@@ -9,6 +9,8 @@ from .config.loader import load_config
 from .mcp.base import MCPRegistry
 from .agent.core import Agent
 from .servers.bootstrap import bootstrap_servers
+from .utils.logging import setup_logging
+import logging
 
 
 def main() -> None:
@@ -25,6 +27,11 @@ def main() -> None:
     vprint(f"[cli] verbose mode on")
     vprint(f"[cli] loading config: {args.config}")
     config = load_config(args.config)
+    # Setup logging if configured
+    log_file = setup_logging(config.logging.enabled, config.logging.level, config.logging.file)
+    logger = logging.getLogger(__name__)
+    if log_file:
+        logger.info("Logging initialized, file=%s", log_file)
     # Apply SSL bypass if configured
     if not config.network.ssl_verify:
         import os
@@ -34,13 +41,17 @@ def main() -> None:
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
     registry = MCPRegistry()
     vprint("[cli] bootstrapping servers...")
+    logger.info("Bootstrapping servers")
     bootstrap_servers(config, registry)
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
+    logger.info("Servers registered: %s", ", ".join(registry.list()))
     agent = Agent(config, registry)
 
     vprint(f"[cli] running task: {args.task}")
+    logger.info("Running task: %s", args.task)
     result = asyncio.run(agent.run(args.task))
     vprint("[cli] done")
+    logger.info("Task completed")
     # Always print the JSON result to stdout for consumption
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

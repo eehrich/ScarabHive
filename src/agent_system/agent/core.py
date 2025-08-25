@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import re
 from typing import Any
+import json
+import time
 
 from ..config.models import AgentConfig
+from ..utils.prompt_renderer import render_system_prompt
 from ..llm.clients import ChatMessage, make_llm
 from ..mcp.base import MCPRegistry
 
@@ -28,96 +31,101 @@ class Agent:
         task_l = task.lower()
         results: dict[str, Any] = {"task": task, "calls": []}
 
-        # Very simple routing heuristics
-        try:
-            if any(k in task_l for k in ["tweet", "twitter", "x.com"]):
-                server = self.registry.get("twitter_search")
-                payload = {"tool": "search", "params": {"query": task, "limit": 5}}
-                out = await server.call(payload["tool"], payload["params"])
-                results["calls"].append({"server": "twitter_search", **payload, "result": out})
-
-            ticker_match = re.search(r"\b([A-Z]{1,5})(?:\s+stock|\s+price|\s+quote|\b)", task)
-            if ticker_match:
-                ticker = ticker_match.group(1)
-                server = self.registry.get("yahoo_finance")
-                payload = {"tool": "quote", "params": {"ticker": ticker}}
-                out = await server.call(payload["tool"], payload["params"])
-                results["calls"].append({"server": "yahoo_finance", **payload, "result": out})
-
-            if any(k in task_l for k in ["search ", "websearch", "google", "find "]):
-                # Prefer our DuckDuckGo server; fall back to any legacy names if present
-                available = set(self.registry.list())
-                if "google_search" in available:
-                    server_name = "google_search"
-                elif "duckduckgo_search" in available:
-                    server_name = "duckduckgo_search"
-                else:
-                    server_name = None
-                if server_name:
-                    server = self.registry.get(server_name)
-                    # Build a cleaner search query from the task
-                    def build_search_query(t: str) -> str:
-                        # Prefer quoted phrases
-                        in_quotes = re.findall(r"['\"]([^'\"]+)['\"]", t)
-                        if in_quotes:
-                            base = " ".join(in_quotes)
-                        else:
-                            words = re.findall(r"[A-Za-z0-9+\-]+", t.lower())
-                            stop = {
-                                "can", "you", "search", "for", "and", "what", "it", "does", "in", "a",
-                                "how", "high", "is", "the", "that", "this", "occurs", "occur", "give",
-                                "me", "ppm", "please", "google", "find"
-                            }
-                            keywords = [w for w in words if w not in stop]
-                            base = " ".join(keywords)
-                        if "car" in t.lower() and "automotive" not in base:
-                            base = (base + " automotive car").strip()
-                        return base.strip() or t
-
-                    search_query = build_search_query(task)
-                    payload = {"tool": "search", "params": {"query": search_query, "max_results": 8}}
-                    out = await server.call(payload["tool"], payload["params"])
-                    results["calls"].append({"server": server_name, **payload, "result": out})
-
-        except Exception as e:
-            results.setdefault("errors", []).append(str(e))
-
-        # LLM summary/plan as last step if available
+        # Prefer an LLM-driven planning loop: ask the LLM what tools to call, execute them,
+        # provide observations, and repeat until the LLM returns a final answer.
         if self.llm is not None:
             try:
-                servers = ", ".join(self.registry.list())
-                # Incorporate search results (if any) to ground the answer
-                snippets: list[str] = []
-                for c in results.get("calls", [])[:1]:  # use first call for now
-                    if isinstance(c.get("result"), dict):
-                        r = c["result"]
-                        if isinstance(r.get("results"), list):
-                            for item in r["results"][:5]:
-                                title = (item.get("title") or "").strip()
-                                body = (item.get("body") or "").strip()
-                                href = (item.get("href") or "").strip()
-                                if title or body:
-                                    line = f"- {title} :: {body}"
-                                    if href:
-                                        line += f" [{href}]"
-                                    snippets.append(line)
-                context_block = "\n".join(snippets)
-                prompt = (
-                    "You are an AI assistant. Available tools: "
-                    + servers
-                    + ". Task: "
-                    + task
-                    + ("\n\nWeb results:\n" + context_block if context_block else "")
-                    + "\n\nProvide a concise answer. If probability in ppm is requested, state assumptions."
-                )
-                answer = await self.llm.chat([ChatMessage(role="user", content=prompt)])
-                if answer and isinstance(answer, str) and answer.strip():
-                    results["summary"] = answer
+                available_tools = self.registry.list()
+
+                system_msg = render_system_prompt(self.config.prompts.system_template, {"tools": available_tools})
+
+                messages = [ChatMessage(role="system", content=system_msg), ChatMessage(role="user", content=task)]
+
+                max_steps = 6
+                import re
+
+                def extract_json(s: str) -> dict | None:
+                    if not s:
+                        return None
+                    # Prefer JSON inside ```json ... ``` fences
+                    m = re.search(r"```json\s*(\{.*?\})\s*```", s, flags=re.DOTALL | re.IGNORECASE)
+                    if m:
+                        cand = m.group(1)
+                        try:
+                            return json.loads(cand)
+                        except Exception:
+                            return None
+                    # Then try any fenced block ``` ... ``` containing JSON
+                    m = re.search(r"```\s*(\{.*?\})\s*```", s, flags=re.DOTALL)
+                    if m:
+                        cand = m.group(1)
+                        try:
+                            return json.loads(cand)
+                        except Exception:
+                            return None
+                    # Finally, find the first balanced JSON object in the text
+                    try:
+                        start = s.index("{")
+                    except ValueError:
+                        return None
+                    depth = 0
+                    for i in range(start, len(s)):
+                        if s[i] == "{":
+                            depth += 1
+                        elif s[i] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                cand = s[start : i + 1]
+                                try:
+                                    return json.loads(cand)
+                                except Exception:
+                                    return None
+                    return None
+
+                for step in range(max_steps):
+                    reply = await self.llm.chat(messages)
+                    parsed = extract_json(reply if isinstance(reply, str) else str(reply))
+                    if not parsed:
+                        results.setdefault("errors", []).append("LLM did not return valid tool JSON.")
+                        break
+
+                    if parsed.get("type") == "final":
+                        results["summary"] = parsed.get("answer", "")
+                        break
+
+                    if parsed.get("type") == "tool":
+                        tool_name = parsed.get("tool")
+                        params = parsed.get("params", {}) or {}
+                        if tool_name not in available_tools:
+                            messages.append(ChatMessage(role="assistant", content=f"Error: unknown tool {tool_name}"))
+                            results.setdefault("errors", []).append(f"Requested unknown tool: {tool_name}")
+                            break
+                        try:
+                            server = self.registry.get(tool_name)
+                            out = await server.call(params.get("tool", params.get("action", "search")) if isinstance(params, dict) else params)
+                        except Exception as e:
+                            messages.append(ChatMessage(role="assistant", content=f"Observation: tool {tool_name} raised {e}"))
+                            results.setdefault("errors", []).append(str(e))
+                            continue
+                        # record call and attach observation for next LLM step
+                        call_record = {"server": tool_name, "tool": params.get("tool", params.get("action", "call")), "params": params, "result": out}
+                        results["calls"].append(call_record)
+                        obs_text = json.dumps(out, ensure_ascii=False)
+                        messages.append(ChatMessage(role="assistant", content=f"Observation from {tool_name}: {obs_text}"))
+                        # small pause to avoid tight loops with sync LLMs
+                        time.sleep(0.1)
+                        continue
+
+                    # unknown directive
+                    results.setdefault("errors", []).append("LLM returned unknown directive.")
+                    break
+
                 else:
-                    results.setdefault("notes", []).append("LLM returned empty response.")
-            except Exception as _:
-                results.setdefault("notes", []).append("LLM call failed; returned raw tool outputs only.")
+                    results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
+            except Exception as e:
+                results.setdefault("errors", []).append(str(e))
+                results.setdefault("errors", []).append("LLM planning failed.")
         else:
-            results.setdefault("notes", []).append("LLM not available; returned raw tool outputs only.")
+            results.setdefault("errors", []).append("No LLM available; agent requires an LLM to plan tool usage.")
 
         return results

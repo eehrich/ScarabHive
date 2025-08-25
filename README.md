@@ -62,6 +62,15 @@ servers:
 
 network:
   ssl_verify: false  # set to false if your corporate network has untrusted SSL interception
+
+logging:
+  enabled: true
+  level: INFO
+  file: logs/agent.log
+  as_json: false
+
+prompts:
+  system_template: config/prompts/system_prompt.yaml
 ```
 
 You can override values using environment variables. For OpenAI, set `llm.provider: openai` and provide `OPENAI_API_KEY`.

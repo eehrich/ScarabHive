@@ -26,8 +26,21 @@ class NetworkConfig(BaseModel):
 # In this scaffold we keep 'servers' as dict[str, dict] directly on AgentConfig.
 
 
+class LoggingConfig(BaseModel):
+    enabled: bool = False
+    level: str = "INFO"
+    file: str = "logs/agent.log"
+    as_json: bool = False
+
+
+class PromptsConfig(BaseModel):
+    system_template: str = "config/prompts/system_prompt.yaml"
+
+
 class AgentConfig(BaseModel):
     llm: LLMConfig = LLMConfig()
     mcp: MCPConfig = MCPConfig()
     network: NetworkConfig = NetworkConfig()
     servers: dict[str, dict] = {}
+    logging: LoggingConfig = LoggingConfig()
+    prompts: PromptsConfig = PromptsConfig()
