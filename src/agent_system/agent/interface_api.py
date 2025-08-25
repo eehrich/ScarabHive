@@ -86,6 +86,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
 
 def run() -> None:
+    # Ensure UTF-8 encoding for all text operations
+    import sys
+    import locale
+    
+    # Set environment variables for UTF-8 encoding
+    os.environ.setdefault('PYTHONUTF8', '1')
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+    
+    # Reconfigure stdout and stderr to use UTF-8
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+    
     # Load config first to get logging and network settings
     from ..config.loader import load_config
     from pathlib import Path
@@ -137,16 +153,17 @@ def run() -> None:
                 "class": "logging.FileHandler",
                 "filename": config.logging.file,
                 "mode": "a",  # Append mode since we already truncated in setup_logging
+                "encoding": "utf-8",
             },
         },
         "loggers": {
-            "uvicorn": {"handlers": ["default", "file"] if config.logging.enabled else ["default"], "level": uvicorn_log_level.upper()},
-            "uvicorn.error": {"level": uvicorn_log_level.upper()},
-            "uvicorn.access": {"handlers": ["access", "file"] if config.logging.enabled else ["access"], "level": uvicorn_log_level.upper(), "propagate": True},
+            "uvicorn": {"handlers": ["default", "file"] if config.logging.enabled else ["default"], "level": uvicorn_log_level.upper(), "propagate": False},
+            "uvicorn.error": {"level": uvicorn_log_level.upper(), "propagate": False},
+            "uvicorn.access": {"handlers": ["access", "file"] if config.logging.enabled else ["access"], "level": uvicorn_log_level.upper(), "propagate": False},
         },
         "root": {
             "level": uvicorn_log_level.upper(),
-            "handlers": ["default", "file"] if config.logging.enabled else ["default"],
+            "handlers": ["file"] if config.logging.enabled else [],
         },
     }
     
