@@ -30,6 +30,12 @@ def main() -> None:
     # Setup logging if configured
     log_file = setup_logging(config.logging.enabled, config.logging.level, config.logging.file)
     logger = logging.getLogger(__name__)
+    # If verbose not set, reduce console output to WARNING to avoid noisy logs on stdout
+    if not args.verbose:
+        root_logger = logging.getLogger()
+        for h in list(root_logger.handlers):
+            if isinstance(h, logging.StreamHandler):
+                h.setLevel(logging.WARNING)
     if log_file:
         logger.info("Logging initialized, file=%s", log_file)
     # Apply SSL bypass if configured

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import AsyncIterator, Optional
+from typing import Optional
+import json
+import re
 
 from pydantic import BaseModel
+import logging
 
 
 class ChatMessage(BaseModel):
@@ -15,46 +18,90 @@ class LLMClient:
         raise NotImplementedError
 
 
-class OllamaClient(LLMClient):
-    def __init__(self, model: str, base_url: str | None = None) -> None:
-        self.model = model
+class OpenAIAsyncClient(LLMClient):
+    """Async client using OpenAI SDK.
+
+    Can talk to:
+      - OpenAI (default base)
+      - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
+    """
+
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None) -> None:
         try:
-            import ollama  # type: ignore
+            from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
-            raise RuntimeError("ollama package required for OllamaClient") from e
-        self._ollama = ollama
-        self._base_url = base_url
-
-    async def chat(self, messages: list[ChatMessage]) -> str:
-        # Simple non-streaming call via sync API in a thread would be ideal; here we use blocking call
-        # because the scaffold focuses on structure. In production, adapt to asyncio.
-        kwargs = {}
-        if self._base_url:
-            kwargs["host"] = self._base_url
-        result = self._ollama.chat(model=self.model, messages=[m.model_dump() for m in messages], **kwargs)
-        return result.get("message", {}).get("content", "")
-
-
-class OpenAIClient(LLMClient):
-    def __init__(self, api_key: str, model: str) -> None:
-        try:
-            from openai import OpenAI  # type: ignore
-        except Exception as e:
-            raise RuntimeError("openai package required for OpenAIClient") from e
-        self._OpenAI = OpenAI
-        self._client = OpenAI(api_key=api_key)
+            raise RuntimeError("openai package required for OpenAIAsyncClient") from e
+        self._AsyncOpenAI = AsyncOpenAI
+        kwargs: dict = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = AsyncOpenAI(**kwargs)
         self.model = model
 
     async def chat(self, messages: list[ChatMessage]) -> str:
-        resp = self._client.chat.completions.create(model=self.model, messages=[m.model_dump() for m in messages])
-        return resp.choices[0].message.content or ""
+        logger = logging.getLogger(__name__)
+        try:
+            resp = await self._client.chat.completions.create(
+                model=self.model,
+                messages=[m.model_dump() for m in messages],
+            )
+            # Log lightly to avoid huge dumps
+            try:
+                logger.debug("OpenAI resp id=%s choices=%d", getattr(resp, "id", None), len(getattr(resp, "choices", []) or []))
+            except Exception:
+                pass
+            choice = resp.choices[0] if resp.choices else None
+            if not choice:
+                return ""
+            message = choice.message
+            # Prefer content text
+            content = getattr(message, "content", None)
+            if content:
+                return content
+            # If tool_calls are present, synthesize our tool JSON
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if tool_calls:
+                try:
+                    first = tool_calls[0]
+                    function = getattr(first, "function", None)
+                    name = getattr(function, "name", None) if function is not None else getattr(first, "name", None)
+                    arguments = getattr(function, "arguments", None) if function is not None else getattr(first, "arguments", None)
+                    params = {}
+                    if isinstance(arguments, str):
+                        try:
+                            params = json.loads(arguments)
+                        except Exception:
+                            # best-effort: attempt relaxed quotes
+                            params = json.loads(arguments.replace("'", '"')) if arguments else {}
+                    elif isinstance(arguments, dict):
+                        params = arguments
+                    if name:
+                        return json.dumps({"type": "tool", "tool": name, "params": params}, ensure_ascii=False)
+                except Exception:
+                    pass
+            # Last fallback: dump the structure to string
+            try:
+                return getattr(message, "content", None) or ""
+            except Exception:
+                return ""
+        except Exception as e:
+            logger.exception("OpenAI chat failed: %s", e)
+            return ""
 
 
 def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None) -> LLMClient:
-    if provider == "ollama":
-        return OllamaClient(model, base_url=ollama_url)
+    """Factory creating an async LLM client.
+
+    - provider=openai: use AsyncOpenAI against OpenAI API.
+    - provider=ollama: use AsyncOpenAI against Ollama's OpenAI-compatible endpoint at base_url .../v1.
+    """
     if provider == "openai":
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
-        return OpenAIClient(openai_api_key, model)
+        return OpenAIAsyncClient(model=model, api_key=openai_api_key)
+    if provider == "ollama":
+        base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
+        # OpenAI SDK requires some api_key value; Ollama ignores it
+        api_key = openai_api_key or "ollama"
+        return OpenAIAsyncClient(model=model, api_key=api_key, base_url=base)
     raise ValueError(f"Unknown LLM provider: {provider}")

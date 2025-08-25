@@ -8,7 +8,9 @@ template: |
   The JSON MUST be one of two forms:
   1) A tool call: {"type": "tool", "tool": "<tool_name>", "params": {...}}
      Example:
-     ```json {"type":"tool", "tool":"google_search", "params": {"query": "Munich weather", "max_results": 3}} ```
+     {%- set example_tool = 'google_search' if 'google_search' in tools else ('duckduckgo_search' if 'duckduckgo_search' in tools else (tools[0] if tools else 'duckduckgo_search')) -%}
+     ```json {"type":"tool", "tool":"{{ example_tool }}", "params": {"query": "Munich weather", "max_results": 3}} ```
   2) A final answer: {"type": "final", "answer": "your final answer text" }
+  After you receive an Observation, either call another tool or return a final answer. Do not repeat the observation verbatim; synthesize the answer.
   Do NOT include any extra commentary outside the JSON code block. If the requested tool is not available,
   return a final answer explaining the limitation.
