@@ -14,7 +14,12 @@ class Agent:
         self.registry = registry
         self.llm = None
         try:
-            self.llm = make_llm(config.llm.provider, config.llm.model, config.llm.openai_api_key)
+            self.llm = make_llm(
+                config.llm.provider,
+                config.llm.model,
+                config.llm.openai_api_key,
+                config.llm.ollama_url,
+            )
         except Exception:
             # LLM optional; continue without it
             self.llm = None

@@ -33,11 +33,12 @@ llm:
   provider: ollama   # ollama | openai
   model: gpt-oss:20b
   openai_api_key: ${OPENAI_API_KEY}
+  ollama_url: http://127.0.0.1:11434  # set to remote Ollama instance if needed
 
 mcp:
   enabled_servers:
     - websearch_abstract
-    - websearch_google
+    - duckduckgo_search
     - yahoo_finance
     - twitter_search
     - llm_router

@@ -29,7 +29,6 @@ Homepage = "https://example.com"
 [project.scripts]
 agent-cli = "agent_system.cli:main"
 agent-api = "agent_system.agent.interface_api:run"
-mcp-websearch-abstract = "agent_system.servers.websearch_abstract.__main__:main"
 mcp-duckduckgo-search = "agent_system.servers.duckduckgo_search.__main__:main"
 mcp-yahoo-finance = "agent_system.servers.yahoo_finance.__main__:main"
 mcp-twitter-search = "agent_system.servers.twitter_search.__main__:main"

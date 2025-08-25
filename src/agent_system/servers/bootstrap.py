@@ -10,13 +10,7 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
     for key in config.mcp.enabled_servers:
         server_cfg: dict[str, Any] = config.servers.get(key, {})
         typ = server_cfg.get("type", key)
-        # Back-compat mapping
-        if typ == "websearch_google":
-            typ = "duckduckgo_search"
-        if typ == "websearch_abstract":
-            from .websearch_abstract.server import AbstractWebSearchServer
-            registry.register(key, AbstractWebSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
-        elif typ == "duckduckgo_search":
+        if typ == "duckduckgo_search":
             from .duckduckgo_search.server import DuckDuckGoSearchServer
             registry.register(key, DuckDuckGoSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
         elif typ == "yahoo_finance":

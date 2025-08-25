@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from ...llm.clients import ChatMessage, make_llm
 from ...mcp.base import MCPServer
@@ -9,10 +9,12 @@ from ...mcp.base import MCPServer
 class LLMRouterServer(MCPServer):
     def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
         super().__init__(name, config, ssl_verify=ssl_verify)
-        provider = (config or {}).get("default_provider", "ollama")
-        model = (config or {}).get("model", "gpt-oss:20b")
-        api_key = (config or {}).get("openai_api_key")
-        self._client = make_llm(provider, model, api_key)
+        cfg = config or {}
+        provider = cfg.get("default_provider", "ollama")
+        model = cfg.get("model", "gpt-oss:20b")
+        api_key = cfg.get("openai_api_key")
+        ollama_url = cfg.get("ollama_url")
+        self._client = make_llm(provider, model, api_key, ollama_url)
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool == "chat":

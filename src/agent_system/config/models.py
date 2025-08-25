@@ -8,6 +8,7 @@ class LLMConfig(BaseModel):
     provider: Literal["ollama", "openai"] = "ollama"
     model: str = "gpt-oss:20b"
     openai_api_key: Optional[str] = None
+    ollama_url: Optional[str] = None  # e.g. http://remote-host:11434
 
 
 class MCPServerRef(BaseModel):

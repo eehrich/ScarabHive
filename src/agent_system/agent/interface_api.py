@@ -20,6 +20,13 @@ app = FastAPI(title="Agent System (MCP)")
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
+    # Apply SSL bypass if configured
+    if not config.network.ssl_verify:
+        import os
+        os.environ["PYTHONHTTPSVERIFY"] = "0"
+        os.environ.setdefault("SSL_CERT_FILE", "")
+        os.environ.setdefault("CURL_CA_BUNDLE", "")
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
     agent = Agent(config, registry)

@@ -16,18 +16,22 @@ class LLMClient:
 
 
 class OllamaClient(LLMClient):
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, base_url: str | None = None) -> None:
         self.model = model
         try:
             import ollama  # type: ignore
         except Exception as e:
             raise RuntimeError("ollama package required for OllamaClient") from e
         self._ollama = ollama
+        self._base_url = base_url
 
     async def chat(self, messages: list[ChatMessage]) -> str:
         # Simple non-streaming call via sync API in a thread would be ideal; here we use blocking call
         # because the scaffold focuses on structure. In production, adapt to asyncio.
-        result = self._ollama.chat(model=self.model, messages=[m.model_dump() for m in messages])
+        kwargs = {}
+        if self._base_url:
+            kwargs["host"] = self._base_url
+        result = self._ollama.chat(model=self.model, messages=[m.model_dump() for m in messages], **kwargs)
         return result.get("message", {}).get("content", "")
 
 
@@ -46,9 +50,9 @@ class OpenAIClient(LLMClient):
         return resp.choices[0].message.content or ""
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str]) -> LLMClient:
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None) -> LLMClient:
     if provider == "ollama":
-        return OllamaClient(model)
+        return OllamaClient(model, base_url=ollama_url)
     if provider == "openai":
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
