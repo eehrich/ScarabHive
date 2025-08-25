@@ -31,6 +31,9 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         elif typ == "weather":
             from .weather.server import WeatherServer
             registry.register(key, WeatherServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
+        elif typ == "datetime":
+            from .datetime.server import DateTimeServer
+            registry.register(key, DateTimeServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
         else:
             # ignore unknown for now
             continue
