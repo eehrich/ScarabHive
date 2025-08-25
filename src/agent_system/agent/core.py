@@ -6,7 +6,7 @@ import json
 import time
 
 from ..config.models import AgentConfig
-from ..utils.prompt_renderer import render_system_prompt
+from ..utils.prompt_renderer import render_system_prompt, render_prompts
 import logging
 from ..llm.clients import ChatMessage, make_llm
 from ..mcp.base import MCPRegistry
@@ -39,50 +39,39 @@ class Agent:
                 available_tools = self.registry.list()
                 logger = logging.getLogger(__name__)
 
-                system_msg = render_system_prompt(self.config.prompts.system_template, {"tools": available_tools})
+                # Render prompts (system + tools)
+                rendered = render_prompts(self.config.prompts.system_template, {"tools": available_tools})
+                system_msg = rendered.get("system_prompt") or "You are an assistant agent."
+                tools_msg = rendered.get("tools_prompt")
 
-                messages = [ChatMessage(role="system", content=system_msg), ChatMessage(role="user", content=task)]
+                messages = [ChatMessage(role="system", content=system_msg)]
+                if tools_msg:
+                    messages.append(ChatMessage(role="system", content=tools_msg))
+                messages.append(ChatMessage(role="user", content=task))
 
                 max_steps = 6
                 import re
 
-                def extract_json(s: str) -> dict | None:
-                    if not s:
-                        return None
-                    # Prefer JSON inside ```json ... ``` fences
-                    m = re.search(r"```json\s*(\{.*?\})\s*```", s, flags=re.DOTALL | re.IGNORECASE)
-                    if m:
-                        cand = m.group(1)
-                        try:
-                            return json.loads(cand)
-                        except Exception:
-                            return None
-                    # Then try any fenced block ``` ... ``` containing JSON
-                    m = re.search(r"```\s*(\{.*?\})\s*```", s, flags=re.DOTALL)
-                    if m:
-                        cand = m.group(1)
-                        try:
-                            return json.loads(cand)
-                        except Exception:
-                            return None
-                    # Finally, find the first balanced JSON object in the text
-                    try:
-                        start = s.index("{")
-                    except ValueError:
-                        return None
-                    depth = 0
-                    for i in range(start, len(s)):
-                        if s[i] == "{":
-                            depth += 1
-                        elif s[i] == "}":
-                            depth -= 1
-                            if depth == 0:
-                                cand = s[start : i + 1]
-                                try:
-                                    return json.loads(cand)
-                                except Exception:
-                                    return None
-                    return None
+                # Native tool calling: build tool schema list the LLM can choose from
+                # Use a simple tool schema: a 'search' action with free-form params; servers parse their own params
+                tools_schema: list[dict] = []
+                for t in available_tools:
+                    tools_schema.append({
+                        "type": "function",
+                        "function": {
+                            "name": t,
+                            "description": f"Call the MCP server '{t}'. Pass a JSON object with fields appropriate for the action.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string", "description": "Action to perform, e.g., 'search'"},
+                                    "query": {"type": "string", "description": "Query or main input"},
+                                    "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                                },
+                                "additionalProperties": True,
+                            },
+                        },
+                    })
 
                 for step in range(max_steps):
                     # Log LLM input (structured)
@@ -93,95 +82,60 @@ class Agent:
                         llm_in = [repr(m) for m in messages]
                     logger.debug("LLM input (step %d): %s", step + 1, llm_in)
 
-                    # Small retry loop to coerce a valid JSON action from the LLM
-                    parsed = None
-                    last_raw = None
-                    tries = 0
-                    while tries < 2 and parsed is None:
-                        reply = await self.llm.chat(messages)
-                        last_raw = reply
-                        logger.debug("LLM raw reply (step %d try %d): %s", step + 1, tries + 1, reply)
-                        raw = reply if isinstance(reply, str) else str(reply)
-                        parsed = extract_json(raw)
-                        if not parsed:
-                            # Try heuristic: extract Function(name='foo', arguments={...}) from repr
-                            m = re.search(r"Function\(\s*name=(['\"]) (?P<name>[^'\"]+)\1.*?arguments=(?P<args>\{.*?\})\s*\)", raw, flags=re.DOTALL)
-                            if m:
+                    # Ask the LLM with native tool calling
+                    llm_out = await self.llm.chat_tools(messages, tools_schema)
+                    assistant = llm_out.get("assistant", {})
+                    logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
+                    tool_calls = assistant.get("tool_calls") or []
+                    content = assistant.get("content")
+
+                    if tool_calls:
+                        # Execute each tool call in order, append tool results as tool messages
+                        for tc in tool_calls:
+                            func = tc.get("function", {})
+                            tool_name = func.get("name")
+                            raw_args = func.get("arguments")
+                            params: dict[str, Any] = {}
+                            if isinstance(raw_args, str) and raw_args:
                                 try:
-                                    name = m.group("name")
-                                    args_txt = m.group("args")
-                                    args = json.loads(args_txt.replace("'", '"'))
-                                    parsed = {"type": "tool", "tool": name, "params": args}
-                                    logger.info("Heuristic parsed tool call from LLM repr: %s %s", name, args)
+                                    params = json.loads(raw_args)
                                 except Exception:
-                                    parsed = None
-                        if parsed is None:
-                            tries += 1
-                            if tries < 2:
-                                # Nudge the model to respond correctly
-                                messages.append(ChatMessage(role="system", content="Return exactly one action as JSON in a ```json``` block. No prose."))
-
-                    reply = last_raw
-                    if not parsed:
-                        results.setdefault("errors", []).append("LLM did not return valid tool JSON.")
-                        results.setdefault("raw_llm_reply", raw if 'raw' in locals() else str(last_raw))
-                        logger.error("LLM parse failed; raw reply: %s", raw if 'raw' in locals() else str(last_raw))
-                        break
-
-                    if parsed.get("type") == "final":
-                        results["summary"] = parsed.get("answer", "")
-                        break
-
-                    if parsed.get("type") == "tool":
-                        tool_name = parsed.get("tool")
-                        params = parsed.get("params", {}) or {}
-                        if tool_name not in available_tools:
-                            messages.append(ChatMessage(role="assistant", content=f"Error: unknown tool {tool_name}"))
-                            results.setdefault("errors", []).append(f"Requested unknown tool: {tool_name}")
-                            break
-                        try:
-                            action_name = params.get("tool", params.get("action", "search"))
-                            logger.info("Calling tool %s action %s with params %s", tool_name, action_name, params)
-                            server = self.registry.get(tool_name)
-                            # servers expect (tool_action, params) where tool_action is e.g. 'search'
-                            if isinstance(params, dict):
+                                    # fall back to permissive parsing
+                                    try:
+                                        params = json.loads(raw_args.replace("'", '"'))
+                                    except Exception:
+                                        params = {}
+                            elif isinstance(raw_args, dict):
+                                params = raw_args
+                            if not tool_name or tool_name not in available_tools:
+                                logger.warning("Unknown tool requested: %s", tool_name)
+                                continue
+                            action_name = params.get("action") or params.get("tool") or "search"
+                            try:
+                                logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
+                                server = self.registry.get(tool_name)
                                 out = await server.call(action_name, params)
-                            else:
-                                # if params is a raw string or other, pass it as the second arg and default action
-                                out = await server.call("search", params)
-                            logger.info("Tool %s returned result: %s", tool_name, out)
-                        except Exception as e:
-                            logger.exception("Tool %s raised an exception", tool_name)
-                            messages.append(ChatMessage(role="assistant", content=f"Observation: tool {tool_name} raised {e}"))
-                            results.setdefault("errors", []).append(str(e))
-                            continue
-                        # record call and attach observation for next LLM step
-                        call_record = {"server": tool_name, "action": action_name if isinstance(params, dict) else "search", "params": params, "result": out}
-                        results["calls"].append(call_record)
-                        # Build a concise observation to keep the loop stable
-                        obs_summary = None
-                        try:
-                            if isinstance(out, (list, tuple)) and out and isinstance(out[0], dict):
-                                items = []
-                                for item in out[:3]:
-                                    title = item.get("title") or item.get("name") or item.get("symbol") or "item"
-                                    link = item.get("link") or item.get("url") or ""
-                                    snippet = item.get("snippet") or item.get("summary") or item.get("text") or ""
-                                    items.append({"title": title, "link": link, "snippet": snippet[:180]})
-                                obs_summary = {"summary": items, "total": len(out)}
-                            elif isinstance(out, dict):
-                                obs_summary = {k: (v[:180] + "...") if isinstance(v, str) and len(v) > 180 else v for k, v in list(out.items())[:8]}
-                            else:
-                                obs_summary = str(out)
-                        except Exception:
-                            obs_summary = str(out)
-                        messages.append(ChatMessage(role="assistant", content=f"Observation: {json.dumps(obs_summary, ensure_ascii=False)}"))
-                        # small pause to avoid tight loops with sync LLMs
-                        time.sleep(0.1)
+                                logger.info("Tool %s returned: %s", tool_name, str(out)[:500])
+                                results["calls"].append({"server": tool_name, "action": action_name, "params": params, "result": out})
+                                # Append tool result message
+                                tool_call_id = tc.get("id")
+                                tool_msg_content = json.dumps(out, ensure_ascii=False)
+                                messages.append(ChatMessage(role="tool", tool_call_id=tool_call_id, name=tool_name, content=tool_msg_content))
+                            except Exception as e:
+                                logger.exception("Tool %s invocation failed: %s", tool_name, e)
+                                results.setdefault("errors", []).append(str(e))
+                                messages.append(ChatMessage(role="assistant", content=f"Observation: tool {tool_name} error: {e}"))
+                                continue
+                        # After executing tools, continue to next step to let LLM synthesize
                         continue
 
-                    # unknown directive
-                    results.setdefault("errors", []).append("LLM returned unknown directive.")
+                    # No tool calls; if there's final content, capture and finish
+                    if content:
+                        results["summary"] = content
+                        break
+
+                    # If neither tools nor content, consider it as no-op and break
+                    results.setdefault("errors", []).append("LLM returned neither tool calls nor content.")
                     break
 
                 else:

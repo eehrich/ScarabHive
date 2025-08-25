@@ -10,11 +10,15 @@ import logging
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: Optional[str] = None
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
 
 
 class LLMClient:
     async def chat(self, messages: list[ChatMessage]) -> str:
+        raise NotImplementedError
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict]) -> dict:
         raise NotImplementedError
 
 
@@ -87,6 +91,55 @@ class OpenAIAsyncClient(LLMClient):
         except Exception as e:
             logger.exception("OpenAI chat failed: %s", e)
             return ""
+
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict]) -> dict:
+        """Call model with native tool calling enabled.
+
+        Returns a dict with keys:
+          - assistant: the assistant message dict including optional tool_calls
+        """
+        logger = logging.getLogger(__name__)
+        # Convert ChatMessage -> dicts compatible with OpenAI SDK
+        msgs: list[dict] = []
+        for m in messages:
+            d = {"role": m.role}
+            if m.content is not None:
+                d["content"] = m.content
+            if m.role == "tool":
+                if m.tool_call_id:
+                    d["tool_call_id"] = m.tool_call_id
+                if m.name:
+                    d["name"] = m.name
+            msgs.append(d)
+        try:
+            resp = await self._client.chat.completions.create(
+                model=self.model,
+                messages=msgs,
+                tools=tools,
+                tool_choice="auto",
+            )
+            choice = resp.choices[0] if resp.choices else None
+            if not choice:
+                return {"assistant": {"role": "assistant", "content": ""}}
+            message = choice.message
+            # Build a transferable dict representation
+            out = {"role": "assistant", "content": getattr(message, "content", None)}
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if tool_calls:
+                out_calls = []
+                for tc in tool_calls:
+                    function = getattr(tc, "function", None)
+                    name = getattr(function, "name", None) if function is not None else getattr(tc, "name", None)
+                    arguments = getattr(function, "arguments", None) if function is not None else getattr(tc, "arguments", None)
+                    out_calls.append({
+                        "id": getattr(tc, "id", None),
+                        "function": {"name": name, "arguments": arguments},
+                    })
+                out["tool_calls"] = out_calls
+            return {"assistant": out}
+        except Exception as e:
+            logger.exception("OpenAI chat with tools failed: %s", e)
+            return {"assistant": {"role": "assistant", "content": ""}}
 
 
 def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None) -> LLMClient:
