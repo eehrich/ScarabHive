@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent System (MCP)</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Agent System <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #243244;color:#9ab;font-size:12px; margin-left:8px">MCP</span></h1>
+    </header>
+
+    <main>
+      <div id="chat" class="chat" aria-live="polite"></div>
+    </main>
+
+    <div class="inputBar" role="region" aria-label="Chat input">
+      <form id="f">
+        <input id="task" type="text" placeholder="Ask the agent…" autocomplete="on" />
+        <button id="runBtn" type="submit">Run</button>
+      </form>
+    </div>
+
+    <script>
+      // client-side: small, readable SSE-driven UI
+      const chat = document.getElementById('chat');
+      const form = document.getElementById('f');
+      const runBtn = document.getElementById('runBtn');
+
+      function escapeHtml(s) {
+        return s.replace(/[&<>]/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;'}[c]));
+      }
+
+      function scrollBottom() {
+        requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+      }
+
+      function addUser(text) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = `<div class="msg user">${escapeHtml(text)}</div>`;
+        chat.appendChild(row);
+        scrollBottom();
+      }
+
+      function addAssistantBlock() {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const box = document.createElement('div');
+        box.className = 'msg assistant';
+        box.innerHTML = `
+          <div id="assistantText"></div>
+          <details id="thinkingBox"><summary>Thinking…</summary><pre id="thinking"></pre></details>
+          <details id="mcpBox"><summary>MCP Calls</summary><pre id="mcp"></pre></details>
+        `;
+        row.appendChild(box);
+        chat.appendChild(row);
+        scrollBottom();
+        return {
+          row,
+          box,
+          t: box.querySelector('#assistantText'),
+          think: box.querySelector('#thinking'),
+          mcp: box.querySelector('#mcp'),
+          thinkBox: box.querySelector('#thinkingBox'),
+          mcpBox: box.querySelector('#mcpBox')
+        };
+      }
+
+      form.addEventListener('submit', e => { e.preventDefault(); run(); });
+
+      async function run() {
+        const taskInput = document.getElementById('task');
+        const task = taskInput.value.trim();
+        if (!task) return;
+
+        addUser(task);
+        taskInput.value = '';
+        const blk = addAssistantBlock();
+        runBtn.disabled = true;
+
+        let sseOk = false;
+        const es = new EventSource(`/events?task=${encodeURIComponent(task)}`);
+
+        es.onopen = () => { console.info('SSE connected'); sseOk = true; };
+
+        es.onmessage = ev => {
+          try {
+            const data = JSON.parse(ev.data);
+            switch (data.type) {
+              case 'thinking':
+                blk.think.textContent += JSON.stringify(data.assistant, null, 2) + '\n';
+                blk.thinkBox.open = true;
+                break;
+              case 'mcp_call':
+                blk.mcp.textContent += `> ${data.server}.${data.action} ${JSON.stringify(data.params)}\n`;
+                blk.mcpBox.open = true;
+                break;
+              case 'mcp_result':
+                blk.mcp.textContent += JSON.stringify(data.result, null, 2) + '\n\n';
+                break;
+              case 'final':
+                blk.t.textContent = data.summary || data.content || '';
+                blk.thinkBox.open = false;
+                break;
+              case 'end':
+                es.close();
+                runBtn.disabled = false;
+                break;
+              case 'error':
+                blk.t.textContent = (blk.t.textContent || '') + `\nError: ${data.message}`;
+                break;
+            }
+            scrollBottom();
+          } catch (err) {
+            // ignore parse errors
+          }
+        };
+
+        setTimeout(async () => {
+          if (!sseOk) {
+            try {
+              const r = await fetch('/run?task=' + encodeURIComponent(task), { method: 'POST' });
+              const j = await r.json();
+              blk.t.textContent = j.summary || JSON.stringify(j, null, 2);
+            } catch (e) {
+              blk.t.textContent = 'Request failed: ' + e;
+            }
+            runBtn.disabled = false;
+            es.close();
+          }
+        }, 1500);
+
+        es.onerror = () => { es.close(); runBtn.disabled = false; };
+      }
+    </script>
+  </body>
+</html>
