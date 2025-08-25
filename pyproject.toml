@@ -39,3 +39,8 @@ mcp-llm-router = "agent_system.servers.llm_router.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4",
+]
