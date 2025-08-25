@@ -15,6 +15,8 @@ system_prompt: |
    When users ask about "tomorrow", that means {{ tomorrow_date }}.
    When users ask about weather forecasts, consider the current date context.
 
+   Use Markdown for output formatting.
+
 tools_prompt: |
     Tools available: {{ tools | join(', ') }}
     Use tool calls when necessary; otherwise respond directly.
