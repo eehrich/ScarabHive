@@ -7,6 +7,7 @@ Flexible AI Agent System using the Model Context Protocol (MCP). Runs locally on
 - Pluggable MCP servers via YAML
 - Default LLM: Ollama `gpt-oss:20b` (configurable). OpenAI supported.
 - Web search servers: AbstractWebSearch + DuckDuckGo, Yahoo Finance, Twitter scrapes
+- Web search servers: Google Custom Search (optional), AbstractWebSearch + DuckDuckGo, Yahoo Finance, Twitter scrapes
 - LLM Router MCP to other AI models (Ollama/OpenAI)
 - FastAPI agent interface at http://127.0.0.1:8000
 - No Docker required
@@ -37,15 +38,18 @@ llm:
 
 mcp:
   enabled_servers:
-    - websearch_abstract
-    - duckduckgo_search
+  - google_search
+  - duckduckgo_search
+  - google_search
     - yahoo_finance
     - twitter_search
     - llm_router
 
 servers:
-  websearch_abstract:
-    type: websearch_abstract
+  google_search:
+    type: google_search
+    api_key: ${GOOGLE_API_KEY}  # set to your Google API key (Custom Search JSON API)
+    cx: ${GOOGLE_CX}            # set to your Custom Search Engine ID
   duckduckgo_search:
     type: duckduckgo_search
   yahoo_finance:

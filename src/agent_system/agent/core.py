@@ -47,10 +47,10 @@ class Agent:
             if any(k in task_l for k in ["search ", "websearch", "google", "find "]):
                 # Prefer our DuckDuckGo server; fall back to any legacy names if present
                 available = set(self.registry.list())
-                if "duckduckgo_search" in available:
+                if "google_search" in available:
+                    server_name = "google_search"
+                elif "duckduckgo_search" in available:
                     server_name = "duckduckgo_search"
-                elif "websearch_google" in available:
-                    server_name = "websearch_google"
                 else:
                     server_name = None
                 if server_name:

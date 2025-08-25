@@ -13,6 +13,9 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         if typ == "duckduckgo_search":
             from .duckduckgo_search.server import DuckDuckGoSearchServer
             registry.register(key, DuckDuckGoSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
+        elif typ == "google_search":
+            from .google_search.server import GoogleSearchServer
+            registry.register(key, GoogleSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
         elif typ == "yahoo_finance":
             from .yahoo_finance.server import YahooFinanceServer
             registry.register(key, YahooFinanceServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
