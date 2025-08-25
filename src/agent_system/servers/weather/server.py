@@ -20,8 +20,11 @@ class WeatherServer(MCPServer):
     """
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        if tool != "forecast":
-            raise ValueError(f"Unknown tool: {tool}")
+        # Support multiple action names for LLM robustness
+        # All these actions do the same thing: get weather forecast
+        supported_actions = ["forecast", "search", "query", "get", "check", "lookup"]
+        if tool not in supported_actions:
+            raise ValueError(f"Unknown tool: {tool}. Supported tools: {', '.join(supported_actions)}")
 
         location = params.get("location", "")
         if not location:
@@ -318,11 +321,15 @@ class WeatherServer(MCPServer):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": "Get weather forecast and current conditions for any location worldwide. Returns multi-day forecasts starting from today. For 'tomorrow' specifically, request 2+ days and use the second day's data. Supports multiple free weather data sources without requiring API tokens.",
+                "description": "Get weather forecast and current conditions for any location worldwide. Returns multi-day forecasts starting from today. For 'tomorrow' specifically, request 2+ days and use the second day's data. Supports multiple action names (forecast, search, query, get, check, lookup) for maximum LLM compatibility. Supports multiple free weather data sources without requiring API tokens.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["forecast"], "description": "Use 'forecast' to get weather data"},
+                        "action": {
+                            "type": "string", 
+                            "enum": ["forecast", "search", "query", "get", "check", "lookup"], 
+                            "description": "Action to perform: 'forecast' (recommended), 'search', 'query', 'get', 'check', or 'lookup' - all do the same thing"
+                        },
                         "location": {
                             "type": "string", 
                             "description": "Location name (city, address, coordinates). Examples: 'Berlin, Germany', 'New York, NY', 'Tokyo, Japan'"
