@@ -47,3 +47,7 @@ class DuckDuckGoSearchServer(MCPServer):
                 },
             },
         }
+
+    def get_default_action(self) -> str:
+        """Return the default action for DuckDuckGo search."""
+        return "search"

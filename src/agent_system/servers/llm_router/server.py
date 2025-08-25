@@ -56,3 +56,7 @@ class LLMRouterServer(MCPServer):
                 },
             },
         }
+
+    def get_default_action(self) -> str:
+        """Return the default action for LLM router."""
+        return "chat"

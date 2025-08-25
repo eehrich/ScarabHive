@@ -21,6 +21,11 @@ class MCPServer(ABC):
         """Return the OpenAI function schema for this MCP server's tools."""
         ...
 
+    @abstractmethod  
+    def get_default_action(self) -> str:
+        """Return the default action name for this MCP server."""
+        ...
+
 
 class MCPRegistry:
     def __init__(self) -> None:

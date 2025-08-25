@@ -49,3 +49,7 @@ class TwitterSearchServer(MCPServer):
                 },
             },
         }
+
+    def get_default_action(self) -> str:
+        """Return the default action for Twitter search."""
+        return "search"

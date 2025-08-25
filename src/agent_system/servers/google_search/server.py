@@ -61,3 +61,7 @@ class GoogleSearchServer(MCPServer):
                 },
             },
         }
+
+    def get_default_action(self) -> str:
+        """Return the default action for Google search."""
+        return "search"

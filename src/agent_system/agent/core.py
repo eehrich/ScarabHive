@@ -100,18 +100,26 @@ class Agent:
                                 logger.warning("Unknown tool requested: %s", tool_name)
                                 continue
                             
-                            # Map tool names to their default action names
-                            default_actions = {
-                                "duckduckgo_search": "search",
-                                "yahoo_finance": "quote", 
-                                "web_scraper": "fetch",
-                                "twitter_search": "search",
-                                "llm_router": "chat"
-                            }
-                            action_name = params.get("action") or params.get("tool") or default_actions.get(tool_name, "search")
+                            # Get default action from the server itself
+                            server = self.registry.get(tool_name)
+                            action_name = params.get("action") or params.get("tool") or server.get_default_action()
+                            
+                            # Validate action against server schema and correct if needed
+                            schema = server.get_schema()
+                            valid_actions = []
+                            if "function" in schema and "parameters" in schema["function"]:
+                                action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
+                                valid_actions = action_prop.get("enum", [])
+                            
+                            if valid_actions and action_name not in valid_actions:
+                                logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
+                                             action_name, tool_name, valid_actions)
+                                action_name = server.get_default_action()
+                                # Update params to reflect corrected action
+                                params["action"] = action_name
+                            
                             try:
-                                logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-                                server = self.registry.get(tool_name)
+                                logger.info("Invoking tool %s action %s with params %s (raw_args: %s)", tool_name, action_name, params, raw_args)
                                 out = await server.call(action_name, params)
                                 logger.info("Tool %s returned: %s", tool_name, str(out)[:500])
                                 results["calls"].append({"server": tool_name, "action": action_name, "params": params, "result": out})
