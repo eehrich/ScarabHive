@@ -45,12 +45,37 @@ class Agent:
                 results["calls"].append({"server": "yahoo_finance", **payload, "result": out})
 
             if any(k in task_l for k in ["search ", "websearch", "google", "find "]):
-                server_name = "websearch_google" if "websearch_google" in self.registry.list() else (
-                    "websearch_abstract" if "websearch_abstract" in self.registry.list() else None
-                )
+                # Prefer our DuckDuckGo server; fall back to any legacy names if present
+                available = set(self.registry.list())
+                if "duckduckgo_search" in available:
+                    server_name = "duckduckgo_search"
+                elif "websearch_google" in available:
+                    server_name = "websearch_google"
+                else:
+                    server_name = None
                 if server_name:
                     server = self.registry.get(server_name)
-                    payload = {"tool": "search", "params": {"query": task, "max_results": 5}}
+                    # Build a cleaner search query from the task
+                    def build_search_query(t: str) -> str:
+                        # Prefer quoted phrases
+                        in_quotes = re.findall(r"['\"]([^'\"]+)['\"]", t)
+                        if in_quotes:
+                            base = " ".join(in_quotes)
+                        else:
+                            words = re.findall(r"[A-Za-z0-9+\-]+", t.lower())
+                            stop = {
+                                "can", "you", "search", "for", "and", "what", "it", "does", "in", "a",
+                                "how", "high", "is", "the", "that", "this", "occurs", "occur", "give",
+                                "me", "ppm", "please", "google", "find"
+                            }
+                            keywords = [w for w in words if w not in stop]
+                            base = " ".join(keywords)
+                        if "car" in t.lower() and "automotive" not in base:
+                            base = (base + " automotive car").strip()
+                        return base.strip() or t
+
+                    search_query = build_search_query(task)
+                    payload = {"tool": "search", "params": {"query": search_query, "max_results": 8}}
                     out = await server.call(payload["tool"], payload["params"])
                     results["calls"].append({"server": server_name, **payload, "result": out})
 
@@ -61,14 +86,35 @@ class Agent:
         if self.llm is not None:
             try:
                 servers = ", ".join(self.registry.list())
+                # Incorporate search results (if any) to ground the answer
+                snippets: list[str] = []
+                for c in results.get("calls", [])[:1]:  # use first call for now
+                    if isinstance(c.get("result"), dict):
+                        r = c["result"]
+                        if isinstance(r.get("results"), list):
+                            for item in r["results"][:5]:
+                                title = (item.get("title") or "").strip()
+                                body = (item.get("body") or "").strip()
+                                href = (item.get("href") or "").strip()
+                                if title or body:
+                                    line = f"- {title} :: {body}"
+                                    if href:
+                                        line += f" [{href}]"
+                                    snippets.append(line)
+                context_block = "\n".join(snippets)
                 prompt = (
-                    "You are an AI agent. Available tools: "
+                    "You are an AI assistant. Available tools: "
                     + servers
-                    + ". Summarize the results provided and answer the task succinctly. Task: "
+                    + ". Task: "
                     + task
+                    + ("\n\nWeb results:\n" + context_block if context_block else "")
+                    + "\n\nProvide a concise answer. If probability in ppm is requested, state assumptions."
                 )
                 answer = await self.llm.chat([ChatMessage(role="user", content=prompt)])
-                results["summary"] = answer
+                if answer and isinstance(answer, str) and answer.strip():
+                    results["summary"] = answer
+                else:
+                    results.setdefault("notes", []).append("LLM returned empty response.")
             except Exception as _:
                 results.setdefault("notes", []).append("LLM call failed; returned raw tool outputs only.")
         else:

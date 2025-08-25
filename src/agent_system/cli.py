@@ -15,8 +15,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Agent System CLI")
     parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
     parser.add_argument("--config", dest="config", default=str(Path("config/agent.yaml")), help="Path to config")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
     args = parser.parse_args()
 
+    def vprint(msg: str) -> None:
+        if args.verbose:
+            print(msg, flush=True)
+
+    vprint(f"[cli] verbose mode on")
+    vprint(f"[cli] loading config: {args.config}")
     config = load_config(args.config)
     # Apply SSL bypass if configured
     if not config.network.ssl_verify:
@@ -26,10 +33,15 @@ def main() -> None:
         os.environ.setdefault("CURL_CA_BUNDLE", "")
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
     registry = MCPRegistry()
+    vprint("[cli] bootstrapping servers...")
     bootstrap_servers(config, registry)
+    vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     agent = Agent(config, registry)
 
+    vprint(f"[cli] running task: {args.task}")
     result = asyncio.run(agent.run(args.task))
+    vprint("[cli] done")
+    # Always print the JSON result to stdout for consumption
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
