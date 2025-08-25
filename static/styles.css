@@ -1,6 +1,17 @@
-/* styles for Agent System (MCP) UI */
-:root { color-scheme: dark; }
-* { box-sizing: border-box; }
+/*
+  styles.css — Agent System (MCP)
+  Human-readable, multi-line formatting with section headers.
+*/
+
+/* Base and layout */
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
@@ -8,6 +19,13 @@ body {
   color: #e6edf3;
 }
 
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+/* Header */
 header {
   position: sticky;
   top: 0;
@@ -18,24 +36,113 @@ header {
   z-index: 10;
 }
 
-h1 { margin: 0; font-size: 18px; color: #cbd5e1; }
+h1 {
+  margin: 0;
+  font-size: 18px;
+  color: #cbd5e1;
+}
 
-main { max-width: 980px; margin: 0 auto; padding: 16px; }
+/* Chat area */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 100px;
+}
 
-.chat { display:flex; flex-direction:column; gap:12px; padding-bottom:100px }
-.row { display:flex; gap:12px; align-items:flex-start }
-.msg { max-width:80%; padding:12px 14px; border-radius:14px; line-height:1.45; box-shadow:0 1px 0 #0008 inset, 0 0 0 1px #ffffff12 inset }
-.user { margin-left:auto; background:#1f2937; border:1px solid #334155 }
-.assistant { background:#0f172a; border:1px solid #243244 }
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
 
-.inputBar { position:fixed; bottom:0; left:0; right:0; padding:12px 16px; background:linear-gradient(180deg,transparent,#0b0f14 30%); border-top:1px solid #1f2937; }
-form { display:flex; gap:8px; max-width:980px; margin:0 auto }
-input[type="text"] { flex:1; background:#0f172a; color:#e6edf3; border:1px solid #334155; border-radius:10px; padding:12px 14px; outline:none }
-input::placeholder { color:#64748b }
-button { background:#2563eb; color:white; border:none; padding:10px 14px; border-radius:10px; cursor:pointer }
-button:disabled { opacity:.6; cursor:not-allowed }
+.msg {
+  max-width: 80%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  line-height: 1.45;
+  box-shadow: 0 1px 0 #0008 inset, 0 0 0 1px #ffffff12 inset;
+}
 
-details { background:#0b1220; border:1px solid #243244; border-radius:12px; padding:10px 12px }
-summary { cursor:pointer; color:#9ab }
-pre { margin:8px 0 0; white-space:pre-wrap; word-break:break-word }
-code, pre { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size:13px }
+.user {
+  margin-left: auto;
+  background: #1f2937;
+  border: 1px solid #334155;
+}
+
+.assistant {
+  background: #0f172a;
+  border: 1px solid #243244;
+}
+
+/* Input bar */
+.inputBar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, transparent, #0b0f14 30%);
+  border-top: 1px solid #1f2937;
+}
+
+form {
+  display: flex;
+  gap: 8px;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+input[type="text"] {
+  flex: 1;
+  background: #0f172a;
+  color: #e6edf3;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 12px 14px;
+  outline: none;
+}
+
+input::placeholder {
+  color: #64748b;
+}
+
+button {
+  background: #2563eb;
+  color: white;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Collapsible panels */
+details {
+  background: #0b1220;
+  border: 1px solid #243244;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+summary {
+  cursor: pointer;
+  color: #9ab;
+}
+
+/* Typography */
+pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}

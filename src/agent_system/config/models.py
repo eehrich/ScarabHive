@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
 
@@ -47,3 +47,5 @@ class AgentConfig(BaseModel):
     servers: dict[str, dict] = {}
     logging: LoggingConfig = LoggingConfig()
     prompts: PromptsConfig = PromptsConfig()
+    # Maximum planning/tool-calling steps before stopping
+    max_steps: int = Field(default=6, ge=1)

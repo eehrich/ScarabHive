@@ -52,7 +52,7 @@ class Agent:
                     messages.append(ChatMessage(role="system", content=tools_msg))
                 messages.append(ChatMessage(role="user", content=task))
 
-                max_steps = 6
+                max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
                 import re
 
                 # Native tool calling: build tool schema list the LLM can choose from
@@ -208,7 +208,7 @@ class Agent:
                 messages.append(ChatMessage(role="system", content=tools_msg))
             messages.append(ChatMessage(role="user", content=task))
 
-            max_steps = 6
+            max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
 
             tools_schema: list[dict] = []
             for t in available_tools:
