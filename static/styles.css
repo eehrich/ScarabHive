@@ -127,11 +127,57 @@ details {
   border: 1px solid #243244;
   border-radius: 12px;
   padding: 10px 12px;
+  margin-bottom: 12px;
 }
 
 summary {
   cursor: pointer;
   color: #9ab;
+  font-weight: 500;
+}
+
+/* Response formatting */
+.response-content {
+  margin-top: 12px;
+}
+
+.response-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.response-header.error {
+  background: #2d1b1b;
+  border-color: #dc2626;
+  color: #fca5a5;
+}
+
+.response-icon {
+  font-size: 16px;
+}
+
+.response-label {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #cbd5e1;
+}
+
+.response-text {
+  line-height: 1.6;
+  color: #e6edf3;
+  font-size: 15px;
+  padding: 12px;
+  background: #0f1419;
+  border-radius: 8px;
+  border: 1px solid #21262d;
 }
 
 /* Typography */

@@ -42,4 +42,20 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     console_handler.setFormatter(formatter)
     root.addHandler(console_handler)
 
+    # Configure specific loggers to inherit from root but with appropriate levels
+    loggers_to_configure = [
+        "uvicorn",
+        "uvicorn.access", 
+        "uvicorn.error",
+        "httpcore",
+        "httpx",
+        "asyncio"
+    ]
+    
+    for logger_name in loggers_to_configure:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(lvl)
+        # Don't add handlers, they will inherit from root
+        logger.propagate = True
+
     return file_path

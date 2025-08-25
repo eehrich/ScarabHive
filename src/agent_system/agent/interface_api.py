@@ -86,25 +86,79 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
 
 def run() -> None:
-    # Build app and read config defaults
-    app_obj = build_app()
-    # Try environment variables first, then config values, then hard defaults
-    host = os.getenv("HOST")
-    port_env = os.getenv("PORT")
-    try:
-        cfg_host = app_obj.dependency_overrides.get("__config_host__") if hasattr(app_obj, "dependency_overrides") else None
-    except Exception:
-        cfg_host = None
-    # Load config from app by re-reading default config file as a lightweight approach
+    # Load config first to get logging and network settings
     from ..config.loader import load_config
     from pathlib import Path
     cfg_path = str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
-
-    host = host or config.network.host or "127.0.0.1"
+    
+    # Build app (this sets up logging based on config)
+    app_obj = build_app(cfg_path)
+    
+    # Try environment variables first, then config values, then hard defaults
+    host = os.getenv("HOST") or config.network.host or "127.0.0.1"
+    port_env = os.getenv("PORT")
     port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
-
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    
+    # Use config log level for uvicorn, convert to lowercase as uvicorn expects
+    uvicorn_log_level = config.logging.level.lower() if config.logging.enabled else "info"
+    
+    # Create a complete log config based on uvicorn's default but adding our file handler
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "()": "uvicorn.logging.DefaultFormatter",
+                "fmt": "%(levelprefix)s %(message)s",
+                "use_colors": None,
+            },
+            "access": {
+                "()": "uvicorn.logging.AccessFormatter",
+                "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+            },
+            "file": {
+                "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stderr",
+            },
+            "access": {
+                "formatter": "access",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+            "file": {
+                "formatter": "file", 
+                "class": "logging.FileHandler",
+                "filename": config.logging.file,
+                "mode": "a",  # Append mode since we already truncated in setup_logging
+            },
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["default", "file"] if config.logging.enabled else ["default"], "level": uvicorn_log_level.upper()},
+            "uvicorn.error": {"level": uvicorn_log_level.upper()},
+            "uvicorn.access": {"handlers": ["access", "file"] if config.logging.enabled else ["access"], "level": uvicorn_log_level.upper(), "propagate": True},
+        },
+        "root": {
+            "level": uvicorn_log_level.upper(),
+            "handlers": ["default", "file"] if config.logging.enabled else ["default"],
+        },
+    }
+    
+    uvicorn.run(
+        app, 
+        host=host, 
+        port=port, 
+        log_level=uvicorn_log_level,
+        log_config=log_config,
+        access_log=config.logging.enabled,
+        use_colors=False
+    )
 
 
 if __name__ == "__main__":
