@@ -24,7 +24,8 @@ class Agent:
                 config.llm.openai_api_key,
                 config.llm.ollama_url,
                 config.llm.context_window,
-                getattr(config.llm, "ollama_mode", None),
+                    getattr(config.llm, "ollama_mode", None),
+                    getattr(config.llm, "request_timeout", None),
             )
         except Exception:
             # LLM optional; continue without it
@@ -58,22 +59,43 @@ class Agent:
                 # Use a simple tool schema: a 'search' action with free-form params; servers parse their own params
                 tools_schema: list[dict] = []
                 for t in available_tools:
-                    tools_schema.append({
-                        "type": "function",
-                        "function": {
-                            "name": t,
-                            "description": f"Call the MCP server '{t}'. Pass a JSON object with fields appropriate for the action.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "action": {"type": "string", "description": "Action to perform, e.g., 'search'"},
-                                    "query": {"type": "string", "description": "Query or main input"},
-                                    "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                    if t == "web_scraper":
+                        tools_schema.append({
+                            "type": "function",
+                            "function": {
+                                "name": t,
+                                "description": "Fetch and read a web page by URL.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "action": {"type": "string", "enum": ["fetch"], "description": "Use 'fetch' to download the page"},
+                                        "url": {"type": "string", "description": "The absolute URL to fetch"},
+                                        "timeout": {"type": "number", "default": 20},
+                                        "include_html": {"type": "boolean", "default": False},
+                                        "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length"},
+                                    },
+                                    "required": ["url"],
+                                    "additionalProperties": True,
                                 },
-                                "additionalProperties": True,
                             },
-                        },
-                    })
+                        })
+                    else:
+                        tools_schema.append({
+                            "type": "function",
+                            "function": {
+                                "name": t,
+                                "description": f"Call the MCP server '{t}'. Pass a JSON object with fields appropriate for the action.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "action": {"type": "string", "description": "Action to perform, e.g., 'search'"},
+                                        "query": {"type": "string", "description": "Query or main input"},
+                                        "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                                    },
+                                    "additionalProperties": True,
+                                },
+                            },
+                        })
 
                 for step in range(max_steps):
                     # Log LLM input (structured)
@@ -93,7 +115,7 @@ class Agent:
 
                     if tool_calls:
                         # Execute each tool call in order, append tool results as tool messages
-                        for tc in tool_calls:
+                        for idx, tc in enumerate(tool_calls):
                             func = tc.get("function", {})
                             tool_name = func.get("name")
                             raw_args = func.get("arguments")
@@ -120,7 +142,7 @@ class Agent:
                                 logger.info("Tool %s returned: %s", tool_name, str(out)[:500])
                                 results["calls"].append({"server": tool_name, "action": action_name, "params": params, "result": out})
                                 # Append tool result message
-                                tool_call_id = tc.get("id")
+                                tool_call_id = tc.get("id") or tc.get("tool_call_id") or f"{tool_name}-call-{int(time.time()*1000)}-{idx}"
                                 tool_msg_content = json.dumps(out, ensure_ascii=False)
                                 messages.append(ChatMessage(role="tool", tool_call_id=tool_call_id, name=tool_name, content=tool_msg_content))
                             except Exception as e:

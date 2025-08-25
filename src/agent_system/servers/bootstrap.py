@@ -25,6 +25,9 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         elif typ == "llm_router":
             from .llm_router.server import LLMRouterServer
             registry.register(key, LLMRouterServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
+        elif typ == "web_scraper":
+            from .web_scraper.server import WebScraperServer
+            registry.register(key, WebScraperServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
         else:
             # ignore unknown for now
             continue

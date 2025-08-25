@@ -30,7 +30,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -39,9 +39,12 @@ class OpenAIAsyncClient(LLMClient):
         kwargs: dict = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         self._client = AsyncOpenAI(**kwargs)
         self.model = model
         self._default_extra = default_extra or {}
+        self._timeout = timeout
 
     async def chat(self, messages: list[ChatMessage]) -> str:
         logger = logging.getLogger(__name__)
@@ -108,10 +111,10 @@ class OpenAIAsyncClient(LLMClient):
             if m.content is not None:
                 d["content"] = m.content
             if m.role == "tool":
+                # For OpenAI tool message: role must be 'tool' and include tool_call_id
                 if m.tool_call_id:
-                    d["tool_call_id"] = m.tool_call_id
-                if m.name:
-                    d["name"] = m.name
+                    # ensure string type
+                    d["tool_call_id"] = str(m.tool_call_id)
             msgs.append(d)
         try:
             opts = {"model": self.model, "messages": msgs, "tools": tools, "tool_choice": "auto"}
@@ -147,12 +150,13 @@ class OllamaNativeAsyncClient(LLMClient):
     Supports per-request options including num_ctx.
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None) -> None:
         import httpx  # lazy import
         self._httpx = httpx
         self._base = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
         self.model = model
         self._options = options or {}
+        self._timeout = timeout or 60.0
 
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -175,7 +179,7 @@ class OllamaNativeAsyncClient(LLMClient):
         }
         if self._options:
             body["options"] = self._options
-        async with self._httpx.AsyncClient(timeout=60.0) as client:
+        async with self._httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(url, json=body)
             resp.raise_for_status()
             data = resp.json()
@@ -192,7 +196,7 @@ class OllamaNativeAsyncClient(LLMClient):
         }
         if self._options:
             body["options"] = self._options
-        async with self._httpx.AsyncClient(timeout=60.0) as client:
+        async with self._httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(url, json=body)
             resp.raise_for_status()
             data = resp.json()
@@ -215,7 +219,7 @@ class OllamaNativeAsyncClient(LLMClient):
         return {"assistant": out}
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None) -> LLMClient:
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -224,7 +228,7 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
     if provider == "openai":
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
-        return OpenAIAsyncClient(model=model, api_key=openai_api_key)
+        return OpenAIAsyncClient(model=model, api_key=openai_api_key, timeout=float(request_timeout) if request_timeout else None)
     if provider == "ollama":
         mode = (ollama_mode or "openai_compat").lower()
         if mode == "native":
@@ -232,9 +236,9 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
             options: dict[str, Any] = {}
             if context_window:
                 options["num_ctx"] = context_window
-            return OllamaNativeAsyncClient(model=model, base_url=base_native, options=options or None)
+            return OllamaNativeAsyncClient(model=model, base_url=base_native, options=options or None, timeout=float(request_timeout) if request_timeout else None)
         # else: OpenAI-compatible path
         base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
         api_key = "ollama"  # required by SDK, ignored by Ollama
-        return OpenAIAsyncClient(model=model, api_key=api_key, base_url=base)
+        return OpenAIAsyncClient(model=model, api_key=api_key, base_url=base, timeout=float(request_timeout) if request_timeout else None)
     raise ValueError(f"Unknown LLM provider: {provider}")

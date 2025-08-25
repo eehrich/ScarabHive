@@ -11,6 +11,7 @@ class LLMConfig(BaseModel):
     ollama_url: Optional[str] = None  # e.g. http://remote-host:11434
     context_window: int = 32768  # default num_ctx for Ollama-compatible models
     ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
+    request_timeout: int = 120  # seconds for LLM API calls
 
 
 class MCPServerRef(BaseModel):

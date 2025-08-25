@@ -6,5 +6,8 @@ system_prompt: |
    When tool results are provided as observations, synthesize them into the final answer.
 
 tools_prompt: |
-   Tools available: {{ tools | join(', ') }}
-   Use tool calls when necessary; otherwise respond directly.
+    Tools available: {{ tools | join(', ') }}
+    Use tool calls when necessary; otherwise respond directly.
+    If a tool named 'web_scraper' is present, it supports:
+       - fetch(url: string, timeout?: number=20, include_html?: boolean=false, max_chars?: number=0):
+          Returns { url, final_url, status_code, title, text, html? }.
