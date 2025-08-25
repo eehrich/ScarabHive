@@ -46,7 +46,18 @@ class LLMRouterServer(MCPServer):
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["chat"], "description": "Use 'chat' to send message to LLM"},
-                        "messages": {"type": "array", "description": "Array of message objects with role and content"},
+                        "messages": {
+                            "type": "array", 
+                            "description": "Array of message objects with role and content",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string", "description": "Message role (user, assistant, system)"},
+                                    "content": {"type": "string", "description": "Message content"}
+                                },
+                                "required": ["role", "content"]
+                            }
+                        },
                         "message": {"type": "string", "description": "Single message or prompt to send to the LLM"},
                         "provider": {"type": "string", "description": "Specific LLM provider to use (optional)"},
                         "model": {"type": "string", "description": "Specific model to use (optional)"},

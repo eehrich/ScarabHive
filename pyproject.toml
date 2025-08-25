@@ -20,7 +20,7 @@ dependencies = [
     "ddgs>=2.8.4; python_version>='3.10'",
     "duckduckgo-search>=6.1.6; python_version<'3.10'",
     "yfinance>=0.2.52",
-    "snscrape>=3.7.0",
+    "snscrape>=0.7.0",
     "openai>=1.37.0",
     "ollama>=0.3.0",
     "jinja2>=3.1",

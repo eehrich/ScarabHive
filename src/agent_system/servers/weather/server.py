@@ -345,7 +345,7 @@ class WeatherServer(MCPServer):
                             "minimum": 1, 
                             "maximum": 7, 
                             "default": 3,
-                            "description": "Number of forecast days starting from today (1=today only, 2=today+tomorrow, 3=today+next 2 days, etc.). For 'tomorrow only' use days=2 and look at the second day in results."
+                            "description": "Number of forecast days starting from today (1=today only, 2=today+tomorrow, 3=today+next 2 days, etc.). Calculate the days accordingly from current date."
                         },
                         "units": {
                             "type": "string",

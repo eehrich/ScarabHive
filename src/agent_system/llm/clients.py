@@ -14,6 +14,7 @@ class ChatMessage(BaseModel):
     content: Optional[str] = None
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
+    tool_calls: Optional[list] = None
 
 
 class LLMClient:
@@ -116,6 +117,9 @@ class OpenAIAsyncClient(LLMClient):
                 if m.tool_call_id:
                     # ensure string type
                     d["tool_call_id"] = str(m.tool_call_id)
+            elif m.role == "assistant" and m.tool_calls:
+                # For OpenAI assistant message with tool calls
+                d["tool_calls"] = m.tool_calls
             msgs.append(d)
         try:
             opts = {"model": self.model, "messages": msgs, "tools": tools, "tool_choice": "auto"}
@@ -138,6 +142,7 @@ class OpenAIAsyncClient(LLMClient):
                     tc_id = getattr(tc, "id", None) or f"call_{uuid.uuid4().hex[:12]}"
                     out_calls.append({
                         "id": tc_id,
+                        "type": "function",
                         "function": {"name": name, "arguments": arguments},
                     })
                 out["tool_calls"] = out_calls
@@ -167,9 +172,15 @@ class OllamaNativeAsyncClient(LLMClient):
             d: dict[str, Any] = {"role": m.role}
             if m.content is not None:
                 d["content"] = m.content
-            # Ollama native supports tool messages via tool_name
-            if m.role == "tool" and m.name:
-                d["tool_name"] = m.name
+            # Ollama native supports tool messages via tool_name and tool_call_id
+            if m.role == "tool":
+                if m.name:
+                    d["tool_name"] = m.name
+                if m.tool_call_id:
+                    d["tool_call_id"] = m.tool_call_id
+            # Handle assistant messages with tool calls for Ollama native
+            elif m.role == "assistant" and m.tool_calls:
+                d["tool_calls"] = m.tool_calls
             out.append(d)
         return out
 

@@ -41,9 +41,5 @@ def cli_main():
     """Synchronous entry point for console script."""
     asyncio.run(main())
 
-# Keep old function for compatibility
-def main() -> None:
-    serve_mcp_server(DuckDuckGoSearchServer("duckduckgo_search"))
-
 if __name__ == "__main__":
     cli_main()

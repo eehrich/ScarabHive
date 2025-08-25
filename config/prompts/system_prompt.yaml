@@ -11,10 +11,6 @@ system_prompt: |
    - Current timezone: {{ current_timezone }}
    - Current location: {{ current_location }}
    
-   When users ask about "today", refer to {{ current_date }}.
-   When users ask about "tomorrow", that means {{ tomorrow_date }}.
-   When users ask about weather forecasts, consider the current date context.
-
    Use Markdown for output formatting.
 
 tools_prompt: |
