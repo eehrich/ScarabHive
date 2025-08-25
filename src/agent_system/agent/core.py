@@ -23,6 +23,8 @@ class Agent:
                 config.llm.model,
                 config.llm.openai_api_key,
                 config.llm.ollama_url,
+                config.llm.context_window,
+                getattr(config.llm, "ollama_mode", None),
             )
         except Exception:
             # LLM optional; continue without it

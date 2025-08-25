@@ -14,7 +14,9 @@ class LLMRouterServer(MCPServer):
         model = cfg.get("model", "gpt-oss:20b")
         api_key = cfg.get("openai_api_key")
         ollama_url = cfg.get("ollama_url")
-        self._client = make_llm(provider, model, api_key, ollama_url)
+        context_window = cfg.get("context_window")
+        ollama_mode = cfg.get("ollama_mode")
+        self._client = make_llm(provider, model, api_key, ollama_url, context_window, ollama_mode)
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool == "chat":

@@ -27,14 +27,15 @@ def main() -> None:
     vprint(f"[cli] verbose mode on")
     vprint(f"[cli] loading config: {args.config}")
     config = load_config(args.config)
-    # Setup logging if configured
+    # Setup logging from config; file handler is created here. Console level is adjusted below.
     log_file = setup_logging(config.logging.enabled, config.logging.level, config.logging.file)
     logger = logging.getLogger(__name__)
     # If verbose not set, reduce console output to WARNING to avoid noisy logs on stdout
     if not args.verbose:
         root_logger = logging.getLogger()
         for h in list(root_logger.handlers):
-            if isinstance(h, logging.StreamHandler):
+            # FileHandler is a subclass of StreamHandler — exclude it
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
                 h.setLevel(logging.WARNING)
     if log_file:
         logger.info("Logging initialized, file=%s", log_file)

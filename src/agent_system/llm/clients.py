@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Any
 import json
 import re
 
@@ -30,7 +30,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -41,13 +41,15 @@ class OpenAIAsyncClient(LLMClient):
             kwargs["base_url"] = base_url
         self._client = AsyncOpenAI(**kwargs)
         self.model = model
+        self._default_extra = default_extra or {}
 
     async def chat(self, messages: list[ChatMessage]) -> str:
         logger = logging.getLogger(__name__)
         try:
+            opts = {"model": self.model, "messages": [m.model_dump() for m in messages]}
+            opts.update(self._default_extra)
             resp = await self._client.chat.completions.create(
-                model=self.model,
-                messages=[m.model_dump() for m in messages],
+                **opts,
             )
             # Log lightly to avoid huge dumps
             try:
@@ -112,12 +114,9 @@ class OpenAIAsyncClient(LLMClient):
                     d["name"] = m.name
             msgs.append(d)
         try:
-            resp = await self._client.chat.completions.create(
-                model=self.model,
-                messages=msgs,
-                tools=tools,
-                tool_choice="auto",
-            )
+            opts = {"model": self.model, "messages": msgs, "tools": tools, "tool_choice": "auto"}
+            opts.update(self._default_extra)
+            resp = await self._client.chat.completions.create(**opts)
             choice = resp.choices[0] if resp.choices else None
             if not choice:
                 return {"assistant": {"role": "assistant", "content": ""}}
@@ -142,7 +141,81 @@ class OpenAIAsyncClient(LLMClient):
             return {"assistant": {"role": "assistant", "content": ""}}
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None) -> LLMClient:
+class OllamaNativeAsyncClient(LLMClient):
+    """Async client for native Ollama REST API (/api/chat).
+
+    Supports per-request options including num_ctx.
+    """
+
+    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None) -> None:
+        import httpx  # lazy import
+        self._httpx = httpx
+        self._base = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
+        self.model = model
+        self._options = options or {}
+
+    def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for m in messages:
+            d: dict[str, Any] = {"role": m.role}
+            if m.content is not None:
+                d["content"] = m.content
+            # Ollama native supports tool messages via tool_name
+            if m.role == "tool" and m.name:
+                d["tool_name"] = m.name
+            out.append(d)
+        return out
+
+    async def chat(self, messages: list[ChatMessage]) -> str:
+        url = f"{self._base}/api/chat"
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": self._map_messages(messages),
+            "stream": False,
+        }
+        if self._options:
+            body["options"] = self._options
+        async with self._httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        msg = (data or {}).get("message") or {}
+        return msg.get("content") or ""
+
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict]) -> dict:
+        url = f"{self._base}/api/chat"
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": self._map_messages(messages),
+            "tools": tools,
+            "stream": False,
+        }
+        if self._options:
+            body["options"] = self._options
+        async with self._httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        message = (data or {}).get("message") or {}
+        out: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
+        tcs = message.get("tool_calls") or []
+        if tcs:
+            # Shape tool calls similar to OpenAI's tool_calls
+            out_calls = []
+            for tc in tcs:
+                func = tc.get("function", {})
+                out_calls.append({
+                    "id": tc.get("id"),
+                    "function": {
+                        "name": func.get("name"),
+                        "arguments": func.get("arguments"),
+                    },
+                })
+            out["tool_calls"] = out_calls
+        return {"assistant": out}
+
+
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -153,8 +226,15 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
         return OpenAIAsyncClient(model=model, api_key=openai_api_key)
     if provider == "ollama":
+        mode = (ollama_mode or "openai_compat").lower()
+        if mode == "native":
+            base_native = (ollama_url.rstrip("/")) if ollama_url else "http://127.0.0.1:11434"
+            options: dict[str, Any] = {}
+            if context_window:
+                options["num_ctx"] = context_window
+            return OllamaNativeAsyncClient(model=model, base_url=base_native, options=options or None)
+        # else: OpenAI-compatible path
         base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
-        # OpenAI SDK requires some api_key value; Ollama ignores it
-        api_key = openai_api_key or "ollama"
+        api_key = "ollama"  # required by SDK, ignored by Ollama
         return OpenAIAsyncClient(model=model, api_key=api_key, base_url=base)
     raise ValueError(f"Unknown LLM provider: {provider}")
