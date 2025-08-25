@@ -192,3 +192,121 @@ pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
 }
+
+/* Markdown Styles */
+.response-text h1,
+.response-text h2,
+.response-text h3 {
+  margin: 16px 0 8px 0;
+  color: #f0f6fc;
+  font-weight: 600;
+}
+
+.response-text h1 {
+  font-size: 1.5em;
+  border-bottom: 1px solid #21262d;
+  padding-bottom: 8px;
+}
+
+.response-text h2 {
+  font-size: 1.3em;
+  border-bottom: 1px solid #21262d;
+  padding-bottom: 6px;
+}
+
+.response-text h3 {
+  font-size: 1.1em;
+  color: #e6edf3;
+}
+
+.response-text strong {
+  color: #ffd700;
+  font-weight: 600;
+}
+
+.response-text em {
+  color: #87ceeb;
+  font-style: italic;
+}
+
+.response-text code {
+  background: #21262d;
+  color: #f85149;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.response-text pre {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.response-text pre code {
+  background: none;
+  color: #e6edf3;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.response-text ul,
+.response-text ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.response-text li {
+  margin: 4px 0;
+  color: #e6edf3;
+}
+
+.response-text .markdown-table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  width: 100%;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.response-text .markdown-table th {
+  background: #21262d;
+  color: #f0f6fc;
+  font-weight: 600;
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #30363d;
+}
+
+.response-text .markdown-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #21262d;
+  color: #e6edf3;
+}
+
+.response-text .markdown-table tr:last-child td {
+  border-bottom: none;
+}
+
+.response-text .markdown-table tr:nth-child(even) {
+  background: #161b22;
+}
+
+.response-text p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.response-text p:first-child {
+  margin-top: 0;
+}
+
+.response-text p:last-child {
+  margin-bottom: 0;
+}

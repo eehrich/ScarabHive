@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 import json
 import os
@@ -81,6 +81,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         return templates.TemplateResponse("index.html", {"request": request})
+
+    @app.get("/favicon.ico")
+    async def favicon():
+        favicon_path = Path(__file__).parents[3] / "static" / "favicon.ico"
+        if favicon_path.exists():
+            return FileResponse(favicon_path)
+        else:
+            # Return 404 if favicon doesn't exist
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Favicon not found")
 
     return app
 

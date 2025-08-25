@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent System (MCP)</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
   </head>
   <body>
     <header>
@@ -30,6 +31,100 @@
 
       function escapeHtml(s) {
         return s.replace(/[&<>]/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;'}[c]));
+      }
+
+      function markdownToHtml(md) {
+        if (!md) return '';
+        
+        let html = md;
+        
+        // First escape HTML to prevent XSS, but preserve line breaks
+        html = escapeHtml(html);
+        
+        // Headers (### ## #)
+        html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');
+        html = html.replace(/^# (.*$)/gm, '<h1>$1</h1>');
+        
+        // Bold text (**text** or __text__)
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
+        
+        // Italic text (*text* or _text_)
+        html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+        html = html.replace(/_(.*?)_/g, '<em>$1</em>');
+        
+        // Code blocks (```language \n code \n ```)
+        html = html.replace(/```[\s\S]*?```/g, function(match) {
+          const content = match.replace(/```.*?\n/, '').replace(/\n```$/, '');
+          return `<pre><code>${content}</code></pre>`;
+        });
+        
+        // Inline code (`code`)
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        
+        // Tables (simple pipe-separated tables)
+        html = html.replace(/^\|(.+)\|$/gm, function(match, content) {
+          const cells = content.split('|').map(cell => cell.trim());
+          const cellTags = cells.map(cell => `<td>${cell}</td>`).join('');
+          return `<tr>${cellTags}</tr>`;
+        });
+        
+        // Wrap table rows in table tags
+        html = html.replace(/(<tr>.*<\/tr>[\n\r]*)+/g, function(match) {
+          // Check if this looks like a header row (contains dashes)
+          const rows = match.trim().split(/[\n\r]+/);
+          let tableContent = '';
+          let inHeader = true;
+          
+          for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (row.includes('---') || row.includes('===')) {
+              // Skip separator rows
+              inHeader = false;
+              continue;
+            }
+            
+            if (inHeader && i === 0) {
+              // First row is header
+              const headerRow = row.replace(/<td>/g, '<th>').replace(/<\/td>/g, '</th>');
+              tableContent += `<thead>${headerRow}</thead><tbody>`;
+              inHeader = false;
+            } else {
+              tableContent += row;
+            }
+          }
+          
+          if (!tableContent.includes('<tbody>')) {
+            tableContent = `<tbody>${tableContent}</tbody>`;
+          } else {
+            tableContent += '</tbody>';
+          }
+          
+          return `<table class="markdown-table">${tableContent}</table>`;
+        });
+        
+        // Unordered lists (- item or * item)
+        html = html.replace(/^[\s]*[-*] (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>[\n\r]*)+/g, '<ul>$&</ul>');
+        
+        // Ordered lists (1. item)
+        html = html.replace(/^[\s]*\d+\. (.+)$/gm, '<li>$1</li>');
+        
+        // Line breaks and paragraphs
+        html = html.replace(/\n\n+/g, '</p><p>');
+        html = html.replace(/\n/g, '<br>');
+        
+        // Wrap in paragraph tags if not already wrapped in block elements
+        if (!html.match(/^<(h[1-6]|table|ul|ol|pre|div)/)) {
+          html = `<p>${html}</p>`;
+        }
+        
+        // Clean up empty paragraphs
+        html = html.replace(/<p><\/p>/g, '');
+        html = html.replace(/<p><br><\/p>/g, '');
+        
+        return html;
       }
 
       function scrollBottom() {
@@ -109,7 +204,7 @@
                     <span class="response-icon">🤖</span>
                     <span class="response-label">Response</span>
                   </div>
-                  <div class="response-text">${escapeHtml(content).replace(/\n/g, '<br>')}</div>
+                  <div class="response-text">${markdownToHtml(content)}</div>
                 `;
                 blk.thinkBox.open = false;
                 blk.mcpBox.open = false;
@@ -145,7 +240,7 @@
                   <span class="response-icon">🤖</span>
                   <span class="response-label">Response</span>
                 </div>
-                <div class="response-text">${escapeHtml(content).replace(/\n/g, '<br>')}</div>
+                <div class="response-text">${markdownToHtml(content)}</div>
               `;
             } catch (e) {
               blk.t.innerHTML = `
