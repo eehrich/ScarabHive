@@ -43,6 +43,12 @@ class PromptsConfig(BaseModel):
     system_template: str = "config/prompts/system_prompt.yaml"
 
 
+class ContextConfig(BaseModel):
+    auto_datetime: bool = True
+    timezone: str = "Europe/Berlin"
+    location: str = "Germany"
+
+
 class AgentConfig(BaseModel):
     llm: LLMConfig = LLMConfig()
     mcp: MCPConfig = MCPConfig()
@@ -50,5 +56,6 @@ class AgentConfig(BaseModel):
     servers: dict[str, dict] = {}
     logging: LoggingConfig = LoggingConfig()
     prompts: PromptsConfig = PromptsConfig()
+    context: ContextConfig = ContextConfig()
     # Maximum planning/tool-calling steps before stopping
     max_steps: int = Field(default=6, ge=1)

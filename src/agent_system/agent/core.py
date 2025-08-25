@@ -42,8 +42,14 @@ class Agent:
                 available_tools = self.registry.list()
                 logger = logging.getLogger(__name__)
 
-                # Render prompts (system + tools)
-                rendered = render_prompts(self.config.prompts.system_template, {"tools": available_tools})
+                # Render prompts (system + tools) with automatic datetime context
+                rendered = render_prompts(
+                    self.config.prompts.system_template, 
+                    {"tools": available_tools},
+                    auto_datetime=self.config.context.auto_datetime,
+                    timezone=self.config.context.timezone,
+                    location=self.config.context.location
+                )
                 system_msg = rendered.get("system_prompt") or "You are an assistant agent."
                 tools_msg = rendered.get("tools_prompt")
 

@@ -4,6 +4,16 @@
 system_prompt: |
    You are an assistant agent. Use the tools provided when needed. Prefer concise, accurate answers.
    When tool results are provided as observations, synthesize them into the final answer.
+   
+   Current date and time context:
+   - Current date: {{ current_date }}
+   - Current time: {{ current_time }}
+   - Current timezone: {{ current_timezone }}
+   - Current location: {{ current_location }}
+   
+   When users ask about "today", refer to {{ current_date }}.
+   When users ask about "tomorrow", that means {{ tomorrow_date }}.
+   When users ask about weather forecasts, consider the current date context.
 
 tools_prompt: |
     Tools available: {{ tools | join(', ') }}

@@ -3,6 +3,49 @@ from __future__ import annotations
 from typing import Dict, Any, Tuple
 import yaml
 from jinja2 import Template
+from datetime import datetime, timedelta
+import pytz
+
+
+def get_datetime_context(timezone_str: str = "UTC", location: str = "Unknown") -> Dict[str, Any]:
+    """Generate current datetime context for prompt templates."""
+    try:
+        if timezone_str.upper() == "UTC":
+            tz = pytz.UTC
+        else:
+            tz = pytz.timezone(timezone_str)
+        
+        now = datetime.now(tz)
+        tomorrow = now + timedelta(days=1)
+        
+        return {
+            "current_date": now.strftime("%Y-%m-%d"),
+            "current_time": now.strftime("%H:%M:%S"),
+            "current_datetime": now.isoformat(),
+            "current_timezone": timezone_str,
+            "current_location": location,
+            "tomorrow_date": tomorrow.strftime("%Y-%m-%d"),
+            "current_weekday": now.strftime("%A"),
+            "current_month": now.strftime("%B"),
+            "current_year": now.year,
+            "unix_timestamp": int(now.timestamp())
+        }
+    except Exception:
+        # Fallback to basic info
+        now = datetime.now()
+        tomorrow = now + timedelta(days=1)
+        return {
+            "current_date": now.strftime("%Y-%m-%d"),
+            "current_time": now.strftime("%H:%M:%S"),
+            "current_datetime": now.isoformat(),
+            "current_timezone": "Local",
+            "current_location": location,
+            "tomorrow_date": tomorrow.strftime("%Y-%m-%d"),
+            "current_weekday": now.strftime("%A"),
+            "current_month": now.strftime("%B"),
+            "current_year": now.year,
+            "unix_timestamp": int(now.timestamp())
+        }
 
 
 def render_system_prompt(template_path: str, context: Dict[str, Any]) -> str:
@@ -18,7 +61,7 @@ def render_system_prompt(template_path: str, context: Dict[str, Any]) -> str:
     return tmpl.render(**context)
 
 
-def render_prompts(template_path: str, context: Dict[str, Any]) -> Dict[str, str]:
+def render_prompts(template_path: str, context: Dict[str, Any], auto_datetime: bool = True, timezone: str = "UTC", location: str = "Unknown") -> Dict[str, str]:
     """Render a YAML template that may contain multiple sections.
 
     Expected keys:
@@ -27,6 +70,11 @@ def render_prompts(template_path: str, context: Dict[str, Any]) -> Dict[str, str
 
     Backward-compat: if only 'template' key exists, map it to system_prompt.
     """
+    # Add automatic datetime context if enabled
+    if auto_datetime:
+        datetime_context = get_datetime_context(timezone, location)
+        context = {**context, **datetime_context}
+    
     with open(template_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     out: Dict[str, str] = {}

@@ -318,7 +318,7 @@ class WeatherServer(MCPServer):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": "Get weather forecast and current conditions for any location worldwide. Supports multiple free weather data sources without requiring API tokens.",
+                "description": "Get weather forecast and current conditions for any location worldwide. Returns multi-day forecasts starting from today. For 'tomorrow' specifically, request 2+ days and use the second day's data. Supports multiple free weather data sources without requiring API tokens.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -338,7 +338,7 @@ class WeatherServer(MCPServer):
                             "minimum": 1, 
                             "maximum": 7, 
                             "default": 3,
-                            "description": "Number of forecast days (1-7)"
+                            "description": "Number of forecast days starting from today (1=today only, 2=today+tomorrow, 3=today+next 2 days, etc.). For 'tomorrow only' use days=2 and look at the second day in results."
                         },
                         "units": {
                             "type": "string",
