@@ -86,9 +86,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
 
 def run() -> None:
-    build_app()
-    host = os.getenv("HOST", "127.0.0.1")
-    port = int(os.getenv("PORT", "8000"))
+    # Build app and read config defaults
+    app_obj = build_app()
+    # Try environment variables first, then config values, then hard defaults
+    host = os.getenv("HOST")
+    port_env = os.getenv("PORT")
+    try:
+        cfg_host = app_obj.dependency_overrides.get("__config_host__") if hasattr(app_obj, "dependency_overrides") else None
+    except Exception:
+        cfg_host = None
+    # Load config from app by re-reading default config file as a lightweight approach
+    from ..config.loader import load_config
+    from pathlib import Path
+    cfg_path = str(Path(__file__).parents[3] / "config" / "agent.yaml")
+    config = load_config(cfg_path)
+
+    host = host or config.network.host or "127.0.0.1"
+    port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
+
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

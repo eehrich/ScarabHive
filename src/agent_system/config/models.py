@@ -24,6 +24,9 @@ class MCPConfig(BaseModel):
 
 class NetworkConfig(BaseModel):
     ssl_verify: bool = True
+    # Host and port for the FastAPI/Uvicorn server
+    host: str = "127.0.0.1"
+    port: int = 8000
 
 
 # In this scaffold we keep 'servers' as dict[str, dict] directly on AgentConfig.
