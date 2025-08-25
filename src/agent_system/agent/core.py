@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import re
-from typing import Any, AsyncIterator
 import json
+import logging
 import time
+from typing import Any, AsyncIterator
 
 from ..config.models import AgentConfig
-from ..utils.prompt_renderer import render_system_prompt, render_prompts
-import logging
 from ..llm.clients import ChatMessage, make_llm
 from ..mcp.base import MCPRegistry
+from ..utils.prompt_renderer import render_prompts
 
 
 class Agent:
@@ -24,139 +23,154 @@ class Agent:
                 config.llm.openai_api_key,
                 config.llm.ollama_url,
                 config.llm.context_window,
-                    getattr(config.llm, "ollama_mode", None),
-                    getattr(config.llm, "request_timeout", None),
+                getattr(config.llm, "ollama_mode", None),
+                getattr(config.llm, "request_timeout", None),
             )
-        except Exception:
-            # LLM optional; continue without it
+        except Exception as e:
+            logging.getLogger(__name__).warning("LLM initialization failed: %s", e)
             self.llm = None
 
     async def run(self, task: str) -> dict[str, Any]:
-        task_l = task.lower()
+        """Run the agent task with LLM planning and tool execution.
+        
+        Returns a dictionary with task results, tool calls, and any errors.
+        """
         results: dict[str, Any] = {"task": task, "calls": []}
 
-        # Prefer an LLM-driven planning loop: ask the LLM what tools to call, execute them,
-        # provide observations, and repeat until the LLM returns a final answer.
-        if self.llm is not None:
-            try:
-                available_tools = self.registry.list()
-                logger = logging.getLogger(__name__)
+        if self.llm is None:
+            results.setdefault("errors", []).append("No LLM available; agent requires an LLM to plan tool usage.")
+            return results
 
-                # Render prompts (system + tools) with automatic datetime context
-                rendered = render_prompts(
-                    self.config.prompts.system_template, 
-                    {"tools": available_tools},
-                    auto_datetime=self.config.context.auto_datetime,
-                    timezone=self.config.context.timezone,
-                    location=self.config.context.location
-                )
-                system_msg = rendered.get("system_prompt") or "You are an assistant agent."
-                tools_msg = rendered.get("tools_prompt")
+        try:
+            available_tools = self.registry.list()
+            logger = logging.getLogger(__name__)
 
-                messages = [ChatMessage(role="system", content=system_msg)]
-                if tools_msg:
-                    messages.append(ChatMessage(role="system", content=tools_msg))
-                messages.append(ChatMessage(role="user", content=task))
+            # Render prompts with automatic datetime context
+            rendered = render_prompts(
+                self.config.prompts.system_template, 
+                {"tools": available_tools},
+                auto_datetime=self.config.context.auto_datetime,
+                timezone=self.config.context.timezone,
+                location=self.config.context.location
+            )
+            system_msg = rendered.get("system_prompt") or "You are an assistant agent."
+            tools_msg = rendered.get("tools_prompt")
 
-                max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
-                import re
+            messages = [ChatMessage(role="system", content=system_msg)]
+            if tools_msg:
+                messages.append(ChatMessage(role="system", content=tools_msg))
+            messages.append(ChatMessage(role="user", content=task))
 
-                # Native tool calling: build tool schema list the LLM can choose from
-                # Use a simple tool schema: a 'search' action with free-form params; servers parse their own params
-                tools_schema: list[dict] = []
-                for t in available_tools:
-                    server = self.registry.get(t)
-                    tools_schema.append(server.get_schema())
+            # Build tool schemas for LLM
+            tools_schema: list[dict] = []
+            for tool_name in available_tools:
+                server = self.registry.get(tool_name)
+                tools_schema.append(server.get_schema())
 
-                for step in range(max_steps):
-                    # Log LLM input (structured)
-                    try:
-                        llm_in = [m.model_dump() for m in messages]
-                    except Exception:
-                        # fallback to simple repr
-                        llm_in = [repr(m) for m in messages]
-                    logger.debug("LLM input (step %d): %s", step + 1, llm_in)
+            max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
+            
+            for step in range(max_steps):
+                # Log LLM input
+                try:
+                    llm_in = [m.model_dump() for m in messages]
+                except Exception:
+                    llm_in = [repr(m) for m in messages]
+                logger.debug("LLM input (step %d): %s", step + 1, llm_in)
 
-                    # Ask the LLM with native tool calling
-                    llm_out = await self.llm.chat_tools(messages, tools_schema)
-                    assistant = llm_out.get("assistant", {})
-                    logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
-                    tool_calls = assistant.get("tool_calls") or []
-                    content = assistant.get("content")
+                # Get LLM response with tool calling
+                llm_out = await self.llm.chat_tools(messages, tools_schema)
+                assistant = llm_out.get("assistant", {})
+                logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
+                
+                tool_calls = assistant.get("tool_calls") or []
+                content = assistant.get("content")
 
-                    if tool_calls:
-                        # Execute each tool call in order, append tool results as tool messages
-                        for idx, tc in enumerate(tool_calls):
-                            func = tc.get("function", {})
-                            tool_name = func.get("name")
-                            raw_args = func.get("arguments")
-                            params: dict[str, Any] = {}
-                            if isinstance(raw_args, str) and raw_args:
-                                try:
-                                    params = json.loads(raw_args)
-                                except Exception:
-                                    # fall back to permissive parsing
-                                    try:
-                                        params = json.loads(raw_args.replace("'", '"'))
-                                    except Exception:
-                                        params = {}
-                            elif isinstance(raw_args, dict):
-                                params = raw_args
-                            if not tool_name or tool_name not in available_tools:
-                                logger.warning("Unknown tool requested: %s", tool_name)
-                                continue
-                            
-                            # Get default action from the server itself
-                            server = self.registry.get(tool_name)
-                            action_name = params.get("action") or params.get("tool") or server.get_default_action()
-                            
-                            # Validate action against server schema and correct if needed
-                            schema = server.get_schema()
-                            valid_actions = []
-                            if "function" in schema and "parameters" in schema["function"]:
-                                action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
-                                valid_actions = action_prop.get("enum", [])
-                            
-                            if valid_actions and action_name not in valid_actions:
-                                logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
-                                             action_name, tool_name, valid_actions)
-                                action_name = server.get_default_action()
-                                # Update params to reflect corrected action
-                                params["action"] = action_name
-                            
+                if tool_calls:
+                    # Execute each tool call
+                    for idx, tc in enumerate(tool_calls):
+                        func = tc.get("function", {})
+                        tool_name = func.get("name")
+                        raw_args = func.get("arguments")
+                        
+                        # Parse arguments
+                        params: dict[str, Any] = {}
+                        if isinstance(raw_args, str) and raw_args:
                             try:
-                                logger.info("Invoking tool %s action %s with params %s (raw_args: %s)", tool_name, action_name, params, raw_args)
-                                out = await server.call(action_name, params)
-                                logger.info("Tool %s returned: %s", tool_name, str(out)[:500])
-                                results["calls"].append({"server": tool_name, "action": action_name, "params": params, "result": out})
-                                # Append tool result message
-                                tool_call_id = tc.get("id") or tc.get("tool_call_id") or f"{tool_name}-call-{int(time.time()*1000)}-{idx}"
-                                tool_msg_content = json.dumps(out, ensure_ascii=False)
-                                messages.append(ChatMessage(role="tool", tool_call_id=tool_call_id, name=tool_name, content=tool_msg_content))
-                            except Exception as e:
-                                logger.exception("Tool %s invocation failed: %s", tool_name, e)
-                                results.setdefault("errors", []).append(str(e))
-                                messages.append(ChatMessage(role="assistant", content=f"Observation: tool {tool_name} error: {e}"))
-                                continue
-                        # After executing tools, continue to next step to let LLM synthesize
-                        continue
+                                params = json.loads(raw_args)
+                            except json.JSONDecodeError:
+                                logger.warning("Failed to parse tool arguments: %s", raw_args)
+                                params = {}
+                        elif isinstance(raw_args, dict):
+                            params = raw_args
+                        
+                        if not tool_name or tool_name not in available_tools:
+                            logger.warning("Unknown tool requested: %s", tool_name)
+                            continue
+                        
+                        # Get action name and validate
+                        server = self.registry.get(tool_name)
+                        action_name = params.get("action") or params.get("tool") or server.get_default_action()
+                        
+                        # Validate action against server schema
+                        schema = server.get_schema()
+                        valid_actions = []
+                        if "function" in schema and "parameters" in schema["function"]:
+                            action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
+                            valid_actions = action_prop.get("enum", [])
+                        
+                        if valid_actions and action_name not in valid_actions:
+                            logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
+                                         action_name, tool_name, valid_actions)
+                            action_name = server.get_default_action()
+                            params["action"] = action_name
+                        
+                        try:
+                            logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
+                            out = await server.call(action_name, params)
+                            logger.info("Tool %s returned: %s", tool_name, str(out)[:500])
+                            
+                            results["calls"].append({
+                                "server": tool_name, 
+                                "action": action_name, 
+                                "params": params, 
+                                "result": out
+                            })
+                            
+                            # Add tool result to conversation
+                            tool_call_id = tc.get("id") or tc.get("tool_call_id") or f"{tool_name}-call-{int(time.time()*1000)}-{idx}"
+                            tool_msg_content = json.dumps(out, ensure_ascii=False)
+                            messages.append(ChatMessage(
+                                role="tool", 
+                                tool_call_id=tool_call_id, 
+                                name=tool_name, 
+                                content=tool_msg_content
+                            ))
+                        except Exception as e:
+                            logger.exception("Tool %s invocation failed: %s", tool_name, e)
+                            results.setdefault("errors", []).append(str(e))
+                            messages.append(ChatMessage(
+                                role="assistant", 
+                                content=f"Observation: tool {tool_name} error: {e}"
+                            ))
+                            continue
+                    # Continue to next step after tool execution
+                    continue
 
-                    # No tool calls; if there's final content, capture and finish
-                    if content:
-                        results["summary"] = content
-                        break
-
-                    # If neither tools nor content, consider it as no-op and break
-                    results.setdefault("errors", []).append("LLM returned neither tool calls nor content.")
+                # No tool calls; check for final content
+                if content:
+                    results["summary"] = content
                     break
 
-                else:
-                    results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
-            except Exception as e:
-                results.setdefault("errors", []).append(str(e))
-                results.setdefault("errors", []).append("LLM planning failed.")
-        else:
-            results.setdefault("errors", []).append("No LLM available; agent requires an LLM to plan tool usage.")
+                # Neither tools nor content
+                results.setdefault("errors", []).append("LLM returned neither tool calls nor content.")
+                break
+
+            else:
+                results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
+                
+        except Exception as e:
+            logger.exception("LLM planning failed: %s", e)
+            results.setdefault("errors", []).append(f"LLM planning failed: {e}")
 
         return results
 
@@ -186,8 +200,14 @@ class Agent:
             available_tools = self.registry.list()
             logger = logging.getLogger(__name__)
 
-            # Render prompts (system + tools)
-            rendered = render_prompts(self.config.prompts.system_template, {"tools": available_tools})
+            # Render prompts with automatic datetime context
+            rendered = render_prompts(
+                self.config.prompts.system_template, 
+                {"tools": available_tools},
+                auto_datetime=self.config.context.auto_datetime,
+                timezone=self.config.context.timezone,
+                location=self.config.context.location
+            )
             system_msg = rendered.get("system_prompt") or "You are an assistant agent."
             tools_msg = rendered.get("tools_prompt")
 
@@ -198,9 +218,10 @@ class Agent:
 
             max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
 
+            # Build tool schemas
             tools_schema: list[dict] = []
-            for t in available_tools:
-                server = self.registry.get(t)
+            for tool_name in available_tools:
+                server = self.registry.get(tool_name)
                 tools_schema.append(server.get_schema())
 
             for step in range(max_steps):
@@ -223,40 +244,71 @@ class Agent:
                         func = tc.get("function", {})
                         tool_name = func.get("name")
                         raw_args = func.get("arguments")
+                        
+                        # Parse arguments (same as run() method)
                         params: dict[str, Any] = {}
                         if isinstance(raw_args, str) and raw_args:
                             try:
                                 params = json.loads(raw_args)
-                            except Exception:
-                                try:
-                                    params = json.loads(raw_args.replace("'", '"'))
-                                except Exception:
-                                    params = {}
+                            except json.JSONDecodeError:
+                                logger.warning("Failed to parse tool arguments: %s", raw_args)
+                                params = {}
                         elif isinstance(raw_args, dict):
                             params = raw_args
+                        
                         if not tool_name or tool_name not in available_tools:
                             warn = f"Unknown tool requested: {tool_name}"
                             logger.warning(warn)
                             yield {"type": "error", "message": warn}
                             continue
-                        action_name = params.get("action") or params.get("tool") or "search"
+                        
+                        # Get action name and validate (same as run() method)
+                        server = self.registry.get(tool_name)
+                        action_name = params.get("action") or params.get("tool") or server.get_default_action()
+                        
+                        # Validate action against server schema
+                        schema = server.get_schema()
+                        valid_actions = []
+                        if "function" in schema and "parameters" in schema["function"]:
+                            action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
+                            valid_actions = action_prop.get("enum", [])
+                        
+                        if valid_actions and action_name not in valid_actions:
+                            logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
+                                         action_name, tool_name, valid_actions)
+                            action_name = server.get_default_action()
+                            params["action"] = action_name
 
                         yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": params}
+                        
                         try:
-                            server = self.registry.get(tool_name)
                             out = await server.call(action_name, params)
-                            results["calls"].append({"server": tool_name, "action": action_name, "params": params, "result": out})
+                            results["calls"].append({
+                                "server": tool_name, 
+                                "action": action_name, 
+                                "params": params, 
+                                "result": out
+                            })
+                            
                             tool_call_id = tc.get("id") or tc.get("tool_call_id") or f"{tool_name}-call-{int(time.time()*1000)}-{idx}"
                             tool_msg_content = json.dumps(out, ensure_ascii=False)
-                            messages.append(ChatMessage(role="tool", tool_call_id=tool_call_id, name=tool_name, content=tool_msg_content))
+                            messages.append(ChatMessage(
+                                role="tool", 
+                                tool_call_id=tool_call_id, 
+                                name=tool_name, 
+                                content=tool_msg_content
+                            ))
                             yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": out}
                         except Exception as e:
                             logger.exception("Tool %s invocation failed: %s", tool_name, e)
                             results.setdefault("errors", []).append(str(e))
-                            messages.append(ChatMessage(role="assistant", content=f"Observation: tool {tool_name} error: {e}"))
+                            messages.append(ChatMessage(
+                                role="assistant", 
+                                content=f"Observation: tool {tool_name} error: {e}"
+                            ))
                             yield {"type": "error", "message": f"Tool {tool_name} failed: {e}"}
                             continue
-                    # Let the loop continue after tools are executed
+                    # Continue after tools are executed
                     continue
 
                 if content:
@@ -273,8 +325,8 @@ class Agent:
                 yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
 
         except Exception as e:
-            results.setdefault("errors", []).append(str(e))
-            results.setdefault("errors", []).append("LLM planning failed.")
+            logger.exception("LLM planning failed: %s", e)
+            results.setdefault("errors", []).append(f"LLM planning failed: {e}")
             yield {"type": "error", "message": f"LLM planning failed: {e}"}
 
         yield {"type": "end"}

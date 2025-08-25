@@ -1,20 +1,20 @@
 from __future__ import annotations
 
+import json
+import logging
+import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
-from fastapi.templating import Jinja2Templates
-import json
-import os
-import logging
 import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
+from ..agent.core import Agent
 from ..config.loader import load_config
 from ..mcp.base import MCPRegistry
-from ..agent.core import Agent
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 
@@ -28,21 +28,23 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
+    """Build and configure the FastAPI application."""
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
 
-    # Logging: truncate file each start; console INFO+, file per config
+    # Initialize logging
     log_file = setup_logging(config.logging.enabled, config.logging.level, config.logging.file)
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
 
-    # SSL verify off if configured
+    # Configure SSL verification
     if not config.network.ssl_verify:
         os.environ["PYTHONHTTPSVERIFY"] = "0"
         os.environ.setdefault("SSL_CERT_FILE", "")
         os.environ.setdefault("CURL_CA_BUNDLE", "")
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
 
+    # Initialize agent and registry
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
     agent = Agent(config, registry)
@@ -88,7 +90,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if favicon_path.exists():
             return FileResponse(favicon_path)
         else:
-            # Return 404 if favicon doesn't exist
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Favicon not found")
 
@@ -96,93 +97,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
 
 def run() -> None:
-    # Ensure UTF-8 encoding for all text operations
-    import sys
-    import locale
-    
-    # Set environment variables for UTF-8 encoding
+    """Run the FastAPI server with proper configuration."""
+    # Set UTF-8 environment for Windows compatibility
     os.environ.setdefault('PYTHONUTF8', '1')
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
     
-    # Reconfigure stdout and stderr to use UTF-8
-    if hasattr(sys.stdout, 'reconfigure'):
-        try:
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-        except Exception:
-            pass
-    
-    # Load config first to get logging and network settings
-    from ..config.loader import load_config
-    from pathlib import Path
+    # Load configuration
     cfg_path = str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
     
-    # Build app (this sets up logging based on config)
+    # Build the application
     app_obj = build_app(cfg_path)
     
-    # Try environment variables first, then config values, then hard defaults
+    # Get server configuration
     host = os.getenv("HOST") or config.network.host or "127.0.0.1"
     port_env = os.getenv("PORT")
     port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
     
-    # Use config log level for uvicorn, convert to lowercase as uvicorn expects
+    # Configure log level
     uvicorn_log_level = config.logging.level.lower() if config.logging.enabled else "info"
     
-    # Create a complete log config based on uvicorn's default but adding our file handler
-    log_config = {
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "default": {
-                "()": "uvicorn.logging.DefaultFormatter",
-                "fmt": "%(levelprefix)s %(message)s",
-                "use_colors": None,
-            },
-            "access": {
-                "()": "uvicorn.logging.AccessFormatter",
-                "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
-            },
-            "file": {
-                "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
-            },
-        },
-        "handlers": {
-            "default": {
-                "formatter": "default",
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stderr",
-            },
-            "access": {
-                "formatter": "access",
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stdout",
-            },
-            "file": {
-                "formatter": "file", 
-                "class": "logging.FileHandler",
-                "filename": config.logging.file,
-                "mode": "a",  # Append mode since we already truncated in setup_logging
-                "encoding": "utf-8",
-            },
-        },
-        "loggers": {
-            "uvicorn": {"handlers": ["default", "file"] if config.logging.enabled else ["default"], "level": uvicorn_log_level.upper(), "propagate": False},
-            "uvicorn.error": {"level": uvicorn_log_level.upper(), "propagate": False},
-            "uvicorn.access": {"handlers": ["access", "file"] if config.logging.enabled else ["access"], "level": uvicorn_log_level.upper(), "propagate": False},
-        },
-        "root": {
-            "level": uvicorn_log_level.upper(),
-            "handlers": ["file"] if config.logging.enabled else [],
-        },
-    }
-    
+    # Run the server
     uvicorn.run(
-        app, 
+        app_obj, 
         host=host, 
         port=port, 
         log_level=uvicorn_log_level,
-        log_config=log_config,
         access_log=config.logging.enabled,
         use_colors=False
     )
