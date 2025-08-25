@@ -91,7 +91,6 @@
             switch (data.type) {
               case 'thinking':
                 blk.think.textContent += JSON.stringify(data.assistant, null, 2) + '\n';
-                blk.thinkBox.open = true;
                 break;
               case 'mcp_call':
                 blk.mcp.textContent += `🔧 ${data.server}.${data.action}\n`;
@@ -99,7 +98,6 @@
                   blk.mcp.textContent += `   📝 Parameters: ${JSON.stringify(data.params, null, 2)}\n`;
                 }
                 blk.mcp.textContent += '\n';
-                blk.mcpBox.open = true;
                 break;
               case 'mcp_result':
                 blk.mcp.textContent += `✅ Result:\n${JSON.stringify(data.result, null, 2)}\n\n`;
