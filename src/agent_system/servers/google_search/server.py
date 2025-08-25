@@ -41,3 +41,23 @@ class GoogleSearchServer(MCPServer):
                 })
             return {"engine": "google", "query": query, "results": results}
         raise ValueError(f"Unknown tool: {tool}")
+
+    def get_schema(self) -> dict[str, Any]:
+        """Return the OpenAI function schema for Google search."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": "Search the web using Google Custom Search API. Returns search results with titles, URLs, and snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["search"], "description": "Use 'search' to perform web search"},
+                        "query": {"type": "string", "description": "Search query terms"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5, "description": "Number of search results to return"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": True,
+                },
+            },
+        }

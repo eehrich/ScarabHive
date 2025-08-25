@@ -116,3 +116,26 @@ class WebScraperServer(MCPServer):
         if include_html:
             result["html"] = html
         return result
+
+    def get_schema(self) -> dict[str, Any]:
+        """Return the OpenAI function schema for web scraper."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": "Fetch and read a web page by URL to extract its text content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["fetch"], "description": "Use 'fetch' to download the page"},
+                        "url": {"type": "string", "description": "The absolute URL to fetch"},
+                        "timeout": {"type": "number", "default": 20, "description": "Request timeout in seconds"},
+                        "include_html": {"type": "boolean", "default": False, "description": "Include raw HTML in response"},
+                        "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length"},
+                        "user_agent": {"type": "string", "description": "Custom User-Agent header for the request"},
+                    },
+                    "required": ["url"],
+                    "additionalProperties": True,
+                },
+            },
+        }

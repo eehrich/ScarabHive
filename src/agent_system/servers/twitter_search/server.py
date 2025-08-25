@@ -28,3 +28,24 @@ class TwitterSearchServer(MCPServer):
                     break
             return {"engine": "twitter-scrape", "query": query, "results": results}
         raise ValueError(f"Unknown tool: {tool}")
+
+    def get_schema(self) -> dict[str, Any]:
+        """Return the OpenAI function schema for Twitter search."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": "Search Twitter/X for tweets and social media content. Returns recent tweets matching the search query.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["search"], "description": "Use 'search' to find tweets"},
+                        "query": {"type": "string", "description": "Search terms for finding tweets"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Number of tweets to return"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Alternative name for limit"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": True,
+                },
+            },
+        }

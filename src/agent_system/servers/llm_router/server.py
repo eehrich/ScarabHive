@@ -34,3 +34,25 @@ class LLMRouterServer(MCPServer):
             content = await self._client.chat(messages)
             return {"content": content}
         raise ValueError(f"Unknown tool: {tool}")
+
+    def get_schema(self) -> dict[str, Any]:
+        """Return the OpenAI function schema for LLM router."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": "Route requests to different LLM providers for specialized tasks or alternative AI models.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["chat"], "description": "Use 'chat' to send message to LLM"},
+                        "messages": {"type": "array", "description": "Array of message objects with role and content"},
+                        "message": {"type": "string", "description": "Single message or prompt to send to the LLM"},
+                        "provider": {"type": "string", "description": "Specific LLM provider to use (optional)"},
+                        "model": {"type": "string", "description": "Specific model to use (optional)"},
+                    },
+                    "required": [],
+                    "additionalProperties": True,
+                },
+            },
+        }

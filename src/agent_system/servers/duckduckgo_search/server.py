@@ -27,3 +27,23 @@ class DuckDuckGoSearchServer(MCPServer):
                 results = list(ddgs.text(query, max_results=max_results))
             return {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
         raise ValueError(f"Unknown tool: {tool}")
+
+    def get_schema(self) -> dict[str, Any]:
+        """Return the OpenAI function schema for DuckDuckGo search."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": "Search the web using DuckDuckGo search engine. Returns search results with titles, URLs, and snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["search"], "description": "Use 'search' to perform web search"},
+                        "query": {"type": "string", "description": "Search query terms"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5, "description": "Number of search results to return"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": True,
+                },
+            },
+        }

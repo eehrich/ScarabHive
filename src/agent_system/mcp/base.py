@@ -16,6 +16,11 @@ class MCPServer(ABC):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         ...
 
+    @abstractmethod
+    def get_schema(self) -> dict[str, Any]:
+        """Return the OpenAI function schema for this MCP server's tools."""
+        ...
+
 
 class MCPRegistry:
     def __init__(self) -> None:

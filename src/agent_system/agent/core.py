@@ -59,43 +59,8 @@ class Agent:
                 # Use a simple tool schema: a 'search' action with free-form params; servers parse their own params
                 tools_schema: list[dict] = []
                 for t in available_tools:
-                    if t == "web_scraper":
-                        tools_schema.append({
-                            "type": "function",
-                            "function": {
-                                "name": t,
-                                "description": "Fetch and read a web page by URL.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "action": {"type": "string", "enum": ["fetch"], "description": "Use 'fetch' to download the page"},
-                                        "url": {"type": "string", "description": "The absolute URL to fetch"},
-                                        "timeout": {"type": "number", "default": 20},
-                                        "include_html": {"type": "boolean", "default": False},
-                                        "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length"},
-                                    },
-                                    "required": ["url"],
-                                    "additionalProperties": True,
-                                },
-                            },
-                        })
-                    else:
-                        tools_schema.append({
-                            "type": "function",
-                            "function": {
-                                "name": t,
-                                "description": f"Call the MCP server '{t}'. Pass a JSON object with fields appropriate for the action.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "action": {"type": "string", "description": "Action to perform, e.g., 'search'"},
-                                        "query": {"type": "string", "description": "Query or main input"},
-                                        "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
-                                    },
-                                    "additionalProperties": True,
-                                },
-                            },
-                        })
+                    server = self.registry.get(t)
+                    tools_schema.append(server.get_schema())
 
                 for step in range(max_steps):
                     # Log LLM input (structured)
@@ -134,7 +99,16 @@ class Agent:
                             if not tool_name or tool_name not in available_tools:
                                 logger.warning("Unknown tool requested: %s", tool_name)
                                 continue
-                            action_name = params.get("action") or params.get("tool") or "search"
+                            
+                            # Map tool names to their default action names
+                            default_actions = {
+                                "duckduckgo_search": "search",
+                                "yahoo_finance": "quote", 
+                                "web_scraper": "fetch",
+                                "twitter_search": "search",
+                                "llm_router": "chat"
+                            }
+                            action_name = params.get("action") or params.get("tool") or default_actions.get(tool_name, "search")
                             try:
                                 logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
                                 server = self.registry.get(tool_name)
@@ -212,43 +186,8 @@ class Agent:
 
             tools_schema: list[dict] = []
             for t in available_tools:
-                if t == "web_scraper":
-                    tools_schema.append({
-                        "type": "function",
-                        "function": {
-                            "name": t,
-                            "description": "Fetch and read a web page by URL.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "action": {"type": "string", "enum": ["fetch"], "description": "Use 'fetch' to download the page"},
-                                    "url": {"type": "string", "description": "The absolute URL to fetch"},
-                                    "timeout": {"type": "number", "default": 20},
-                                    "include_html": {"type": "boolean", "default": False},
-                                    "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length"},
-                                },
-                                "required": ["url"],
-                                "additionalProperties": True,
-                            },
-                        },
-                    })
-                else:
-                    tools_schema.append({
-                        "type": "function",
-                        "function": {
-                            "name": t,
-                            "description": f"Call the MCP server '{t}'. Pass a JSON object with fields appropriate for the action.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "action": {"type": "string", "description": "Action to perform, e.g., 'search'"},
-                                    "query": {"type": "string", "description": "Query or main input"},
-                                    "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
-                                },
-                                "additionalProperties": True,
-                            },
-                        },
-                    })
+                server = self.registry.get(t)
+                tools_schema.append(server.get_schema())
 
             for step in range(max_steps):
                 try:
