@@ -124,7 +124,8 @@ def run() -> None:
         port=port, 
         log_level=uvicorn_log_level,
         access_log=config.logging.enabled,
-        use_colors=False
+        use_colors=False,
+        log_config=None  # Disable uvicorn's logging config to preserve our setup
     )
 
 

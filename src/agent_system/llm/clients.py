@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional, Any
 import json
 import re
+import uuid
 
 from pydantic import BaseModel
 import logging
@@ -133,8 +134,10 @@ class OpenAIAsyncClient(LLMClient):
                     function = getattr(tc, "function", None)
                     name = getattr(function, "name", None) if function is not None else getattr(tc, "name", None)
                     arguments = getattr(function, "arguments", None) if function is not None else getattr(tc, "arguments", None)
+                    # Generate UUID if no ID provided by LLM
+                    tc_id = getattr(tc, "id", None) or f"call_{uuid.uuid4().hex[:12]}"
                     out_calls.append({
-                        "id": getattr(tc, "id", None),
+                        "id": tc_id,
                         "function": {"name": name, "arguments": arguments},
                     })
                 out["tool_calls"] = out_calls
@@ -208,8 +211,10 @@ class OllamaNativeAsyncClient(LLMClient):
             out_calls = []
             for tc in tcs:
                 func = tc.get("function", {})
+                # Generate UUID if no ID provided by LLM
+                tc_id = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
                 out_calls.append({
-                    "id": tc.get("id"),
+                    "id": tc_id,
                     "function": {
                         "name": func.get("name"),
                         "arguments": func.get("arguments"),
