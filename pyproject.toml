@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-system-mcp"
+version = "0.1.0"
+description = "Flexible AI Agent System using MCP with pluggable servers and FastAPI UI"
+authors = [{ name = "Your Name" }]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "ddgs>=2.8.4; python_version>='3.10'",
+    "duckduckgo-search>=6.1.6; python_version<'3.10'",
+    "yfinance>=0.2.52",
+    "snscrape",
+    "openai>=1.37.0",
+    "ollama>=0.3.0",
+]
+
+[project.urls]
+Homepage = "https://example.com"
+
+[project.scripts]
+agent-cli = "agent_system.cli:main"
+agent-api = "agent_system.agent.interface_api:run"
+mcp-websearch-abstract = "agent_system.servers.websearch_abstract.__main__:main"
+mcp-duckduckgo-search = "agent_system.servers.duckduckgo_search.__main__:main"
+mcp-yahoo-finance = "agent_system.servers.yahoo_finance.__main__:main"
+mcp-twitter-search = "agent_system.servers.twitter_search.__main__:main"
+mcp-llm-router = "agent_system.servers.llm_router.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
