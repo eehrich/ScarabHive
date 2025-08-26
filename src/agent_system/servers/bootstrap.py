@@ -34,16 +34,13 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         elif typ == "datetime":
             from .datetime.server import DateTimeServer
             registry.register(key, DateTimeServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
-        elif typ == "sub_agent":
-            # Sub-agent type requires special handling - needs an agent instance
-            # This will be used later for specialized agents
-            from ..agent.sub_agent import SubAgent
+        elif typ == "agent":
+            # Direct agent type - Agent extends MCPServer so can be used directly
             from ..agent.core import Agent
-            # For now, create a basic sub-agent (will be enhanced in specialized agents)
-            sub_agent_config = AgentConfig()  # Use default config for sub-agent
-            sub_registry = MCPRegistry()  # Empty registry for sub-agent
-            sub_agent_instance = Agent("basic_sub_agent", sub_agent_config, sub_registry)
-            registry.register(key, SubAgent(key, sub_agent_instance, server_cfg, ssl_verify=config.network.ssl_verify))
+            # Create agent with basic config and empty registry (no recursion)
+            agent_config = AgentConfig()  # Use default config 
+            agent_registry = MCPRegistry()  # Empty registry for this agent
+            registry.register(key, Agent(key, agent_config, agent_registry, server_cfg, ssl_verify=config.network.ssl_verify))
         elif typ == "web_research_agent":
             # Specialized web research agent
             from ..agent.web_research_agent import WebResearchAgent
