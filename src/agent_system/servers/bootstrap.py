@@ -38,13 +38,41 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
             # Direct agent type - Agent extends MCPServer so can be used directly
             from .agent.server import Agent
             # Create agent with basic config and empty registry (no recursion)
-            agent_config = AgentConfig()  # Use default config 
+            # Inherit top-level LLM config unless server explicitly overrides
+            agent_cfg = AgentConfig()
+            # copy top-level LLM config
+            agent_cfg.llm = config.llm
+            # apply server-level overrides if present
+            if server_cfg.get("default_provider") or server_cfg.get("provider") or server_cfg.get("model"):
+                sc = server_cfg
+                llm_kwargs = {}
+                if sc.get("default_provider"):
+                    llm_kwargs["provider"] = sc.get("default_provider")
+                elif sc.get("provider"):
+                    llm_kwargs["provider"] = sc.get("provider")
+                if sc.get("model"):
+                    llm_kwargs["model"] = sc.get("model")
+                if sc.get("openai_api_key"):
+                    llm_kwargs["openai_api_key"] = sc.get("openai_api_key")
+                if sc.get("ollama_url"):
+                    llm_kwargs["ollama_url"] = sc.get("ollama_url")
+                if sc.get("ollama_mode"):
+                    llm_kwargs["ollama_mode"] = sc.get("ollama_mode")
+                if sc.get("request_timeout") is not None:
+                    llm_kwargs["request_timeout"] = sc.get("request_timeout")
+                # merge overrides
+                for k, v in llm_kwargs.items():
+                    setattr(agent_cfg.llm, k, v)
+
             agent_registry = MCPRegistry()  # Empty registry for this agent
-            registry.register(key, Agent(key, agent_config, agent_registry, server_cfg, ssl_verify=config.network.ssl_verify))
+            registry.register(key, Agent(key, agent_cfg, agent_registry, server_cfg, ssl_verify=config.network.ssl_verify))
         elif typ == "web_research_agent":
             # Specialized web research agent
             from .web_research_agent.server import WebResearchAgent
-            registry.register(key, WebResearchAgent(key, server_cfg, ssl_verify=config.network.ssl_verify))
+            # Build config that inherits top-level LLM but allows server overrides
+            wr_cfg = server_cfg or {}
+            # If server specifies LLM options, pass them into WebResearchAgent via config
+            registry.register(key, WebResearchAgent(key, wr_cfg, ssl_verify=config.network.ssl_verify))
         else:
             # ignore unknown for now
             continue

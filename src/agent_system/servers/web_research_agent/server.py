@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from ...config.models import AgentConfig, MCPConfig
+from ...config.models import AgentConfig, MCPConfig, LLMConfig
 from ...mcp.base import MCPRegistry
 from ..agent.server import Agent
 from ...servers.bootstrap import bootstrap_servers
@@ -35,7 +35,29 @@ def create_web_research_agent(
         Agent configured for web research
     """
     # Create specialized agent configuration
+    # Allow server-provided LLM overrides (e.g., default_provider/model) via `config`
+    server_cfg = config or {}
+    llm_kwargs: dict = {}
+    # accept either 'default_provider' or 'provider' keys from server config
+    if server_cfg.get("default_provider"):
+        llm_kwargs["provider"] = server_cfg.get("default_provider")
+    elif server_cfg.get("provider"):
+        llm_kwargs["provider"] = server_cfg.get("provider")
+    if server_cfg.get("model"):
+        llm_kwargs["model"] = server_cfg.get("model")
+    if server_cfg.get("openai_api_key"):
+        llm_kwargs["openai_api_key"] = server_cfg.get("openai_api_key")
+    if server_cfg.get("ollama_url"):
+        llm_kwargs["ollama_url"] = server_cfg.get("ollama_url")
+    if server_cfg.get("ollama_mode"):
+        llm_kwargs["ollama_mode"] = server_cfg.get("ollama_mode")
+    if server_cfg.get("request_timeout") is not None:
+        llm_kwargs["request_timeout"] = server_cfg.get("request_timeout")
+
+    research_llm = LLMConfig(**llm_kwargs) if llm_kwargs else LLMConfig()
+
     research_config = AgentConfig(
+        llm=research_llm,
         mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
         servers={
             "duckduckgo_search": {
@@ -86,7 +108,27 @@ class WebResearchAgent(Agent):
             ssl_verify: SSL verification setting
         """
         # Create specialized agent configuration for research
+        server_cfg = config or {}
+        llm_kwargs: dict = {}
+        if server_cfg.get("default_provider"):
+            llm_kwargs["provider"] = server_cfg.get("default_provider")
+        elif server_cfg.get("provider"):
+            llm_kwargs["provider"] = server_cfg.get("provider")
+        if server_cfg.get("model"):
+            llm_kwargs["model"] = server_cfg.get("model")
+        if server_cfg.get("openai_api_key"):
+            llm_kwargs["openai_api_key"] = server_cfg.get("openai_api_key")
+        if server_cfg.get("ollama_url"):
+            llm_kwargs["ollama_url"] = server_cfg.get("ollama_url")
+        if server_cfg.get("ollama_mode"):
+            llm_kwargs["ollama_mode"] = server_cfg.get("ollama_mode")
+        if server_cfg.get("request_timeout") is not None:
+            llm_kwargs["request_timeout"] = server_cfg.get("request_timeout")
+
+        research_llm = LLMConfig(**llm_kwargs) if llm_kwargs else LLMConfig()
+
         research_config = AgentConfig(
+            llm=research_llm,
             mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
             servers={
                 "duckduckgo_search": {"type": "duckduckgo_search"},
@@ -213,14 +255,14 @@ class WebResearchAgent(Agent):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": "Advanced web research agent for comprehensive topic research, fact-checking, and source comparison. Use for: detailed research on specific topics, fact-checking claims, comparing multiple sources, analyzing contradictory information, or when standard search is insufficient and you need thorough analysis.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
                             "enum": ["run", "execute", "ask", "research", "fact_check", "compare_sources"],
-                            "description": "Action to perform"
+                            "description": "Action to perform: 'research' for comprehensive topic research, 'fact_check' for verifying claims, 'compare_sources' for analyzing multiple sources, 'run/execute/ask' for general queries"
                         },
                         "task": {
                             "type": "string",
@@ -228,21 +270,21 @@ class WebResearchAgent(Agent):
                         },
                         "topic": {
                             "type": "string",
-                            "description": "Research topic for research action"
+                            "description": "Research topic for comprehensive research action (use with action='research')"
                         },
                         "claim": {
                             "type": "string", 
-                            "description": "Claim to fact-check for fact_check action"
+                            "description": "Claim to fact-check for fact_check action (use with action='fact_check')"
                         },
                         "source_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "URLs to compare for compare_sources action"
+                            "description": "URLs to compare for compare_sources action (use with action='compare_sources')"
                         },
                         "max_results": {
                             "type": "integer",
                             "default": 5,
-                            "description": "Maximum results for research action"
+                            "description": "Maximum results for research action (1-10)"
                         }
                     },
                     "required": ["action"],
@@ -264,92 +306,6 @@ class WebResearchAgent(Agent):
         if action == "research":
             topic = params.get("topic")
             if not topic:
-                return {"error": "Missing required parameter: topic"}
-            max_results = params.get("max_results", 5)
-            return await self.research(topic, max_results)
-            
-        elif action == "fact_check":
-            claim = params.get("claim")
-            if not claim:
-                return {"error": "Missing required parameter: claim"}
-            return await self.fact_check(claim)
-            
-        elif action == "compare_sources":
-            source_urls = params.get("source_urls")
-            topic = params.get("topic", "")
-            if not source_urls:
-                return {"error": "Missing required parameter: source_urls"}
-            return await self.compare_sources(topic, source_urls)
-            
-        else:
-            # Fall back to parent implementation for standard actions
-            return await super().call(action, params)
-        
-    def get_schema(self) -> dict[str, Any]:
-        """
-        Return enhanced schema for WebResearchAgent with specialized actions.
-        
-        Returns:
-            OpenAI function schema dict with research-specific actions
-        """
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["run", "execute", "ask", "research", "fact_check", "compare_sources"],
-                            "description": "Action to perform (run/execute/ask for general tasks, research/fact_check/compare_sources for specialized research)"
-                        },
-                        "task": {
-                            "type": "string", 
-                            "description": "The task/query/prompt to execute (for run/execute/ask actions)"
-                        },
-                        "topic": {
-                            "type": "string",
-                            "description": "Research topic (for research action)"
-                        },
-                        "claim": {
-                            "type": "string", 
-                            "description": "Claim to fact-check (for fact_check action)"
-                        },
-                        "source_urls": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "URLs to compare (for compare_sources action)"
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 10,
-                            "default": 5,
-                            "description": "Maximum number of results to process"
-                        }
-                    },
-                    "required": [],  # No required params, depends on action
-                },
-            },
-        }
-        
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        """
-        Enhanced call method with specialized research actions.
-        
-        Args:
-            tool: The action to execute
-            params: Parameters for the action
-            
-        Returns:
-            Action result
-        """
-        # Handle specialized research actions
-        if tool == "research":
-            topic = params.get("topic")
-            if not topic:
                 return {
                     "status": "error",
                     "error": "Missing required parameter 'topic' for research action"
@@ -357,7 +313,7 @@ class WebResearchAgent(Agent):
             max_results = params.get("max_results", 5)
             return await self.research(topic, max_results)
             
-        elif tool == "fact_check":
+        elif action == "fact_check":
             claim = params.get("claim")
             if not claim:
                 return {
@@ -366,9 +322,9 @@ class WebResearchAgent(Agent):
                 }
             return await self.fact_check(claim)
             
-        elif tool == "compare_sources":
+        elif action == "compare_sources":
+            source_urls = params.get("source_urls")
             topic = params.get("topic")
-            source_urls = params.get("source_urls", [])
             if not topic or not source_urls:
                 return {
                     "status": "error",
@@ -376,5 +332,6 @@ class WebResearchAgent(Agent):
                 }
             return await self.compare_sources(topic, source_urls)
             
-        # Fall back to parent implementation for standard actions
-        return await super().call(tool, params)
+        else:
+            # Fall back to parent implementation for standard actions
+            return await super().call(action, params)
