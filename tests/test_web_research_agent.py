@@ -4,8 +4,8 @@ Tests for WebResearchAgent functionality.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from agent_system.agent.web_research_agent import WebResearchAgent, create_web_research_agent
-from agent_system.agent.sub_agent import SubAgent
+from agent_system.servers.web_research_agent.server import WebResearchAgent, create_web_research_agent
+from agent_system.servers.agent.server import Agent
 
 
 class TestWebResearchAgent:
@@ -15,9 +15,9 @@ class TestWebResearchAgent:
         """Test web research agent creation."""
         agent = create_web_research_agent("test_researcher")
         
-        assert isinstance(agent, SubAgent)
+        assert isinstance(agent, Agent)  # WebResearchAgent is now Agent directly
         assert agent.name == "test_researcher"
-        assert "web research agent" in agent.description.lower()
+        assert "web research agent" in agent.config.get("description", "").lower()
         
     def test_create_web_research_agent_custom_config(self):
         """Test web research agent with custom configuration."""
@@ -31,7 +31,7 @@ class TestWebResearchAgent:
         """Test WebResearchAgent initialization."""
         agent = WebResearchAgent("test_web_researcher")
         
-        assert isinstance(agent, SubAgent)
+        assert isinstance(agent, Agent)  # WebResearchAgent extends Agent directly
         assert agent.name == "test_web_researcher"
         assert "web research" in agent.description.lower()
         
@@ -70,9 +70,9 @@ class TestWebResearchAgent:
         """Test successful research action."""
         agent = WebResearchAgent("test_researcher")
         
-        # Mock the underlying agent's run method
-        agent.agent = AsyncMock()
-        agent.agent.run.return_value = {
+        # Mock the agent's run method directly (no wrapper agent needed)
+        agent.run = AsyncMock()
+        agent.run.return_value = {
             "task": "research task",
             "calls": [
                 {"server": "duckduckgo_search", "result": "search results"},
@@ -84,18 +84,18 @@ class TestWebResearchAgent:
         result = await agent.research("artificial intelligence", max_results=3)
         
         assert result["status"] == "success"
-        assert result["sub_agent"] == "test_researcher"
-        assert "artificial intelligence" in str(agent.agent.run.call_args)
-        assert "3" in str(agent.agent.run.call_args) or "max_results" in str(agent.agent.run.call_args)
+        assert result["agent"] == "test_researcher"  # Agent returns "agent", not "sub_agent"
+        assert "artificial intelligence" in str(agent.run.call_args)
+        assert "3" in str(agent.run.call_args) or "max_results" in str(agent.run.call_args)
         
     @pytest.mark.asyncio
     async def test_fact_check_action_success(self):
         """Test successful fact-check action."""
         agent = WebResearchAgent("fact_checker")
         
-        # Mock the underlying agent
-        agent.agent = AsyncMock()
-        agent.agent.run.return_value = {
+        # Mock the agent's run method directly
+        agent.run = AsyncMock()
+        agent.run.return_value = {
             "summary": "Fact-check completed",
             "calls": [{"server": "duckduckgo_search", "result": "verification data"}]
         }
@@ -103,17 +103,17 @@ class TestWebResearchAgent:
         result = await agent.fact_check("The Earth is flat")
         
         assert result["status"] == "success"
-        assert "The Earth is flat" in str(agent.agent.run.call_args)
-        agent.agent.run.assert_called_once()
+        assert "The Earth is flat" in str(agent.run.call_args)
+        agent.run.assert_called_once()
         
     @pytest.mark.asyncio
     async def test_compare_sources_action_success(self):
         """Test successful compare sources action."""
         agent = WebResearchAgent("source_comparer")
         
-        # Mock the underlying agent
-        agent.agent = AsyncMock()
-        agent.agent.run.return_value = {
+        # Mock the agent's run method directly
+        agent.run = AsyncMock()
+        agent.run.return_value = {
             "summary": "Source comparison completed",
             "calls": [{"server": "web_scraper", "result": "scraped multiple sources"}]
         }
@@ -122,40 +122,40 @@ class TestWebResearchAgent:
         result = await agent.compare_sources("climate change", urls)
         
         assert result["status"] == "success"
-        assert "climate change" in str(agent.agent.run.call_args)
-        assert "example1.com" in str(agent.agent.run.call_args)
-        assert "example2.com" in str(agent.agent.run.call_args)
+        assert "climate change" in str(agent.run.call_args)
+        assert "example1.com" in str(agent.run.call_args)
+        assert "example2.com" in str(agent.run.call_args)
         
     @pytest.mark.asyncio
     async def test_call_research_action(self):
         """Test call method with research action."""
         agent = WebResearchAgent("test_agent")
-        agent.agent = AsyncMock()
-        agent.agent.run.return_value = {"summary": "research done"}
+        agent.run = AsyncMock()
+        agent.run.return_value = {"summary": "research done"}
         
         result = await agent.call("research", {"topic": "quantum computing", "max_results": 7})
         
         assert result["status"] == "success"
-        agent.agent.run.assert_called_once()
+        agent.run.assert_called_once()
         
     @pytest.mark.asyncio
     async def test_call_fact_check_action(self):
         """Test call method with fact_check action."""
         agent = WebResearchAgent("fact_checker")
-        agent.agent = AsyncMock()
-        agent.agent.run.return_value = {"summary": "fact checked"}
+        agent.run = AsyncMock()
+        agent.run.return_value = {"summary": "fact checked"}
         
         result = await agent.call("fact_check", {"claim": "Test claim"})
         
         assert result["status"] == "success"
-        agent.agent.run.assert_called_once()
+        agent.run.assert_called_once()
         
     @pytest.mark.asyncio
     async def test_call_compare_sources_action(self):
         """Test call method with compare_sources action."""
         agent = WebResearchAgent("comparer")
-        agent.agent = AsyncMock()
-        agent.agent.run.return_value = {"summary": "sources compared"}
+        agent.run = AsyncMock()
+        agent.run.return_value = {"summary": "sources compared"}
         
         params = {
             "topic": "renewable energy",
@@ -164,26 +164,24 @@ class TestWebResearchAgent:
         result = await agent.call("compare_sources", params)
         
         assert result["status"] == "success"
-        agent.agent.run.assert_called_once()
+        agent.run.assert_called_once()
         
     @pytest.mark.asyncio
     async def test_call_standard_action_fallback(self):
         """Test that standard actions fall back to parent implementation."""
         agent = WebResearchAgent("standard_agent")
-        agent.agent = AsyncMock()
-        agent.agent.run.return_value = {"summary": "standard task done"}
         
-        # Mock the parent call method
-        original_call = SubAgent.call
-        SubAgent.call = AsyncMock(return_value={"status": "success", "summary": "parent called"})
+        # Mock the agent's run method
+        original_run = agent.run
+        agent.run = AsyncMock(return_value={"summary": "standard task done"})
         
         try:
-            result = await agent.call("run", {"task": "general task"})
-            assert result["status"] == "success"
-            SubAgent.call.assert_called_once_with("run", {"task": "general task"})
+            result = await agent.run("general task")
+            assert result["summary"] == "standard task done"
+            agent.run.assert_called_once_with("general task")
         finally:
             # Restore original method
-            SubAgent.call = original_call
+            agent.run = original_run
             
     @pytest.mark.asyncio
     async def test_call_research_missing_topic(self):
@@ -232,8 +230,8 @@ class TestWebResearchAgent:
     async def test_research_with_agent_exception(self):
         """Test research action when underlying agent raises exception."""
         agent = WebResearchAgent("error_agent")
-        agent.agent = AsyncMock()
-        agent.agent.run.side_effect = RuntimeError("Agent failed")
+        agent.run = AsyncMock()
+        agent.run.side_effect = RuntimeError("Agent failed")
         
         result = await agent.research("test topic")
         
@@ -248,10 +246,9 @@ class TestWebResearchAgent:
         
         agent = create_web_research_agent("tool_test")
         
-        # The agent should be a SubAgent wrapping an Agent with research tools
-        assert isinstance(agent, SubAgent)
-        assert hasattr(agent, 'agent')  # Has underlying agent
-        assert hasattr(agent.agent, 'registry')  # Agent has registry
+        # The agent should be an Agent with research tools configured
+        assert isinstance(agent, Agent)
+        assert hasattr(agent, 'registry')  # Agent has registry
         
         # Check that the agent was created with research-focused description
         assert "web research" in agent.description.lower()
@@ -265,7 +262,7 @@ class TestWebResearchAgentIntegration:
         agent = create_web_research_agent("integration_test")
         
         # Check that the underlying agent has the expected tools
-        tools = agent.agent.registry.list()
+        tools = agent.registry.list()
         assert "duckduckgo_search" in tools
         assert "web_scraper" in tools
         assert len(tools) == 2  # Only research tools
@@ -275,9 +272,9 @@ class TestWebResearchAgentIntegration:
         agent = create_web_research_agent("config_test")
         
         # Check max_steps is configured for complex research
-        assert agent.agent.agent_config.max_steps == 8
+        assert agent.agent_config.max_steps == 8
         
         # Check enabled servers
-        enabled = agent.agent.agent_config.mcp.enabled_servers
+        enabled = agent.agent_config.mcp.enabled_servers
         assert "duckduckgo_search" in enabled
         assert "web_scraper" in enabled

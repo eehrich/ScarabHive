@@ -9,10 +9,10 @@ import logging
 import time
 from typing import Any, Dict, List, AsyncIterator
 
-from ..config.models import AgentConfig
-from ..mcp.base import MCPRegistry, MCPServer
-from ..llm.clients import ChatMessage, make_llm
-from ..utils.prompt_renderer import render_prompts
+from ...config.models import AgentConfig
+from ...mcp.base import MCPRegistry, MCPServer
+from ...llm.clients import ChatMessage, make_llm
+from ...utils.prompt_renderer import render_prompts
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,11 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.warning("LLM initialization failed: %s", e)
                 self.llm = None
+
+    @property
+    def description(self) -> str:
+        """Get the agent description."""
+        return self.config.get("description", f"Agent: {self.name}")
 
     async def run(self, task: str) -> Dict[str, Any]:
         """

@@ -6,7 +6,7 @@ import pytest
 from agent_system.config.models import AgentConfig, MCPConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
-from agent_system.agent.core import Agent
+from agent_system.servers.agent.server import Agent
 
 
 class TestAgentBootstrap:

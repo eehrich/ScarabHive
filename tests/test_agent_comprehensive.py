@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.mcp.base import MCPRegistry, MCPServer
 from agent_system.config.models import AgentConfig, LLMConfig, ContextConfig, PromptsConfig
-from agent_system.agent.core import Agent
+from agent_system.servers.agent.server import Agent
 
 
 class MockMCPServer(MCPServer):

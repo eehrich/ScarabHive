@@ -7,11 +7,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from ..config.models import AgentConfig, MCPConfig
-from ..mcp.base import MCPRegistry
-from .core import Agent
-from .sub_agent import SubAgent
-from ..servers.bootstrap import bootstrap_servers
+from ...config.models import AgentConfig, MCPConfig
+from ...mcp.base import MCPRegistry
+from ..agent.server import Agent
+from ...servers.bootstrap import bootstrap_servers
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ def create_web_research_agent(
     name: str = "web_researcher", 
     config: dict | None = None,
     ssl_verify: bool = True
-) -> SubAgent:
+) -> Agent:
     """
     Create a specialized WebResearchAgent.
     
@@ -33,7 +32,7 @@ def create_web_research_agent(
         ssl_verify: SSL verification setting
         
     Returns:
-        SubAgent configured for web research
+        Agent configured for web research
     """
     # Create specialized agent configuration
     research_config = AgentConfig(
@@ -54,25 +53,22 @@ def create_web_research_agent(
     research_registry = MCPRegistry()
     bootstrap_servers(research_config, research_registry)
     
-    # Create the underlying agent
-    research_agent = Agent("web_research_core", research_config, research_registry)
-    
-    # Create SubAgent wrapper with research-specific configuration
+    # Create the agent directly with research-specific configuration
     agent_config = config or {}
     agent_config.setdefault("description", 
         "Specialized web research agent that can search the web and scrape content from websites")
     
-    sub_agent = SubAgent(name, research_agent, agent_config, ssl_verify)
+    research_agent = Agent(name, research_config, research_registry, agent_config, ssl_verify)
     
     logger.info("Created WebResearchAgent '%s' with tools: %s", 
                 name, research_registry.list())
     
-    return sub_agent
+    return research_agent
 
 
-class WebResearchAgent(SubAgent):
+class WebResearchAgent(Agent):
     """
-    Specialized SubAgent for web research tasks.
+    Specialized Agent for web research tasks.
     
     This agent is pre-configured with:
     - DuckDuckGo search capabilities  
@@ -89,16 +85,31 @@ class WebResearchAgent(SubAgent):
             config: Optional configuration dict
             ssl_verify: SSL verification setting
         """
-        # Ensure config has the research description if not provided
-        config = config or {}
-        if "description" not in config:
-            config["description"] = "Specialized web research agent that can search the web and scrape content from websites"
-            
-        # Create the research-capable agent
-        sub_agent = create_web_research_agent(name, config, ssl_verify)
+        # Create specialized agent configuration for research
+        research_config = AgentConfig(
+            mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
+            servers={
+                "duckduckgo_search": {"type": "duckduckgo_search"},
+                "web_scraper": {"type": "web_scraper"}
+            },
+            max_steps=8,  # More steps for complex research tasks
+            network={"ssl_verify": ssl_verify}
+        )
         
-        # Initialize as SubAgent
-        super().__init__(name, sub_agent.agent, config, ssl_verify)
+        # Create registry and bootstrap the research tools
+        research_registry = MCPRegistry()
+        bootstrap_servers(research_config, research_registry)
+        
+        # Set default description for research agent
+        agent_config = config or {}
+        agent_config.setdefault("description", 
+            "Specialized web research agent that can search the web and scrape content from websites")
+            
+        # Initialize as Agent directly - this is the radical change!
+        super().__init__(name, research_config, research_registry, agent_config, ssl_verify)
+        
+        logger.info("Created WebResearchAgent '%s' with tools: %s", 
+                    name, research_registry.list())
         
     async def research(self, topic: str, max_results: int = 5) -> Dict[str, Any]:
         """
@@ -190,6 +201,89 @@ class WebResearchAgent(SubAgent):
         """
         
         return await self.call("run", {"task": compare_prompt})
+        
+    def get_schema(self) -> Dict[str, Any]:
+        """
+        Override to provide enhanced schema with research-specific actions.
+        
+        Returns:
+            Enhanced OpenAI function schema for web research
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["run", "execute", "ask", "research", "fact_check", "compare_sources"],
+                            "description": "Action to perform"
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "General task/query for run/execute/ask actions"
+                        },
+                        "topic": {
+                            "type": "string",
+                            "description": "Research topic for research action"
+                        },
+                        "claim": {
+                            "type": "string", 
+                            "description": "Claim to fact-check for fact_check action"
+                        },
+                        "source_urls": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "URLs to compare for compare_sources action"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "default": 5,
+                            "description": "Maximum results for research action"
+                        }
+                    },
+                    "required": ["action"],
+                },
+            },
+        }
+        
+    async def call(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Override call to handle research-specific actions.
+        
+        Args:
+            action: Action to perform
+            params: Action parameters
+            
+        Returns:
+            Action result
+        """
+        if action == "research":
+            topic = params.get("topic")
+            if not topic:
+                return {"error": "Missing required parameter: topic"}
+            max_results = params.get("max_results", 5)
+            return await self.research(topic, max_results)
+            
+        elif action == "fact_check":
+            claim = params.get("claim")
+            if not claim:
+                return {"error": "Missing required parameter: claim"}
+            return await self.fact_check(claim)
+            
+        elif action == "compare_sources":
+            source_urls = params.get("source_urls")
+            topic = params.get("topic", "")
+            if not source_urls:
+                return {"error": "Missing required parameter: source_urls"}
+            return await self.compare_sources(topic, source_urls)
+            
+        else:
+            # Fall back to parent implementation for standard actions
+            return await super().call(action, params)
         
     def get_schema(self) -> dict[str, Any]:
         """

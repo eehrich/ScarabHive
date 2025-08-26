@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from ..agent.core import Agent
+from ..servers.agent.server import Agent
 from ..config.loader import load_config
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers

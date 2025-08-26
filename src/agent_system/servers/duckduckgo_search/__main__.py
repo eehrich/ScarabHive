@@ -28,10 +28,20 @@ async def main():
             })
             print(f"Search results for '{args.query}':")
             if isinstance(result, dict) and "results" in result:
-                for i, item in enumerate(result["results"], 1):
-                    print(f"{i}. {item.get('title', 'No title')}")
-                    print(f"   {item.get('url', 'No URL')}")
-                    print(f"   {item.get('snippet', 'No description')}\n")
+                results = result["results"]
+                if not results:
+                    # Handle empty results gracefully
+                    if "error" in result:
+                        print(f"No results found: {result['error']}")
+                        if "suggestion" in result:
+                            print(f"Suggestion: {result['suggestion']}")
+                    else:
+                        print("No results found for this query.")
+                else:
+                    for i, item in enumerate(results, 1):
+                        print(f"{i}. {item.get('title', 'No title')}")
+                        print(f"   {item.get('href', item.get('url', 'No URL'))}")
+                        print(f"   {item.get('body', item.get('snippet', 'No description'))}\n")
             else:
                 print(result)
         except Exception as e:

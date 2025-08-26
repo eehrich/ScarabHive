@@ -6,7 +6,7 @@ import pytest
 from agent_system.config.models import AgentConfig, MCPConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
-from agent_system.agent.web_research_agent import WebResearchAgent
+from agent_system.servers.web_research_agent.server import WebResearchAgent
 
 
 class TestWebResearchAgentBootstrap:
@@ -78,12 +78,11 @@ class TestWebResearchAgentBootstrap:
         registry = MCPRegistry()
         bootstrap_servers(config, registry)
         
-        # Should have all servers
+        # Should have all servers (reduced from 4 to 3 since we don't have basic_sub as MCP server)
         servers = registry.list()
-        assert len(servers) == 4
+        assert len(servers) == 3
         assert "datetime" in servers
         assert "researcher" in servers  
-        assert "basic_sub" in servers
         assert "duckduckgo_search" in servers
         
         # Web research agent should be correct type
@@ -108,8 +107,8 @@ class TestWebResearchAgentBootstrap:
         agent = registry.get("research_agent")
         assert isinstance(agent, WebResearchAgent)
         
-        # Check that underlying agent has research tools
-        tools = agent.agent.registry.list()
+        # Check that the agent has research tools
+        tools = agent.registry.list()
         assert "duckduckgo_search" in tools
         assert "web_scraper" in tools
         

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config.loader import load_config
 from .mcp.base import MCPRegistry
-from .agent.core import Agent  # Use Agent from core.py
+from .servers.agent.server import Agent  # Use Agent from servers
 from .servers.bootstrap import bootstrap_servers
 from .utils.logging import setup_logging
 import logging

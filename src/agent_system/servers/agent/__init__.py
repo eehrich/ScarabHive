@@ -1,11 +1,10 @@
 """
-Agent Server - MCP Server implementations for agent-to-agent communication.
+Agent MCP Server - Base agent that can be used as an MCP Server by other agents.
 
-Since Agent already extends MCPServer, agents can be used directly as MCP servers
-without needing wrapper classes.
+This is the core Agent class that extends MCPServer, enabling direct agent-to-agent 
+communication without wrapper classes.
 """
 
-from ...agent.core import Agent
-from .web_research import WebResearchAgent
+from .server import Agent
 
-__all__ = ["Agent", "WebResearchAgent"]
+__all__ = ["Agent"]
