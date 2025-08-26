@@ -1,6 +1,6 @@
 """
-Simplified Agent Core - One tool call per conversation turn
-Focuses on clarity and prevents infinite tool call loops
+Enhanced Agent Core - Supports multiple tool calls per conversation turn
+Processes all tool calls from LLM in a single turn for better efficiency
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 
 class Agent:
     """
-    Simplified Agent that executes ONE tool call per LLM conversation turn.
-    This prevents infinite loops and makes the conversation flow clearer.
+    Enhanced Agent that executes ALL tool calls per LLM conversation turn.
+    This allows faster execution when multiple tools are needed simultaneously.
     """
 
     def __init__(self, config: AgentConfig, registry: MCPRegistry) -> None:
@@ -47,8 +47,8 @@ class Agent:
 
     async def run(self, task: str) -> Dict[str, Any]:
         """
-        Run the agent task with simplified tool calling logic.
-        Execute at most ONE tool call per LLM turn to prevent loops.
+        Run the agent task with enhanced tool calling logic.
+        Executes ALL tool calls from LLM per turn for better efficiency.
         """
         results: Dict[str, Any] = {"task": task, "calls": []}
 
@@ -114,85 +114,85 @@ class Agent:
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
                     
-                    # Execute ONLY the first tool call
-                    tc = tool_calls[0]
-                    func = tc.get("function", {})
-                    tool_name = func.get("name")
-                    raw_args = func.get("arguments")
-                    
-                    # Parse arguments
-                    params: Dict[str, Any] = {}
-                    if isinstance(raw_args, str) and raw_args:
-                        try:
-                            params = json.loads(raw_args)
-                        except json.JSONDecodeError:
-                            logger.warning("Failed to parse tool arguments: %s", raw_args)
-                            params = {}
-                    elif isinstance(raw_args, dict):
-                        params = raw_args
-                    
-                    if not tool_name or tool_name not in available_tools:
-                        logger.warning("Unknown tool requested: %s", tool_name)
-                        messages.append(ChatMessage(
-                            role="assistant", 
-                            content=f"Error: Tool '{tool_name}' is not available."
-                        ))
-                        continue
-                    
-                    # Get action name and validate
-                    server = self.registry.get(tool_name)
-                    action_name = params.get("action") or params.get("tool") or server.get_default_action()
-                    
-                    # Validate action against server schema
-                    schema = server.get_schema()
-                    valid_actions = []
-                    if "function" in schema and "parameters" in schema["function"]:
-                        action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
-                        valid_actions = action_prop.get("enum", [])
-                    
-                    if valid_actions and action_name not in valid_actions:
-                        logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
-                                     action_name, tool_name, valid_actions)
-                        action_name = server.get_default_action()
-                        params["action"] = action_name
-                    
-                    try:
-                        logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-                        tool_result = await server.call(action_name, params)
-                        logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
+                    # Execute ALL tool calls
+                    for i, tc in enumerate(tool_calls):
+                        func = tc.get("function", {})
+                        tool_name = func.get("name")
+                        raw_args = func.get("arguments")
                         
-                        results["calls"].append({
-                            "server": tool_name, 
-                            "action": action_name, 
-                            "params": params, 
-                            "result": tool_result
-                        })
+                        # Parse arguments
+                        params: Dict[str, Any] = {}
+                        if isinstance(raw_args, str) and raw_args:
+                            try:
+                                params = json.loads(raw_args)
+                            except json.JSONDecodeError:
+                                logger.warning("Failed to parse tool arguments: %s", raw_args)
+                                params = {}
+                        elif isinstance(raw_args, dict):
+                            params = raw_args
                         
-                        # Add tool result to conversation
-                        tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-                        tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-                        messages.append(ChatMessage(
-                            role="tool", 
-                            tool_call_id=tool_call_id, 
-                            name=tool_name, 
-                            content=tool_msg_content
-                        ))
-                        
-                        # If there were multiple tool calls, inform about skipping others
-                        if len(tool_calls) > 1:
-                            skipped_calls = [tc.get("function", {}).get("name") for tc in tool_calls[1:]]
+                        if not tool_name or tool_name not in available_tools:
+                            logger.warning("Unknown tool requested: %s", tool_name)
+                            # Add error message for this specific tool call
+                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                             messages.append(ChatMessage(
-                                role="assistant", 
-                                content=f"Note: I executed {tool_name} and skipped {len(tool_calls)-1} other tool calls: {', '.join(skipped_calls)}. I'll make one tool call at a time for clarity."
+                                role="tool", 
+                                tool_call_id=tool_call_id,
+                                name=tool_name or "unknown",
+                                content=json.dumps({"error": f"Tool '{tool_name}' is not available."})
+                            ))
+                            continue
+                        
+                        # Get action name and validate
+                        server = self.registry.get(tool_name)
+                        action_name = params.get("action") or params.get("tool") or server.get_default_action()
+                        
+                        # Validate action against server schema
+                        schema = server.get_schema()
+                        valid_actions = []
+                        if "function" in schema and "parameters" in schema["function"]:
+                            action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
+                            valid_actions = action_prop.get("enum", [])
+                        
+                        if valid_actions and action_name not in valid_actions:
+                            logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
+                                         action_name, tool_name, valid_actions)
+                            action_name = server.get_default_action()
+                            params["action"] = action_name
+                        
+                        try:
+                            logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
+                            tool_result = await server.call(action_name, params)
+                            logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
+                            
+                            results["calls"].append({
+                                "server": tool_name, 
+                                "action": action_name, 
+                                "params": params, 
+                                "result": tool_result
+                            })
+                            
+                            # Add tool result to conversation
+                            tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
+                            tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
+                            messages.append(ChatMessage(
+                                role="tool", 
+                                tool_call_id=tool_call_id, 
+                                name=tool_name, 
+                                content=tool_msg_content
                             ))
                             
-                    except Exception as e:
-                        logger.exception("Tool %s invocation failed: %s", tool_name, e)
-                        results.setdefault("errors", []).append(str(e))
-                        messages.append(ChatMessage(
-                            role="assistant", 
-                            content=f"Error calling tool {tool_name}: {e}"
-                        ))
+                        except Exception as e:
+                            logger.exception("Tool %s invocation failed: %s", tool_name, e)
+                            results.setdefault("errors", []).append(str(e))
+                            # Add error result for this specific tool call
+                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            messages.append(ChatMessage(
+                                role="tool", 
+                                tool_call_id=tool_call_id,
+                                name=tool_name,
+                                content=json.dumps({"error": str(e)})
+                            ))
 
                 # Check for final content
                 elif content:
@@ -317,94 +317,102 @@ class Agent:
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
 
-                # SIMPLE RULE: Execute only the FIRST tool call per turn
+                # Execute ALL tool calls with immediate streaming
                 if tool_calls:
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
                     
-                    # Execute ONLY the first tool call with immediate streaming
-                    tc = tool_calls[0]
-                    func = tc.get("function", {})
-                    tool_name = func.get("name")
-                    raw_args = func.get("arguments")
-                    
-                    # Parse arguments
-                    params: Dict[str, Any] = {}
-                    if isinstance(raw_args, str) and raw_args:
-                        try:
-                            params = json.loads(raw_args)
-                        except json.JSONDecodeError:
-                            logger.warning("Failed to parse tool arguments: %s", raw_args)
-                            params = {}
-                    elif isinstance(raw_args, dict):
-                        params = raw_args
-                    
-                    if not tool_name or tool_name not in available_tools:
-                        logger.warning("Unknown tool requested: %s", tool_name)
-                        yield {"type": "error", "message": f"Unknown tool: {tool_name}"}
-                        continue
-                    
-                    # Get action name and validate
-                    server = self.registry.get(tool_name)
-                    action_name = params.get("action") or params.get("tool") or server.get_default_action()
-                    
-                    # Validate action against server schema
-                    schema = server.get_schema()
-                    valid_actions = []
-                    if "function" in schema and "parameters" in schema["function"]:
-                        action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
-                        valid_actions = action_prop.get("enum", [])
-                    
-                    if valid_actions and action_name not in valid_actions:
-                        logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
-                                     action_name, tool_name, valid_actions)
-                        action_name = server.get_default_action()
-                        params["action"] = action_name
-                    
-                    # Emit MCP call event immediately
-                    yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": params}
-                    
-                    try:
-                        logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-                        tool_result = await server.call(action_name, params)
-                        logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
+                    # Execute ALL tool calls with immediate streaming
+                    for i, tc in enumerate(tool_calls):
+                        func = tc.get("function", {})
+                        tool_name = func.get("name")
+                        raw_args = func.get("arguments")
                         
-                        results["calls"].append({
-                            "server": tool_name, 
-                            "action": action_name, 
-                            "params": params, 
-                            "result": tool_result
-                        })
+                        # Parse arguments
+                        params: Dict[str, Any] = {}
+                        if isinstance(raw_args, str) and raw_args:
+                            try:
+                                params = json.loads(raw_args)
+                            except json.JSONDecodeError:
+                                logger.warning("Failed to parse tool arguments: %s", raw_args)
+                                params = {}
+                        elif isinstance(raw_args, dict):
+                            params = raw_args
                         
-                        # Emit MCP result event immediately
-                        yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result}
-                        
-                        # Add tool result to conversation
-                        tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-                        tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-                        messages.append(ChatMessage(
-                            role="tool", 
-                            tool_call_id=tool_call_id, 
-                            name=tool_name, 
-                            content=tool_msg_content
-                        ))
-                        
-                        # If there were multiple tool calls, inform about skipping others
-                        if len(tool_calls) > 1:
-                            skipped_calls = [tc.get("function", {}).get("name") for tc in tool_calls[1:]]
+                        if not tool_name or tool_name not in available_tools:
+                            logger.warning("Unknown tool requested: %s", tool_name)
+                            yield {"type": "error", "message": f"Unknown tool: {tool_name}"}
+                            # Add error result for this specific tool call
+                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                             messages.append(ChatMessage(
-                                role="assistant", 
-                                content=f"Note: I executed {tool_name} and skipped {len(tool_calls)-1} other tool calls: {', '.join(skipped_calls)}. I'll make one tool call at a time for clarity."
+                                role="tool", 
+                                tool_call_id=tool_call_id,
+                                name=tool_name or "unknown",
+                                content=json.dumps({"error": f"Tool '{tool_name}' is not available."})
+                            ))
+                            continue
+                        
+                        # Get action name and validate
+                        server = self.registry.get(tool_name)
+                        action_name = params.get("action") or params.get("tool") or server.get_default_action()
+                        
+                        # Validate action against server schema
+                        schema = server.get_schema()
+                        valid_actions = []
+                        if "function" in schema and "parameters" in schema["function"]:
+                            action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
+                            valid_actions = action_prop.get("enum", [])
+                        
+                        if valid_actions and action_name not in valid_actions:
+                            logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
+                                         action_name, tool_name, valid_actions)
+                            action_name = server.get_default_action()
+                            params["action"] = action_name
+                        
+                        # Emit MCP call event immediately
+                        yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": params}
+                        
+                        try:
+                            logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
+                            tool_result = await server.call(action_name, params)
+                            logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
+                            
+                            results["calls"].append({
+                                "server": tool_name, 
+                                "action": action_name, 
+                                "params": params, 
+                                "result": tool_result
+                            })
+                            
+                            # Emit MCP result event immediately
+                            yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result}
+                            
+                            # Add tool result to conversation
+                            tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
+                            tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
+                            messages.append(ChatMessage(
+                                role="tool", 
+                                tool_call_id=tool_call_id, 
+                                name=tool_name, 
+                                content=tool_msg_content
                             ))
                             
-                    except Exception as e:
-                        logger.exception("Tool %s invocation failed: %s", tool_name, e)
-                        results.setdefault("errors", []).append(str(e))
-                        yield {"type": "error", "message": f"Tool {tool_name} failed: {e}"}
-                        messages.append(ChatMessage(
-                            role="assistant", 
-                            content=f"Error calling tool {tool_name}: {e}"
-                        ))
+                        except Exception as e:
+                            logger.exception("Tool %s invocation failed: %s", tool_name, e)
+                            results.setdefault("errors", []).append(str(e))
+                            yield {"type": "error", "message": f"Tool {tool_name} failed: {e}"}
+                            # Add error result for this specific tool call
+                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            messages.append(ChatMessage(
+                                role="tool", 
+                                tool_call_id=tool_call_id,
+                                name=tool_name,
+                                content=json.dumps({"error": str(e)})
+                            ))
+                            messages.append(ChatMessage(
+                                role="assistant", 
+                                content=f"Error calling tool {tool_name}: {e}"
+                            ))
 
                 # Check for final content
                 elif content:

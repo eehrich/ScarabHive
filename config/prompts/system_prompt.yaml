@@ -6,7 +6,9 @@ system_prompt: |
    When tool results are provided as observations, synthesize them into the final answer.
    
    Important constraints:
-   - You can make a maximum of {{ max_steps }} tool calls to complete this task
+   - make as many tool calls as needed to complete the task
+   - make as many tool calls as possible within one turn, to parallelize execution
+   - You can make a maximum of {{ max_steps }} tool calls / assistant turns to complete this task
    - Plan your tool usage efficiently to stay within this limit
    - If you need more steps, prioritize the most important tool calls
    

@@ -17,6 +17,9 @@ class WebScraperServer(MCPServer):
         timeout = float(params.get("timeout", 20))
         include_html = bool(params.get("include_html", False))
         max_chars = int(params.get("max_chars", 0))
+        extract_tables = bool(params.get("extract_tables", False))
+        extract_forms = bool(params.get("extract_forms", False))
+        extract_lists = bool(params.get("extract_lists", False))
         user_agent = params.get(
             "user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
@@ -77,6 +80,10 @@ class WebScraperServer(MCPServer):
         # Extract readable text and title
         title: str | None = None
         text: str = ""
+        tables: list[dict[str, Any]] = []
+        forms: list[dict[str, Any]] = []
+        lists: list[dict[str, Any]] = []
+        
         try:
             from bs4 import BeautifulSoup  # type: ignore
             # Prefer lxml if available, else fallback to html.parser
@@ -86,7 +93,16 @@ class WebScraperServer(MCPServer):
             except Exception:
                 parser = "html.parser"
             soup = BeautifulSoup(html, parser)
-            # Remove scripts/styles
+            
+            # Extract structured data before removing scripts/styles
+            if extract_tables:
+                tables = self._extract_tables(soup)
+            if extract_forms:
+                forms = self._extract_forms(soup)
+            if extract_lists:
+                lists = self._extract_lists(soup)
+            
+            # Remove scripts/styles for text extraction
             for tag in soup(["script", "style", "noscript"]):
                 tag.decompose()
             title = soup.title.string.strip() if soup.title and soup.title.string else None
@@ -113,9 +129,123 @@ class WebScraperServer(MCPServer):
             "title": title,
             "text": text,
         }
+        
+        # Add structured data if requested
+        if extract_tables and tables:
+            result["tables"] = tables
+        if extract_forms and forms:
+            result["forms"] = forms
+        if extract_lists and lists:
+            result["lists"] = lists
+        
         if include_html:
             result["html"] = html
         return result
+
+    def _extract_tables(self, soup) -> list[dict[str, Any]]:
+        """Extract structured table data from HTML."""
+        tables = []
+        for i, table in enumerate(soup.find_all("table")):
+            table_data = {
+                "table_id": i,
+                "headers": [],
+                "rows": [],
+                "caption": None,
+                "summary": None
+            }
+            
+            # Extract caption
+            caption = table.find("caption")
+            if caption:
+                table_data["caption"] = caption.get_text(strip=True)
+            
+            # Extract headers
+            header_row = table.find("tr")
+            if header_row:
+                headers = header_row.find_all(["th", "td"])
+                table_data["headers"] = [h.get_text(strip=True) for h in headers]
+            
+            # Extract data rows
+            for row in table.find_all("tr")[1:]:  # Skip header row
+                cells = row.find_all(["td", "th"])
+                row_data = [cell.get_text(strip=True) for cell in cells]
+                if row_data:  # Only add non-empty rows
+                    table_data["rows"].append(row_data)
+            
+            # Add summary info
+            table_data["summary"] = f"Table with {len(table_data['headers'])} columns and {len(table_data['rows'])} rows"
+            
+            if table_data["headers"] or table_data["rows"]:
+                tables.append(table_data)
+        
+        return tables
+
+    def _extract_forms(self, soup) -> list[dict[str, Any]]:
+        """Extract structured form data from HTML."""
+        forms = []
+        for i, form in enumerate(soup.find_all("form")):
+            form_data = {
+                "form_id": i,
+                "action": form.get("action", ""),
+                "method": form.get("method", "GET").upper(),
+                "fields": [],
+                "summary": None
+            }
+            
+            # Extract form fields
+            for field in form.find_all(["input", "textarea", "select"]):
+                field_info = {
+                    "type": field.name,
+                    "name": field.get("name", ""),
+                    "id": field.get("id", ""),
+                    "placeholder": field.get("placeholder", ""),
+                    "required": field.has_attr("required"),
+                    "value": field.get("value", "")
+                }
+                
+                if field.name == "input":
+                    field_info["input_type"] = field.get("type", "text")
+                elif field.name == "select":
+                    options = [opt.get_text(strip=True) for opt in field.find_all("option")]
+                    field_info["options"] = options
+                
+                form_data["fields"].append(field_info)
+            
+            form_data["summary"] = f"Form with {len(form_data['fields'])} fields"
+            forms.append(form_data)
+        
+        return forms
+
+    def _extract_lists(self, soup) -> list[dict[str, Any]]:
+        """Extract structured list data from HTML."""
+        lists = []
+        for i, list_elem in enumerate(soup.find_all(["ul", "ol", "dl"])):
+            list_data = {
+                "list_id": i,
+                "type": list_elem.name,
+                "items": [],
+                "summary": None
+            }
+            
+            if list_elem.name in ["ul", "ol"]:
+                items = list_elem.find_all("li", recursive=False)
+                list_data["items"] = [item.get_text(strip=True) for item in items]
+            elif list_elem.name == "dl":
+                # Definition lists
+                items = []
+                for dt in list_elem.find_all("dt"):
+                    term = dt.get_text(strip=True)
+                    definition = ""
+                    dd = dt.find_next_sibling("dd")
+                    if dd:
+                        definition = dd.get_text(strip=True)
+                    items.append({"term": term, "definition": definition})
+                list_data["items"] = items
+            
+            list_data["summary"] = f"{list_elem.name.upper()} list with {len(list_data['items'])} items"
+            lists.append(list_data)
+        
+        return lists
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for web scraper."""
@@ -123,7 +253,7 @@ class WebScraperServer(MCPServer):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": "Fetch and read a web page by URL to extract its text content.",
+                "description": "Fetch and read a web page by URL to extract text content and structured data (tables, forms, lists). Enhanced with structured data extraction to reduce parsing errors and improve data quality.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -132,6 +262,9 @@ class WebScraperServer(MCPServer):
                         "timeout": {"type": "number", "default": 20, "description": "Request timeout in seconds"},
                         "include_html": {"type": "boolean", "default": False, "description": "Include raw HTML in response"},
                         "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length"},
+                        "extract_tables": {"type": "boolean", "default": False, "description": "Extract structured table data with headers and rows"},
+                        "extract_forms": {"type": "boolean", "default": False, "description": "Extract form structure with fields and validation info"},
+                        "extract_lists": {"type": "boolean", "default": False, "description": "Extract structured list data (ul, ol, dl)"},
                         "user_agent": {"type": "string", "description": "Custom User-Agent header for the request"},
                     },
                     "required": ["url"],
