@@ -28,26 +28,33 @@ class DateTimeServer(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Execute datetime operations."""
         
-        if tool == "current":
-            return await self._get_current_datetime(params)
-        elif tool == "format":
-            return await self._format_datetime(params)
-        elif tool == "parse":
-            return await self._parse_datetime(params)
-        elif tool == "add":
-            return await self._add_time(params)
-        elif tool == "subtract":
-            return await self._subtract_time(params)
-        elif tool == "convert_timezone":
-            return await self._convert_timezone(params)
-        elif tool == "timestamp":
-            return await self._unix_timestamp(params)
-        elif tool == "calendar_info":
-            return await self._calendar_info(params)
-        elif tool == "business_days":
-            return await self._business_days(params)
-        else:
-            raise ValueError(f"Unknown tool: {tool}")
+        try:
+            if tool == "current":
+                return await self._get_current_datetime(params)
+            elif tool == "format":
+                return await self._format_datetime(params)
+            elif tool == "parse":
+                return await self._parse_datetime(params)
+            elif tool == "add":
+                return await self._add_time(params)
+            elif tool == "subtract":
+                return await self._subtract_time(params)
+            elif tool == "convert_timezone":
+                return await self._convert_timezone(params)
+            elif tool == "timestamp":
+                return await self._unix_timestamp(params)
+            elif tool == "calendar_info":
+                return await self._calendar_info(params)
+            elif tool == "business_days":
+                return await self._business_days(params)
+            elif tool == "day_of_week":
+                return await self._day_of_week(params)
+            elif tool == "days_until":
+                return await self._days_until(params)
+            else:
+                return {"status": "error", "error": f"Unknown action: {tool}"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
     async def _get_current_datetime(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get current date and time information."""
@@ -60,7 +67,10 @@ class DateTimeServer(MCPServer):
             elif timezone_str.upper() == "LOCAL":
                 tz = None  # Local timezone
             else:
-                tz = pytz.timezone(timezone_str)
+                try:
+                    tz = pytz.timezone(timezone_str)
+                except pytz.UnknownTimeZoneError:
+                    return {"status": "error", "error": f"Invalid timezone: {timezone_str}"}
             
             if tz:
                 now = datetime.now(tz)
@@ -68,6 +78,8 @@ class DateTimeServer(MCPServer):
                 now = datetime.now()
             
             result = {
+                "status": "success",
+                "current_time": now.isoformat(),
                 "timestamp": now.isoformat(),
                 "timezone": str(now.tzinfo) if now.tzinfo else "Local",
                 "year": now.year,
@@ -100,7 +112,7 @@ class DateTimeServer(MCPServer):
             return result
             
         except Exception as e:
-            return {"error": str(e), "timezone_requested": timezone_str}
+            return {"status": "error", "error": str(e), "timezone_requested": timezone_str}
 
     async def _format_datetime(self, params: dict[str, Any]) -> dict[str, Any]:
         """Format a given datetime string."""
@@ -109,7 +121,7 @@ class DateTimeServer(MCPServer):
         input_format = params.get("input_format", "auto")
         
         if not datetime_str:
-            return {"error": "Missing required parameter: datetime"}
+            return {"status": "error", "error": "Missing required parameter: datetime"}
         
         try:
             # Parse input datetime
@@ -137,6 +149,7 @@ class DateTimeServer(MCPServer):
                 dt = datetime.strptime(datetime_str, input_format)
             
             return {
+                "status": "success",
                 "original": datetime_str,
                 "formatted": dt.strftime(format_str),
                 "parsed_datetime": dt.isoformat(),
@@ -152,14 +165,14 @@ class DateTimeServer(MCPServer):
             }
             
         except Exception as e:
-            return {"error": str(e), "input": datetime_str}
+            return {"status": "error", "error": str(e), "input": datetime_str}
 
     async def _parse_datetime(self, params: dict[str, Any]) -> dict[str, Any]:
         """Parse datetime from string with detailed information."""
-        datetime_str = params.get("datetime", "")
+        datetime_str = params.get("datetime_string", params.get("datetime", ""))
         
         if not datetime_str:
-            return {"error": "Missing required parameter: datetime"}
+            return {"status": "error", "error": "Missing required parameter: datetime_string or datetime"}
         
         try:
             # Try parsing with various formats
@@ -189,11 +202,13 @@ class DateTimeServer(MCPServer):
                     continue
             
             if dt is None:
-                return {"error": f"Could not parse datetime: {datetime_str}"}
+                return {"status": "error", "error": f"Could not parse datetime: {datetime_str}"}
             
             return {
+                "status": "success",
                 "original": datetime_str,
                 "parsed_format": used_format,
+                "parsed_datetime": dt.isoformat(),
                 "iso_format": dt.isoformat(),
                 "unix_timestamp": int(dt.timestamp()),
                 "components": {
@@ -213,7 +228,7 @@ class DateTimeServer(MCPServer):
             }
             
         except Exception as e:
-            return {"error": str(e), "input": datetime_str}
+            return {"status": "error", "error": str(e), "input": datetime_str}
 
     async def _add_time(self, params: dict[str, Any]) -> dict[str, Any]:
         """Add time to a datetime."""
@@ -260,8 +275,10 @@ class DateTimeServer(MCPServer):
                 )
             
             return {
+                "status": "success",
                 "original": base_datetime or "current time",
                 "result": result_dt.isoformat(),
+                "result_datetime": result_dt.isoformat(),
                 "added": {
                     "years": years,
                     "months": months,
@@ -275,7 +292,7 @@ class DateTimeServer(MCPServer):
             }
             
         except Exception as e:
-            return {"error": str(e), "input": base_datetime}
+            return {"status": "error", "error": str(e), "input": base_datetime}
 
     async def _subtract_time(self, params: dict[str, Any]) -> dict[str, Any]:
         """Subtract time from a datetime."""
@@ -325,6 +342,7 @@ class DateTimeServer(MCPServer):
             converted_dt = dt.astimezone(target_tz)
             
             return {
+                "status": "success",
                 "original": datetime_str or "current time",
                 "from_timezone": from_tz,
                 "to_timezone": to_tz,
@@ -335,7 +353,7 @@ class DateTimeServer(MCPServer):
             }
             
         except Exception as e:
-            return {"error": str(e), "input": datetime_str, "from_tz": from_tz, "to_tz": to_tz}
+            return {"status": "error", "error": str(e), "input": datetime_str, "from_tz": from_tz, "to_tz": to_tz}
 
     async def _unix_timestamp(self, params: dict[str, Any]) -> dict[str, Any]:
         """Convert between datetime and Unix timestamp."""
@@ -347,6 +365,7 @@ class DateTimeServer(MCPServer):
                 # Convert from Unix timestamp to datetime
                 dt = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
                 return {
+                    "status": "success",
                     "timestamp": timestamp,
                     "datetime": dt.isoformat(),
                     "human_readable": dt.strftime("%A, %B %d, %Y at %I:%M:%S %p UTC"),
@@ -370,6 +389,7 @@ class DateTimeServer(MCPServer):
                     dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
                 
                 return {
+                    "status": "success",
                     "datetime": datetime_str or "current time",
                     "timestamp": int(dt.timestamp()),
                     "timestamp_milliseconds": int(dt.timestamp() * 1000),
@@ -377,14 +397,19 @@ class DateTimeServer(MCPServer):
                 }
                 
         except Exception as e:
-            return {"error": str(e), "input": {"datetime": datetime_str, "timestamp": timestamp}}
+            return {"status": "error", "error": str(e), "input": {"datetime": datetime_str, "timestamp": timestamp}}
 
     async def _calendar_info(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get calendar information for a date."""
         datetime_str = params.get("datetime", "")
+        year = params.get("year", None)
+        month = params.get("month", None)
         
         try:
-            if not datetime_str:
+            if year and month:
+                # Create a datetime for the first day of the specified month/year
+                dt = datetime(year, month, 1)
+            elif not datetime_str:
                 dt = datetime.now()
             else:
                 dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
@@ -392,6 +417,7 @@ class DateTimeServer(MCPServer):
             year, week, weekday = dt.isocalendar()
             
             return {
+                "status": "success",
                 "date": dt.strftime("%Y-%m-%d"),
                 "year": dt.year,
                 "month": dt.month,
@@ -412,7 +438,7 @@ class DateTimeServer(MCPServer):
             }
             
         except Exception as e:
-            return {"error": str(e), "input": datetime_str}
+            return {"status": "error", "error": str(e), "input": datetime_str}
 
     async def _business_days(self, params: dict[str, Any]) -> dict[str, Any]:
         """Calculate business days between dates or add business days."""
@@ -443,6 +469,7 @@ class DateTimeServer(MCPServer):
                         days_added += 1
                 
                 return {
+                    "status": "success",
                     "start_date": start_date or "current date",
                     "business_days_added": add_days,
                     "result_date": current_date.isoformat(),
@@ -470,6 +497,7 @@ class DateTimeServer(MCPServer):
                     current_date += timedelta(days=1)
                 
                 return {
+                    "status": "success",
                     "start_date": start_date,
                     "end_date": end_date,
                     "business_days_between": business_days,
@@ -478,10 +506,63 @@ class DateTimeServer(MCPServer):
                 }
             
             else:
-                return {"error": "Either end_date or add_business_days parameter required"}
+                return {"status": "error", "error": "Either end_date or add_business_days parameter required"}
                 
         except Exception as e:
-            return {"error": str(e), "input": {"start_date": start_date, "end_date": end_date, "add_days": add_days}}
+            return {"status": "error", "error": str(e), "input": {"start_date": start_date, "end_date": end_date, "add_days": add_days}}
+
+    async def _day_of_week(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Get the day of week for a given date."""
+        datetime_str = params.get("datetime", "")
+        
+        try:
+            if not datetime_str:
+                dt = datetime.now()
+            else:
+                dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+            
+            return {
+                "status": "success",
+                "datetime": datetime_str or "current time",
+                "day_of_week": dt.strftime("%A"),
+                "weekday_number": dt.weekday(),  # 0=Monday, 6=Sunday
+                "is_weekend": dt.weekday() >= 5
+            }
+            
+        except Exception as e:
+            return {"status": "error", "error": str(e), "input": datetime_str}
+
+    async def _days_until(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Calculate days until a target date."""
+        target_date = params.get("target_date", "")
+        start_date = params.get("start_date", "")
+        
+        try:
+            if not target_date:
+                return {"status": "error", "error": "Missing required parameter: target_date"}
+            
+            if not start_date:
+                start_dt = datetime.now().date()
+            else:
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
+            
+            target_dt = datetime.fromisoformat(target_date.replace('Z', '+00:00')).date()
+            
+            delta = target_dt - start_dt
+            days = delta.days
+            
+            return {
+                "status": "success",
+                "start_date": start_date or "current date",
+                "target_date": target_date,
+                "days": days,
+                "is_future": days > 0,
+                "is_past": days < 0,
+                "is_today": days == 0
+            }
+            
+        except Exception as e:
+            return {"status": "error", "error": str(e), "input": {"target_date": target_date, "start_date": start_date}}
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for datetime operations."""
@@ -495,8 +576,8 @@ class DateTimeServer(MCPServer):
                     "properties": {
                         "action": {
                             "type": "string", 
-                            "enum": ["current", "format", "parse", "add", "subtract", "convert_timezone", "timestamp", "calendar_info", "business_days"],
-                            "description": "DateTime operation: 'current' (get current date/time), 'format' (format datetime), 'parse' (parse datetime string), 'add'/'subtract' (date arithmetic), 'convert_timezone' (timezone conversion), 'timestamp' (Unix timestamp conversion), 'calendar_info' (calendar details), 'business_days' (business day calculations)"
+                            "enum": ["current", "format", "parse", "add", "subtract", "convert_timezone", "timestamp", "calendar_info", "business_days", "day_of_week", "days_until"],
+                            "description": "DateTime operation: 'current' (get current date/time), 'format' (format datetime), 'parse' (parse datetime string), 'add'/'subtract' (date arithmetic), 'convert_timezone' (timezone conversion), 'timestamp' (Unix timestamp conversion), 'calendar_info' (calendar details), 'business_days' (business day calculations), 'day_of_week' (get day of week), 'days_until' (calculate days until target date)"
                         },
                         "timezone": {
                             "type": "string",
@@ -548,6 +629,22 @@ class DateTimeServer(MCPServer):
                         "add_business_days": {
                             "type": "integer",
                             "description": "Number of business days to add to start_date"
+                        },
+                        "datetime_string": {
+                            "type": "string",
+                            "description": "Datetime string to parse (alternative to 'datetime' parameter)"
+                        },
+                        "target_date": {
+                            "type": "string",
+                            "description": "Target date for days_until calculation"
+                        },
+                        "year": {
+                            "type": "integer",
+                            "description": "Year for calendar_info (use with month)"
+                        },
+                        "month": {
+                            "type": "integer",
+                            "description": "Month for calendar_info (use with year)"
                         }
                     },
                     "required": [],

@@ -37,16 +37,18 @@ class TestWeatherServer:
         """Test weather server with missing location."""
         server = WeatherServer("weather", {}, True)
         
-        with pytest.raises(ValueError, match="Missing required parameter: location"):
-            await server.call("forecast", {})
+        result = await server.call("forecast", {})
+        assert result["status"] == "error"
+        assert "Missing required parameter: location" in result["error"]
     
     @pytest.mark.asyncio
     async def test_weather_server_invalid_action(self):
         """Test weather server with invalid action."""
         server = WeatherServer("weather", {}, True)
         
-        with pytest.raises(ValueError, match="Unknown tool"):
-            await server.call("invalid_action", {"location": "Berlin"})
+        result = await server.call("invalid_action", {"location": "Berlin"})
+        assert result["status"] == "error"
+        assert "Unknown tool" in result["error"]
 
 
 class TestDateTimeServer:
@@ -86,8 +88,9 @@ class TestDateTimeServer:
         """Test datetime server with invalid action."""
         server = DateTimeServer("datetime", {}, True)
         
-        with pytest.raises(ValueError, match="Unknown tool"):
-            await server.call("invalid_action", {})
+        result = await server.call("invalid_action", {})
+        assert result["status"] == "error"
+        assert "Unknown action" in result["error"]
 
 
 class TestServerIntegration:

@@ -25,11 +25,11 @@ class WeatherServer(MCPServer):
         # All these actions do the same thing: get weather forecast
         supported_actions = ["forecast", "search", "query", "get", "check", "lookup"]
         if tool not in supported_actions:
-            raise ValueError(f"Unknown tool: {tool}. Supported tools: {', '.join(supported_actions)}")
+            return {"status": "error", "error": f"Unknown tool: {tool}. Supported tools: {', '.join(supported_actions)}"}
 
         location = params.get("location", "")
         if not location:
-            raise ValueError("Missing required parameter: location")
+            return {"status": "error", "error": "Missing required parameter: location"}
         
         source = params.get("source", "met.no").lower()  # Default to met.no for better forecast range
         days = min(int(params.get("days", 3)), 7)  # Up to 7 days max
@@ -47,17 +47,27 @@ class WeatherServer(MCPServer):
         
         try:
             if source == "wttr.in":
-                return await self._fetch_wttr(location, days, units)
+                result = await self._fetch_wttr(location, days, units)
             elif source == "weather.gov":
-                return await self._fetch_weather_gov(location, days, units)
+                result = await self._fetch_weather_gov(location, days, units)
             elif source == "met.no":
-                return await self._fetch_met_no(location, days, units)
+                result = await self._fetch_met_no(location, days, units)
             elif source == "marine.weather.gov":
-                return await self._fetch_marine_weather_gov(location, days, units, include_marine)
+                result = await self._fetch_marine_weather_gov(location, days, units, include_marine)
             else:
-                raise ValueError(f"Unsupported weather source: {source}")
+                return {"status": "error", "error": f"Unsupported weather source: {source}"}
+            
+            # Add status to successful results
+            if "error" not in result:
+                result["status"] = "success"
+            else:
+                result["status"] = "error"
+            
+            return result
+            
         except Exception as e:
             return {
+                "status": "error",
                 "error": str(e),
                 "location": location,
                 "source": source,

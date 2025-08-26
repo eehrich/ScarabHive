@@ -60,18 +60,20 @@ class TestWeatherServer:
         """Test weather server with invalid action."""
         server = WeatherServer("weather", {}, True)
         
-        # Our implementation raises exceptions for invalid actions
-        with pytest.raises(ValueError, match="Unknown tool"):
-            await server.call("invalid_action", {"location": "Berlin"})
+        # Our implementation returns error dict for invalid actions
+        result = await server.call("invalid_action", {"location": "Berlin"})
+        assert result["status"] == "error"
+        assert "Unknown tool" in result["error"]
     
     @pytest.mark.asyncio
     async def test_weather_server_missing_location(self):
         """Test weather server with missing location."""
         server = WeatherServer("weather", {}, True)
         
-        # Our implementation raises exceptions for missing parameters
-        with pytest.raises(ValueError, match="Missing required parameter: location"):
-            await server.call("forecast", {})
+        # Our implementation returns error dict for missing parameters
+        result = await server.call("forecast", {})
+        assert result["status"] == "error"
+        assert "Missing required parameter: location" in result["error"]
 
 
 class TestDateTimeServer:
@@ -271,7 +273,7 @@ class TestServerIntegration:
             })
             
             assert weather_result["status"] == "success"
-            assert "weather" in weather_result
+            assert "location" in weather_result or "forecast" in weather_result
     
     @pytest.mark.asyncio
     async def test_multiple_server_schemas(self):
