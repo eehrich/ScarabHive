@@ -75,10 +75,24 @@ prompts:
 
 You can override values using environment variables. For OpenAI, set `llm.provider: openai` and provide `OPENAI_API_KEY`.
 
-## VS Code
-- Python 3.11+
-- Recommended: Install Microsoft Python and Pylance extensions
 - Use provided tasks to run API and tests
+## Copilot / assistant prompts
+
+This repository includes reusable prompt templates you can load into Copilot Chat or other assistant sessions to act like a persistent "system prompt".
+
+- Files: `.prompts/developer_rules.md`, `.prompts/project_objectives.md`, `.prompts/master_system_prompt.md`
+- Intended usage: load `developer_rules.md` and `project_objectives.md` first, then run `master_system_prompt.md` as the primary system prompt. The master prompt enforces running tests, updating `README.md` and tests when behavior changes, and never leaving failing tests.
+
+How to use (Copilot Chat):
+
+1. Open the Copilot Chat prompt file action (e.g., "Chat: New Untitled Prompt File") and paste the contents, or save the files into your `.prompts` folder and use Copilot Chat's prompt file loader if available.
+2. Run the master prompt at the start of a session so the assistant follows the repository rules.
+
+Quick test command (Windows PowerShell):
+```powershell
+python -m pytest -q
+```
+
 
 ## License
 MIT
