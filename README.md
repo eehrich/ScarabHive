@@ -1,29 +1,32 @@
-# Agent System (MCP, Python)
+AgentSystem — Flexible MCP-based Agent Framework (Python)
 
-Flexible AI Agent System using the Model Context Protocol (MCP). Runs locally on Windows 11 without Docker. Provides a FastAPI UI and a CLI. MCP servers are configured via YAML and decoupled behind a simple service interface.
+AgentSystem is a lightweight, pluggable agent framework that uses the Model Context Protocol (MCP) architecture to integrate LLMs, search APIs, and specialized tool servers (e.g., web search, finance, weather, web scraping). The project aims to be runnable locally, test-driven, and accessible via both a CLI and a small FastAPI web UI.
+
+
 
 ## Features
-- Object-oriented Python 3.11+
-- Pluggable MCP servers via YAML
-- Default LLM: Ollama `gpt-oss:20b` (configurable). OpenAI supported.
-- Web search servers: AbstractWebSearch + DuckDuckGo, Yahoo Finance, Twitter scrapes
-- Web search servers: Google Custom Search (optional), AbstractWebSearch + DuckDuckGo, Yahoo Finance, Twitter scrapes
-- LLM Router MCP to other AI models (Ollama/OpenAI)
-- FastAPI agent interface at http://127.0.0.1:8000
-- No Docker required
+- Platform: Python 3.11+ (PowerShell examples for Windows), cross-platform compatible
+- Pluggable MCP servers configured via YAML (`config/agent.yaml`)
+- LLM adapters: Ollama, OpenAI (configurable)
+- Built-in servers: web search, Yahoo Finance, weather, web scraping, Twitter, and more
+- Interfaces: CLI and FastAPI HTTP API
+- Test-first development: unit tests with pytest
 
 ## Quickstart (Windows PowerShell)
 ```powershell
-# Create and activate venv
+# 1) Create and activate virtual environment
 python -m venv .venv; . .venv/Scripts/Activate.ps1
 
-# Install
+# 2) Install the project (editable)
 pip install -U pip; pip install -e .
 
-# Run API
+# 3) Run tests
+python -m pytest -q
+
+# 4) Start the API (use a separate terminal)
 agent-api
 
-# Or run CLI
+# or: CLI
 agent-cli --help
 ```
 

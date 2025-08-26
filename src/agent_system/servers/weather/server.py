@@ -6,6 +6,7 @@ import json
 from urllib.parse import quote
 
 from ...mcp.base import MCPServer
+from .sources import fetch_wttr, fetch_weather_gov, fetch_marine_weather_gov, fetch_met_no
 
 
 class WeatherServer(MCPServer):
@@ -47,31 +48,31 @@ class WeatherServer(MCPServer):
         
         try:
             if source == "wttr.in":
-                result = await self._fetch_wttr(location, days, units)
+                result = await fetch_wttr(location, days, units, self.ssl_verify)
             elif source == "weather.gov":
-                result = await self._fetch_weather_gov(location, days, units)
+                result = await fetch_weather_gov(location, days, units, self.ssl_verify)
             elif source == "met.no":
-                result = await self._fetch_met_no(location, days, units)
+                result = await fetch_met_no(location, days, units, self.ssl_verify)
             elif source == "marine.weather.gov":
-                result = await self._fetch_marine_weather_gov(location, days, units, include_marine)
+                result = await fetch_marine_weather_gov(location, days, units, self.ssl_verify, include_marine)
             else:
                 return {"status": "error", "error": f"Unsupported weather source: {source}"}
-            
+
             # Add status to successful results
             if "error" not in result:
                 result["status"] = "success"
             else:
                 result["status"] = "error"
-            
+
             return result
-            
+
         except Exception as e:
             return {
                 "status": "error",
                 "error": str(e),
                 "location": location,
                 "source": source,
-                "message": f"Failed to fetch weather data from {source}"
+                "message": f"Failed to fetch weather data from {source}",
             }
 
     async def _fetch_wttr(self, location: str, days: int, units: str) -> dict[str, Any]:
