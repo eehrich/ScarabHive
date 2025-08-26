@@ -9,30 +9,60 @@ from ...mcp.base import MCPServer
 class LLMRouterServer(MCPServer):
     def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
         super().__init__(name, config, ssl_verify=ssl_verify)
-        cfg = config or {}
-        provider = cfg.get("default_provider", "ollama")
-        model = cfg.get("model", "gpt-oss:20b")
-        api_key = cfg.get("openai_api_key")
-        ollama_url = cfg.get("ollama_url")
-        # remaining config values and client creation must be inside __init__
-        context_window = cfg.get("context_window")
-        ollama_mode = cfg.get("ollama_mode")
-        request_timeout = cfg.get("request_timeout")
-        self._client = make_llm(
+        self.config = config or {}
+        # Store base configuration but don't create a fixed client
+        self.default_provider = self.config.get("default_provider", "openai")
+        self.default_model = self.config.get("model", "gpt-5-mini")
+        self.openai_api_key = self.config.get("openai_api_key")
+        self.ollama_url = self.config.get("ollama_url")
+        self.context_window = self.config.get("context_window")
+        self.ollama_mode = self.config.get("ollama_mode")
+        self.request_timeout = self.config.get("request_timeout")
+
+    def _make_client(self, provider: str | None = None, model: str | None = None):
+        """Create an LLM client with specified or default parameters."""
+        provider = provider or self.default_provider
+        model = model or self.default_model
+        return make_llm(
             provider,
             model,
-            api_key,
-            ollama_url,
-            context_window,
-            ollama_mode,
-            request_timeout,
+            self.openai_api_key,
+            self.ollama_url,
+            self.context_window,
+            self.ollama_mode,
+            self.request_timeout,
         )
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool == "chat":
-            messages = [ChatMessage(**m) for m in params.get("messages", [])]
-            content = await self._client.chat(messages)
-            return {"content": content}
+            # Extract provider and model from parameters
+            provider = params.get("provider")
+            model = params.get("model")
+            
+            # Create appropriate client
+            client = self._make_client(provider, model)
+            
+            # Handle both message formats
+            if "messages" in params:
+                messages = [ChatMessage(**m) for m in params["messages"]]
+            elif "message" in params:
+                messages = [ChatMessage(role="user", content=params["message"])]
+            else:
+                return {"error": "No message or messages provided"}
+            
+            try:
+                content = await client.chat(messages)
+                return {
+                    "content": content,
+                    "provider": provider or self.default_provider,
+                    "model": model or self.default_model
+                }
+            except Exception as e:
+                return {
+                    "error": str(e),
+                    "provider": provider or self.default_provider,
+                    "model": model or self.default_model
+                }
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_schema(self) -> dict[str, Any]:
