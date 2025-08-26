@@ -1,0 +1,283 @@
+"""
+Tests for WebResearchAgent functionality.
+"""
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from agent_system.agent.web_research_agent import WebResearchAgent, create_web_research_agent
+from agent_system.agent.sub_agent import SubAgent
+
+
+class TestWebResearchAgent:
+    """Test WebResearchAgent functionality."""
+    
+    def test_create_web_research_agent(self):
+        """Test web research agent creation."""
+        agent = create_web_research_agent("test_researcher")
+        
+        assert isinstance(agent, SubAgent)
+        assert agent.name == "test_researcher"
+        assert "web research agent" in agent.description.lower()
+        
+    def test_create_web_research_agent_custom_config(self):
+        """Test web research agent with custom configuration."""
+        config = {"description": "Custom research agent"}
+        agent = create_web_research_agent("custom_researcher", config)
+        
+        assert agent.description == "Custom research agent"
+        assert agent.name == "custom_researcher"
+        
+    def test_web_research_agent_initialization(self):
+        """Test WebResearchAgent initialization."""
+        agent = WebResearchAgent("test_web_researcher")
+        
+        assert isinstance(agent, SubAgent)
+        assert agent.name == "test_web_researcher"
+        assert "web research" in agent.description.lower()
+        
+    def test_web_research_agent_custom_name_and_config(self):
+        """Test WebResearchAgent with custom name and config."""
+        config = {"description": "Specialized research bot"}
+        agent = WebResearchAgent("research_bot", config)
+        
+        assert agent.name == "research_bot"
+        assert agent.description == "Specialized research bot"
+        
+    def test_get_enhanced_schema(self):
+        """Test that WebResearchAgent has enhanced schema with research actions."""
+        agent = WebResearchAgent("test_researcher")
+        schema = agent.get_schema()
+        
+        assert schema["type"] == "function"
+        assert schema["function"]["name"] == "test_researcher"
+        
+        # Check for specialized actions
+        actions = schema["function"]["parameters"]["properties"]["action"]["enum"]
+        assert "research" in actions
+        assert "fact_check" in actions
+        assert "compare_sources" in actions
+        assert "run" in actions  # Standard actions still available
+        
+        # Check for specialized parameters
+        props = schema["function"]["parameters"]["properties"]
+        assert "topic" in props
+        assert "claim" in props
+        assert "source_urls" in props
+        assert "max_results" in props
+        
+    @pytest.mark.asyncio
+    async def test_research_action_success(self):
+        """Test successful research action."""
+        agent = WebResearchAgent("test_researcher")
+        
+        # Mock the underlying agent's run method
+        agent.agent = AsyncMock()
+        agent.agent.run.return_value = {
+            "task": "research task",
+            "calls": [
+                {"server": "duckduckgo_search", "result": "search results"},
+                {"server": "web_scraper", "result": "scraped content"}
+            ],
+            "summary": "Research completed successfully"
+        }
+        
+        result = await agent.research("artificial intelligence", max_results=3)
+        
+        assert result["status"] == "success"
+        assert result["sub_agent"] == "test_researcher"
+        assert "artificial intelligence" in str(agent.agent.run.call_args)
+        assert "3" in str(agent.agent.run.call_args) or "max_results" in str(agent.agent.run.call_args)
+        
+    @pytest.mark.asyncio
+    async def test_fact_check_action_success(self):
+        """Test successful fact-check action."""
+        agent = WebResearchAgent("fact_checker")
+        
+        # Mock the underlying agent
+        agent.agent = AsyncMock()
+        agent.agent.run.return_value = {
+            "summary": "Fact-check completed",
+            "calls": [{"server": "duckduckgo_search", "result": "verification data"}]
+        }
+        
+        result = await agent.fact_check("The Earth is flat")
+        
+        assert result["status"] == "success"
+        assert "The Earth is flat" in str(agent.agent.run.call_args)
+        agent.agent.run.assert_called_once()
+        
+    @pytest.mark.asyncio
+    async def test_compare_sources_action_success(self):
+        """Test successful compare sources action."""
+        agent = WebResearchAgent("source_comparer")
+        
+        # Mock the underlying agent
+        agent.agent = AsyncMock()
+        agent.agent.run.return_value = {
+            "summary": "Source comparison completed",
+            "calls": [{"server": "web_scraper", "result": "scraped multiple sources"}]
+        }
+        
+        urls = ["https://example1.com", "https://example2.com"]
+        result = await agent.compare_sources("climate change", urls)
+        
+        assert result["status"] == "success"
+        assert "climate change" in str(agent.agent.run.call_args)
+        assert "example1.com" in str(agent.agent.run.call_args)
+        assert "example2.com" in str(agent.agent.run.call_args)
+        
+    @pytest.mark.asyncio
+    async def test_call_research_action(self):
+        """Test call method with research action."""
+        agent = WebResearchAgent("test_agent")
+        agent.agent = AsyncMock()
+        agent.agent.run.return_value = {"summary": "research done"}
+        
+        result = await agent.call("research", {"topic": "quantum computing", "max_results": 7})
+        
+        assert result["status"] == "success"
+        agent.agent.run.assert_called_once()
+        
+    @pytest.mark.asyncio
+    async def test_call_fact_check_action(self):
+        """Test call method with fact_check action."""
+        agent = WebResearchAgent("fact_checker")
+        agent.agent = AsyncMock()
+        agent.agent.run.return_value = {"summary": "fact checked"}
+        
+        result = await agent.call("fact_check", {"claim": "Test claim"})
+        
+        assert result["status"] == "success"
+        agent.agent.run.assert_called_once()
+        
+    @pytest.mark.asyncio
+    async def test_call_compare_sources_action(self):
+        """Test call method with compare_sources action."""
+        agent = WebResearchAgent("comparer")
+        agent.agent = AsyncMock()
+        agent.agent.run.return_value = {"summary": "sources compared"}
+        
+        params = {
+            "topic": "renewable energy",
+            "source_urls": ["https://site1.com", "https://site2.com"]
+        }
+        result = await agent.call("compare_sources", params)
+        
+        assert result["status"] == "success"
+        agent.agent.run.assert_called_once()
+        
+    @pytest.mark.asyncio
+    async def test_call_standard_action_fallback(self):
+        """Test that standard actions fall back to parent implementation."""
+        agent = WebResearchAgent("standard_agent")
+        agent.agent = AsyncMock()
+        agent.agent.run.return_value = {"summary": "standard task done"}
+        
+        # Mock the parent call method
+        original_call = SubAgent.call
+        SubAgent.call = AsyncMock(return_value={"status": "success", "summary": "parent called"})
+        
+        try:
+            result = await agent.call("run", {"task": "general task"})
+            assert result["status"] == "success"
+            SubAgent.call.assert_called_once_with("run", {"task": "general task"})
+        finally:
+            # Restore original method
+            SubAgent.call = original_call
+            
+    @pytest.mark.asyncio
+    async def test_call_research_missing_topic(self):
+        """Test research action with missing topic parameter."""
+        agent = WebResearchAgent("error_agent")
+        
+        result = await agent.call("research", {})
+        
+        assert result["status"] == "error"
+        assert "Missing required parameter 'topic'" in result["error"]
+        
+    @pytest.mark.asyncio
+    async def test_call_fact_check_missing_claim(self):
+        """Test fact_check action with missing claim parameter."""
+        agent = WebResearchAgent("error_agent")
+        
+        result = await agent.call("fact_check", {})
+        
+        assert result["status"] == "error"
+        assert "Missing required parameter 'claim'" in result["error"]
+        
+    @pytest.mark.asyncio
+    async def test_call_compare_sources_missing_params(self):
+        """Test compare_sources action with missing parameters."""
+        agent = WebResearchAgent("error_agent")
+        
+        # Missing both topic and source_urls
+        result = await agent.call("compare_sources", {})
+        
+        assert result["status"] == "error"
+        assert "Missing required parameters" in result["error"]
+        
+        # Missing source_urls
+        result = await agent.call("compare_sources", {"topic": "test"})
+        
+        assert result["status"] == "error"
+        assert "Missing required parameters" in result["error"]
+        
+        # Missing topic
+        result = await agent.call("compare_sources", {"source_urls": ["http://example.com"]})
+        
+        assert result["status"] == "error"
+        assert "Missing required parameters" in result["error"]
+        
+    @pytest.mark.asyncio
+    async def test_research_with_agent_exception(self):
+        """Test research action when underlying agent raises exception."""
+        agent = WebResearchAgent("error_agent")
+        agent.agent = AsyncMock()
+        agent.agent.run.side_effect = RuntimeError("Agent failed")
+        
+        result = await agent.research("test topic")
+        
+        assert result["status"] == "error"
+        assert "Agent failed" in result["error"]
+        
+    def test_specialized_agent_has_research_tools(self):
+        """Test that the specialized agent is configured with research tools."""
+        # This test verifies the agent has the right tools configured
+        # We can't easily test the actual bootstrap without integration test
+        # But we can verify the factory function sets up the right configuration
+        
+        agent = create_web_research_agent("tool_test")
+        
+        # The agent should be a SubAgent wrapping an Agent with research tools
+        assert isinstance(agent, SubAgent)
+        assert hasattr(agent, 'agent')  # Has underlying agent
+        assert hasattr(agent.agent, 'registry')  # Agent has registry
+        
+        # Check that the agent was created with research-focused description
+        assert "web research" in agent.description.lower()
+
+
+class TestWebResearchAgentIntegration:
+    """Integration tests for WebResearchAgent with real components."""
+    
+    def test_agent_tools_configuration(self):
+        """Test that WebResearchAgent has correct tools configured."""
+        agent = create_web_research_agent("integration_test")
+        
+        # Check that the underlying agent has the expected tools
+        tools = agent.agent.registry.list()
+        assert "duckduckgo_search" in tools
+        assert "web_scraper" in tools
+        assert len(tools) == 2  # Only research tools
+        
+    def test_agent_configuration_values(self):
+        """Test that WebResearchAgent has correct configuration."""
+        agent = create_web_research_agent("config_test")
+        
+        # Check max_steps is configured for complex research
+        assert agent.agent.agent_config.max_steps == 8
+        
+        # Check enabled servers
+        enabled = agent.agent.agent_config.mcp.enabled_servers
+        assert "duckduckgo_search" in enabled
+        assert "web_scraper" in enabled

@@ -47,7 +47,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Initialize agent and registry
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
-    agent = Agent(config, registry)
+    agent = Agent("api_agent", config, registry)
 
     @app.get("/health")
     def health():

@@ -137,9 +137,9 @@ class TestAgent:
         registry = MCPRegistry()
         
         # Agent should initialize even if LLM fails
-        agent = Agent(config, registry)
+        agent = Agent("test_agent", config, registry)
         assert agent.llm is None
-        assert agent.config is config
+        assert agent.agent_config is config
         assert agent.registry is registry
     
     @pytest.mark.asyncio
@@ -147,7 +147,7 @@ class TestAgent:
         """Test agent run when no LLM is available."""
         config = self.create_test_config()
         registry = MCPRegistry()
-        agent = Agent(config, registry)
+        agent = Agent("test_agent", config, registry)
         
         result = await agent.run("test task")
         
@@ -167,7 +167,7 @@ class TestAgent:
         registry.register("search", server1)
         registry.register("weather", server2)
         
-        agent = Agent(config, registry)
+        agent = Agent("test_agent", config, registry)
         
         # Verify registry is properly set up
         assert agent.registry.list() == ["search", "weather"]
@@ -193,7 +193,7 @@ class TestAgentEventStream:
         """Test event stream when no LLM is available."""
         config = self.create_test_config()
         registry = MCPRegistry()
-        agent = Agent(config, registry)
+        agent = Agent("test_agent", config, registry)
         
         events = []
         async for event in agent.run_events("test task"):
@@ -230,7 +230,7 @@ class TestAgentValidation:
         server = MockMCPServer("test_server")
         registry.register("test", server)
         
-        agent = Agent(config, registry)
+        agent = Agent("test_agent", config, registry)
         
         # Mock the LLM to return a specific tool call
         mock_llm = AsyncMock()
@@ -308,7 +308,7 @@ def test_config():
 @pytest.fixture
 def test_agent(test_config, mock_registry):
     """Fixture providing a test agent."""
-    return Agent(test_config, mock_registry)
+    return Agent("test_agent", test_config, mock_registry)
 
 
 class TestWithFixtures:
@@ -317,7 +317,7 @@ class TestWithFixtures:
     def test_agent_with_fixtures(self, test_agent):
         """Test agent using fixtures."""
         assert test_agent.registry.list() == ["search", "weather"]
-        assert test_agent.config.max_steps == 3
+        assert test_agent.agent_config.max_steps == 3
     
     @pytest.mark.asyncio
     async def test_registry_server_calls(self, mock_registry):

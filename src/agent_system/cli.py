@@ -52,7 +52,7 @@ def main() -> None:
     bootstrap_servers(config, registry)
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
-    agent = Agent(config, registry=registry)
+    agent = Agent("cli_agent", config, registry=registry)
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)

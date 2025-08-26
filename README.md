@@ -7,6 +7,8 @@ AgentSystem is a lightweight, pluggable agent framework that uses the Model Cont
 ## Features
 - Platform: Python 3.11+ (PowerShell examples for Windows), cross-platform compatible
 - Pluggable MCP servers configured via YAML (`config/agent.yaml`)
+- **Sub-Agent Architecture**: Agents can use other agents as tools, enabling hierarchical architectures
+- **Specialized Agents**: Pre-built agents for specific domains (WebResearchAgent, etc.)
 - LLM adapters: Ollama, OpenAI (configurable)
 - Built-in servers: web search, Yahoo Finance, weather, web scraping, Twitter, and more
 - Interfaces: CLI and FastAPI HTTP API
@@ -62,6 +64,14 @@ servers:
   llm_router:
     type: llm_router
     default_provider: ollama
+  # Sub-agents enable hierarchical agent architectures
+  helper_agent:
+    type: sub_agent
+    description: "A specialized helper agent"
+  # Specialized agents for specific domains
+  web_researcher:
+    type: web_research_agent
+    description: "Advanced web research with search and scraping"
 
 network:
   ssl_verify: false  # set to false if your corporate network has untrusted SSL interception

@@ -1,6 +1,6 @@
 """
-Enhanced Agent Core - Supports multiple tool calls per conversation turn
-Processes all tool calls from LLM in a single turn for better efficiency
+Enhanced Agent Core - Agent extends MCPServer for direct agent-to-agent communication
+Supports multiple tool calls per conversation turn for better efficiency
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, List, AsyncIterator
 
 from ..config.models import AgentConfig
-from ..mcp.base import MCPRegistry
+from ..mcp.base import MCPRegistry, MCPServer
 from ..llm.clients import ChatMessage, make_llm
 from ..utils.prompt_renderer import render_prompts
 
@@ -18,16 +18,36 @@ from ..utils.prompt_renderer import render_prompts
 logger = logging.getLogger(__name__)
 
 
-class Agent:
+class Agent(MCPServer):
     """
     Enhanced Agent that executes ALL tool calls per LLM conversation turn.
-    This allows faster execution when multiple tools are needed simultaneously.
+    Also serves as an MCP Server that can be used by other agents as a tool.
+    This enables direct agent-to-agent communication without wrapper classes.
     """
 
-    def __init__(self, config: AgentConfig, registry: MCPRegistry) -> None:
-        self.config = config
+    def __init__(self, name: str, config: AgentConfig, registry: MCPRegistry, 
+                 agent_config: dict | None = None, ssl_verify: bool = True) -> None:
+        """
+        Initialize Agent as both an executor and an MCP Server.
+        
+        Args:
+            name: Name of this agent (used when serving as MCP Server)
+            config: Agent configuration
+            registry: MCP Registry with available tools
+            agent_config: Optional agent-specific config (description, etc.)
+            ssl_verify: SSL verification setting
+        """
+        # Initialize as MCPServer
+        super().__init__(name, agent_config, ssl_verify)
+        
+        # Agent-specific initialization
+        self.agent_config = config
         self.registry = registry
         self.llm = None
+        
+        # Set default description
+        if "description" not in self.config:
+            self.config["description"] = f"Agent: {name}"
         
         # Initialize LLM if not provided
         if self.llm is None:
@@ -60,15 +80,15 @@ class Agent:
             available_tools = self.registry.list()
             logger = logging.getLogger(__name__)
 
-            max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
+            max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
             # Render prompts
             rendered = render_prompts(
-                self.config.prompts.system_template, 
+                self.agent_config.prompts.system_template, 
                 {"tools": available_tools, "max_steps": max_steps},
-                auto_datetime=self.config.context.auto_datetime,
-                timezone=self.config.context.timezone,
-                location=self.config.context.location
+                auto_datetime=self.agent_config.context.auto_datetime,
+                timezone=self.agent_config.context.timezone,
+                location=self.agent_config.context.location
             )
             system_msg = rendered.get("system_prompt") or "You are an assistant agent."
             tools_msg = rendered.get("tools_prompt")
@@ -85,13 +105,13 @@ class Agent:
                 server = self.registry.get(tool_name)
                 tools_schema.append(server.get_schema())
 
-            max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
+            max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             
             for step in range(max_steps):
                 # Debug: Log message count and estimated token count
                 message_count = len(messages)
                 estimated_tokens = self._estimate_token_count(messages)
-                context_window = getattr(self.config, "context_window", 32768)
+                context_window = getattr(self.agent_config, "context_window", 32768)
                 logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
                            step + 1, message_count, estimated_tokens, context_window)
                 
@@ -257,15 +277,15 @@ class Agent:
             available_tools = self.registry.list()
             logger = logging.getLogger(__name__)
 
-            max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
+            max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
             # Render prompts
             rendered = render_prompts(
-                self.config.prompts.system_template, 
+                self.agent_config.prompts.system_template, 
                 {"tools": available_tools, "max_steps": max_steps-1},
-                auto_datetime=self.config.context.auto_datetime,
-                timezone=self.config.context.timezone,
-                location=self.config.context.location
+                auto_datetime=self.agent_config.context.auto_datetime,
+                timezone=self.agent_config.context.timezone,
+                location=self.agent_config.context.location
             )
             system_msg = rendered.get("system_prompt") or "You are an assistant agent."
             tools_msg = rendered.get("tools_prompt")
@@ -282,14 +302,14 @@ class Agent:
                 server = self.registry.get(tool_name)
                 tools_schema.append(server.get_schema())
 
-            max_steps = max(1, int(getattr(self.config, "max_steps", 6)))
+            max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}
             
             for step in range(max_steps):
                 # Debug: Log message count and estimated token count
                 message_count = len(messages)
                 estimated_tokens = self._estimate_token_count(messages)
-                context_window = getattr(self.config, "context_window", 32768)
+                context_window = getattr(self.agent_config, "context_window", 32768)
                 logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
                            step + 1, message_count, estimated_tokens, context_window)
                 
@@ -439,3 +459,118 @@ class Agent:
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
             
         yield {"type": "end"}
+
+    # MCPServer interface implementation
+    async def call(self, tool: str, params: dict[str, Any]) -> Any:
+        """
+        MCPServer interface: Handle tool calls from other agents.
+        
+        Args:
+            tool: The tool/action to execute (should be "run" or "execute")
+            params: Parameters including the task to execute
+            
+        Returns:
+            The agent's execution result
+        """
+        # Validate action
+        if tool not in ["run", "execute", "ask"]:
+            return {
+                "status": "error", 
+                "error": f"Unknown action '{tool}'. Available actions: run, execute, ask"
+            }
+            
+        # Extract task from parameters
+        task = params.get("task") or params.get("query") or params.get("prompt")
+        if not task:
+            return {
+                "status": "error",
+                "error": "Missing required parameter: 'task', 'query', or 'prompt'"
+            }
+            
+        try:
+            # Execute the task using this agent
+            logger.info("Agent %s executing task: %s", self.name, task[:100])
+            result = await self.run(str(task))
+            
+            # Wrap result with agent metadata
+            return {
+                "status": "success",
+                "agent": self.name,
+                "task": task,
+                "result": result,
+                "summary": self._extract_summary(result)
+            }
+            
+        except Exception as e:
+            logger.error("Agent %s failed to execute task: %s", self.name, e)
+            return {
+                "status": "error",
+                "agent": self.name, 
+                "task": task,
+                "error": str(e)
+            }
+    
+    def get_schema(self) -> dict[str, Any]:
+        """
+        MCPServer interface: Return the OpenAI function schema for this agent.
+        
+        Returns:
+            OpenAI function schema dict
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.config.get("description", f"Agent: {self.name}"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["run", "execute", "ask"],
+                            "description": "Action to perform (run/execute/ask the agent)"
+                        },
+                        "task": {
+                            "type": "string", 
+                            "description": "The task/query/prompt to execute"
+                        }
+                    },
+                    "required": ["task"],
+                },
+            },
+        }
+        
+    def get_default_action(self) -> str:
+        """MCPServer interface: Return the default action for this agent."""
+        return "run"
+        
+    def _extract_summary(self, result: Dict[str, Any]) -> str:
+        """
+        Extract a summary from the agent result for easier consumption.
+        
+        Args:
+            result: The agent execution result
+            
+        Returns:
+            A summary string
+        """
+        if isinstance(result, dict):
+            # Look for summary in result
+            if "summary" in result:
+                return str(result["summary"])
+            
+            # If there are successful tool calls, summarize them
+            calls = result.get("calls", [])
+            if calls:
+                successful_calls = [c for c in calls if "error" not in str(c.get("result", ""))]
+                if successful_calls:
+                    return f"Executed {len(successful_calls)} tool(s) successfully"
+                    
+            # Check for errors
+            errors = result.get("errors", [])
+            if errors:
+                return f"Failed with {len(errors)} error(s): {errors[0]}"
+                
+            return "Task completed"
+        
+        return str(result)[:200]  # Fallback to string representation
