@@ -492,6 +492,17 @@ class WeatherServer(MCPServer):
                             "type": "boolean",
                             "default": False,
                             "description": "Include marine data (sea surface temperatures, wave heights). Automatically switches to marine.weather.gov source when true."
+                        },
+                        "summary_format": {
+                            "type": "string",
+                            "enum": ["detailed", "daily_summary", "hourly"],
+                            "default": "detailed",
+                            "description": "Output format: 'detailed' (daily summaries + hourly), 'daily_summary' (only daily aggregates for efficiency), 'hourly' (focus on hourly data)"
+                        },
+                        "include_radiation": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include estimated solar radiation data (daily averages, solar elevation). Useful for solar energy planning."
                         }
                     },
                     "required": ["location"],
