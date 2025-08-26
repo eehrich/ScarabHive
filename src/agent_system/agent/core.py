@@ -198,12 +198,8 @@ class Agent:
                 elif content:
                     results["summary"] = content
                     break
-                else:
-                    # No tools and no content - ask LLM to provide final answer
-                    messages.append(ChatMessage(
-                        role="assistant", 
-                        content="Please provide your final answer based on the information gathered."
-                    ))
+                # If we had tool calls, continue to next iteration to let LLM respond to tool results
+                # Don't add extra assistant messages here as it creates invalid conversation flow
 
             else:
                 # Max steps reached - get final answer
@@ -419,12 +415,8 @@ class Agent:
                     results["summary"] = content
                     yield {"type": "final", "summary": content}
                     break
-                else:
-                    # No tools and no content - ask LLM to provide final answer
-                    messages.append(ChatMessage(
-                        role="assistant", 
-                        content="Please provide your final answer based on the information gathered."
-                    ))
+                # If we had tool calls, continue to next iteration to let LLM respond to tool results
+                # Don't add extra assistant messages here as it creates invalid conversation flow
 
             else:
                 # Max steps reached - get final answer

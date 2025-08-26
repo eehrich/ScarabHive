@@ -10,23 +10,22 @@ class TwitterSearchServer(MCPServer):
         if tool == "search":
             query = params.get("query", "")
             limit = int(params.get("limit", 10))
-            results = []
-            try:
-                import snscrape.modules.twitter as sntwitter  # type: ignore
-            except Exception as e:
-                raise RuntimeError("snscrape is required for twitter_search. Install it via pip.") from e
-            # snscrape uses HTTP clients internally; if enterprise SSL MITM causes issues, users may need to set
-            # SSL_CERT_FILE/CURL_CA_BUNDLE or use corporate proxies. Proceed with default behavior here.
-            for i, tweet in enumerate(sntwitter.TwitterSearchScraper(query).get_items()):
-                results.append({
-                    "date": str(tweet.date),
-                    "user": str(tweet.user.username),
-                    "content": tweet.rawContent,
-                    "url": tweet.url,
-                })
-                if i + 1 >= limit:
-                    break
-            return {"engine": "twitter-scrape", "query": query, "results": results}
+            
+            # Twitter/X search is now heavily restricted and requires official API access
+            # snscrape has compatibility issues with modern Python versions
+            # Return a helpful message instead of failing
+            return {
+                "engine": "twitter-info",
+                "query": query,
+                "message": "Twitter/X search requires official API access. For stock trends, consider using:",
+                "alternatives": [
+                    "yahoo_finance tool for stock data and news",
+                    "duckduckgo_search for recent stock mentions", 
+                    "web_scraper for financial news websites",
+                    "Use the official Twitter API with proper credentials"
+                ],
+                "suggestion": f"Try searching for '{query}' using duckduckgo_search or yahoo_finance instead"
+            }
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_schema(self) -> dict[str, Any]:
@@ -35,7 +34,7 @@ class TwitterSearchServer(MCPServer):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": "Search Twitter/X for tweets and social media content. Returns recent tweets matching the search query.",
+                "description": "Get information about Twitter/X search limitations and suggested alternatives for social media and stock trend analysis.",
                 "parameters": {
                     "type": "object",
                     "properties": {
