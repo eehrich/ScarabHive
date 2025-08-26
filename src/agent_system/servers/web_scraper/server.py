@@ -7,6 +7,36 @@ from ...mcp.base import MCPServer
 
 
 class WebScraperServer(MCPServer):
+    def _clean_text(self, text: str) -> str:
+        """Clean up extracted text by removing excessive whitespace and normalizing newlines."""
+        if not text:
+            return ""
+        
+        # Replace multiple consecutive newlines with maximum 2 newlines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        # Replace multiple consecutive spaces/tabs with single space (but preserve newlines)
+        lines = text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # Clean each line individually - remove excessive spaces/tabs
+            cleaned_line = re.sub(r'[ \t]+', ' ', line.strip())
+            cleaned_lines.append(cleaned_line)
+        
+        # Join lines back and remove empty lines between content
+        text = '\n'.join(cleaned_lines)
+        
+        # Remove lines that are just whitespace
+        lines = [line for line in text.split('\n') if line.strip()]
+        
+        # Join with single newlines and add a final cleanup
+        text = '\n'.join(lines)
+        
+        # Final cleanup: ensure no more than 2 consecutive newlines
+        text = re.sub(r'\n{2,}', '\n\n', text)
+        
+        return text.strip()
+
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool != "fetch":
             raise ValueError(f"Unknown tool: {tool}")
@@ -107,6 +137,8 @@ class WebScraperServer(MCPServer):
                 tag.decompose()
             title = soup.title.string.strip() if soup.title and soup.title.string else None
             text = soup.get_text("\n")
+            # Clean up excessive whitespace and newlines
+            text = self._clean_text(text)
         except Exception:
             # Naive fallback: strip tags
             # Remove script/style blocks
@@ -117,7 +149,8 @@ class WebScraperServer(MCPServer):
             title = m.group(1).strip() if m else None
             # Strip all remaining tags
             text = re.sub(r"<[^>]+>", " ", no_style)
-            text = re.sub(r"\s+", " ", text).strip()
+            # Apply the same cleaning as BeautifulSoup path
+            text = self._clean_text(text)
 
         if max_chars and max_chars > 0:
             text = text[:max_chars]
