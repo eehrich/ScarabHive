@@ -185,7 +185,23 @@
             const data = JSON.parse(ev.data);
             switch (data.type) {
               case 'thinking':
-                blk.think.textContent += JSON.stringify(data.assistant, null, 2) + '\n';
+                if (data.assistant) {
+                  // Show the assistant's response content if available
+                  if (data.assistant.content) {
+                    blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
+                  }
+                  if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
+                    blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+                    data.assistant.tool_calls.forEach((tc, i) => {
+                      const func = tc.function || {};
+                      blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
+                    });
+                    blk.think.textContent += '\n';
+                  }
+                } else {
+                  // Just show that we're thinking at this step
+                  blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
+                }
                 break;
               case 'mcp_call':
                 blk.mcp.textContent += `🔧 ${data.server}.${data.action}\n`;

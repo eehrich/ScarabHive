@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config.loader import load_config
 from .mcp.base import MCPRegistry
-from .agent.core_simple import SimpleAgent  # Use SimpleAgent instead
+from .agent.core import Agent  # Use Agent from core.py
 from .servers.bootstrap import bootstrap_servers
 from .utils.logging import setup_logging
 import logging
@@ -52,7 +52,7 @@ def main() -> None:
     bootstrap_servers(config, registry)
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
-    agent = SimpleAgent(config, registry=registry)
+    agent = Agent(config, registry=registry)
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)

@@ -30,9 +30,16 @@ class WeatherServer(MCPServer):
         if not location:
             raise ValueError("Missing required parameter: location")
         
-        source = params.get("source", "wttr.in").lower()
-        days = min(int(params.get("days", 3)), 7)  # Limit to 7 days max
+        source = params.get("source", "met.no").lower()  # Default to met.no for better forecast range
+        days = min(int(params.get("days", 3)), 7)  # Up to 7 days max
         units = params.get("units", "metric").lower()  # metric, imperial
+        
+        # Auto-select source based on requested days
+        if days > 3 and source == "wttr.in":
+            source = "met.no"  # Switch to met.no for longer forecasts
+        elif days <= 3 and source == "met.no":
+            # Keep met.no, it works fine for shorter forecasts too
+            pass
         
         try:
             if source == "wttr.in":
@@ -52,12 +59,16 @@ class WeatherServer(MCPServer):
             }
 
     async def _fetch_wttr(self, location: str, days: int, units: str) -> dict[str, Any]:
-        """Fetch weather from wttr.in - excellent free service with JSON API."""
+        """Fetch weather from wttr.in - excellent free service with JSON API.
+        Note: wttr.in only provides 3 days maximum, regardless of days parameter."""
         try:
             import httpx
         except ImportError:
             raise RuntimeError("httpx package required for weather server")
 
+        # wttr.in only provides 3 days maximum
+        days = min(days, 3)
+        
         # wttr.in format: ?format=j1 for JSON, ?M for metric, ?u for imperial
         unit_param = "M" if units == "metric" else "u" if units == "imperial" else "M"
         url = f"https://wttr.in/{quote(location)}?format=j1&{unit_param}"
@@ -321,7 +332,7 @@ class WeatherServer(MCPServer):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": "Get weather forecast and current conditions for any location worldwide. Returns multi-day forecasts starting from today. For 'tomorrow' specifically, request 2+ days and use the second day's data. Supports multiple action names (forecast, search, query, get, check, lookup) for maximum LLM compatibility. Supports multiple free weather data sources without requiring API tokens.",
+                "description": "Get weather forecast and current conditions for any location worldwide. Returns multi-day forecasts: wttr.in provides up to 3 days, met.no provides up to 7 days. For 'tomorrow' specifically, request 2+ days and use the second day's data. Supports multiple action names (forecast, search, query, get, check, lookup) for maximum LLM compatibility. Supports multiple free weather data sources without requiring API tokens.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -337,15 +348,15 @@ class WeatherServer(MCPServer):
                         "source": {
                             "type": "string", 
                             "enum": ["wttr.in", "weather.gov", "met.no"],
-                            "default": "wttr.in",
-                            "description": "Weather data source: 'wttr.in' (global, best), 'weather.gov' (US only), 'met.no' (global, detailed)"
+                            "default": "met.no",
+                            "description": "Weather data source: 'wttr.in' (global, 3 days max), 'weather.gov' (US only), 'met.no' (global, up to 7 days, recommended for longer forecasts)"
                         },
                         "days": {
                             "type": "integer", 
                             "minimum": 1, 
                             "maximum": 7, 
                             "default": 3,
-                            "description": "Number of forecast days starting from today (1=today only, 2=today+tomorrow, 3=today+next 2 days, etc.). Calculate the days accordingly from current date."
+                            "description": "Number of forecast days starting from today (1=today only, 2=today+tomorrow, etc.). Note: wttr.in max 3 days, met.no up to 7 days. Use met.no for requests >3 days."
                         },
                         "units": {
                             "type": "string",
