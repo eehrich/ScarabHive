@@ -88,6 +88,24 @@ prompts:
 
 You can override values using environment variables. For OpenAI, set `llm.provider: openai` and provide `OPENAI_API_KEY`.
 
+## Settings loader and dependency injection
+
+- The project exposes `load_settings()` in `agent_system.config.settings` which loads `config/agent.yaml` (or the path from `AGENT_CONFIG_PATH`) and expands `${VAR}` placeholders using environment variables.
+- `Agent` now accepts an optional `llm` or `llm_factory` parameter for dependency injection. This makes it easy to pass a mocked LLM in tests or wire a factory in bootstrap code.
+
+Example (CLI/bootstrap will use `load_settings()` automatically):
+
+```python
+from agent_system.config.settings import load_settings
+from agent_system.servers.agent.server import Agent
+
+config = load_settings()
+# Optionally inject pre-created llm
+agent = Agent("my_agent", config, registry, llm=None)
+```
+
+CI: A GitHub Actions workflow (`.github/workflows/ci.yml`) runs the test suite on push/PR.
+
 - Use provided tasks to run API and tests
 ## Copilot / assistant prompts
 

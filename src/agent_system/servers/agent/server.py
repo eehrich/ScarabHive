@@ -80,7 +80,17 @@ class Agent(MCPServer):
                             getattr(config.llm, "request_timeout", None),
                         )
                 except Exception as e:
-                    logger.warning("LLM initialization failed: %s", e)
+                    # Missing API key is an expected situation in test/dev
+                    # environments; avoid noisy warnings for that case.
+                    try:
+                        msg = str(e)
+                    except Exception:
+                        msg = "<exception>"
+                    # Match the exact ValueError message emitted by make_llm
+                    if isinstance(e, ValueError) and msg == "OPENAI_API_KEY is required when provider=openai":
+                        logger.debug("LLM not initialized (no API key): %s", msg)
+                    else:
+                        logger.warning("LLM initialization failed: %s", msg)
                     self.llm = None
 
     @property
