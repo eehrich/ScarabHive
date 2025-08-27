@@ -190,10 +190,21 @@ def main() -> None:
                 return
             meta = getattr(factory, "_plugin_metadata", None) or {}
             # raw output: include factory repr and module path
-            if getattr(args, "raw", False):
+            # Accept either the parsed flag or fallback to detecting '--raw'
+            # in sys.argv to be resilient to argument ordering and parser quirks.
+            raw_flag = getattr(args, "raw", False) or ("--raw" in sys.argv)
+            if raw_flag:
+                # Ensure we always include these keys so downstream callers/tests
+                # can rely on stable JSON shape. Use safe fallbacks if repr()
+                # or attribute access fails.
+                try:
+                    fr = repr(factory)
+                except Exception:
+                    fr = None
+                fm = getattr(factory, "__module__", None)
                 factory_info = {
-                    "factory_repr": repr(factory),
-                    "factory_module": getattr(factory, "__module__", None),
+                    "factory_repr": fr,
+                    "factory_module": fm,
                 }
                 out = {"name": target, "metadata": meta, **factory_info}
                 out["enabled"] = target in set((config.mcp.enabled_servers or []) or [])

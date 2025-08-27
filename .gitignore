@@ -9,3 +9,6 @@ build/
 .vscode/*.log
 logs/
 *.log
+
+# Local debug helpers (not committed)
+tools/debug/
