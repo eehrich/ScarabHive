@@ -1,110 +1,126 @@
 AgentSystem — Flexible MCP-based Agent Framework (Python)
+# AgentSystem — MCP-based Agent Framework
 
-AgentSystem is a lightweight, pluggable agent framework that uses the Model Context Protocol (MCP) architecture to integrate LLMs, search APIs, and specialized tool servers (e.g., web search, finance, weather, web scraping). The project aims to be runnable locally, test-driven, and accessible via both a CLI and a small FastAPI web UI.
+A lightweight, pluggable agent framework that composes LLMs and tool servers using the Model Context Protocol (MCP).
 
-
-
-## Features
-- Platform: Python 3.11+ (PowerShell examples for Windows), cross-platform compatible
-- Pluggable MCP servers configured via YAML (`config/agent.yaml`)
-- **Sub-Agent Architecture**: Agents can use other agents as tools, enabling hierarchical architectures
-- **Specialized Agents**: Pre-built agents for specific domains (WebResearchAgent, etc.)
-- LLM adapters: Ollama, OpenAI (configurable)
-- Built-in servers: web search, Yahoo Finance, weather, web scraping, Twitter, and more
-- Interfaces: CLI and FastAPI HTTP API
-- Test-first development: unit tests with pytest
+This README is a short, focused developer and user guide that matches the current repository layout and behavior.
 
 ## Quickstart (Windows PowerShell)
+
+1) Create and activate a virtual environment
+
 ```powershell
-# 1) Create and activate virtual environment
 python -m venv .venv; . .venv/Scripts/Activate.ps1
+```
 
-# 2) Install the project (editable)
-pip install -U pip; pip install -e .
+2) Install the project (editable)
 
-# 3) Run tests
+```powershell
+pip install -U pip
+pip install -e .
+```
+
+3) Run tests
+
+```powershell
 python -m pytest -q
+```
 
-# 4) Start the API (use a separate terminal)
+4) Start the API (separate terminal)
+
+```powershell
 agent-api
+```
 
-# or: CLI
+Or use the CLI
+
+```powershell
 agent-cli --help
-
-Tip: you can disable colored output with the global flag `--no-color` (or force it with `--color always`).
+agent-cli "What is the time in Nitra/Slovakia?"
 ```
 
 ## Configuration
-Edit the master manifest `config/agent.yaml` which lists included YAML files to load:
+
+The repo uses `config/agent.yaml` as the master manifest. The manifest may include other files using `includes:` (recommended for MCP-specific settings). The CLI will not overwrite the master manifest when managing MCP settings — it writes only to included managed files (for example `mcp.yaml`).
+
+Minimal configuration snippet (important options):
+
 ```yaml
 llm:
-  provider: ollama   # ollama | openai
-  model: gpt-oss:20b
+  provider: openai
+  model: gpt-5-mini
   openai_api_key: ${OPENAI_API_KEY}
-  ollama_url: http://127.0.0.1:11434  # set to remote Ollama instance if needed
+  context_window: 32768
 
-mcp:
-  enabled_servers:
-  - google_search
-  - duckduckgo_search
-  - google_search
-    - yahoo_finance
-    - twitter_search
-    - llm_router
-
-servers:
-  google_search:
-    type: google_search
-    api_key: ${GOOGLE_API_KEY}  # set to your Google API key (Custom Search JSON API)
-    cx: ${GOOGLE_CX}            # set to your Custom Search Engine ID
-  duckduckgo_search:
-    type: duckduckgo_search
-  yahoo_finance:
-    type: yahoo_finance
-  twitter_search:
-    type: twitter_search
-  llm_router:
-    type: llm_router
-    default_provider: ollama
-  # Sub-agents enable hierarchical agent architectures
-  helper_agent:
-    type: sub_agent
-    description: "A specialized helper agent"
-  # Specialized agents for specific domains
-  web_researcher:
-    type: web_research_agent
-    description: "Advanced web research with search and scraping"
+includes:
+  - mcp.yaml
 
 network:
-  ssl_verify: false  # set to false if your corporate network has untrusted SSL interception
+  ssl_verify: false
+  host: 127.0.0.1
+  port: 8000
 
 logging:
   enabled: true
-  level: INFO
-  file: logs/agent.log
+  level: DEBUG
+  file: logs/agent.log       # legacy single-file config
+  file_cli: logs/cli.log     # optional: explicit CLI log file
+  file_api: logs/api.log     # optional: explicit API log file
   as_json: false
 
 prompts:
   system_template: config/prompts/system_prompt.yaml
 
-Configuration manifest behavior:
-
-- The file `config/agent.yaml` acts as a manifest and may list other YAML files to include via an `includes:` (or `files:`) key. Example:
-
-```yaml
-includes:
-  - general.yaml
-  - mcp.yaml
+max_steps: 50
 ```
 
-- CLI operations that modify MCP settings (enable/disable) will only write into included files (for example `mcp.yaml`) and will not overwrite the master manifest `config/agent.yaml`.
-```
+Notes on logging behavior
+- Preferred: set `logging.file_cli` and/or `logging.file_api` to control where the CLI and API write logs.
+- Backward-compatible: if the per-role fields are absent, the system falls back to `logging.file` and derives role-specific filenames (e.g., `agent-cli` / `agent-api`) to avoid clobbering a single log file when running both processes.
+- Consider adding log rotation or an external log collector for production workloads.
 
-You can override values using environment variables. For OpenAI, set `llm.provider: openai` and provide `OPENAI_API_KEY`.
+## CLI
 
-## Settings loader and dependency injection
+Key flags and behavior:
+- `--config PATH` — load a different manifest
+- `--no-stream` — disable live streaming of MCP calls/results
+- `--raw` — print final result as raw JSON instead of pretty printing
+- `--color/--no-color` — control ANSI color output
 
-- The project exposes `load_settings()` in `agent_system.config.settings` which loads `config/agent.yaml` (or the path from `AGENT_CONFIG_PATH`) and expands `${VAR}` placeholders using environment variables.
+Commands:
+- `agent-cli run "task"` — run a task (default when no subcommand is given)
+- `agent-cli plugins list|info|enable|disable|search|status` — manage plugins
+
+The CLI streams MCP CALL and MCP RESULT events by default and prints a human-readable, colorized summary at the end.
+
+## API
+
+A small FastAPI app provides endpoints:
+- `GET /health` — health check
+- `GET /config` — returns loaded configuration
+- `POST /run?task=...` — run a task and return final result
+- `GET /events?task=...` — SSE stream of MCP events
+
+Start with `agent-api`.
+
+## Plugins
+
+Plugins live under the repository `plugins/` directory (package-style `plugins/<name>/plugin.py` with optional `plugin.yaml` for metadata). The loader also discovers legacy single-file plugins and entrypoints.
+
+Important: plugin packages are loaded under the `plugins.<name>` namespace in-memory to avoid collisions with stdlib module names (e.g., `datetime`).
+
+See `docs/plugin_authoring.md` for authoring guidance and `plugins/example` for a sample plugin.
+
+## Development notes
+- Tests are in `tests/` and run with pytest. The project includes tests that exercise plugin discovery, CLI streaming, and config loader behavior.
+- The repository includes `.prompts/` templates used by developer-assistants for consistent behavior (see `.prompts/developer_rules.md`).
+
+## Contributing
+- Follow the `backlog.md` for task tracking and add entries when implementing project-relevant changes.
+- Run tests and keep them green before pushing changes.
+
+## License
+MIT
 - `Agent` now accepts an optional `llm` or `llm_factory` parameter for dependency injection. This makes it easy to pass a mocked LLM in tests or wire a factory in bootstrap code.
 
 Example (CLI/bootstrap will use `load_settings()` automatically):
