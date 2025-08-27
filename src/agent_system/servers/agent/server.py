@@ -13,6 +13,8 @@ from ...config.models import AgentConfig
 from ...mcp.base import MCPRegistry, MCPServer
 from ...llm.clients import ChatMessage, make_llm
 from ...utils.prompt_renderer import render_prompts
+from .planner import Planner
+from .executor import Executor
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,8 @@ class Agent(MCPServer):
     """
 
     def __init__(self, name: str, config: AgentConfig, registry: MCPRegistry, 
-                 agent_config: dict | None = None, ssl_verify: bool = True) -> None:
+                 agent_config: dict | None = None, ssl_verify: bool = True,
+                 llm: object | None = None, llm_factory: object | None = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
         
@@ -39,31 +42,46 @@ class Agent(MCPServer):
         """
         # Initialize as MCPServer
         super().__init__(name, agent_config, ssl_verify)
-        
+
         # Agent-specific initialization
         self.agent_config = config
         self.registry = registry
-        self.llm = None
-        
+        # Allow dependency injection of an LLM client or a factory that
+        # creates one. This makes testing and runtime wiring explicit.
+        self.llm = llm
+        self._llm_factory = llm_factory
+
         # Set default description
         if "description" not in self.config:
             self.config["description"] = f"Agent: {name}"
-        
-        # Initialize LLM if not provided
+
+        # Initialize LLM if not provided. Prefer an explicitly passed `llm`.
         if self.llm is None:
-            try:
-                self.llm = make_llm(
-                    config.llm.provider,
-                    config.llm.model,
-                    config.llm.openai_api_key,
-                    config.llm.ollama_url,
-                    config.llm.context_window,
-                    getattr(config.llm, "ollama_mode", None),
-                    getattr(config.llm, "request_timeout", None),
-                )
-            except Exception as e:
-                logger.warning("LLM initialization failed: %s", e)
-                self.llm = None
+            # If a factory is provided, use it to create the client.
+            if self._llm_factory is not None:
+                try:
+                    self.llm = self._llm_factory.create()
+                except Exception as e:
+                    logger.warning("LLM factory creation failed: %s", e)
+                    self.llm = None
+            else:
+                # Fallback: attempt to create LLM directly from config if available.
+                try:
+                    # Lazy import to avoid circular imports when testing
+                    from ...llm.clients import make_llm
+                    if getattr(config, "llm", None):
+                        self.llm = make_llm(
+                            config.llm.provider,
+                            config.llm.model,
+                            config.llm.openai_api_key,
+                            config.llm.ollama_url,
+                            config.llm.context_window,
+                            getattr(config.llm, "ollama_mode", None),
+                            getattr(config.llm, "request_timeout", None),
+                        )
+                except Exception as e:
+                    logger.warning("LLM initialization failed: %s", e)
+                    self.llm = None
 
     @property
     def description(self) -> str:
@@ -98,11 +116,9 @@ class Agent(MCPServer):
             system_msg = rendered.get("system_prompt") or "You are an assistant agent."
             tools_msg = rendered.get("tools_prompt")
 
-            # Initialize conversation
-            messages = [ChatMessage(role="system", content=system_msg)]
-            if tools_msg:
-                messages.append(ChatMessage(role="system", content=tools_msg))
-            messages.append(ChatMessage(role="user", content=task))
+            # Use Planner to build initial messages and call the LLM
+            planner = Planner(self.llm, system_msg, tools_msg)
+            messages = planner.initial_messages(task)
 
             # Build tool schemas
             tools_schema: List[Dict] = []
@@ -112,6 +128,8 @@ class Agent(MCPServer):
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             
+            executor = Executor(self.registry)
+            executor = Executor(self.registry)
             for step in range(max_steps):
                 # Debug: Log message count and estimated token count
                 message_count = len(messages)
@@ -126,8 +144,8 @@ class Agent(MCPServer):
                 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
-                # Get LLM response
-                llm_out = await self.llm.chat_tools(messages, tools_schema)
+                # Get LLM response via Planner
+                llm_out = await planner.chat(messages, tools_schema)
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
                 
@@ -187,7 +205,7 @@ class Agent(MCPServer):
                         
                         try:
                             logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-                            tool_result = await server.call(action_name, params)
+                            tool_result = await executor.invoke(tool_name, params)
                             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
                             
                             results["calls"].append({
@@ -309,6 +327,7 @@ class Agent(MCPServer):
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}
+            executor = Executor(self.registry)
             
             for step in range(max_steps):
                 # Debug: Log message count and estimated token count
@@ -395,7 +414,7 @@ class Agent(MCPServer):
                         
                         try:
                             logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-                            tool_result = await server.call(action_name, params)
+                            tool_result = await executor.invoke(tool_name, params)
                             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
                             
                             results["calls"].append({

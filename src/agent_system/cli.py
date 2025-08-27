@@ -5,7 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from .config.loader import load_config
+from .config.settings import load_settings
 from .mcp.base import MCPRegistry
 from .servers.agent.server import Agent  # Use Agent from servers
 from .servers.bootstrap import bootstrap_servers
@@ -26,7 +26,7 @@ def main() -> None:
 
     vprint(f"[cli] verbose mode on")
     vprint(f"[cli] loading config: {args.config}")
-    config = load_config(args.config)
+    config = load_settings(args.config)
     # Setup logging from config; file handler is created here. Console level is adjusted below.
     log_file = setup_logging(config.logging.enabled, config.logging.level, config.logging.file)
     logger = logging.getLogger(__name__)
