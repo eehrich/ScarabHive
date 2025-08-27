@@ -35,7 +35,7 @@ Tip: you can disable colored output with the global flag `--no-color` (or force 
 ```
 
 ## Configuration
-Edit `config/agent.yaml`:
+Edit the master manifest `config/agent.yaml` which lists included YAML files to load:
 ```yaml
 llm:
   provider: ollama   # ollama | openai
@@ -86,6 +86,18 @@ logging:
 
 prompts:
   system_template: config/prompts/system_prompt.yaml
+
+Configuration manifest behavior:
+
+- The file `config/agent.yaml` acts as a manifest and may list other YAML files to include via an `includes:` (or `files:`) key. Example:
+
+```yaml
+includes:
+  - general.yaml
+  - mcp.yaml
+```
+
+- CLI operations that modify MCP settings (enable/disable) will only write into included files (for example `mcp.yaml`) and will not overwrite the master manifest `config/agent.yaml`.
 ```
 
 You can override values using environment variables. For OpenAI, set `llm.provider: openai` and provide `OPENAI_API_KEY`.

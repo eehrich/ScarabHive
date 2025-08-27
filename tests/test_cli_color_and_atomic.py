@@ -20,8 +20,11 @@ def test_no_color_and_always_color(monkeypatch, capsys):
     out2 = capsys.readouterr().out
     assert "YES" in out2 or "NO" in out2
 def test_enable_atomic_write(tmp_path, monkeypatch, capsys):
+    # Create a master manifest that includes a separate mcp.yaml (managed file)
     cfg = tmp_path / "agent.yaml"
-    cfg.write_text('{"mcp": {"enabled_servers": []}}')
+    managed = tmp_path / "mcp.yaml"
+    managed.write_text('{"mcp": {"enabled_servers": []}}')
+    cfg.write_text('{"includes": ["mcp.yaml"]}')
     # monkeypatch load_settings to minimal config with no plugin_dirs (we won't discover plugins here)
     from agent_system.config.models import AgentConfig, MCPConfig
     cfg_model = AgentConfig()
@@ -34,8 +37,8 @@ def test_enable_atomic_write(tmp_path, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out.get("result") == "ok"
     import yaml
-    data = yaml.safe_load(cfg.read_text())
+    data = yaml.safe_load(managed.read_text())
     assert "example" in data.get("mcp", {}).get("enabled_servers", [])
-    # backup file should exist
-    bak = cfg.with_suffix(".yaml.bak")
-    assert bak.exists()
+    # No backup rotation files should be created for YAML-managed files
+    bak = managed.with_suffix(".yaml.bak")
+    assert not bak.exists()

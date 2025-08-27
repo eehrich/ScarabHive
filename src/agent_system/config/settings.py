@@ -29,9 +29,42 @@ def load_settings(config_path: Optional[str] = None) -> AgentConfig:
     # Allow overriding default config file via env var
     env_cfg = os.environ.get("AGENT_CONFIG_PATH")
     cfg_path = Path(config_path or env_cfg or "config/agent.yaml")
-    data = {}
+    data: dict = {}
+
+    # If the master config (manifest) exists, load it and then load any
+    # included files listed under `includes` or `files`. The master config
+    # acts as a manifest and should not be overwritten by CLI actions; only
+    # the included files (for example `mcp.yaml`) will be written by the CLI.
     if cfg_path.exists():
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        master = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        # Determine includes: accept either `includes` (list) or `files`
+        includes = master.get("includes") or master.get("files") or []
+        # If includes is a single string, make it a list
+        if isinstance(includes, str):
+            includes = [includes]
+
+        # Start with the master config as base
+        data = dict(master)
+
+        # Load each included file (relative paths are resolved against master)
+        merged = {}
+        for inc in includes:
+            inc_path = Path(inc)
+            if not inc_path.is_absolute():
+                inc_path = cfg_path.parent.joinpath(inc_path)
+            if inc_path.exists():
+                try:
+                    part = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                    # shallow merge: later included files override previous keys
+                    merged.update(part)
+                except Exception:
+                    # ignore parse errors for now and continue
+                    pass
+
+        # Merge master (manifest) with included content, giving included files precedence
+        merged_final = dict(data)
+        merged_final.update(merged)
+        data = merged_final
 
     # Apply simple env-variable expansion for ${VAR} patterns (keep existing loader behavior)
     def _expand_env(value):

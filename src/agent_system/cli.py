@@ -21,6 +21,7 @@ from .mcp.plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
+from .servers.agent.server import Agent
 
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
@@ -207,19 +208,40 @@ def main() -> None:
                 print(json.dumps({"error": "missing plugin name"}, ensure_ascii=False))
                 return
             cfg_path = Path(args.config)
-            data = {}
-            if cfg_path.exists():
-                try:
-                    data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    data = {}
-
-            # Determine where to write managed settings. If the master config declares
-            # includes or a managed_file, write to the managed file to avoid overwriting
-            # a hand-edited master config. Otherwise default to the provided cfg_path.
+            # Read master manifest to discover included files and prefer writing
+            # to the included file that contains an `mcp` mapping (e.g. `mcp.yaml`).
             managed_path = cfg_path
-            mcp_master = data.get("mcp", {}) or {}
-            if data.get("includes") or mcp_master.get("managed_file"):
+            try:
+                master_raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                master_raw = {}
+
+            includes = master_raw.get("includes") or master_raw.get("files") or []
+            if isinstance(includes, str):
+                includes = [includes]
+
+            # Attempt to find an included file that contains 'mcp' mapping
+            found = None
+            for inc in includes:
+                inc_path = Path(inc)
+                if not inc_path.is_absolute():
+                    inc_path = cfg_path.parent.joinpath(inc_path)
+                if inc_path.exists():
+                    try:
+                        inc_data = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                        if isinstance(inc_data, dict) and "mcp" in inc_data:
+                            found = inc_path
+                            break
+                    except Exception:
+                        continue
+
+            # If a specific mcp-managed file was found in includes, use it.
+            if found:
+                managed_path = found
+            else:
+                # Fallback: if master declares mcp.managed_file, respect it; otherwise
+                # default to writing a `.managed` sibling next to master (legacy behavior)
+                mcp_master = master_raw.get("mcp", {}) or {}
                 mf = mcp_master.get("managed_file")
                 if mf:
                     mp = Path(mf)
@@ -228,7 +250,6 @@ def main() -> None:
                     else:
                         managed_path = mp
                 else:
-                    # default managed filename next to master
                     managed_path = cfg_path.with_name(cfg_path.stem + ".managed" + cfg_path.suffix)
 
             # load managed data (this is what we'll update)
@@ -263,40 +284,11 @@ def main() -> None:
             # persist into the managed_data (not the master data) so we don't overwrite
             # user-edited master config. We'll write managed_data to managed_path.
             managed_data["mcp"] = mcp
-            # atomic write with backup to avoid corrupting config on failure
+            # atomic write only: write temp file in same dir and atomically replace target.
             try:
-                backup_suffix = (config.mcp.backup_suffix if getattr(config, "mcp", None) else ".bak")
-                backup_rotate = (config.mcp.backup_rotate if getattr(config, "mcp", None) else 1)
-                backup_path = managed_path.with_suffix(managed_path.suffix + backup_suffix)
-                # create tmp file in same directory to ensure atomic os.replace works
                 with tempfile.NamedTemporaryFile("w", delete=False, dir=str(managed_path.parent), encoding="utf-8") as tf:
-                    # Persist managed file as JSON for stability and easier programmatic parsing
                     tf.write(json.dumps(managed_data, ensure_ascii=False, indent=2))
                     tmp_name = tf.name
-                # make backup if original exists
-                if managed_path.exists():
-                    try:
-                        # rotate existing backups if requested
-                        if backup_rotate and backup_rotate > 1:
-                            # rotate up: .bak.N <- .bak.(N-1), ..., .bak.1 <- current
-                            for i in range(backup_rotate - 1, 0, -1):
-                                older = managed_path.with_suffix(managed_path.suffix + f"{backup_suffix}.{i}")
-                                newer = managed_path.with_suffix(managed_path.suffix + f"{backup_suffix}.{i+1}")
-                                if older.exists():
-                                    try:
-                                        os.replace(str(older), str(newer))
-                                    except Exception:
-                                        pass
-                            # move current to .bak.1
-                            first_rot = managed_path.with_suffix(managed_path.suffix + f"{backup_suffix}.1")
-                            os.replace(str(managed_path), str(first_rot))
-                        else:
-                            # backup_rotate == 1 or no rotation requested: move to simple backup (e.g. .bak)
-                            os.replace(str(managed_path), str(backup_path))
-                    except Exception:
-                        # fallback: copy contents
-                        backup_path.write_text(managed_path.read_text(encoding="utf-8"), encoding="utf-8")
-                # atomically move temp to target
                 os.replace(tmp_name, str(managed_path))
             except Exception as e:
                 print(json.dumps({"error": "failed to write config", "reason": str(e)}, ensure_ascii=False))
