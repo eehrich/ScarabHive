@@ -20,6 +20,8 @@ class MCPServerRef(BaseModel):
 
 class MCPConfig(BaseModel):
     enabled_servers: list[str] = []
+    # Optional list of plugin directories to discover MCP server plugins from
+    plugin_dirs: list[str] = []
 
 
 class NetworkConfig(BaseModel):

@@ -4,12 +4,33 @@ from typing import Any
 
 from ..config.models import AgentConfig
 from ..mcp.base import MCPRegistry
+from ..mcp.plugins import discover_all_plugins
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
+    # Discover plugins from configured plugin directories plus default ./plugins
+    default_dir = Path("plugins")
+    dirs = [default_dir] + [Path(p) for p in (config.mcp.plugin_dirs or [])]
+    plugins = discover_all_plugins(dirs=dirs)
+
+    # Log discovered plugins for visibility at startup
+    if plugins:
+        logger.info("Discovered MCP plugins: %s", ", ".join(sorted(plugins.keys())))
+    else:
+        logger.debug("No external MCP plugins discovered in %s", dirs)
+
     for key in config.mcp.enabled_servers:
         server_cfg: dict[str, Any] = config.servers.get(key, {})
         typ = server_cfg.get("type", key)
+        # If a plugin provides this type, use it
+        if typ in plugins:
+            factory = plugins[typ]
+            registry.register(key, factory(key, server_cfg, ssl_verify=config.network.ssl_verify))
+            continue
         if typ == "duckduckgo_search":
             from .duckduckgo_search.server import DuckDuckGoSearchServer
             registry.register(key, DuckDuckGoSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
