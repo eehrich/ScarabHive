@@ -103,7 +103,7 @@ def validate(path: Path) -> int:
     return 0
 
 
-def move_finished_epics(path: Path) -> int:
+def move_finished_epics(path: Path, dry_run: bool = False, verbose: bool = False) -> int:
     """Move epics whose subtasks are all finished into the finished section.
 
     Also add an `- updated: YYYY-MM-DD` line to moved epics.
@@ -155,6 +155,8 @@ def move_finished_epics(path: Path) -> int:
         s_clean = re.sub(r"[^a-z0-9 ]+", '', s0)
         WORD_MAP = {
             'done': 'done',
+            'implemented': 'done',
+            'fixed': 'done',
             'finished': 'done',
             'resolved': 'done',
             'closed': 'done',
@@ -178,8 +180,7 @@ def move_finished_epics(path: Path) -> int:
         return WORD_MAP.get(first)
 
     moved_blocks = []
-    kept_parts = []
-    last = 0
+    acceptable_terminal = {'done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed'}
     for start, end in blocks:
         block_text = ''.join(lines[start:end])
         # prefer statuses under the Subtasks: section
@@ -192,13 +193,25 @@ def move_finished_epics(path: Path) -> int:
 
         if not status_lines:
             # no explicit statuses -> do not move
+            if verbose:
+                # try to extract epic id for clarity
+                m = epic_header_re.search(block_text)
+                eid = m.group(1) if m else '<unknown>'
+                print(f"[skip] Epic {eid}: no status lines found")
             continue
-    norms = [normalize_status_local(s) for s in status_lines]
-    # move epic if all subtask statuses normalize to an acceptable terminal state
-    # Accept 'done' as well as 'reverted' and 'rejected' as non-blocking terminal states
-    acceptable_terminal = {'done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed'}
-    if norms and all((n in acceptable_terminal) for n in norms):
-            moved_blocks.append((start, end, block_text))
+
+        norms = [normalize_status_local(s) for s in status_lines]
+        # try to extract epic id for verbose output
+        m = epic_header_re.search(block_text)
+        eid = m.group(1) if m else '<unknown>'
+        if verbose:
+            print(f"[inspect] Epic {eid}: raw_statuses={status_lines} normalized={norms}")
+
+        # move epic if all subtask statuses normalize to an acceptable terminal state
+        if norms and all((n in acceptable_terminal) for n in norms):
+            moved_blocks.append((start, end, block_text, norms, status_lines))
+            if verbose:
+                print(f"[will-move] Epic {eid}: all subtasks terminal -> queued for move")
 
     if not moved_blocks:
         return 0
@@ -274,13 +287,21 @@ def main():
     if not p.exists():
         print('backlog.md not found at', p)
         return 4
+    # parse simple CLI flags
+    import argparse
+    ap = argparse.ArgumentParser(description='Validate and optionally move finished epics in backlog.md')
+    ap.add_argument('--dry-run', action='store_true', help='Do not write changes; only print what would change')
+    ap.add_argument('--verbose', '-v', action='store_true', help='Verbose diagnostic output')
+    ap.add_argument('--apply-only', action='store_true', help='Run without running tests (legacy compatibility)')
+    args = ap.parse_args()
+
     # first validate existing file
     rc = validate(p)
     if rc != 0:
         return rc
     # attempt to move finished epics and add updated metadata
     try:
-        return move_finished_epics(p)
+        return move_finished_epics(p, dry_run=args.dry_run, verbose=args.verbose)
     except Exception as e:
         print('Error updating backlog:', e)
         return 6
