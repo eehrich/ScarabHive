@@ -93,7 +93,7 @@ class TestMCPServerCLI:
     def test_datetime_cli_help(self):
         """Test DateTime server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.datetime",
+            sys.executable, "-m", "plugins.datetime",
             "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -137,9 +137,13 @@ class TestMCPServerCLI:
         ]
         
         for server in servers:
+            # Use plugins package for datetime, otherwise import src shim which still exists.
+            module = f"agent_system.servers.{server}.__main__"
+            if server == "datetime":
+                module = f"plugins.{server}.__main__"
+
             result = subprocess.run([
-                sys.executable, "-c", 
-                f"import agent_system.servers.{server}.__main__; print('OK')"
+                sys.executable, "-c", f"import {module}; print('OK')"
             ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
             
             assert result.returncode == 0, f"Failed to import {server} server"
