@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-system-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Flexible AI Agent System using MCP with pluggable servers and FastAPI UI"
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Enrico Ehrich" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -28,6 +28,7 @@ dependencies = [
     "pytz>=2024.1",
     "pytest>=8.4",
     "pytest-asyncio>=1.1.0",
+    "tabulate>=0.9",
 ]
 
 [project.urls]
