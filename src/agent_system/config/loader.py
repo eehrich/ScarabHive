@@ -29,5 +29,29 @@ def _expand_env(value: Any) -> Any:
 def load_config(path: str | Path) -> AgentConfig:
     p = Path(path)
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    data = _expand_env(data)
-    return AgentConfig.model_validate(data)
+
+    # If the master manifest declares includes/files, load and merge them.
+    includes = data.get("includes") or data.get("files") or []
+    if isinstance(includes, str):
+        includes = [includes]
+
+    merged = {}
+    for inc in includes:
+        try:
+            inc_path = Path(inc)
+            if not inc_path.is_absolute():
+                inc_path = p.parent.joinpath(inc_path)
+            if inc_path.exists():
+                part = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                # later includes override earlier merged keys
+                merged.update(part)
+        except Exception:
+            # ignore errors reading individual includes
+            pass
+
+    # Merge master (manifest) with included content, giving included files precedence
+    merged_final = dict(data)
+    merged_final.update(merged)
+
+    merged_final = _expand_env(merged_final)
+    return AgentConfig.model_validate(merged_final)
