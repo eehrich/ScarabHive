@@ -5,6 +5,8 @@ import inspect
 import logging
 from pathlib import Path
 import os
+import sys
+import types
 from typing import Callable, Dict, Iterable
 import yaml
 
@@ -33,7 +35,29 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         if d.is_dir():
             plugin_file = d / "plugin.py"
             if plugin_file.exists():
-                spec = importlib.util.spec_from_file_location(f"{d.name}.plugin", str(plugin_file))
+                # Ensure a top-level 'plugins' package exists in sys.modules
+                # and that a package entry for this plugin is present so
+                # imports like `from plugins.<name> import server` work.
+                pkg_name = "plugins"
+                plugin_pkg = f"{pkg_name}.{d.name}"
+                try:
+                    if pkg_name not in sys.modules:
+                        pkg_mod = types.ModuleType(pkg_name)
+                        # point package path to the discovered plugins directory
+                        pkg_mod.__path__ = [str(path.resolve())]
+                        sys.modules[pkg_name] = pkg_mod
+                    # create the plugin subpackage module pointing at the plugin dir
+                    if plugin_pkg not in sys.modules:
+                        sub_mod = types.ModuleType(plugin_pkg)
+                        sub_mod.__path__ = [str(d.resolve())]
+                        sys.modules[plugin_pkg] = sub_mod
+                except Exception:
+                    # best-effort: if sys.modules manipulation fails, continue
+                    pass
+
+                # Load the plugin module under the `plugins.<name>` namespace to
+                # avoid collisions with stdlib modules (for example `datetime`).
+                spec = importlib.util.spec_from_file_location(f"{plugin_pkg}.plugin", str(plugin_file))
                 if spec is None or spec.loader is None:
                     logger.debug("Skipping plugin %s: cannot create spec", plugin_file)
                     continue
@@ -76,7 +100,19 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
 
     # Then, discover legacy single-file plugins for backward compatibility
     for p in path.glob("*.py"):
-        spec = importlib.util.spec_from_file_location(p.stem, str(p))
+        # Single-file plugins are also loaded under the `plugins.` namespace to
+        # keep imports inside the plugin consistent and avoid name clashes.
+        # ensure top-level 'plugins' package exists so absolute imports work
+        try:
+            pkg_name = "plugins"
+            if pkg_name not in sys.modules:
+                pkg_mod = types.ModuleType(pkg_name)
+                pkg_mod.__path__ = [str(path.resolve())]
+                sys.modules[pkg_name] = pkg_mod
+        except Exception:
+            pass
+
+        spec = importlib.util.spec_from_file_location(f"plugins.{p.stem}", str(p))
         if spec is None or spec.loader is None:
             logger.debug("Skipping plugin %s: cannot create spec", p)
             continue
