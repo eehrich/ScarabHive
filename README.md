@@ -125,12 +125,13 @@ CI: A GitHub Actions workflow (`.github/workflows/ci.yml`) runs the test suite o
 
 This repository includes reusable prompt templates you can load into Copilot Chat or other assistant sessions to act like a persistent "system prompt".
 
-- Files: `.prompts/developer_rules.md`, `.prompts/project_objectives.md`, `.prompts/master_system_prompt.md`
+ - Files: `.prompts/developer_rules.md`, `.prompts/project_objectives.md`, `.prompts/master_system_prompt.md`
 - Intended usage: load `developer_rules.md` and `project_objectives.md` first, then run `master_system_prompt.md` as the primary system prompt. The master prompt enforces running tests, updating `README.md` and tests when behavior changes, and never leaving failing tests.
 
 How to use (Copilot Chat):
 
 1. Open the Copilot Chat prompt file action (e.g., "Chat: New Untitled Prompt File") and paste the contents, or save the files into your `.prompts` folder and use Copilot Chat's prompt file loader if available.
+2. The backlog document has moved to `backlog.md` at the repo root; scripts for validating it live under `scripts/update_backlog.py`.
 2. Run the master prompt at the start of a session so the assistant follows the repository rules.
 
 Quick test command (Windows PowerShell):

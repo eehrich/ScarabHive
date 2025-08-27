@@ -25,7 +25,7 @@ BACKLOG_SYNONYMS = '''# Backlog
 def run_script(backlog_path: Path) -> int:
     env = dict(**os.environ)
     env['BACKLOG_MD'] = str(backlog_path)
-    script = Path('.') / '.prompts' / 'scripts' / 'update_backlog.py'
+    script = Path('.') / 'scripts' / 'update_backlog.py'
     res = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
     print('stdout:', res.stdout)
     print('stderr:', res.stderr)
