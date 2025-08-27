@@ -42,6 +42,10 @@ class LoggingConfig(BaseModel):
     enabled: bool = False
     level: str = "INFO"
     file: str = "logs/agent.log"
+    # Optional explicit per-role log files. If provided, these override the
+    # role-derived naming logic used by the CLI and API startup code.
+    file_cli: Optional[str] = None
+    file_api: Optional[str] = None
     as_json: bool = False
 
 

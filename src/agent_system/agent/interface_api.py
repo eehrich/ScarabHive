@@ -32,8 +32,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
 
-    # Initialize logging
-    log_file = setup_logging(config.logging.enabled, config.logging.level, config.logging.file)
+    # Initialize logging. Use a role-specific logfile so the API server does
+    # not write into the same file as the CLI (e.g., create `logs/agent-api.log`).
+    def _role_logfile(base: str, role: str) -> str:
+        try:
+            p = Path(base)
+            stem = p.stem or "agent"
+            suffix = "".join(p.suffixes) or ".log"
+            return str(p.with_name(f"{stem}-{role}{suffix}"))
+        except Exception:
+            return str(Path("logs") / f"agent-{role}.log")
+
+    # Determine logfile for API: prefer explicit per-role setting if provided.
+    log_path = config.logging.file_api or _role_logfile(config.logging.file or "logs/agent.log", "api")
+    log_file = setup_logging(config.logging.enabled, config.logging.level, log_path)
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
 

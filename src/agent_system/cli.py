@@ -422,7 +422,23 @@ def main() -> None:
         print(json.dumps(listing, indent=2, ensure_ascii=False))
         return
     # Setup logging from config; file handler is created here. Console level is adjusted below.
-    log_file = setup_logging(config.logging.enabled, config.logging.level, config.logging.file)
+    # Use a role-specific logfile so concurrent processes (cli vs api) don't
+    # clobber the same file. If the configured file is `logs/agent.log` this
+    # will create `logs/agent-cli.log` for the CLI.
+    def _role_logfile(base: str, role: str) -> str:
+        try:
+            p = Path(base)
+            stem = p.stem or "agent"
+            # preserve all suffixes (e.g. .log)
+            suffix = "".join(p.suffixes) or ".log"
+            return str(p.with_name(f"{stem}-{role}{suffix}"))
+        except Exception:
+            # fallback to a simple role-specific name in logs/
+            return str(Path("logs") / f"agent-{role}.log")
+
+    # Determine logfile: prefer explicit per-role setting if provided in config.
+    log_path = config.logging.file_cli or _role_logfile(config.logging.file or "logs/agent.log", "cli")
+    log_file = setup_logging(config.logging.enabled, config.logging.level, log_path)
     logger = logging.getLogger(__name__)
     # If verbose not set, reduce console output to WARNING to avoid noisy logs on stdout
     if not args.verbose:
