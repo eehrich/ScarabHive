@@ -4,6 +4,7 @@ import importlib.util
 import inspect
 import logging
 from pathlib import Path
+import os
 from typing import Callable, Dict, Iterable
 import yaml
 
@@ -148,48 +149,53 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
     """
     plugins: Dict[str, Callable[..., MCPServer]] = {}
 
-    # Normalize and resolve dirs: accept Path-like objects; resolve relative
-    # paths against the repository root so `plugins` in config points to
-    # repo_root/plugins by default.
+    # Simplified directory handling:
+    # - Allow environment override via AGENT_PLUGIN_DIR or AGENT_PLUGIN_DIRS
+    # - Prefer explicitly passed `dirs` from caller (typically from config)
+    # - If none provided, fall back to repo_root/plugins
     repo_root = Path(__file__).resolve().parents[2]
-    norm_dirs: list[Path] = []
+
+    env_dirs = []
+    env_single = os.environ.get("AGENT_PLUGIN_DIR")
+    env_multi = os.environ.get("AGENT_PLUGIN_DIRS")
+    if env_single:
+        env_dirs = [p.strip() for p in env_single.split(";") if p.strip()]
+    elif env_multi:
+        env_dirs = [p.strip() for p in env_multi.split(";") if p.strip()]
+
+    # choose source dirs: explicit dirs -> env dirs -> default repo/plugins
+    source_dirs = []
     if dirs:
-        for d in dirs:
-            try:
-                # Keep original semantics for Path-like inputs: resolve relative
-                # paths against current working directory so callers that pass
-                # a Path('plugins') expecting cwd-relative behavior continue to work.
-                if isinstance(d, Path):
-                    p = d
-                    if not p.is_absolute():
-                        try:
-                            p = p.resolve()
-                        except Exception:
-                            p = Path.cwd().joinpath(p)
-                else:
-                    # for strings (likely from config), resolve against repo_root
-                    p = Path(d)
-                    if not p.is_absolute():
-                        p = repo_root.joinpath(p)
-            except Exception:
+        source_dirs = list(dirs)
+    elif env_dirs:
+        source_dirs = env_dirs
+    else:
+        source_dirs = [repo_root.joinpath("plugins")]
+
+    # Normalize each source dir to an absolute Path and discover plugins there.
+    for raw in source_dirs:
+        try:
+            if isinstance(raw, Path):
+                p = raw
+                if not p.is_absolute():
+                    # Path objects should be resolved against current working dir
+                    try:
+                        p = p.resolve()
+                    except Exception:
+                        p = Path.cwd().joinpath(p)
+            else:
+                # strings (likely from config or env) resolve relative to repo_root
+                p = Path(raw)
+                if not p.is_absolute():
+                    p = (repo_root / p).resolve()
+
+            if not p.exists():
+                # skip non-existing dirs silently
                 continue
-            norm_dirs.append(p)
-
-    # If no directories are configured or none exist, fallback to repo/plugins
-    if not norm_dirs or not any(p.exists() for p in norm_dirs):
-        repo_plugins = repo_root.joinpath("plugins")
-        if repo_plugins.exists():
-            subdirs = [d for d in repo_plugins.iterdir() if d.is_dir()]
-            norm_dirs = subdirs if subdirs else [repo_plugins]
-
-    # filesystem dirs
-    if norm_dirs:
-        for d in norm_dirs:
-            try:
-                discovered = discover_plugins(Path(d))
-                plugins.update(discovered)
-            except Exception as e:
-                logger.warning("Error discovering plugins in %s: %s", d, e)
+            discovered = discover_plugins(p)
+            plugins.update(discovered)
+        except Exception as e:
+            logger.warning("Error discovering plugins in %s: %s", raw, e)
 
     # entry point plugins
     try:
