@@ -51,5 +51,6 @@ where = ["src"]
 dev = [
     "wheel",
     "setuptools",
+    "build",
 ]
 

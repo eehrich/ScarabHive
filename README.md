@@ -129,6 +129,17 @@ python -m pytest -q
 
 See `docs/plugin_authoring.md` for a short guide and examples on writing MCP plugins. Also check `.prompts/lessons_learned.md` for repository-specific notes and guidance for maintainers and assistants.
 
+Developer setup (dev extras)
+
+To install development dependencies (packaging/test tools) into your venv, run:
+
+```powershell
+# from project root, with venv activated
+pip install -e '.[dev]'
+```
+
+This installs `wheel`, `build`, `setuptools`, and test helpers specified in `pyproject.toml` so you can run the packaging integration tests locally.
+
 
 ## License
 MIT

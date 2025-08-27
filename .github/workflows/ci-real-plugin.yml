@@ -20,9 +20,9 @@ jobs:
       - name: Create venv
         run: |
           python -m venv .venv; .venv/bin/python -m pip install --upgrade pip
-      - name: Install test deps
+      - name: Install project with dev extras
         run: |
-          .venv/bin/python -m pip install setuptools wheel pytest pytest-asyncio
+          .venv/bin/python -m pip install -e '.[dev]'
       - name: Run real plugin integration test
         run: |
           .venv/bin/python -m pytest tests/test_mcp_real_plugin_install.py -q | tee pytest-output.txt
