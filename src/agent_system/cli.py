@@ -303,8 +303,13 @@ def main() -> None:
             managed_data["mcp"] = mcp
             # atomic write only: write temp file in same dir and atomically replace target.
             try:
+                # Write managed data as YAML (not JSON) to preserve expected
+                # config formatting and allow editing by users. Keep atomic
+                # replace semantics: write to a temp file in the same dir and
+                # then atomically replace the target.
                 with tempfile.NamedTemporaryFile("w", delete=False, dir=str(managed_path.parent), encoding="utf-8") as tf:
-                    tf.write(json.dumps(managed_data, ensure_ascii=False, indent=2))
+                    # Use safe_dump with sort_keys=False to preserve order where possible
+                    yaml.safe_dump(managed_data, tf, allow_unicode=True, sort_keys=False)
                     tmp_name = tf.name
                 os.replace(tmp_name, str(managed_path))
             except Exception as e:

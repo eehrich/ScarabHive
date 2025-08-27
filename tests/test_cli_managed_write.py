@@ -31,5 +31,10 @@ def test_enable_writes_managed_file(monkeypatch, tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out.get("result") == "ok"
     assert managed.exists()
-    data = json.loads(managed.read_text())
+    text = managed.read_text()
+    try:
+        data = json.loads(text)
+    except Exception:
+        import yaml
+        data = yaml.safe_load(text)
     assert "m1" in data.get("mcp", {}).get("enabled_servers", [])
