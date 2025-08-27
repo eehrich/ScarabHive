@@ -30,6 +30,8 @@ agent-api
 
 # or: CLI
 agent-cli --help
+
+Tip: you can disable colored output with the global flag `--no-color` (or force it with `--color always`).
 ```
 
 ## Configuration

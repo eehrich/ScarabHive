@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+import os
+import tempfile
 import yaml
 
 from .config.settings import load_settings
@@ -21,35 +23,81 @@ except Exception:
     tabulate = None
 
 
+# color_mode: 'auto'|'always'|'never' - can be set from CLI --color
+color_mode = "auto"
+
+
+def _supports_color() -> bool:
+    """Return True if color output should be used based on mode/env/tty."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if color_mode == "never":
+        return False
+    if color_mode == "always":
+        return True
+    # auto
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _colorize(text: str, color_code: str) -> str:
+    """Wrap text in ANSI color codes when supported."""
+    if not _supports_color():
+        return text
+    return f"\x1b[{color_code}m{text}\x1b[0m"
+
+
+
 def main() -> None:
     # Backward-compatible: allow calling `agent-cli <task>` without an explicit subcommand.
     # If the first non-option arg isn't a known subcommand, inject an implicit 'run' subcommand.
-    argv = list(sys.argv)
-    # Normalize argv so global options (--config, -v/--verbose) are accepted
-    # even when provided after the subcommand (tests often do this).
-    globals_opts = []
-    i = 1
-    while i < len(argv):
-        if argv[i] == "--config" and i + 1 < len(argv):
-            globals_opts.extend([argv[i], argv[i + 1]])
-            del argv[i:i + 2]
-            continue
-        if argv[i] in ("-v", "--verbose"):
-            globals_opts.append(argv[i])
-            del argv[i]
-            continue
-        i += 1
+    # Use a two-stage parse: first extract global options from anywhere using parse_known_args,
+    # then parse the remaining args (subcommand + subargs). This avoids confusing option values
+    # with subcommands when we need to insert an implicit 'run'.
+    prelim = argparse.ArgumentParser(add_help=False)
+    prelim.add_argument("--config", dest="config", default=str(Path("config/agent.yaml")))
+    prelim.add_argument("-v", "--verbose", dest="verbose", action="store_true")
+    prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto")
+    prelim.add_argument("--no-color", dest="no_color", action="store_true")
+    orig_args = sys.argv[1:]
+    ns, rest = prelim.parse_known_args(orig_args)
 
-    if globals_opts:
-        argv = [argv[0]] + globals_opts + argv[1:]
+    # decide color mode early so helpers behave predictably
+    global color_mode
+    if getattr(ns, "no_color", False):
+        color_mode = "never"
+    else:
+        color_mode = getattr(ns, "color", "auto")
 
-    if len(argv) > 1 and argv[1] not in ("plugins", "run", "-h", "--help", "--config", "-v", "--verbose"):
-        # insert the 'run' subcommand so argparse handles both styles
-        argv.insert(1, "run")
+    # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
+    known = ("plugins", "run", "-h", "--help")
+    if rest:
+        if not rest[0].startswith("-") and rest[0] not in known:
+            rest.insert(0, "run")
+    else:
+        # no remaining tokens: nothing to parse further
+        rest = []
+
+    # Reconstruct final argv for full parsing: prepend any global options we care about
+    final_args = []
+    if getattr(ns, "config", None):
+        final_args.extend(["--config", ns.config])
+    if getattr(ns, "verbose", False):
+        final_args.append("--verbose")
+    if getattr(ns, "no_color", False):
+        final_args.append("--no-color")
+    elif getattr(ns, "color", "auto") != "auto":
+        final_args.extend(["--color", ns.color])
+    # append the remaining tokens (subcommand + subargs)
+    argv = [sys.argv[0]] + final_args + rest
 
     parser = argparse.ArgumentParser(description="Agent System CLI")
     parser.add_argument("--config", dest="config", default=str(Path("config/agent.yaml")), help="Path to config")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
+    parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto", help="Colorize output (auto|always|never)")
+    parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
     subparsers = parser.add_subparsers(dest="subcommand")
 
     # run subcommand (default behavior)
@@ -91,11 +139,12 @@ def main() -> None:
                 meta = getattr(factory, "_plugin_metadata", None) or {}
                 # include whether this plugin is enabled in the current config
                 enabled_set = set((config.mcp.enabled_servers or []) or [])
+                enabled_flag = name in enabled_set
                 out.append({
                     "name": name,
                     "description": meta.get("description"),
                     "version": meta.get("version"),
-                    "enabled": name in enabled_set,
+                    "enabled": enabled_flag,
                 })
             return out
 
@@ -137,7 +186,14 @@ def main() -> None:
                     print(f"{k.upper()}: {v}")
                 # show enabled status for this plugin
                 enabled_flag = target in set((config.mcp.enabled_servers or []) or [])
-                print(f"ENABLED: {enabled_flag}")
+                enabled_text = "YES" if enabled_flag else "NO"
+                display_enabled = enabled_text
+                if _supports_color():
+                    if enabled_flag:
+                        display_enabled = _colorize(enabled_text, "32")
+                    else:
+                        display_enabled = _colorize(enabled_text, "31")
+                print(f"ENABLED: {display_enabled}")
                 return
             print(json.dumps({"name": target, "metadata": meta}, indent=2, ensure_ascii=False))
             return
@@ -165,8 +221,8 @@ def main() -> None:
                 print(json.dumps({"dry_run": True, "action": intended, "preview_enabled": preview}, ensure_ascii=False))
                 return
 
-            # confirm unless --yes. If stdin is not a TTY (non-interactive/test), skip prompt.
-            if not args.yes and sys.stdin.isatty():
+            # confirm unless --yes. If stdin or stdout are not a TTY (non-interactive/test), skip prompt.
+            if not args.yes and (sys.stdin.isatty() and sys.stdout.isatty()):
                 resp = input(f"Are you sure you want to {intended} plugin '{target}'? [y/N]: ")
                 if resp.strip().lower() not in ("y", "yes"):
                     print(json.dumps({"result": "cancelled"}, ensure_ascii=False))
@@ -178,10 +234,48 @@ def main() -> None:
                 enabled.discard(target)
             mcp["enabled_servers"] = sorted(enabled)
             data["mcp"] = mcp
+            # atomic write with backup to avoid corrupting config on failure
             try:
-                cfg_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+                backup_suffix = (config.mcp.backup_suffix if getattr(config, "mcp", None) else ".bak")
+                backup_rotate = (config.mcp.backup_rotate if getattr(config, "mcp", None) else 1)
+                backup_path = cfg_path.with_suffix(cfg_path.suffix + backup_suffix)
+                # create tmp file in same directory to ensure atomic os.replace works
+                with tempfile.NamedTemporaryFile("w", delete=False, dir=str(cfg_path.parent), encoding="utf-8") as tf:
+                    tf.write(yaml.safe_dump(data))
+                    tmp_name = tf.name
+                # make backup if original exists
+                if cfg_path.exists():
+                    try:
+                        # rotate existing backups if requested
+                        if backup_rotate and backup_rotate > 1:
+                            # rotate up: .bak.N <- .bak.(N-1), ..., .bak.1 <- current
+                            for i in range(backup_rotate - 1, 0, -1):
+                                older = cfg_path.with_suffix(cfg_path.suffix + f"{backup_suffix}.{i}")
+                                newer = cfg_path.with_suffix(cfg_path.suffix + f"{backup_suffix}.{i+1}")
+                                if older.exists():
+                                    try:
+                                        os.replace(str(older), str(newer))
+                                    except Exception:
+                                        pass
+                            # move current to .bak.1
+                            first_rot = cfg_path.with_suffix(cfg_path.suffix + f"{backup_suffix}.1")
+                            os.replace(str(cfg_path), str(first_rot))
+                        else:
+                            # backup_rotate == 1 or no rotation requested: move to simple backup (e.g. .bak)
+                            os.replace(str(cfg_path), str(backup_path))
+                    except Exception:
+                        # fallback: copy contents
+                        backup_path.write_text(cfg_path.read_text(encoding="utf-8"), encoding="utf-8")
+                # atomically move temp to target
+                os.replace(tmp_name, str(cfg_path))
             except Exception as e:
                 print(json.dumps({"error": "failed to write config", "reason": str(e)}, ensure_ascii=False))
+                # cleanup temp file if present
+                try:
+                    if 'tmp_name' in locals() and os.path.exists(tmp_name):
+                        os.remove(tmp_name)
+                except Exception:
+                    pass
                 return
             print(json.dumps({"result": "ok", "enabled": mcp["enabled_servers"]}, ensure_ascii=False))
             return
@@ -215,7 +309,17 @@ def main() -> None:
         listing = to_list()
         if args.out_format == "table":
             # nice table layout using tabulate if available
-            rows = [(p.get("name") or "", "YES" if p.get("enabled") else "NO", p.get("description") or "", p.get("version") or "") for p in listing]
+            rows = []
+            for p in listing:
+                enabled_flag = bool(p.get("enabled"))
+                enabled_text = "YES" if enabled_flag else "NO"
+                display_enabled = enabled_text
+                if _supports_color():
+                    if enabled_flag:
+                        display_enabled = _colorize(enabled_text, "32")
+                    else:
+                        display_enabled = _colorize(enabled_text, "31")
+                rows.append((p.get("name") or "", display_enabled, p.get("description") or "", p.get("version") or ""))
             headers = ["NAME", "ENABLED", "DESCRIPTION", "VERSION"]
             if tabulate:
                 print(tabulate(rows, headers=headers, tablefmt="github"))
@@ -250,7 +354,6 @@ def main() -> None:
         logger.info("Logging initialized, file=%s", log_file)
     # Apply SSL bypass if configured
     if not config.network.ssl_verify:
-        import os
         os.environ["PYTHONHTTPSVERIFY"] = "0"
         os.environ.setdefault("SSL_CERT_FILE", "")
         os.environ.setdefault("CURL_CA_BUNDLE", "")

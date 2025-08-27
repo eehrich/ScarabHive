@@ -22,6 +22,10 @@ class MCPConfig(BaseModel):
     enabled_servers: list[str] = []
     # Optional list of plugin directories to discover MCP server plugins from
     plugin_dirs: list[str] = []
+    # Suffix to use for config backups when enabling/disabling plugins
+    backup_suffix: str = ".bak"
+    # How many backup rotations to keep (1 = keep only .bak, 0 = no backups)
+    backup_rotate: int = 1
 
 
 class NetworkConfig(BaseModel):
