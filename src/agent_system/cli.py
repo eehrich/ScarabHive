@@ -63,6 +63,7 @@ def main() -> None:
     prelim.add_argument("-v", "--verbose", dest="verbose", action="store_true")
     prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto")
     prelim.add_argument("--no-color", dest="no_color", action="store_true")
+    prelim.add_argument("--no-stream", dest="no_stream", action="store_true")
     orig_args = sys.argv[1:]
     ns, rest = prelim.parse_known_args(orig_args)
 
@@ -100,6 +101,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
     parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto", help="Colorize output (auto|always|never)")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
+    parser.add_argument("--no-stream", dest="no_stream", action="store_true", help="Disable live MCP call/result streaming; print only final JSON result")
     subparsers = parser.add_subparsers(dest="subcommand")
 
     # run subcommand (default behavior)
@@ -427,11 +429,126 @@ def main() -> None:
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
-    result = asyncio.run(agent.run(args.task))
+    # Stream execution and show MCP call/results on the fly in a human readable way.
+    async def _stream_and_run(agent: Agent, task: str) -> dict:
+        final_result = {"task": task, "calls": []}
+        # buffer summary to print after streaming completes so it appears at the end
+        buffered_summary = None
+        try:
+            async for ev in agent.run_events(task):
+                t = ev.get("type")
+                if t == "mcp_call":
+                    srv = ev.get("server")
+                    action = ev.get("action")
+                    params = ev.get("params") or {}
+                    # Human readable print
+                    header = f"MCP CALL -> server={srv} action={action}"
+                    if _supports_color():
+                        header = _colorize(header, "36")
+                    print(header)
+                    print(json.dumps(params, indent=2, ensure_ascii=False))
+                elif t == "mcp_result":
+                    srv = ev.get("server")
+                    action = ev.get("action")
+                    res = ev.get("result")
+                    # Append to final_result calls for JSON output
+                    final_result.setdefault("calls", []).append({"server": srv, "action": action, "result": res})
+                    header = f"MCP RESULT <- server={srv} action={action}"
+                    if _supports_color():
+                        header = _colorize(header, "32")
+                    print(header)
+                    try:
+                        print(json.dumps(res, indent=2, ensure_ascii=False))
+                    except Exception:
+                        print(str(res))
+                elif t == "thinking":
+                    # Optionally show LLM progress when verbose
+                    if args.verbose:
+                        step = ev.get("step")
+                        print(f"[LLM] thinking (step {step})")
+                elif t == "final":
+                    # buffer final summary; don't print immediately to avoid mid-stream placement
+                    summary = ev.get("summary")
+                    if summary:
+                        buffered_summary = summary
+                        final_result["summary"] = summary
+                elif t == "error":
+                    err = f"ERROR: {ev.get('message')}"
+                    if _supports_color():
+                        err = _colorize(err, "31")
+                    print(err)
+                elif t == "done":
+                    # run_events may emit a final aggregated result
+                    fr = ev.get("result")
+                    if isinstance(fr, dict):
+                        final_result = fr
+                # keep looping until 'end'
+
+            return final_result
+        except Exception as e:
+            # Fallback: surface exception as result
+            return {"task": task, "errors": [str(e)]}
+
+    if getattr(args, "no_stream", False):
+        # Use legacy blocking run and print final JSON only
+        result = asyncio.run(agent.run(args.task))
+    else:
+        result = asyncio.run(_stream_and_run(agent, args.task))
     vprint("[cli] done")
     logger.info("Task completed")
-    # Always print the JSON result to stdout for consumption
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    # Human-readable final output
+    def _pretty_print_result(res: dict) -> None:
+        # Calls (print first so summary appears at the end)
+        calls = res.get("calls", []) or []
+        if calls:
+            print("")
+            print("Tool calls:")
+            for c in calls:
+                srv = c.get("server")
+                action = c.get("action")
+                header = f"- {srv} :: {action}"
+                if _supports_color():
+                    header = _colorize(header, "36")
+                print(header)
+                result_obj = c.get("result")
+                # Render result as YAML for human readability when possible
+                try:
+                    yaml_text = yaml.safe_dump(result_obj, allow_unicode=True, sort_keys=False)
+                    for line in yaml_text.rstrip().splitlines():
+                        print(f"    {line}")
+                except Exception:
+                    # Fallback to JSON-ish string
+                    try:
+                        j = json.dumps(result_obj, ensure_ascii=False)
+                        print(f"    {j}")
+                    except Exception:
+                        print(f"    {str(result_obj)}")
+
+        # Summary (print after calls so it is the final user-visible result)
+        summary = res.get("summary")
+        if summary:
+            print("")
+            line = f"Summary: {summary}"
+            if _supports_color():
+                line = _colorize(line, "33")
+            print(line)
+
+        # Errors
+        errors = res.get("errors") or []
+        if errors:
+            print("")
+            print(_colorize("Errors:", "31") if _supports_color() else "Errors:")
+            for e in errors:
+                print(f"  - {e}")
+
+        # If verbose, print raw JSON for debugging
+        if getattr(args, "verbose", False):
+            print("")
+            print(_colorize("Raw result JSON:", "35") if _supports_color() else "Raw result JSON:")
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+
+    _pretty_print_result(result)
 
 
 if __name__ == "__main__":
