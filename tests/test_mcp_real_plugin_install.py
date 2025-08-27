@@ -17,6 +17,7 @@ FIXTURE_DIR = Path(__file__).parent / 'fixtures' / 'real_plugin'
 _HAS_PIP = shutil.which('pip') is not None
 _HAS_SETUPTOOLS = importlib.util.find_spec('setuptools') is not None
 _HAS_WHEEL = importlib.util.find_spec('wheel') is not None
+_HAS_BUILD = importlib.util.find_spec('build') is not None
 
 
 def _run_with_retries(cmd, cwd=None, retries=3, delay=1):
@@ -48,12 +49,12 @@ def _pip_uninstall(package_name):
         return False
 
 
-@pytest.mark.skipif(not (_HAS_PIP and _HAS_SETUPTOOLS and _HAS_WHEEL), reason='packaging tools (pip/setuptools/wheel) not available')
+@pytest.mark.skipif(not (_HAS_PIP and _HAS_SETUPTOOLS and _HAS_WHEEL and _HAS_BUILD), reason='packaging tools (pip/setuptools/wheel/build) not available')
 def test_build_and_install_real_plugin(tmp_path):
-    # Build wheel
+    # Build wheel using PEP 517 build tool
     dist_dir = tmp_path / 'dist'
     dist_dir.mkdir()
-    cmd_build = [sys.executable, 'setup.py', 'bdist_wheel', '--dist-dir', str(dist_dir)]
+    cmd_build = [sys.executable, '-m', 'build', '--wheel', '--outdir', str(dist_dir)]
     _run_with_retries(cmd_build, cwd=str(FIXTURE_DIR))
 
     wheels = list(dist_dir.glob('*.whl'))
