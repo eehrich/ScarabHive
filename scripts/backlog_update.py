@@ -219,7 +219,9 @@ def move_finished_epics(path: Path, dry_run: bool = False, verbose: bool = False
     # Rebuild open_text without moved blocks
     keep_lines = list(lines)
     # remove moved blocks in reverse order to keep indices valid
-    for start, end, _ in reversed(moved_blocks):
+    # moved_blocks entries contain extra diagnostic fields (norms, status_lines),
+    # use star-unpacking to remain robust if the tuple shape changes.
+    for start, end, *_ in reversed(moved_blocks):
         del keep_lines[start:end]
     new_open_text = ''.join(keep_lines)
 
@@ -228,7 +230,7 @@ def move_finished_epics(path: Path, dry_run: bool = False, verbose: bool = False
     # Keep finished_text as-is and append moved blocks at its end
     appended = ''
     today = date.today().isoformat()
-    for _, _, block in moved_blocks:
+    for _, _, block, *_ in moved_blocks:
         # add updated metadata if not present
         if '- updated:' not in block:
             # insert updated line after the epic header (first line)
