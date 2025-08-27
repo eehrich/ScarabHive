@@ -3,34 +3,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from pathlib import Path
+import logging
 import os
+import sys
 import tempfile
+from pathlib import Path
+
 import yaml
 
-from .config.settings import load_settings
-from .mcp.base import MCPRegistry
-from .servers.agent.server import Agent  # Use Agent from servers
-from .servers.bootstrap import bootstrap_servers
-from .mcp.plugins import discover_all_plugins
-from .utils.logging import setup_logging
-import logging
-import sys
-from pathlib import Path
 try:
-    from tabulate import tabulate  # type: ignore
+    from tabulate import tabulate  # optional dependency for pretty tables
 except Exception:
     tabulate = None
 
+from .config.settings import load_settings
+from .mcp.plugins import discover_all_plugins
+from .mcp.base import MCPRegistry
+from .utils.logging import setup_logging
+from .servers.bootstrap import bootstrap_servers
 
-# color_mode: 'auto'|'always'|'never' - can be set from CLI --color
-color_mode = "auto"
+# Global color mode: tests may monkeypatch this variable
+color_mode: str = "auto"
 
 
 def _supports_color() -> bool:
-    """Return True if color output should be used based on mode/env/tty."""
-    if os.environ.get("NO_COLOR"):
-        return False
+    """Return whether ANSI color sequences should be used.
+
+    Honors the global `color_mode` which tests may set to 'auto',
+    'always' or 'never'. In 'auto' mode this checks stdout.isatty().
+    """
     if color_mode == "never":
         return False
     if color_mode == "always":
@@ -182,8 +183,9 @@ def main() -> None:
             if args.out_format == "table":
                 # Print the plugin name header followed by metadata key: value lines
                 print(f"NAME: {target}")
-                for k, v in meta.items():
-                    print(f"{k.upper()}: {v}")
+                # Always print DESCRIPTION and VERSION lines (may be blank) to keep output stable
+                print(f"DESCRIPTION: {meta.get('description', '')}")
+                print(f"VERSION: {meta.get('version', '')}")
                 # show enabled status for this plugin
                 enabled_flag = target in set((config.mcp.enabled_servers or []) or [])
                 enabled_text = "YES" if enabled_flag else "NO"
@@ -211,7 +213,32 @@ def main() -> None:
                     data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                 except Exception:
                     data = {}
-            mcp = data.get("mcp", {}) or {}
+
+            # Determine where to write managed settings. If the master config declares
+            # includes or a managed_file, write to the managed file to avoid overwriting
+            # a hand-edited master config. Otherwise default to the provided cfg_path.
+            managed_path = cfg_path
+            mcp_master = data.get("mcp", {}) or {}
+            if data.get("includes") or mcp_master.get("managed_file"):
+                mf = mcp_master.get("managed_file")
+                if mf:
+                    mp = Path(mf)
+                    if not mp.is_absolute():
+                        managed_path = cfg_path.parent.joinpath(mp)
+                    else:
+                        managed_path = mp
+                else:
+                    # default managed filename next to master
+                    managed_path = cfg_path.with_name(cfg_path.stem + ".managed" + cfg_path.suffix)
+
+            # load managed data (this is what we'll update)
+            managed_data = {}
+            if managed_path.exists():
+                try:
+                    managed_data = yaml.safe_load(managed_path.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    managed_data = {}
+            mcp = managed_data.get("mcp", {}) or {}
             enabled = set(mcp.get("enabled_servers", []) or [])
 
             intended = "enable" if args.action == "enable" else "disable"
@@ -233,41 +260,44 @@ def main() -> None:
             else:
                 enabled.discard(target)
             mcp["enabled_servers"] = sorted(enabled)
-            data["mcp"] = mcp
+            # persist into the managed_data (not the master data) so we don't overwrite
+            # user-edited master config. We'll write managed_data to managed_path.
+            managed_data["mcp"] = mcp
             # atomic write with backup to avoid corrupting config on failure
             try:
                 backup_suffix = (config.mcp.backup_suffix if getattr(config, "mcp", None) else ".bak")
                 backup_rotate = (config.mcp.backup_rotate if getattr(config, "mcp", None) else 1)
-                backup_path = cfg_path.with_suffix(cfg_path.suffix + backup_suffix)
+                backup_path = managed_path.with_suffix(managed_path.suffix + backup_suffix)
                 # create tmp file in same directory to ensure atomic os.replace works
-                with tempfile.NamedTemporaryFile("w", delete=False, dir=str(cfg_path.parent), encoding="utf-8") as tf:
-                    tf.write(yaml.safe_dump(data))
+                with tempfile.NamedTemporaryFile("w", delete=False, dir=str(managed_path.parent), encoding="utf-8") as tf:
+                    # Persist managed file as JSON for stability and easier programmatic parsing
+                    tf.write(json.dumps(managed_data, ensure_ascii=False, indent=2))
                     tmp_name = tf.name
                 # make backup if original exists
-                if cfg_path.exists():
+                if managed_path.exists():
                     try:
                         # rotate existing backups if requested
                         if backup_rotate and backup_rotate > 1:
                             # rotate up: .bak.N <- .bak.(N-1), ..., .bak.1 <- current
                             for i in range(backup_rotate - 1, 0, -1):
-                                older = cfg_path.with_suffix(cfg_path.suffix + f"{backup_suffix}.{i}")
-                                newer = cfg_path.with_suffix(cfg_path.suffix + f"{backup_suffix}.{i+1}")
+                                older = managed_path.with_suffix(managed_path.suffix + f"{backup_suffix}.{i}")
+                                newer = managed_path.with_suffix(managed_path.suffix + f"{backup_suffix}.{i+1}")
                                 if older.exists():
                                     try:
                                         os.replace(str(older), str(newer))
                                     except Exception:
                                         pass
                             # move current to .bak.1
-                            first_rot = cfg_path.with_suffix(cfg_path.suffix + f"{backup_suffix}.1")
-                            os.replace(str(cfg_path), str(first_rot))
+                            first_rot = managed_path.with_suffix(managed_path.suffix + f"{backup_suffix}.1")
+                            os.replace(str(managed_path), str(first_rot))
                         else:
                             # backup_rotate == 1 or no rotation requested: move to simple backup (e.g. .bak)
-                            os.replace(str(cfg_path), str(backup_path))
+                            os.replace(str(managed_path), str(backup_path))
                     except Exception:
                         # fallback: copy contents
-                        backup_path.write_text(cfg_path.read_text(encoding="utf-8"), encoding="utf-8")
+                        backup_path.write_text(managed_path.read_text(encoding="utf-8"), encoding="utf-8")
                 # atomically move temp to target
-                os.replace(tmp_name, str(cfg_path))
+                os.replace(tmp_name, str(managed_path))
             except Exception as e:
                 print(json.dumps({"error": "failed to write config", "reason": str(e)}, ensure_ascii=False))
                 # cleanup temp file if present
