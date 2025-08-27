@@ -37,10 +37,7 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                 logger.info("Using plugin '%s' (version=%s) for server '%s': %s", typ, ver, key, desc)
             registry.register(key, factory(key, server_cfg, ssl_verify=config.network.ssl_verify))
             continue
-        if typ == "duckduckgo_search":
-            from .duckduckgo_search.server import DuckDuckGoSearchServer
-            registry.register(key, DuckDuckGoSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
-        elif typ == "google_search":
+        if typ == "google_search":
             from .google_search.server import GoogleSearchServer
             registry.register(key, GoogleSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
         elif typ == "yahoo_finance":

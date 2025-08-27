@@ -28,7 +28,7 @@ class TestMCPServerCLI:
     def test_duckduckgo_cli_help(self):
         """Test DuckDuckGo search server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.duckduckgo_search",
+            sys.executable, "-m", "plugins.duckduckgo_search",
             "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -138,9 +138,11 @@ class TestMCPServerCLI:
         
         for server in servers:
             # Use plugins package for datetime, otherwise import src shim which still exists.
-            module = f"agent_system.servers.{server}.__main__"
-            if server == "datetime":
+            # For some servers the canonical module is now under `plugins`.
+            if server in ("datetime", "duckduckgo_search"):
                 module = f"plugins.{server}.__main__"
+            else:
+                module = f"agent_system.servers.{server}.__main__"
 
             result = subprocess.run([
                 sys.executable, "-c", f"import {module}; print('OK')"
