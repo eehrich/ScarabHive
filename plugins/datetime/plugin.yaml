@@ -1,5 +1,5 @@
 name: datetime
-summary: Date/time utilities optimized for MCP usage
+description: Date/time utilities optimized for MCP usage
 version: 0.1.0
 authors:
   - name: AgentSystem
