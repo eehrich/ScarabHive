@@ -242,23 +242,18 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
     - provider=ollama: use AsyncOpenAI against Ollama's OpenAI-compatible endpoint at base_url .../v1.
     """
     if provider == "openai":
-        # openai_api_key may be provided via config; if missing, attempt to read config/agent.yaml
+        # Prefer an explicit api key passed in, otherwise honor the
+        # OPENAI_API_KEY environment variable. Avoid implicitly loading
+        # repository config files (e.g. config/agent.yaml) here because
+        # that couples runtime initialization to repository state and
+        # can break unit tests which expect no LLM to be available.
+        import os
         if not openai_api_key:
-            try:
-                # lazy import to avoid circular imports at module load
-                from ..config.loader import load_config
-                from pathlib import Path
-                cfg_path = Path("config/agent.yaml")
-                if cfg_path.exists():
-                    cfg = load_config(str(cfg_path))
-                    maybe_key = getattr(cfg.llm, "openai_api_key", None)
-                    if maybe_key:
-                        openai_api_key = maybe_key
-            except Exception:
-                # ignore errors here and fall through to raise below
-                pass
+            openai_api_key = os.getenv("OPENAI_API_KEY")
+
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
+
         return OpenAIAsyncClient(model=model, api_key=openai_api_key, timeout=float(request_timeout) if request_timeout else None)
     if provider == "ollama":
         mode = (ollama_mode or "openai_compat").lower()
