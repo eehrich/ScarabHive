@@ -47,3 +47,9 @@ mcp-datetime = "agent_system.servers.datetime.__main__:cli_main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[project.optional-dependencies]
+dev = [
+    "wheel",
+    "setuptools",
+]
+

@@ -66,6 +66,20 @@ def test_build_and_install_real_plugin(tmp_path):
         _pip_install(wheel)
         installed = True
 
+        # Wait a short time for importlib.metadata to notice the new distribution
+        import importlib.metadata as _md
+        found = False
+        for _ in range(10):
+            try:
+                dists = list(_md.distributions())
+                if any(d.metadata.get('Name', '').lower() == 'test_plugin_real' for d in dists):
+                    found = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        assert found, 'installed distribution not found by importlib.metadata'
+
         plugins_map = plugins.discover_all_plugins(dirs=[Path('plugins')])
         # Should include the real_example entrypoint
         assert 'real_example' in plugins_map

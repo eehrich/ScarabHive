@@ -97,3 +97,9 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         else:
             # ignore unknown for now
             continue
+
+    # After registration, log all registered servers for visibility
+    try:
+        logger.info("Registered MCP servers: %s", ", ".join(registry.list()))
+    except Exception:
+        logger.debug("Could not list registered servers after bootstrap")
