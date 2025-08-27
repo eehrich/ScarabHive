@@ -51,6 +51,20 @@ Testing
 - Use `discover_all_plugins()` to find both filesystem and entry-point plugins.
 - Unit tests can monkeypatch `importlib.metadata.entry_points()` to simulate installed plugins.
 
+Testing notes
+
+- For quick unit tests, monkeypatching `importlib.metadata.entry_points()` or
+    `importlib.metadata.distributions()` is fast and deterministic (see
+    `tests/test_mcp_entrypoints.py` and `tests/test_mcp_entrypoint_integration.py`).
+
+- For higher-fidelity integration tests, build and install a small test
+    package (wheel) into the test venv and assert real entry-point
+    resolution. This is slower but exercises packaging metadata and real
+    importlib.metadata behavior.
+
+- The integration tests may be async. Use `pytest-asyncio` and mark tests
+    with `@pytest.mark.asyncio` to `await` async plugin `call()` methods.
+
 Security
 
 - Treat third-party plugins as untrusted. Prefer sandboxing or process isolation for executing them in production.

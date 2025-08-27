@@ -1,6 +1,7 @@
 import types
 from importlib import metadata
 from pathlib import Path
+import pytest
 
 from agent_system.mcp import plugins
 
@@ -23,7 +24,8 @@ class FakeDist:
         return self._eps
 
 
-def test_integration_discover_entrypoint_and_filesystem(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_integration_discover_entrypoint_and_filesystem(monkeypatch, tmp_path):
     # filesystem plugin exists in project plugins/ - ensure discover_all_plugins sees it
     default_dir = Path("plugins")
     assert default_dir.exists()
@@ -64,10 +66,8 @@ def test_integration_discover_entrypoint_and_filesystem(monkeypatch, tmp_path):
     ep_server = ep_factory('ep_example', {})
 
     # Call their call() methods (filesystem plugin is async)
-    import asyncio
-
-    res1 = asyncio.run(fs_server.call())
-    res2 = asyncio.run(ep_server.call())
+    res1 = await fs_server.call()
+    res2 = await ep_server.call()
 
     assert res1['status'] == 'ok'
     assert res2['status'] == 'ep'
