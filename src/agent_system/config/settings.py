@@ -82,4 +82,26 @@ def load_settings(config_path: Optional[str] = None) -> AgentConfig:
 
     data = _expand_env(data)
 
+    # Resolve any `mcp.plugin_dirs` entries relative to the config file directory
+    # so users can specify relative paths in the YAML manifest or included files.
+    if cfg_path.exists():
+        base_dir = cfg_path.parent
+        try:
+            mcp_block = data.get("mcp") if isinstance(data, dict) else None
+            if isinstance(mcp_block, dict):
+                pdirs = mcp_block.get("plugin_dirs")
+                if isinstance(pdirs, list):
+                    resolved = []
+                    for p in pdirs:
+                        if isinstance(p, str) and p:
+                            ppath = Path(p)
+                            if not ppath.is_absolute():
+                                # Resolve relative to the config file's directory
+                                p = str((base_dir.joinpath(ppath)).resolve())
+                        resolved.append(p)
+                    data["mcp"]["plugin_dirs"] = resolved
+        except Exception:
+            # Conservative: if resolution fails for any reason, keep original values
+            pass
+
     return AgentConfig.model_validate(data)

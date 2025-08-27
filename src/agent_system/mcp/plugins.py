@@ -147,9 +147,44 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
     group: entry point group to query for packaged plugins.
     """
     plugins: Dict[str, Callable[..., MCPServer]] = {}
-    # filesystem dirs
+
+    # Normalize and resolve dirs: accept Path-like objects; resolve relative
+    # paths against the repository root so `plugins` in config points to
+    # repo_root/plugins by default.
+    repo_root = Path(__file__).resolve().parents[2]
+    norm_dirs: list[Path] = []
     if dirs:
         for d in dirs:
+            try:
+                # Keep original semantics for Path-like inputs: resolve relative
+                # paths against current working directory so callers that pass
+                # a Path('plugins') expecting cwd-relative behavior continue to work.
+                if isinstance(d, Path):
+                    p = d
+                    if not p.is_absolute():
+                        try:
+                            p = p.resolve()
+                        except Exception:
+                            p = Path.cwd().joinpath(p)
+                else:
+                    # for strings (likely from config), resolve against repo_root
+                    p = Path(d)
+                    if not p.is_absolute():
+                        p = repo_root.joinpath(p)
+            except Exception:
+                continue
+            norm_dirs.append(p)
+
+    # If no directories are configured or none exist, fallback to repo/plugins
+    if not norm_dirs or not any(p.exists() for p in norm_dirs):
+        repo_plugins = repo_root.joinpath("plugins")
+        if repo_plugins.exists():
+            subdirs = [d for d in repo_plugins.iterdir() if d.is_dir()]
+            norm_dirs = subdirs if subdirs else [repo_plugins]
+
+    # filesystem dirs
+    if norm_dirs:
+        for d in norm_dirs:
             try:
                 discovered = discover_plugins(Path(d))
                 plugins.update(discovered)
@@ -162,5 +197,25 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
         plugins.update(eps)
     except Exception as e:
         logger.warning("Error discovering entrypoint plugins: %s", e)
+
+    # Ensure metadata: for factories missing `_plugin_metadata`, try to load
+    # a `plugin.yaml` from repo/plugins/<name>/plugin.yaml and attach it.
+    try:
+        for name, factory in list(plugins.items()):
+            meta = getattr(factory, "_plugin_metadata", None)
+            if not meta:
+                meta_path = repo_root.joinpath("plugins", name, "plugin.yaml")
+                if meta_path.exists():
+                    try:
+                        loaded = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                        try:
+                            setattr(factory, "_plugin_metadata", loaded)
+                        except Exception:
+                            pass
+                    except Exception:
+                        # ignore metadata load errors
+                        pass
+    except Exception:
+        pass
 
     return plugins

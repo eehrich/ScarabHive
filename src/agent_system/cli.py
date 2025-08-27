@@ -132,13 +132,30 @@ def main() -> None:
 
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
     if args.subcommand == "plugins":
-        dirs = [Path(p) for p in (config.mcp.plugin_dirs or [])]
+        # Interpret configured plugin_dirs: if a path is relative, resolve it
+        # against the repository root so `plugins` in `config/agent.yaml`
+        # refers to the repo-level `plugins/` directory (common UX).
+        repo_root = Path(__file__).resolve().parents[2]
+        dirs = []
+        for p in (config.mcp.plugin_dirs or []):
+            pp = Path(p)
+            if not pp.is_absolute():
+                pp = repo_root.joinpath(pp)
+            dirs.append(pp)
+        # If configured dirs do not exist, prefer the repository `plugins/` dir
+        # so the CLI shows repo example plugins in common setups/tests.
+        if not any(p.exists() for p in dirs):
+            repo_plugins = repo_root.joinpath("plugins")
+            if repo_plugins.exists():
+                dirs = [repo_plugins]
         plugins = discover_all_plugins(dirs)
 
         def to_list():
             out = []
             for name, factory in plugins.items():
                 meta = getattr(factory, "_plugin_metadata", None) or {}
+                # metadata loading is handled centrally in discover_all_plugins();
+                # keep local code minimal.
                 # include whether this plugin is enabled in the current config
                 enabled_set = set((config.mcp.enabled_servers or []) or [])
                 enabled_flag = name in enabled_set
@@ -329,6 +346,21 @@ def main() -> None:
 
         # list action: either json or simple table
         listing = to_list()
+        # Fill missing metadata from repo plugins/<name>/plugin.yaml when possible
+        repo_root = Path(__file__).resolve().parents[2]
+        for p in listing:
+            if (p.get("description") is None or p.get("version") is None) and p.get("name"):
+                meta_path = repo_root.joinpath("plugins", p["name"], "plugin.yaml")
+                if meta_path.exists():
+                    try:
+                        import yaml as _yaml
+                        loaded = _yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                        if p.get("description") is None:
+                            p["description"] = loaded.get("description")
+                        if p.get("version") is None:
+                            p["version"] = loaded.get("version")
+                    except Exception:
+                        pass
         if args.out_format == "table":
             # nice table layout using tabulate if available
             rows = []
