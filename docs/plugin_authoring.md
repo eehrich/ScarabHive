@@ -16,7 +16,24 @@ Plugin contract
 
 Minimal example (filesystem plugin)
 
-Create `plugins/example_plugin.py` with:
+Recommended folder layout
+
+Each plugin should live in its own folder under `plugins/` with the
+entrypoint file named `plugin.py`. This allows the plugin to include
+auxiliary modules, resources, or data files.
+
+Example layout:
+
+```
+plugins/
+    example/
+        plugin.py
+        utils.py
+        templates/
+            ...
+```
+
+Create `plugins/example/plugin.py` with:
 
 ```python
 PLUGIN_NAME = "example"

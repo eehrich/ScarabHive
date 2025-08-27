@@ -29,6 +29,12 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         # If a plugin provides this type, use it
         if typ in plugins:
             factory = plugins[typ]
+            # Attach metadata-aware logging if plugin provides metadata
+            meta = getattr(factory, '_plugin_metadata', None)
+            if meta:
+                desc = meta.get('description') or meta.get('summary') or ''
+                ver = meta.get('version') or ''
+                logger.info("Using plugin '%s' (version=%s) for server '%s': %s", typ, ver, key, desc)
             registry.register(key, factory(key, server_cfg, ssl_verify=config.network.ssl_verify))
             continue
         if typ == "duckduckgo_search":

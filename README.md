@@ -140,6 +140,31 @@ pip install -e '.[dev]'
 
 This installs `wheel`, `build`, `setuptools`, and test helpers specified in `pyproject.toml` so you can run the packaging integration tests locally.
 
+Plugin examples
+
+`plugin.py` can expose either a `register()` function or `PLUGIN_NAME`/`PLUGIN_FACTORY` constants. Example:
+
+register() example (in `plugins/foo/plugin.py`):
+
+```python
+def register():
+  def factory(name, cfg, ssl_verify=True):
+    return MyServer(name, cfg, ssl_verify)
+  return "foo", factory
+```
+
+PLUGIN_* example:
+
+```python
+PLUGIN_NAME = "foo"
+
+class MyServer:
+  def __init__(self, name, cfg=None, ssl_verify=True):
+    self.name = name
+
+PLUGIN_FACTORY = MyServer
+```
+
 
 ## License
 MIT

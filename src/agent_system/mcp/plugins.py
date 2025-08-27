@@ -5,6 +5,7 @@ import inspect
 import logging
 from pathlib import Path
 from typing import Callable, Dict, Iterable
+import yaml
 
 from .base import MCPServer
 
@@ -22,6 +23,57 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
     if not path or not path.exists() or not path.is_dir():
         return out
 
+    # Support two layouts:
+    # 1) plugin as a single python file: plugins/foo.py
+    # 2) plugin as a package folder: plugins/foo/plugin.py (recommended)
+
+    # First, discover plugin folders with plugin.py
+    for d in path.iterdir():
+        if d.is_dir():
+            plugin_file = d / "plugin.py"
+            if plugin_file.exists():
+                spec = importlib.util.spec_from_file_location(f"{d.name}.plugin", str(plugin_file))
+                if spec is None or spec.loader is None:
+                    logger.debug("Skipping plugin %s: cannot create spec", plugin_file)
+                    continue
+                mod = importlib.util.module_from_spec(spec)
+                try:
+                    spec.loader.exec_module(mod)
+                except Exception as e:
+                    logger.warning("Failed to load plugin module %s: %s", plugin_file, e)
+                    continue
+
+                # same registration logic as single-file plugins
+                try:
+                    if hasattr(mod, "register") and inspect.isfunction(mod.register):
+                        name, factory = mod.register()
+                        out[name] = factory
+                        continue
+                except Exception as e:
+                    logger.warning("Plugin %s register() failed: %s", plugin_file, e)
+                    continue
+
+                name = getattr(mod, "PLUGIN_NAME", None)
+                factory = getattr(mod, "PLUGIN_FACTORY", None)
+                # Load optional plugin metadata file (plugin.yaml) if present
+                metadata = None
+                meta_file = d / "plugin.yaml"
+                if meta_file.exists():
+                    try:
+                        with open(meta_file, 'r', encoding='utf-8') as fh:
+                            metadata = yaml.safe_load(fh) or {}
+                    except Exception as e:
+                        logger.warning("Failed to read metadata %s: %s", meta_file, e)
+
+                if name and factory:
+                    # attach metadata to factory for downstream use
+                    try:
+                        setattr(factory, '_plugin_metadata', metadata)
+                    except Exception:
+                        pass
+                    out[name] = factory
+
+    # Then, discover legacy single-file plugins for backward compatibility
     for p in path.glob("*.py"):
         spec = importlib.util.spec_from_file_location(p.stem, str(p))
         if spec is None or spec.loader is None:
