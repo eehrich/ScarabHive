@@ -64,6 +64,7 @@ def main() -> None:
     prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto")
     prelim.add_argument("--no-color", dest="no_color", action="store_true")
     prelim.add_argument("--no-stream", dest="no_stream", action="store_true")
+    prelim.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
     orig_args = sys.argv[1:]
     ns, rest = prelim.parse_known_args(orig_args)
 
@@ -93,6 +94,13 @@ def main() -> None:
         final_args.append("--no-color")
     elif getattr(ns, "color", "auto") != "auto":
         final_args.extend(["--color", ns.color])
+    # Forward streaming/raw flags parsed in the preliminary stage so the
+    # final parser receives the same intent (these flags may have been
+    # placed anywhere on the command line by the user).
+    if getattr(ns, "no_stream", False):
+        final_args.append("--no-stream")
+    if getattr(ns, "raw", False):
+        final_args.append("--raw")
     # append the remaining tokens (subcommand + subargs)
     argv = [sys.argv[0]] + final_args + rest
 
@@ -102,6 +110,7 @@ def main() -> None:
     parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto", help="Colorize output (auto|always|never)")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
     parser.add_argument("--no-stream", dest="no_stream", action="store_true", help="Disable live MCP call/result streaming; print only final JSON result")
+    parser.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
     subparsers = parser.add_subparsers(dest="subcommand")
 
     # run subcommand (default behavior)
@@ -548,7 +557,16 @@ def main() -> None:
             print(_colorize("Raw result JSON:", "35") if _supports_color() else "Raw result JSON:")
             print(json.dumps(res, indent=2, ensure_ascii=False))
 
-    _pretty_print_result(result)
+    # If raw requested, print JSON and exit. Ensure output is flushed so
+    # test harnesses and non-interactive environments capture it.
+    if getattr(args, "raw", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
+    else:
+        _pretty_print_result(result)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
