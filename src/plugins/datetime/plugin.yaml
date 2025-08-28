@@ -1,9 +1,7 @@
 name: datetime
 description: Date/time utilities optimized for MCP usage
 version: 0.1.0
-authors:
-  - name: AgentSystem
-    email: dev@example.com
+author: "Enrico Ehrich"
 capabilities:
   - datetime
   - parse
