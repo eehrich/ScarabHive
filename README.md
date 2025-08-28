@@ -84,15 +84,22 @@ API endpoints (FastAPI):
 3. Start the API in terminal A and leave it running.
 4. Reproduce issues or run tests in terminal B.
 
+Using VS Code launch configurations (recommended)
+- Ensure VS Code uses the project venv: open the Command Palette -> `Python: Select Interpreter` and pick `.venv/Scripts/python.exe`.
+- Open the Run and Debug view (Ctrl+Shift+D) and choose one of the launch configurations:
+  - `Launch Agent API (module)` — starts the API module under the debugger.
+  - `Agent CLI (module) — with args` — prompts for CLI args (for example: `run "What is the time in Nitra/Slovakia?"`).
+  - `Debug pytest (module) — run single test or folder` — prompts for pytest target (for example `tests/test_cli.py::test_case` or `tests/`).
+- When prompted for inputs, enter the desired args or pytest target and start debugging. Breakpoints will bind to your source code.
+
 Tips:
-- To run a single test with an interactive debugger:
+- To run a single test with an interactive debugger (pytest + pdb fallback):
 
 ```bash
 python -m pytest tests/test_example.py::test_case -q -s --maxfail=1 --pdb
 ```
 
 - Increase logging for troubleshooting: edit `config/agent.yaml` and set `logging.level: DEBUG`. Logs are written to `logs/` (for example `logs/agent.log`, `logs/cli.log`, `logs/api.log`).
-- In VS Code, pick the `.venv` Python interpreter before launching the debugger so breakpoints bind correctly.
 - If Windows PowerShell blocks activation, prefer Git Bash or CMD to avoid ExecutionPolicy issues.
 
 ## Configuration

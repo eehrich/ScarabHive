@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Launch Agent API (module)",
+      "module": "agent_system.agent.interface_api",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Agent CLI (module) — with args",
+      "module": "agent_system.cli",
+      "args": [
+        "${input:cliArgs}"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Debug pytest (module) — run single test or folder",
+      "module": "pytest",
+      "args": [
+        "${input:pytestTest}"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    }
+  ],
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "cliArgs",
+      "description": "Arguments to pass to agent-cli (e.g. \"\"\"run 'my task' --option value\"\"\")"
+    },
+    {
+      "type": "promptString",
+      "id": "pytestTest",
+      "description": "pytest target to run (e.g. tests/test_cli.py::test_case or tests/)"
+    }
+  ]
+}
