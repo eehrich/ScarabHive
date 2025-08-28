@@ -1,0 +1,52 @@
+---
+# Configurable backlog values for status lists and symbol mappings.
+# This file is optional; the code will fall back to sensible defaults if absent.
+allowed_statuses:
+  - open
+  - done
+  - closed
+  - complete
+  - finished
+  - resolved
+  - in progress
+  - todo
+  - reverted
+  - rejected
+  - cancelled
+
+finish_statuses:
+  - done
+  - closed
+  - complete
+  - finished
+  - implemented
+  - fixed
+
+symbol_map:
+  "☐": open
+  "✅": done
+  "❌": failed
+  "⏳": "in progress"
+
+word_map:
+  done: done
+  implemented: done
+  finished: done
+  resolved: done
+  closed: done
+  completed: done
+  open: open
+  "in progress": "in progress"
+  started: "in progress"
+  failed: failed
+  reverted: reverted
+  rejected: rejected
+  cancelled: cancelled
+
+acceptable_terminal:
+  - done
+  - reverted
+  - rejected
+  - cancelled
+  - implemented
+  - fixed

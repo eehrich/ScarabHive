@@ -12,6 +12,7 @@ from typing import List, Optional, Dict, Tuple
 import re
 import os
 from datetime import date
+from . import values
 import shutil
 import time
 
@@ -150,11 +151,26 @@ def build_markdown(backlog: Backlog) -> str:
         lines.append("## 1. Epics - open")
         lines.append("")
     for e in backlog.epics_open:
-        lines.append(f"- ☐ Epic {e.id}: {e.title}")
+        # Use configured symbol for open epic where available
+        sym = None
+        sym_map = values.get('symbol_map', {}) or {}
+        for k, v in sym_map.items():
+            if v == (e.status or '').strip().lower():
+                sym = k
+                break
+        sym = sym or '☐'
+        lines.append(f"- {sym} Epic {e.id}: {e.title}")
         lines.append(f"  - status: {e.status}")
         lines.append(f"  - Subtasks:")
         for t in e.subtasks:
-            lines.append(f"    - ☐ Task {t.id}: {t.title}")
+            # task symbol resolved from status
+            task_sym = None
+            for k, v in sym_map.items():
+                if v == (t.status or '').strip().lower():
+                    task_sym = k
+                    break
+            task_sym = task_sym or '☐'
+            lines.append(f"    - {task_sym} Task {t.id}: {t.title}")
             lines.append(f"      - status: {t.status}")
             if t.added:
                 lines.append(f"      - added: {t.added}")
@@ -317,7 +333,8 @@ def update_task_status(backlog: Backlog, task_id: str, new_status: str) -> Task:
     _, task = find_task(backlog, task_id)
     task.status = new_status
     lower = (new_status or "").strip().lower()
-    if lower in ("done", "closed", "complete", "finished"):
+    finish_list = set(values.get('finish_statuses', ["done", "closed", "complete", "finished"]))
+    if lower in finish_list:
         if not task.closed:
             task.closed = date.today().isoformat()
     else:
@@ -371,7 +388,7 @@ def validate_backlog(backlog: Backlog) -> list[str]:
                 errors.append(f"bad date (closed) for task {t.id}: {t.closed}")
 
     # status values
-    allowed = {"open", "done", "closed", "complete", "finished", "resolved", "in progress", "todo"}
+    allowed = set(values.get('allowed_statuses', ["open", "done", "closed", "complete", "finished", "resolved", "in progress", "todo"]))
     for e in backlog.epics_open + backlog.epics_finished:
         if e.status and e.status.strip().lower() not in allowed:
             errors.append(f"unknown epic status for {e.id}: {e.status}")

@@ -181,27 +181,21 @@ def _normalize_status(s: str) -> str | None:
     if not s:
         return None
     s0 = s.strip().lower()
-    SYM = {
-        '\u2610': 'open',
-        '☐': 'open',
-        '\u2705': 'done',
-        '✅': 'done',
-        '\u274c': 'failed',
-        '❌': 'failed',
-        '\u23f3': 'in progress',
-        '⏳': 'in progress',
-    }
+    from scripts.backlog_tool import values
+    SYM = values.get('symbol_map', {
+        '\u2610': 'open', '☐': 'open', '\u2705': 'done', '✅': 'done', '\u274c': 'failed', '❌': 'failed', '\u23f3': 'in progress', '⏳': 'in progress'
+    })
     if s0 in SYM:
         return SYM[s0]
     import re
     s_clean = re.sub(r"[^a-z0-9 ]+", '', s0)
-    WORD_MAP = {
+    WORD_MAP = values.get('word_map', {
         'done': 'done', 'implemented': 'done', 'finished': 'done', 'resolved': 'done', 'closed': 'done', 'completed': 'done',
         'open': 'open', 'in progress': 'in progress', 'started': 'in progress',
         'failed': 'failed', 'reverted': 'reverted', 'revert': 'reverted',
         'rejected': 'rejected', 'reject': 'rejected',
         'cancelled': 'cancelled', 'canceled': 'cancelled', 'cancel': 'cancelled', 'aborted': 'cancelled'
-    }
+    })
     if s_clean in WORD_MAP:
         return WORD_MAP[s_clean]
     first = s_clean.split()[0] if s_clean else ''
@@ -239,9 +233,10 @@ def cmd_update(args: argparse.Namespace) -> int:
         return 3
 
     # status validation
+    from scripts.backlog_tool import values as bl_values
     status_lines = re.findall(r"^\s*-\s*status:\s*(.+)$", txt, flags=re.M)
     bad = []
-    canonical = {'done', 'open', 'failed', 'in progress', 'reverted', 'rejected', 'cancelled'}
+    canonical = set(bl_values.get('allowed_statuses', ['done', 'open', 'failed', 'in progress', 'reverted', 'rejected', 'cancelled']))
     for s in status_lines:
         norm = _normalize_status(s)
         if not norm or norm not in canonical:
@@ -276,7 +271,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         blocks.append((start, end))
 
     moved_blocks = []
-    acceptable_terminal = {'done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed'}
+    acceptable_terminal = set(bl_values.get('acceptable_terminal', ['done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed']))
     for start, end in blocks:
         block_text = ''.join(lines[start:end])
         subtasks_match = re.search(r"-\s*Subtasks:\s*", block_text, flags=re.I)
