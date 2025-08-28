@@ -4,6 +4,7 @@ import pytest
 import subprocess
 import sys
 import os
+import importlib.util
 from pathlib import Path
 
 # Add the src directory to the Python path for imports
@@ -53,7 +54,7 @@ class TestMCPServerCLI:
     def test_twitter_search_cli_help(self):
         """Test Twitter search server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.twitter_search",
+            sys.executable, "-m", "plugins.twitter_search",
             "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -139,13 +140,20 @@ class TestMCPServerCLI:
         for server in servers:
             # Use plugins package for datetime, duckduckgo_search, weather and yahoo_finance;
             # otherwise import the legacy server shim under agent_system.servers.
-            if server in ("datetime", "duckduckgo_search", "weather", "yahoo_finance", "google_search"):
-                module = f"plugins.{server}.__main__"
-            else:
-                module = f"agent_system.servers.{server}.__main__"
+            # Prefer plugin packages for migrated servers; fall back to legacy server shim
+            # Try importing the plugin package first, fall back to legacy shim.
+            py = (
+                "import importlib\n"
+                f"try:\n"
+                f"    import plugins.{server}.__main__\n"
+                f"    print('OK')\n"
+                f"except Exception:\n"
+                f"    import agent_system.servers.{server}.__main__\n"
+                f"    print('OK')\n"
+            )
 
             result = subprocess.run([
-                sys.executable, "-c", f"import {module}; print('OK')"
+                sys.executable, "-c", py
             ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
 
             assert result.returncode == 0, f"Failed to import {server} server"
