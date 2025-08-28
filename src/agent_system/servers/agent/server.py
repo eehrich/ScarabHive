@@ -78,6 +78,7 @@ class Agent(MCPServer):
                             config.llm.context_window,
                             getattr(config.llm, "ollama_mode", None),
                             getattr(config.llm, "request_timeout", None),
+                            ssl_verify=getattr(config, "network").ssl_verify if getattr(config, "network", None) else None,
                         )
                 except Exception as e:
                     # Missing API key is an expected situation in test/dev

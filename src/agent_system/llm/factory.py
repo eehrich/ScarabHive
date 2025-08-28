@@ -35,6 +35,12 @@ class LLMFactory:
 
         llm_cfg = self.agent_config.llm
         # Pass explicit values from config to make_llm so creation is explicit
+        # Propagate network SSL verification setting into the LLM client creation
+        ssl_verify = None
+        try:
+            ssl_verify = getattr(self.agent_config, "network").ssl_verify
+        except Exception:
+            ssl_verify = None
         return make_llm(
             llm_cfg.provider,
             llm_cfg.model,
@@ -43,4 +49,5 @@ class LLMFactory:
             getattr(llm_cfg, "context_window", None),
             getattr(llm_cfg, "ollama_mode", None),
             getattr(llm_cfg, "request_timeout", None),
+            ssl_verify=ssl_verify,
         )

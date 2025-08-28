@@ -36,18 +36,45 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
             raise RuntimeError("openai package required for OpenAIAsyncClient") from e
         self._AsyncOpenAI = AsyncOpenAI
         kwargs: dict = {"api_key": api_key}
+        # Allow SDK base_url/timeout as before
         if base_url:
             kwargs["base_url"] = base_url
         if timeout is not None:
             kwargs["timeout"] = timeout
-        self._client = AsyncOpenAI(**kwargs)
+
+        # If a custom 'verify' flag is provided, create an httpx.AsyncClient with that verify
+        # and try to pass it into the OpenAI SDK if it accepts a custom httpx client.
+        httpx_client = None
+        if verify is not None:
+            try:
+                import httpx as _httpx
+                httpx_client = _httpx.AsyncClient(verify=verify, timeout=timeout)
+            except Exception:
+                httpx_client = None
+
+        # Try the known parameter names for a custom httpx client; fall back to letting the SDK create its own client
+        if httpx_client is not None:
+            # Try arguments that different SDK versions might accept.
+            for param in ("httpx_client", "http_client", "client"):
+                try:
+                    _kwargs = dict(kwargs)
+                    _kwargs[param] = httpx_client
+                    self._client = AsyncOpenAI(**_kwargs)
+                    break
+                except Exception:
+                    self._client = None
+            if self._client is None:
+                # Last attempt: pass kwargs without client and let SDK handle network behavior
+                self._client = AsyncOpenAI(**kwargs)
+        else:
+            self._client = AsyncOpenAI(**kwargs)
         # Retry/backoff configuration
         self._retry_max_attempts = int(max_attempts)
         self._retry_base_backoff = float(base_backoff)
@@ -367,7 +394,7 @@ class OllamaNativeAsyncClient(LLMClient):
         return {"assistant": out}
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None) -> LLMClient:
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -386,7 +413,7 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
 
-        return OpenAIAsyncClient(model=model, api_key=openai_api_key, timeout=float(request_timeout) if request_timeout else None)
+    return OpenAIAsyncClient(model=model, api_key=openai_api_key, timeout=float(request_timeout) if request_timeout else None, verify=ssl_verify)
     if provider == "ollama":
         mode = (ollama_mode or "openai_compat").lower()
         if mode == "native":
@@ -398,5 +425,5 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
         # else: OpenAI-compatible path
         base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
         api_key = "ollama"  # required by SDK, ignored by Ollama
-        return OpenAIAsyncClient(model=model, api_key=api_key, base_url=base, timeout=float(request_timeout) if request_timeout else None)
+    return OpenAIAsyncClient(model=model, api_key=api_key, base_url=base, timeout=float(request_timeout) if request_timeout else None, verify=ssl_verify)
     raise ValueError(f"Unknown LLM provider: {provider}")

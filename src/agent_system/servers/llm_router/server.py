@@ -31,6 +31,7 @@ class LLMRouterServer(MCPServer):
             self.context_window,
             self.ollama_mode,
             self.request_timeout,
+            ssl_verify=self.ssl_verify,
         )
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
