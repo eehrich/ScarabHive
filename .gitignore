@@ -9,6 +9,9 @@ build/
 .vscode/*.log
 logs/
 *.log
-
+.backupa/
+    
 # Local debug helpers (not committed)
 tools/debug/
+tmp*
+
