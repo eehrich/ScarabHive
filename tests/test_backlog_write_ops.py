@@ -1,4 +1,122 @@
 import importlib
+from pathlib import Path
+
+
+def make_minimal_backlog(path: Path, epic_id: str = None) -> None:
+    content = [
+        "# Backlog",
+        "",
+        "## 1. Epics - open",
+        "",
+    ]
+    if epic_id:
+        content.extend([
+            f"- ☐ Epic {epic_id}: Sample Epic",
+            "  - status: open",
+            "  - Subtasks:",
+            "",
+        ])
+    content.extend(["## 2. Epics - finished", ""]) 
+    path.write_text("\n".join(content), encoding="utf-8")
+
+
+def test_add_epic_write_creates_backup(tmp_path):
+    mod = importlib.import_module("scripts.backlog")
+    p = tmp_path / "backlog.md"
+    make_minimal_backlog(p)
+    rc = mod.main(["add-epic", "--title", "New Epic", "--file", str(p), "--write"])
+    assert rc == 0
+    text = p.read_text(encoding="utf-8")
+    assert "Epic" in text
+    backups = (p.parent / ".backups")
+    assert backups.exists()
+    files = list(backups.glob(p.name + ".*.bak"))
+    assert files, "Expected a backup file to be created"
+
+
+def test_add_task_write_appends_task_and_backup(tmp_path):
+    mod = importlib.import_module("scripts.backlog")
+    p = tmp_path / "backlog.md"
+    make_minimal_backlog(p, epic_id="0018")
+    rc = mod.main(["add-task", "--title", "New Task", "--epic", "0018", "--file", str(p), "--write"])
+    assert rc == 0
+    text = p.read_text(encoding="utf-8")
+    assert "Task" in text
+    backups = (p.parent / ".backups")
+    assert backups.exists()
+    files = list(backups.glob(p.name + ".*.bak"))
+    assert files
+
+
+def test_add_task_write_requires_epic(tmp_path, capfd):
+    """Using --write without --epic should fail with an error and non-zero return."""
+    mod = importlib.import_module("scripts.backlog")
+    p = tmp_path / "backlog.md"
+    make_minimal_backlog(p)
+    rc = mod.main(["add-task", "--title", "Orphan Task", "--file", str(p), "--write"])
+    assert rc != 0
+    out, err = capfd.readouterr()
+    assert "--epic is required when using --write" in err
+
+
+def test_fix_format_reassigns_duplicates_and_backups(tmp_path):
+    mod = importlib.import_module("scripts.backlog")
+    p = tmp_path / "backlog.md"
+    # create a backlog with duplicate task ids and placeholder closed
+    lines = [
+        "# Backlog",
+        "",
+        "## 1. Epics - open",
+        "",
+        "- ☐ Epic 0001: Dup Epic",
+        "  - status: open",
+        "  - Subtasks:",
+        "    - ☐ Task 0001: First",
+        "      - status: open",
+        "      - added: 2025-08-28",
+        "    - ☐ Task 0001: Second",
+        "      - status: open",
+        "      - closed: —",
+        "",
+        "## 2. Epics - finished",
+        "",
+    ]
+    p.write_text("\n".join(lines), encoding="utf-8")
+    rc = mod.main(["fix-format", "--file", str(p), "--write"])
+    assert rc == 0
+    # parse result: no duplicate ids
+    from scripts.backlog_tool import parser as bl
+    blines = bl.read_file(str(p))
+    backlog = bl.parse(blines)
+    ids = [t.id for e in backlog.epics_open + backlog.epics_finished for t in e.subtasks]
+    assert len(ids) == len(set(ids)), "Expected duplicate task ids to be reassigned"
+    backups = (p.parent / ".backups")
+    assert backups.exists()
+    files = list(backups.glob(p.name + ".*.bak"))
+    assert files
+
+
+def test_check_ids_detects_duplicates(tmp_path):
+    mod = importlib.import_module("scripts.backlog")
+    p = tmp_path / "backlog.md"
+    lines = [
+        "# Backlog",
+        "",
+        "## 1. Epics - open",
+        "",
+        "- ☐ Epic 0002: Example",
+        "  - status: open",
+        "  - Subtasks:",
+        "    - ☐ Task 0100: A",
+        "    - ☐ Task 0100: B",
+        "",
+        "## 2. Epics - finished",
+        "",
+    ]
+    p.write_text("\n".join(lines), encoding="utf-8")
+    rc = mod.main(["check-ids", "--file", str(p)])
+    assert rc != 0
+import importlib
 from scripts.backlog_tool import parser as bl
 
 SAMPLE = """
