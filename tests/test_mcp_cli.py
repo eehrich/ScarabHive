@@ -139,7 +139,7 @@ class TestMCPServerCLI:
         for server in servers:
             # Use plugins package for datetime, duckduckgo_search, weather and yahoo_finance;
             # otherwise import the legacy server shim under agent_system.servers.
-            if server in ("datetime", "duckduckgo_search", "weather", "yahoo_finance"):
+            if server in ("datetime", "duckduckgo_search", "weather", "yahoo_finance", "google_search"):
                 module = f"plugins.{server}.__main__"
             else:
                 module = f"agent_system.servers.{server}.__main__"

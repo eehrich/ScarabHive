@@ -1,3 +1,3 @@
 description: "Google Custom Search plugin wrapper around legacy implementation. Requires `api_key` and `cx` in server config or via CLI args/env vars."
-version: "0.1"
+version: "0.1.0"
 author: "Automated Migration"
