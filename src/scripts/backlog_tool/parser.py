@@ -142,6 +142,27 @@ def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional
     raise KeyError(f"epic {epic_id} not found")
 
 
+def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open') -> Epic:
+    """Create a new epic with a unique zero-padded 4-digit id and append to epics_open.
+
+    The id generator finds the next unused numeric id (0000..9999) not present
+    in existing epics.
+    """
+    existing = {e.id for e in backlog.epics_open + backlog.epics_finished}
+    # find next available numeric id
+    for i in range(0, 10000):
+        cand = f"{i:04d}"
+        if cand not in existing:
+            new_id = cand
+            break
+    else:
+        raise RuntimeError("no available epic ids")
+
+    e = Epic(id=new_id, title=title, status=status, subtasks=[], raw_lines=[])
+    backlog.epics_open.append(e)
+    return e
+
+
 def build_markdown(backlog: Backlog) -> str:
     lines: List[str] = []
     lines.extend(backlog.header)
@@ -397,4 +418,73 @@ def validate_backlog(backlog: Backlog) -> list[str]:
                 errors.append(f"unknown task status for {t.id}: {t.status}")
 
     return errors
+
+
+def reassign_duplicate_task_ids(backlog: Backlog) -> list[Tuple[str, str]]:
+    """Find duplicate task ids and reassign new unique ids.
+
+    Returns list of tuples (old_id, new_id) for changed tasks.
+    """
+    all_ids: list[str] = []
+    for e in backlog.epics_open + backlog.epics_finished:
+        for t in e.subtasks:
+            all_ids.append(t.id)
+    dup = {i for i in all_ids if all_ids.count(i) > 1}
+    changed: list[Tuple[str, str]] = []
+    if not dup:
+        return changed
+
+    existing = set(all_ids)
+    # helper to make next available id (0000..9999)
+    def next_id(start=0):
+        for i in range(start, 10000):
+            cand = f"{i:04d}"
+            if cand not in existing:
+                existing.add(cand)
+                return cand
+        raise RuntimeError("no available task ids")
+
+    for e in backlog.epics_open + backlog.epics_finished:
+        for t in e.subtasks:
+            if t.id in dup:
+                newid = next_id()
+                changed.append((t.id, newid))
+                t.id = newid
+    return changed
+
+
+def normalize_backlog_format(backlog: Backlog) -> list[str]:
+    """Normalize status tokens and empty/placeholder dates; returns list of change descriptions."""
+    changes: list[str] = []
+    from . import values as _values
+    allowed = set(_values.get('allowed_statuses', []))
+    finish_list = set(_values.get('finish_statuses', []))
+    for e in backlog.epics_open + backlog.epics_finished:
+        # normalize epic status word
+        if e.status:
+            norm = e.status.strip()
+            n = norm.lower()
+            # map symbols or words
+            mapped = None
+            for k, v in _values.get('symbol_map', {}).items():
+                if k == norm or k == norm.strip():
+                    mapped = v
+                    break
+            if not mapped:
+                mapped = _values.get('word_map', {}).get(n, n)
+            if mapped != e.status:
+                changes.append(f"epic {e.id} status: {e.status} -> {mapped}")
+                e.status = mapped
+        for t in e.subtasks:
+            if t.status:
+                n = t.status.strip().lower()
+                mapped = _values.get('word_map', {}).get(n, t.status)
+                if mapped != t.status:
+                    changes.append(f"task {t.id} status: {t.status} -> {mapped}")
+                    t.status = mapped
+            # normalize placeholder closed dates like em-dash '—' or dash
+            if t.closed and t.closed.strip() in ('—', '-', '—'):
+                changes.append(f"task {t.id} closed: {t.closed} -> ''")
+                t.closed = None
+    return changes
 

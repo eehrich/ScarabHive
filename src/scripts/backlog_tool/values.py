@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-import yaml
+try:
+    import yaml
+except Exception:
+    # PyYAML may not be installed in every test or runtime environment.
+    yaml = None
 
 _config: dict | None = None
 
@@ -49,6 +53,10 @@ def load() -> dict:
         _config = defaults
         return _config
 
+    if yaml is None:
+        # PyYAML not available in this environment; skip loading file
+        _config = defaults
+        return _config
     try:
         with open(cfg_path, 'r', encoding='utf-8') as fh:
             data = yaml.safe_load(fh) or {}

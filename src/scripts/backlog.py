@@ -40,20 +40,37 @@ def cmd_add_task(args: argparse.Namespace) -> int:
     # Dry-run add: print a formatted snippet that would be inserted
     now = date.today().isoformat()
     entry = []
-    entry.append(f"- ☐ Task XXXX: {args.title}")
+    entry.append(f"- \u2610 Task XXXX: {args.title}")
     entry.append(f"  - status: open")
     entry.append(f"  - added: {now}")
-    if args.notes:
+    if getattr(args, "notes", None):
         entry.append("  - Notes:")
         for line in args.notes.splitlines():
             entry.append(f"    - {line}")
     print("Dry-run: task entry to insert:")
     print("\n".join(entry))
+
+    if getattr(args, "write", False):
+        # when persisting changes, an epic id is required
+        if not getattr(args, "epic", None):
+            print("ERROR: --epic is required when using --write", file=sys.stderr)
+            return 2
+        from scripts.backlog_tool import parser as bl
+        path = args.file or "backlog.md"
+        lines = bl.read_file(path)
+        backlog = bl.parse(lines)
+        try:
+            t = bl.add_task_to_epic(backlog, args.epic, args.title, getattr(args, "notes", None))
+        except KeyError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+        bak = bl.make_backup(path)
+        bl.safe_write(path, bl.build_markdown(backlog))
+        print(f"Created task {t.id} under epic {args.epic}; backup: {bak}")
     return 0
 
 
 def cmd_move_task(args: argparse.Namespace) -> int:
-    # Move a task between epics (dry-run by default)
     from scripts.backlog_tool import parser as bl
 
     path = args.file or "backlog.md"
@@ -65,9 +82,25 @@ def cmd_move_task(args: argparse.Namespace) -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
     print(f"Dry-run: moved task {args.task} -> epic {args.to_epic} (new id: {moved.id})")
-    if args.write:
+    if getattr(args, "write", False):
+        bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
-        print(f"Wrote changes to {path}")
+        print(f"Wrote changes to {path}; backup: {bak}")
+    return 0
+
+
+def cmd_add_epic(args: argparse.Namespace) -> int:
+    from scripts.backlog_tool import parser as bl
+    path = args.file or "backlog.md"
+    # Dry-run: show what would be added
+    print(f"Dry-run: create epic -> title: {args.title}")
+    if args.write:
+        lines = bl.read_file(path)
+        backlog = bl.parse(lines)
+        e = bl.add_epic_to_backlog(backlog, args.title)
+        bak = bl.make_backup(path)
+        bl.safe_write(path, bl.build_markdown(backlog))
+        print(f"Created epic {e.id}; backup: {bak}")
     return 0
 
 
@@ -83,9 +116,10 @@ def cmd_update_status(args: argparse.Namespace) -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
     print(f"Dry-run: updated task {args.task} status -> {updated.status} (closed: {updated.closed})")
-    if args.write:
+    if getattr(args, "write", False):
+        bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
-        print(f"Wrote changes to {path}")
+        print(f"Wrote changes to {path}; backup: {bak}")
     return 0
 
 
@@ -121,6 +155,49 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_ids(args: argparse.Namespace) -> int:
+    from scripts.backlog_tool import parser as bl
+    path = args.file or "backlog.md"
+    lines = bl.read_file(path)
+    backlog = bl.parse(lines)
+    # detect duplicate task ids
+    task_ids: list[str] = []
+    for e in backlog.epics_open + backlog.epics_finished:
+        for t in e.subtasks:
+            task_ids.append(t.id)
+    dup_tasks = {i for i in task_ids if task_ids.count(i) > 1}
+    if dup_tasks:
+        print("Duplicate task ids:")
+        for d in sorted(dup_tasks):
+            print(d)
+        return 1
+    print("No duplicate task ids found")
+    return 0
+
+
+def cmd_fix_format(args: argparse.Namespace) -> int:
+    from scripts.backlog_tool import parser as bl
+
+    path = args.file or "backlog.md"
+    lines = bl.read_file(path)
+    backlog = bl.parse(lines)
+    id_changes = bl.reassign_duplicate_task_ids(backlog)
+    norm_changes = bl.normalize_backlog_format(backlog)
+    if not id_changes and not norm_changes:
+        print("No formatting or id issues found")
+        return 0
+    print("Planned changes:")
+    for old, new in id_changes:
+        print(f"reassign: {old} -> {new}")
+    for c in norm_changes:
+        print(c)
+    if getattr(args, "write", False):
+        bak = bl.make_backup(path)
+        bl.safe_write(path, bl.build_markdown(backlog))
+        print(f"Applied fixes; backup: {bak}")
+    return 0
+
+
 def cmd_undo(args: argparse.Namespace) -> int:
     from scripts.backlog_tool import parser as bl
     import os
@@ -129,6 +206,14 @@ def cmd_undo(args: argparse.Namespace) -> int:
     if not os.path.exists(path):
         print(f"ERROR: backlog file not found: {path}", file=sys.stderr)
         return 2
+    backups = bl.list_backups(path)
+    if not backups:
+        print("No backups found", file=sys.stderr)
+        return 3
+    # restore last backup by default
+    bl.restore_backup(path, backups[-1])
+    print(f"Restored backup: {backups[-1]}")
+    return 0
     backups = bl.list_backups(path)
     if not backups:
         print("No backups found", file=sys.stderr)
@@ -349,9 +434,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("add-task", help="Dry-run add a new task")
     a.add_argument("--title", required=True, help="Task title")
+    # make --epic optional for dry-run compatibility; required when --write is used
+    a.add_argument("--epic", required=False, help="Epic id to add the task under")
     a.add_argument("--notes", help="Optional notes text")
     a.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    a.add_argument("--write", action="store_true", help="Persist changes to file")
     a.set_defaults(func=cmd_add_task)
+
+    ae = sub.add_parser("add-epic", help="Create a new epic")
+    ae.add_argument("--title", required=True, help="Epic title")
+    ae.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    ae.add_argument("--write", action="store_true", help="Persist changes to file")
+    ae.set_defaults(func=cmd_add_epic)
 
     m = sub.add_parser("move-task", help="Move a task to another epic")
     m.add_argument("--task", required=True, help="Task id to move")
@@ -384,6 +478,15 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--choose", action="store_true", help="Interactively choose a backup to restore")
     r.add_argument("--backup", help="Restore a specific backup file path (exact match from --list)")
     r.set_defaults(func=cmd_undo)
+
+    c = sub.add_parser("check-ids", help="Check for duplicate task ids")
+    c.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    c.set_defaults(func=cmd_check_ids)
+
+    f = sub.add_parser("fix-format", help="Normalize status tokens and reassign duplicate ids")
+    f.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    f.add_argument("--write", action="store_true", help="Apply fixes and persist to file")
+    f.set_defaults(func=cmd_fix_format)
 
     # legacy compatibility: expose the `update` command used by older scripts/tests
     up = sub.add_parser("update", help="Validate and move finished epics (compat shim)")
