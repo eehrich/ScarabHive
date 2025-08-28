@@ -44,6 +44,7 @@ mcp-twitter-search = "plugins.twitter_search.__main__:cli_main"
 mcp-llm-router = "plugins.llm_router.__main__:cli_main"
 mcp-weather = "plugins.weather.__main__:main"
 mcp-datetime = "plugins.datetime.__main__:cli_main"
+backlog = "scripts.backlog:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
