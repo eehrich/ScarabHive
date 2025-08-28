@@ -1,4 +1,5 @@
 name: duckduckgo_search
-version: 0.1.0
-description: DuckDuckGo web search plugin (wraps ddgs or duckduckgo-search packages)
 author: "Enrico Ehrich"
+version: 0.1.0
+description: "DuckDuckGo web search plugin (wraps ddgs or duckduckgo-search packages)"
+entrypoint: plugin:PLUGIN_FACTORY

@@ -1,7 +1,8 @@
 name: datetime
-description: Date/time utilities optimized for MCP usage
-version: 0.1.0
 author: "Enrico Ehrich"
+version: 0.1.0
+description: "Date/time utilities optimized for MCP usage"
+entrypoint: plugin:PLUGIN_FACTORY
 capabilities:
   - datetime
   - parse
