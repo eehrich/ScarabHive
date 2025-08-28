@@ -3,7 +3,7 @@ from pathlib import Path
 from agent_system.mcp.plugins import discover_all_plugins
 
 
-def test_duckduckgo_plugin_discovered():
+def test_weather_plugin_discovered():
     repo_root = Path(__file__).resolve().parents[1]
     default_dir = repo_root / 'plugins'
     if not default_dir.exists():
@@ -11,8 +11,7 @@ def test_duckduckgo_plugin_discovered():
         if alt.exists():
             default_dir = alt
     plugins = discover_all_plugins([default_dir])
-    assert 'duckduckgo_search' in plugins
-    factory = plugins['duckduckgo_search']
-    # Ensure factory is callable / instantiable
-    inst = factory('duckduckgo_search', {})
+    assert 'weather' in plugins
+    factory = plugins['weather']
+    inst = factory('weather', {})
     assert inst is not None

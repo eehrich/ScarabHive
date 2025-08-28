@@ -7,13 +7,11 @@ from urllib.parse import quote
 
 
 async def fetch_wttr(location: str, days: int, units: str, ssl_verify: bool) -> dict[str, Any]:
-    """Fetch weather from wttr.in - extracted from WeatherServer._fetch_wttr."""
     try:
         import httpx
     except ImportError:
         raise RuntimeError("httpx package required for weather server")
 
-    # wttr.in only provides 3 days maximum
     days = min(days, 3)
 
     unit_param = "M" if units == "metric" else "u" if units == "imperial" else "M"
@@ -75,7 +73,6 @@ async def fetch_wttr(location: str, days: int, units: str, ssl_verify: bool) -> 
 
 
 async def fetch_weather_gov(location: str, days: int, units: str, ssl_verify: bool) -> dict[str, Any]:
-    """Fetch weather from weather.gov - extracted from WeatherServer._fetch_weather_gov."""
     try:
         import httpx
     except ImportError:
@@ -151,7 +148,6 @@ async def fetch_weather_gov(location: str, days: int, units: str, ssl_verify: bo
 
 
 async def fetch_marine_weather_gov(location: str, days: int, units: str, ssl_verify: bool, include_marine: bool = True) -> dict[str, Any]:
-    """Fetch marine weather from NOAA - extracted from WeatherServer._fetch_marine_weather_gov."""
     try:
         import httpx
     except ImportError:
@@ -221,7 +217,6 @@ async def fetch_marine_weather_gov(location: str, days: int, units: str, ssl_ver
 
         if include_marine:
             try:
-                # Simplified, estimated SST generation for demonstration
                 current_date = datetime.date.today()
                 for day in range(days):
                     forecast_date = current_date + datetime.timedelta(days=day)
@@ -255,7 +250,6 @@ async def fetch_marine_weather_gov(location: str, days: int, units: str, ssl_ver
 
 
 async def fetch_met_no(location: str, days: int, units: str, ssl_verify: bool) -> dict[str, Any]:
-    """Fetch weather from met.no - extracted from WeatherServer._fetch_met_no."""
     try:
         import httpx
     except ImportError:

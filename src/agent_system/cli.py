@@ -143,23 +143,13 @@ def main() -> None:
 
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
     if args.subcommand == "plugins":
-        # Interpret configured plugin_dirs: if a path is relative, resolve it
-        # against the repository root so `plugins` in `config/agent.yaml`
-        # refers to the repo-level `plugins/` directory (common UX).
-        repo_root = Path(__file__).resolve().parents[2]
-        dirs = []
-        for p in (config.mcp.plugin_dirs or []):
-            pp = Path(p)
-            if not pp.is_absolute():
-                pp = repo_root.joinpath(pp)
-            dirs.append(pp)
-        # If configured dirs do not exist, prefer the repository `plugins/` dir
-        # so the CLI shows repo example plugins in common setups/tests.
-        if not any(p.exists() for p in dirs):
-            repo_plugins = repo_root.joinpath("plugins")
-            if repo_plugins.exists():
-                dirs = [repo_plugins]
-        plugins = discover_all_plugins(dirs)
+        # Use the configured plugin_dirs from the loaded settings. The
+        # `load_settings()` call resolves relative paths against the
+        # config file directory, so we can trust these paths as provided by
+        # the user. If no plugin dirs are configured, pass None to
+        # `discover_all_plugins()` to discover only entrypoint plugins.
+        dirs = [Path(p) for p in (config.mcp.plugin_dirs or []) if p]
+        plugins = discover_all_plugins(dirs if dirs else None)
 
         def to_list():
             out = []
@@ -373,21 +363,11 @@ def main() -> None:
 
         # list action: either json or simple table
         listing = to_list()
-        # Fill missing metadata from repo plugins/<name>/plugin.yaml when possible
-        repo_root = Path(__file__).resolve().parents[2]
-        for p in listing:
-            if (p.get("description") is None or p.get("version") is None) and p.get("name"):
-                meta_path = repo_root.joinpath("plugins", p["name"], "plugin.yaml")
-                if meta_path.exists():
-                    try:
-                        import yaml as _yaml
-                        loaded = _yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
-                        if p.get("description") is None:
-                            p["description"] = loaded.get("description")
-                        if p.get("version") is None:
-                            p["version"] = loaded.get("version")
-                    except Exception:
-                        pass
+    # Metadata should have been attached by discover_all_plugins() when
+    # filesystem plugin dirs were provided. If any metadata is still
+    # missing, leave it blank rather than attempting to read repository
+    # paths — callers should configure plugin_dirs in `mcp.yaml` if
+    # they expect filesystem plugin metadata to be used.
         if args.out_format == "table":
             # nice table layout using tabulate if available
             rows = []

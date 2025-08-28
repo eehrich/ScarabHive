@@ -3,7 +3,7 @@ Simplified tests for the Weather MCP server implementation.
 """
 import pytest
 
-from agent_system.servers.weather.server import WeatherServer
+from plugins.weather.server import WeatherServer
 
 
 class TestWeatherServer:

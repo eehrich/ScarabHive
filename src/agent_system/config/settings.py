@@ -82,10 +82,20 @@ def load_settings(config_path: Optional[str] = None) -> AgentConfig:
 
     data = _expand_env(data)
 
-    # Resolve any `mcp.plugin_dirs` entries relative to the config file directory
-    # so users can specify relative paths in the YAML manifest or included files.
+    # Resolve any `mcp.plugin_dirs` entries. We attempt to preserve user
+    # intent when paths are relative: first resolve relative to the
+    # configuration file directory (so includes relative to the managed file
+    # keep local paths), but if that resolution yields a non-existing path and
+    # the same relative path exists relative to the repository root (parent of
+    # the config directory), prefer that. This allows common entries like
+    # `src/plugins` in `mcp.yaml` to refer to the repository `src` tree while
+    # keeping resolution predictable.
     if cfg_path.exists():
         base_dir = cfg_path.parent
+        # repository root is assumed to be parent of the config dir when
+        # config lives in a `config/` subdirectory; fall back to base_dir if
+        # the parent is not meaningful.
+        repo_root = cfg_path.parent.parent if cfg_path.parent.parent.exists() else base_dir
         try:
             mcp_block = data.get("mcp") if isinstance(data, dict) else None
             if isinstance(mcp_block, dict):
@@ -96,8 +106,25 @@ def load_settings(config_path: Optional[str] = None) -> AgentConfig:
                         if isinstance(p, str) and p:
                             ppath = Path(p)
                             if not ppath.is_absolute():
-                                # Resolve relative to the config file's directory
-                                p = str((base_dir.joinpath(ppath)).resolve())
+                                # Try config-folder-relative first
+                                try:
+                                    candidate = (base_dir.joinpath(ppath)).resolve()
+                                except Exception:
+                                    candidate = base_dir.joinpath(ppath)
+                                # If that candidate doesn't exist but an equivalent
+                                # path exists relative to the repo root, prefer the
+                                # repo-root-relative path (handles `src/...`).
+                                if not candidate.exists():
+                                    try:
+                                        repo_candidate = (repo_root.joinpath(ppath)).resolve()
+                                    except Exception:
+                                        repo_candidate = repo_root.joinpath(ppath)
+                                    if repo_candidate.exists():
+                                        p = str(repo_candidate)
+                                    else:
+                                        p = str(candidate)
+                                else:
+                                    p = str(candidate)
                         resolved.append(p)
                     data["mcp"]["plugin_dirs"] = resolved
         except Exception:

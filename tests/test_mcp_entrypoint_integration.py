@@ -26,8 +26,12 @@ class FakeDist:
 
 @pytest.mark.asyncio
 async def test_integration_discover_entrypoint_and_filesystem(monkeypatch, tmp_path):
-    # filesystem plugin exists in project plugins/ - ensure discover_all_plugins sees it
+    # filesystem plugin exists in project plugins/ (or src/plugins/) - ensure discover_all_plugins sees it
     default_dir = Path("plugins")
+    if not default_dir.exists():
+        alt = Path("src") / "plugins"
+        if alt.exists():
+            default_dir = alt
     assert default_dir.exists()
 
     # create a fake entry point that points to a factory returning an ExampleServer

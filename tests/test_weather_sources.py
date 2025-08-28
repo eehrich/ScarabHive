@@ -2,7 +2,7 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
-from agent_system.servers.weather import sources
+from plugins.weather import sources
 
 
 @pytest.mark.asyncio

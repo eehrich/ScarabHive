@@ -37,12 +37,12 @@ Homepage = "https://example.com"
 [project.scripts]
 agent-cli = "agent_system.cli:main"
 agent-api = "agent_system.agent.interface_api:run"
-mcp-duckduckgo-search = "agent_system.servers.duckduckgo_search.__main__:cli_main"
-mcp-google-search = "agent_system.servers.google_search.__main__:cli_main"
-mcp-yahoo-finance = "agent_system.servers.yahoo_finance.__main__:cli_main"
-mcp-twitter-search = "agent_system.servers.twitter_search.__main__:cli_main"
-mcp-llm-router = "agent_system.servers.llm_router.__main__:cli_main"
-mcp-weather = "agent_system.servers.weather.__main__:cli_main"
+mcp-duckduckgo-search = "plugins.duckduckgo_search.__main__:cli_main"
+mcp-google-search = "plugins.google_search.__main__:cli_main"
+mcp-yahoo-finance = "plugins.yahoo_finance.__main__:cli_main"
+mcp-twitter-search = "plugins.twitter_search.__main__:cli_main"
+mcp-llm-router = "plugins.llm_router.__main__:cli_main"
+mcp-weather = "plugins.weather.__main__:main"
 mcp-datetime = "plugins.datetime.__main__:cli_main"
 
 [tool.setuptools.packages.find]

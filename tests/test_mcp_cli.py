@@ -15,7 +15,7 @@ class TestMCPServerCLI:
     def test_weather_cli_help(self):
         """Test weather server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.weather",
+            sys.executable, "-m", "plugins.weather",
             "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -106,7 +106,7 @@ class TestMCPServerCLI:
         """Test that --server flag is recognized."""
         # Test with weather server
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.weather",
+            sys.executable, "-m", "plugins.weather",
             "--server", "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -117,7 +117,7 @@ class TestMCPServerCLI:
     def test_cli_invalid_arguments(self):
         """Test CLI with invalid arguments."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.weather",
+            sys.executable, "-m", "plugins.weather",
             "--invalid-argument"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -137,9 +137,9 @@ class TestMCPServerCLI:
         ]
         
         for server in servers:
-            # Use plugins package for datetime, otherwise import src shim which still exists.
-            # For some servers the canonical module is now under `plugins`.
-            if server in ("datetime", "duckduckgo_search"):
+            # Use plugins package for datetime, duckduckgo_search, weather; otherwise
+            # import the legacy server shim under agent_system.servers.
+            if server in ("datetime", "duckduckgo_search", "weather"):
                 module = f"plugins.{server}.__main__"
             else:
                 module = f"agent_system.servers.{server}.__main__"
@@ -147,6 +147,6 @@ class TestMCPServerCLI:
             result = subprocess.run([
                 sys.executable, "-c", f"import {module}; print('OK')"
             ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
-            
+
             assert result.returncode == 0, f"Failed to import {server} server"
             assert "OK" in result.stdout, f"Import test failed for {server}"

@@ -12,10 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
-    # Discover plugins from configured plugin directories plus default ./plugins
-    default_dir = Path("plugins")
-    dirs = [default_dir] + [Path(p) for p in (config.mcp.plugin_dirs or [])]
-    plugins = discover_all_plugins(dirs=dirs)
+    # Discover plugins from configured plugin directories only. The
+    # `config.mcp.plugin_dirs` entries are expected to be resolved by the
+    # settings loader; here we convert them to Path objects and forward them
+    # to the discovery routine. If no plugin_dirs are configured, skip
+    # filesystem discovery and rely only on entrypoint plugins.
+    configured = config.mcp.plugin_dirs or []
+    dirs = [Path(p) for p in configured if p]
+    plugins = discover_all_plugins(dirs=dirs if dirs else None)
 
     # Log discovered plugins for visibility at startup
     if plugins:
@@ -52,9 +56,8 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         elif typ == "web_scraper":
             from .web_scraper.server import WebScraperServer
             registry.register(key, WebScraperServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
-        elif typ == "weather":
-            from .weather.server import WeatherServer
-            registry.register(key, WeatherServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
+    # legacy weather server removed; prefer plugin discovery above. If a
+    # non-plugin implementation is required in future, add it here.
         elif typ == "agent":
             # Direct agent type - Agent extends MCPServer so can be used directly
             from .agent.server import Agent

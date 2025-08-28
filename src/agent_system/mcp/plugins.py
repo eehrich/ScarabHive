@@ -185,28 +185,12 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
     """
     plugins: Dict[str, Callable[..., MCPServer]] = {}
 
-    # Simplified directory handling:
-    # - Allow environment override via AGENT_PLUGIN_DIR or AGENT_PLUGIN_DIRS
-    # - Prefer explicitly passed `dirs` from caller (typically from config)
-    # - If none provided, fall back to repo_root/plugins
-    repo_root = Path(__file__).resolve().parents[2]
-
-    env_dirs = []
-    env_single = os.environ.get("AGENT_PLUGIN_DIR")
-    env_multi = os.environ.get("AGENT_PLUGIN_DIRS")
-    if env_single:
-        env_dirs = [p.strip() for p in env_single.split(";") if p.strip()]
-    elif env_multi:
-        env_dirs = [p.strip() for p in env_multi.split(";") if p.strip()]
-
-    # choose source dirs: explicit dirs -> env dirs -> default repo/plugins
-    source_dirs = []
-    if dirs:
-        source_dirs = list(dirs)
-    elif env_dirs:
-        source_dirs = env_dirs
-    else:
-        source_dirs = [repo_root.joinpath("plugins")]
+    # Use only explicitly provided `dirs` for filesystem discovery. Do not
+    # fall back to repository defaults or environment variables here — callers
+    # (CLI/bootstrap) should pass configured plugin directories from the
+    # loaded `mcp` configuration. If `dirs` is falsy, skip filesystem
+    # discovery and rely only on entrypoint plugins.
+    source_dirs = list(dirs) if dirs else []
 
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
@@ -223,7 +207,12 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
                 # strings (likely from config or env) resolve relative to repo_root
                 p = Path(raw)
                 if not p.is_absolute():
-                    p = (repo_root / p).resolve()
+                    # resolve relative to current working dir when caller
+                    # supplied a relative path
+                    try:
+                        p = p.resolve()
+                    except Exception:
+                        p = Path.cwd().joinpath(p)
 
             if not p.exists():
                 # skip non-existing dirs silently
@@ -241,23 +230,27 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
         logger.warning("Error discovering entrypoint plugins: %s", e)
 
     # Ensure metadata: for factories missing `_plugin_metadata`, try to load
-    # a `plugin.yaml` from repo/plugins/<name>/plugin.yaml and attach it.
-    try:
-        for name, factory in list(plugins.items()):
-            meta = getattr(factory, "_plugin_metadata", None)
-            if not meta:
-                meta_path = repo_root.joinpath("plugins", name, "plugin.yaml")
-                if meta_path.exists():
-                    try:
-                        loaded = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+    # a `plugin.yaml` from the configured filesystem plugin directories (if
+    # any were provided). This avoids hardcoding repository-level paths.
+    if source_dirs:
+        try:
+            for name, factory in list(plugins.items()):
+                meta = getattr(factory, "_plugin_metadata", None)
+                if not meta:
+                    for d in source_dirs:
                         try:
-                            setattr(factory, "_plugin_metadata", loaded)
+                            dp = Path(d)
+                            meta_path = dp.joinpath(name, "plugin.yaml")
+                            if meta_path.exists():
+                                loaded = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                                try:
+                                    setattr(factory, "_plugin_metadata", loaded)
+                                except Exception:
+                                    pass
+                                break
                         except Exception:
-                            pass
-                    except Exception:
-                        # ignore metadata load errors
-                        pass
-    except Exception:
-        pass
+                            continue
+        except Exception:
+            pass
 
     return plugins
