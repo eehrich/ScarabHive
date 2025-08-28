@@ -40,7 +40,7 @@ class TestMCPServerCLI:
     def test_yahoo_finance_cli_help(self):
         """Test Yahoo Finance server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.yahoo_finance",
+            sys.executable, "-m", "plugins.yahoo_finance",
             "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -137,9 +137,9 @@ class TestMCPServerCLI:
         ]
         
         for server in servers:
-            # Use plugins package for datetime, duckduckgo_search, weather; otherwise
-            # import the legacy server shim under agent_system.servers.
-            if server in ("datetime", "duckduckgo_search", "weather"):
+            # Use plugins package for datetime, duckduckgo_search, weather and yahoo_finance;
+            # otherwise import the legacy server shim under agent_system.servers.
+            if server in ("datetime", "duckduckgo_search", "weather", "yahoo_finance"):
                 module = f"plugins.{server}.__main__"
             else:
                 module = f"agent_system.servers.{server}.__main__"
