@@ -79,7 +79,7 @@ class TestMCPServerCLI:
     def test_google_search_cli_help(self):
         """Test Google Search server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.google_search",
+            sys.executable, "-m", "plugins.google_search",
             "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         

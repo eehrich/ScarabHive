@@ -56,9 +56,7 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                 # continue to try other servers
             continue
             continue
-        if typ == "google_search":
-            from .google_search.server import GoogleSearchServer
-            registry.register(key, GoogleSearchServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
+    # google_search migrated to plugins; discovery will provide the factory.
     # yahoo_finance migrated to plugin package; filesystem or entrypoint discovery
     # will provide the factory when configured via `mcp.plugin_dirs` or entrypoints.
         elif typ == "twitter_search":
