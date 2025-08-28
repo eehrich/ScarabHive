@@ -1,0 +1,5 @@
+name: twitter_search
+author: "Enrico Ehrich"
+version: 0.1.0
+description: "Twitter Search MCP server plugin (informational fallback due to API restrictions)"
+entrypoint: plugin:PLUGIN_FACTORY
