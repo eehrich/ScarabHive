@@ -4,6 +4,10 @@ from typing import Optional, Any
 import json
 import re
 import uuid
+import asyncio
+import random
+
+import httpx
 
 from pydantic import BaseModel
 import logging
@@ -53,9 +57,43 @@ class OpenAIAsyncClient(LLMClient):
         try:
             opts = {"model": self.model, "messages": [m.model_dump() for m in messages]}
             opts.update(self._default_extra)
-            resp = await self._client.chat.completions.create(
-                **opts,
-            )
+            # Retry loop for transient 429 responses
+            max_attempts = 5
+            base_backoff = 1.0
+            resp = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = await self._client.chat.completions.create(**opts)
+                    break
+                except Exception as e:
+                    status = None
+                    resp_obj = getattr(e, "response", None)
+                    if isinstance(e, httpx.HTTPStatusError) or (resp_obj is not None):
+                        try:
+                            status = int(getattr(resp_obj, "status_code", None) or 0)
+                        except Exception:
+                            status = None
+                    # If rate limited, honor Retry-After when present and backoff
+                    if status == 429:
+                        retry_after = None
+                        try:
+                            hdr = getattr(resp_obj, "headers", {}) or {}
+                            ra = hdr.get("retry-after")
+                            if ra is not None:
+                                # try integer seconds first
+                                try:
+                                    retry_after = float(ra)
+                                except Exception:
+                                    # ignore parse error; fall back to exponential backoff
+                                    retry_after = None
+                        except Exception:
+                            retry_after = None
+                        wait = float(retry_after) if retry_after is not None else min(60.0, base_backoff * (2 ** (attempt - 1))) + random.random() * 0.5
+                        logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                        await asyncio.sleep(wait)
+                        continue
+                    # Not a rate-limit we can retry, re-raise to be handled below
+                    raise
             # Log lightly to avoid huge dumps
             try:
                 logger.debug("OpenAI resp id=%s choices=%d", getattr(resp, "id", None), len(getattr(resp, "choices", []) or []))
@@ -124,7 +162,39 @@ class OpenAIAsyncClient(LLMClient):
         try:
             opts = {"model": self.model, "messages": msgs, "tools": tools, "tool_choice": "auto"}
             opts.update(self._default_extra)
-            resp = await self._client.chat.completions.create(**opts)
+            # Retry loop for transient 429 responses
+            max_attempts = 5
+            base_backoff = 1.0
+            resp = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = await self._client.chat.completions.create(**opts)
+                    break
+                except Exception as e:
+                    status = None
+                    resp_obj = getattr(e, "response", None)
+                    if isinstance(e, httpx.HTTPStatusError) or (resp_obj is not None):
+                        try:
+                            status = int(getattr(resp_obj, "status_code", None) or 0)
+                        except Exception:
+                            status = None
+                    if status == 429:
+                        retry_after = None
+                        try:
+                            hdr = getattr(resp_obj, "headers", {}) or {}
+                            ra = hdr.get("retry-after")
+                            if ra is not None:
+                                try:
+                                    retry_after = float(ra)
+                                except Exception:
+                                    retry_after = None
+                        except Exception:
+                            retry_after = None
+                        wait = float(retry_after) if retry_after is not None else min(60.0, base_backoff * (2 ** (attempt - 1))) + random.random() * 0.5
+                        logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                        await asyncio.sleep(wait)
+                        continue
+                    raise
             choice = resp.choices[0] if resp.choices else None
             if not choice:
                 return {"assistant": {"role": "assistant", "content": ""}}
