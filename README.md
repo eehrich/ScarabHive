@@ -1,49 +1,104 @@
-AgentSystem — Flexible MCP-based Agent Framework (Python)
-# AgentSystem — MCP-based Agent Framework
+# AgentSystem — Flexible MCP-based Agent Framework (Python)
 
 A lightweight, pluggable agent framework that composes LLMs and tool servers using the Model Context Protocol (MCP).
 
-This README is a short, focused developer and user guide that matches the current repository layout and behavior.
+This README is a concise developer and user guide matching this repository layout.
 
-## Quickstart (Windows PowerShell)
+## Quick links
+- Code: `src/agent_system`
+- Config: all yaml files in `config/`
+- Docs: `docs/`
+- Logfiles: `logs/` - AgentSystem logfiles. cli and api
+- Plugins: `plugins/`
+- Tests: `tests/` (pytest)
+- Prompts for assistant sessions: `.prompts/` and `.github/`
+- Helper Scripts: `scripts/`
+- Ticketsystem/Backlog: `backlog.md`
+- Python-ProjectSetup: `pyenvironment.toml`
 
-1) Create and activate a virtual environment
+## Requirements
+- Python 3.11+
+- Git (for development)
+- Optional: API key(s) for LLM providers (configured via env vars or `config/agent.yaml`)
 
-```powershell
-python -m venv .venv; . .venv/Scripts/Activate.ps1
+## Recommended shell on Windows
+On Windows we recommend Git Bash for interactive debugging and venv activation. PowerShell examples remain supported but may require setting ExecutionPolicy.
+
+## Quickstart (Git Bash — recommended on Windows)
+1. Create and activate a virtualenv (Git Bash):
+
+```bash
+python -m venv .venv
+source .venv/Scripts/activate
 ```
 
-2) Install the project (editable)
+(PowerShell alternative)
 
 ```powershell
+python -m venv .venv
+. .venv/Scripts/Activate.ps1    # may require changing ExecutionPolicy
+```
+
+(CMD alternative)
+
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+2. Install the project (editable):
+
+```bash
 pip install -U pip
 pip install -e .
 ```
 
-3) Run tests
+3. Run tests:
 
-```powershell
+```bash
 python -m pytest -q
 ```
 
-4) Start the API (separate terminal)
+## How to use
+- CLI: `agent-cli "Your question or task"` or `agent-cli --help`
+- API: start the HTTP API in a separate, activated terminal and call the endpoints below.
 
-```powershell
+Start the API (recommended in a second terminal):
+
+```bash
+# with venv activated in the terminal
+python -m agent_system.agent.interface_api
+# or the convenience wrapper (if installed in PATH)
 agent-api
 ```
 
-Or use the CLI
+API endpoints (FastAPI):
+- `GET /health` — health check
+- `GET /config` — returns loaded configuration
+- `POST /run?task=...` — run a task and return final result
+- `GET /events?task=...` — SSE stream of MCP events
 
-```powershell
-agent-cli --help
-agent-cli "What is the time in Nitra/Slovakia?"
+## How to debug
+1. Use two terminals: one for the API, one for running tests / CLI commands. Do not run a long-lived server and tests in the same terminal.
+2. Activate the venv in both terminals (see Quickstart).
+3. Start the API in terminal A and leave it running.
+4. Reproduce issues or run tests in terminal B.
+
+Tips:
+- To run a single test with an interactive debugger:
+
+```bash
+python -m pytest tests/test_example.py::test_case -q -s --maxfail=1 --pdb
 ```
 
+- Increase logging for troubleshooting: edit `config/agent.yaml` and set `logging.level: DEBUG`. Logs are written to `logs/` (for example `logs/agent.log`, `logs/cli.log`, `logs/api.log`).
+- In VS Code, pick the `.venv` Python interpreter before launching the debugger so breakpoints bind correctly.
+- If Windows PowerShell blocks activation, prefer Git Bash or CMD to avoid ExecutionPolicy issues.
+
 ## Configuration
+Primary manifest: `config/agent.yaml`. The manifest may include other files (recommended for MCP-specific settings) via `includes:`. The CLI writes only to included managed files (for example `mcp.yaml`) when managing MCP settings.
 
-The repo uses `config/agent.yaml` as the master manifest. The manifest may include other files using `includes:` (recommended for MCP-specific settings). The CLI will not overwrite the master manifest when managing MCP settings — it writes only to included managed files (for example `mcp.yaml`).
-
-Minimal configuration snippet (important options):
+Example minimal snippet:
 
 ```yaml
 llm:
@@ -63,9 +118,9 @@ network:
 logging:
   enabled: true
   level: DEBUG
-  file: logs/agent.log       # legacy single-file config
-  file_cli: logs/cli.log     # optional: explicit CLI log file
-  file_api: logs/api.log     # optional: explicit API log file
+  file: logs/agent.log
+  file_cli: logs/cli.log
+  file_api: logs/api.log
   as_json: false
 
 prompts:
@@ -74,128 +129,40 @@ prompts:
 max_steps: 50
 ```
 
-Notes on logging behavior
-- Preferred: set `logging.file_cli` and/or `logging.file_api` to control where the CLI and API write logs.
-- Backward-compatible: if the per-role fields are absent, the system falls back to `logging.file` and derives role-specific filenames (e.g., `agent-cli` / `agent-api`) to avoid clobbering a single log file when running both processes.
-- Consider adding log rotation or an external log collector for production workloads.
-
-## CLI
-
-Key flags and behavior:
-- `--config PATH` — load a different manifest
-- `--no-stream` — disable live streaming of MCP calls/results
-- `--raw` — print final result as raw JSON instead of pretty printing
-- `--color/--no-color` — control ANSI color output
-
-Commands:
-- `agent-cli run "task"` — run a task (default when no subcommand is given)
-- `agent-cli plugins list|info|enable|disable|search|status` — manage plugins
-
-The CLI streams MCP CALL and MCP RESULT events by default and prints a human-readable, colorized summary at the end.
-
-## API
-
-A small FastAPI app provides endpoints:
-- `GET /health` — health check
-- `GET /config` — returns loaded configuration
-- `POST /run?task=...` — run a task and return final result
-- `GET /events?task=...` — SSE stream of MCP events
-
-Start with `agent-api`.
-
 ## Plugins
+Plugins live under `plugins/<name>/` and should expose a package-style layout with `plugin.py` and optional `plugin.yaml` for metadata. The loader also supports legacy single-file plugins.
 
-Plugins live under the repository `plugins/` directory (package-style `plugins/<name>/plugin.py` with optional `plugin.yaml` for metadata). The loader also discovers legacy single-file plugins and entrypoints.
+Important: plugins are loaded in-memory under the `plugins.<name>` namespace to avoid collisions with stdlib modules (for example `datetime`).
 
-Important: plugin packages are loaded under the `plugins.<name>` namespace in-memory to avoid collisions with stdlib module names (e.g., `datetime`).
+See `docs/plugin_authoring.md` and `plugins/example` for examples.
 
-See `docs/plugin_authoring.md` for authoring guidance and `plugins/example` for a sample plugin.
+Plugin-Management with:
 
-## Development notes
-- Tests are in `tests/` and run with pytest. The project includes tests that exercise plugin discovery, CLI streaming, and config loader behavior.
-- The repository includes `.prompts/` templates used by developer-assistants for consistent behavior (see `.prompts/developer_rules.md`).
-
-## Contributing
-- Follow the `backlog.md` for task tracking and add entries when implementing project-relevant changes.
-- Run tests and keep them green before pushing changes.
-
-## License
-MIT
-- `Agent` now accepts an optional `llm` or `llm_factory` parameter for dependency injection. This makes it easy to pass a mocked LLM in tests or wire a factory in bootstrap code.
-
-Example (CLI/bootstrap will use `load_settings()` automatically):
-
-```python
-from agent_system.config.settings import load_settings
-from agent_system.servers.agent.server import Agent
-
-config = load_settings()
-# Optionally inject pre-created llm
-agent = Agent("my_agent", config, registry, llm=None)
+```bash
+agent-cli plugins list|info|enable|disable|search|status — manage plugins
 ```
 
-CI: A GitHub Actions workflow (`.github/workflows/ci.yml`) runs the test suite on push/PR.
+## Development (with AI)
+- Follow instructions and guidlines. For repository rules: venv activation, testing, and commit guidance.
+- Run tests with `pytest -q` or `python -m pytest -q` and do not leave failing tests.
+- To install dev dependencies (with venv activated):
 
-- Use provided tasks to run API and tests
-## Copilot / assistant prompts
-
-This repository includes reusable prompt templates you can load into Copilot Chat or other assistant sessions to act like a persistent "system prompt".
-
- - Files: `.prompts/developer_rules.md`, `.prompts/project_objectives.md`, `.prompts/master_system_prompt.md`
-- Intended usage: load `developer_rules.md` and `project_objectives.md` first, then run `master_system_prompt.md` as the primary system prompt. The master prompt enforces running tests, updating `README.md` and tests when behavior changes, and never leaving failing tests.
-
-How to use (Copilot Chat):
-
-1. Open the Copilot Chat prompt file action (e.g., "Chat: New Untitled Prompt File") and paste the contents, or save the files into your `.prompts` folder and use Copilot Chat's prompt file loader if available.
-2. The backlog document has moved to `backlog.md` at the repo root; scripts for validating it live under `scripts/update_backlog.py`.
-2. Run the master prompt at the start of a session so the assistant follows the repository rules.
-
-Quick test command (Windows PowerShell):
-```powershell
-python -m pytest -q
-```
-
-
-## Plugin authoring
-
-See `docs/plugin_authoring.md` for a short guide and examples on writing MCP plugins. Also check `.prompts/lessons_learned.md` for repository-specific notes and guidance for maintainers and assistants.
-
-Developer setup (dev extras)
-
-To install development dependencies (packaging/test tools) into your venv, run:
-
-```powershell
-# from project root, with venv activated
+```bash
 pip install -e '.[dev]'
 ```
 
-This installs `wheel`, `build`, `setuptools`, and test helpers specified in `pyproject.toml` so you can run the packaging integration tests locally.
+- When changing behavior, update `README.md` and tests accordingly.
+- Maintain `backlog.md`
 
-Plugin examples
+## Contributing
+- Use `backlog.md` to track tasks and update it after finishing or documenting progress.
+- Add tests for new or changed behavior (happy path + at least one edge case).
+- Keep changes minimal and focused; prefer small, well-tested commits.
 
-`plugin.py` can expose either a `register()` function or `PLUGIN_NAME`/`PLUGIN_FACTORY` constants. Example:
-
-register() example (in `plugins/foo/plugin.py`):
-
-```python
-def register():
-  def factory(name, cfg, ssl_verify=True):
-    return MyServer(name, cfg, ssl_verify)
-  return "foo", factory
-```
-
-PLUGIN_* example:
-
-```python
-PLUGIN_NAME = "foo"
-
-class MyServer:
-  def __init__(self, name, cfg=None, ssl_verify=True):
-    self.name = name
-
-PLUGIN_FACTORY = MyServer
-```
-
+## Contact / Notes
+- This repository includes assistant prompt templates in `.prompts/` (developer rules and project objectives). Load `developer_rules.md` and `project_objectives.md` first in any assistant session, then `master_system_prompt.md`.
 
 ## License
 MIT
+
+---
