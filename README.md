@@ -161,6 +161,11 @@ pip install -e '.[dev]'
 - When changing behavior, update `README.md` and tests accordingly.
 - Maintain `backlog.md`
 
+## Maintenance notes
+
+- Keep `backlog.md` updated for project-relevant changes (new tasks, epics, decisions). The repository includes a conservative `backlog` CLI that supports dry-run and write modes; prefer dry-run first and use `--write` to persist.
+- Record short "lessons learned" entries in `.prompts/lessons_learned.md` when a non-trivial architectural decision or incident occurs.
+
 ## Contributing
 - Use `backlog.md` to track tasks and update it after finishing or documenting progress.
 - Add tests for new or changed behavior (happy path + at least one edge case).

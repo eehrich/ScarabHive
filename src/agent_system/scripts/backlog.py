@@ -1,13 +1,11 @@
-"""Minimal backlog CLI dispatcher for the project.
+"""Backlog CLI shim within the installed package namespace.
 
-This is intentionally tiny: it provides a thin entry point `main()` and
-supports a couple of smoke commands used by tests and CI: `--version`,
-`validate`, and `add-task --title` (dry-run).
-
-The full tool will live under `scripts/backlog_tool/` and this module will
-be the console entrypoint that imports the library code.
+This file mirrors `scripts/backlog.py` from the repository root but lives under
+`agent_system.scripts` so the console entry can import it after installation.
 """
 from __future__ import annotations
+
+# ...existing code...
 
 import argparse
 import sys
@@ -57,11 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     v = sub.add_parser("validate", help="Validate the backlog file")
+    v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     v.set_defaults(func=cmd_validate)
 
     a = sub.add_parser("add-task", help="Dry-run add a new task")
     a.add_argument("--title", required=True, help="Task title")
     a.add_argument("--notes", help="Optional notes text")
+    a.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     a.set_defaults(func=cmd_add_task)
 
     return p

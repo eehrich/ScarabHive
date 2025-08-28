@@ -32,16 +32,18 @@ BAD = '''# Backlog
 
 
 def run_validator(path: Path) -> tuple[int, str]:
-    env = dict(**os.environ)
-    env['BACKLOG_MD'] = str(path)
-    res = subprocess.run(
-        [sys.executable, 'scripts/update_backlog.py'],
-        cwd=Path('.'),
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    return res.returncode, res.stdout + res.stderr
+  env = dict(**os.environ)
+  env['BACKLOG_MD'] = str(path)
+  # canonical implementation lives under src/scripts
+  script = Path('.') / 'src' / 'scripts' / 'update_backlog.py'
+  res = subprocess.run(
+    [sys.executable, str(script)],
+    cwd=Path('.'),
+    env=env,
+    capture_output=True,
+    text=True,
+  )
+  return res.returncode, res.stdout + res.stderr
 
 
 def test_good(tmp_path):

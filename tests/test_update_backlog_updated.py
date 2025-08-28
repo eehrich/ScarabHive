@@ -22,7 +22,8 @@ BACKLOG_WITHOUT_UPDATED = '''# Backlog
 def run_script(backlog_path: Path) -> int:
     env = dict(**os.environ)
     env['BACKLOG_MD'] = str(backlog_path)
-    script = Path('.') / 'scripts' / 'update_backlog.py'
+    # canonical implementation location under src
+    script = Path('.') / 'src' / 'scripts' / 'update_backlog.py'
     res = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
     print('stdout:', res.stdout)
     print('stderr:', res.stderr)
