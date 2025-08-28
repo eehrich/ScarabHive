@@ -177,6 +177,170 @@ def cmd_undo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _normalize_status(s: str) -> str | None:
+    if not s:
+        return None
+    s0 = s.strip().lower()
+    SYM = {
+        '\u2610': 'open',
+        '☐': 'open',
+        '\u2705': 'done',
+        '✅': 'done',
+        '\u274c': 'failed',
+        '❌': 'failed',
+        '\u23f3': 'in progress',
+        '⏳': 'in progress',
+    }
+    if s0 in SYM:
+        return SYM[s0]
+    import re
+    s_clean = re.sub(r"[^a-z0-9 ]+", '', s0)
+    WORD_MAP = {
+        'done': 'done', 'implemented': 'done', 'finished': 'done', 'resolved': 'done', 'closed': 'done', 'completed': 'done',
+        'open': 'open', 'in progress': 'in progress', 'started': 'in progress',
+        'failed': 'failed', 'reverted': 'reverted', 'revert': 'reverted',
+        'rejected': 'rejected', 'reject': 'rejected',
+        'cancelled': 'cancelled', 'canceled': 'cancelled', 'cancel': 'cancelled', 'aborted': 'cancelled'
+    }
+    if s_clean in WORD_MAP:
+        return WORD_MAP[s_clean]
+    first = s_clean.split()[0] if s_clean else ''
+    return WORD_MAP.get(first)
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """Validate and move finished epics (compat shim for legacy updater).
+
+    Respects BACKLOG_MD env var for tests; otherwise uses --file if provided.
+    """
+    import os
+    from pathlib import Path
+    import re
+    from datetime import date
+
+    ppath = os.environ.get('BACKLOG_MD')
+    if ppath:
+        p = Path(ppath)
+    else:
+        p = Path(args.file or 'backlog.md')
+    if not p.exists():
+        print('backlog.md not found at', p)
+        return 4
+
+    # validate
+    txt = p.read_text(encoding='utf-8')
+    if txt.count('# Backlog') != 1:
+        print('Expected single "# Backlog" header')
+        return 2
+    ids = re.findall(r"^\s*(?:☐|✅|❌|⏳)?\s*(?:Epic|Task)\s+(\d{4})\b", txt, flags=re.M)
+    dup = {i for i in ids if ids.count(i) > 1}
+    if dup:
+        print('Duplicate numeric IDs found:', ', '.join(sorted(dup)))
+        return 3
+
+    # status validation
+    status_lines = re.findall(r"^\s*-\s*status:\s*(.+)$", txt, flags=re.M)
+    bad = []
+    canonical = {'done', 'open', 'failed', 'in progress', 'reverted', 'rejected', 'cancelled'}
+    for s in status_lines:
+        norm = _normalize_status(s)
+        if not norm or norm not in canonical:
+            bad.append(s)
+    if bad:
+        msg = 'Found unknown status values: ' + ', '.join(sorted(set(bad)))
+        try:
+            print(msg)
+        except UnicodeEncodeError:
+            safe = msg.encode('ascii', errors='backslashreplace').decode('ascii')
+            print(safe)
+        return 5
+
+    # move finished epics
+    full = txt
+    start_open = full.find('## 1. Epics - open')
+    start_finished = full.find('## 2. Epics - finished')
+    if start_open == -1 or start_finished == -1:
+        return 0
+    prefix = full[:start_open]
+    open_text = full[start_open:start_finished]
+    finished_text = full[start_finished:]
+
+    lines = open_text.splitlines(keepends=True)
+    epic_header_re = re.compile(r"^\s*(?:☐|✅|❌|⏳)?\s*Epic\s+(\d{4}):")
+    epic_indices = [i for i, line in enumerate(lines) if epic_header_re.match(line)]
+    if not epic_indices:
+        return 0
+    blocks = []
+    for idx, start in enumerate(epic_indices):
+        end = epic_indices[idx + 1] if idx + 1 < len(epic_indices) else len(lines)
+        blocks.append((start, end))
+
+    moved_blocks = []
+    acceptable_terminal = {'done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed'}
+    for start, end in blocks:
+        block_text = ''.join(lines[start:end])
+        subtasks_match = re.search(r"-\s*Subtasks:\s*", block_text, flags=re.I)
+        if subtasks_match:
+            subtasks_part = block_text[subtasks_match.end():]
+            status_lines = re.findall(r"^\s*-\s*status:\s*(.+)$", subtasks_part, flags=re.M)
+        else:
+            status_lines = re.findall(r"^\s*-\s*status:\s*(.+)$", block_text, flags=re.M)
+        if not status_lines:
+            continue
+        norms = [_normalize_status(s) for s in status_lines]
+        m = epic_header_re.search(block_text)
+        eid = m.group(1) if m else '<unknown>'
+        if norms and all((n in acceptable_terminal) for n in norms):
+            moved_blocks.append((start, end, block_text, norms, status_lines))
+
+    if not moved_blocks:
+        return 0
+
+    keep_lines = list(lines)
+    for start, end, *_ in reversed(moved_blocks):
+        del keep_lines[start:end]
+    new_open_text = ''.join(keep_lines)
+
+    appended = ''
+    today = date.today().isoformat()
+    for _, _, block, *_ in moved_blocks:
+        if '- updated:' not in block:
+            parts = block.splitlines(keepends=True)
+            if len(parts) >= 1:
+                parts.insert(1, f" - updated: {today}\n")
+            block = ''.join(parts)
+        appended += '\n' + block
+
+    if not new_open_text.endswith('\n'):
+        new_open_text += '\n'
+
+    m = re.search(r"^##\s*2\.\s*Epics\s*-\s*finished.*?$", full, flags=re.M)
+    if not m:
+        new_txt = prefix + new_open_text + finished_text + appended + '\n'
+    else:
+        header_end = m.end()
+        insertion_pos = header_end
+        while insertion_pos < len(full) and full[insertion_pos] in ('\n', '\r'):
+            insertion_pos += 1
+        new_txt = prefix + new_open_text + full[start_finished:insertion_pos] + appended + full[insertion_pos:]
+
+    # write atomically
+    import tempfile, os
+    dirp = p.parent
+    fd, tmppath = tempfile.mkstemp(dir=dirp)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(new_txt)
+        os.replace(tmppath, str(p))
+    finally:
+        if os.path.exists(tmppath):
+            try:
+                os.remove(tmppath)
+            except OSError:
+                pass
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="backlog")
     p.add_argument("--version", action="store_true", help="Show version and exit")
@@ -225,6 +389,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--choose", action="store_true", help="Interactively choose a backup to restore")
     r.add_argument("--backup", help="Restore a specific backup file path (exact match from --list)")
     r.set_defaults(func=cmd_undo)
+
+    # legacy compatibility: expose the `update` command used by older scripts/tests
+    up = sub.add_parser("update", help="Validate and move finished epics (compat shim)")
+    up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    up.set_defaults(func=cmd_update)
 
     return p
 

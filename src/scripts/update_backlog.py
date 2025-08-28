@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Wrapper to run the backlog updater (keeps legacy path)."""
-from pathlib import Path
-import runpy
+"""Compatibility shim: run the canonical `scripts.backlog update` subcommand
+while keeping the legacy script path available for tests and users.
 
-runpy.run_path(str(Path(__file__).parent / 'backlog_update.py'), run_name='__main__')
+This shim sets sys.argv so the invoked module sees the `update` subcommand.
+"""
+import runpy
+import sys
+
+# Ensure the invoked module sees the 'update' subcommand by default.
+# Preserve any extra args passed through.
+argv = sys.argv[1:]
+sys.argv = [sys.argv[0], 'update'] + argv
+runpy.run_module('scripts.backlog', run_name='__main__')
