@@ -36,7 +36,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -48,6 +48,11 @@ class OpenAIAsyncClient(LLMClient):
         if timeout is not None:
             kwargs["timeout"] = timeout
         self._client = AsyncOpenAI(**kwargs)
+        # Retry/backoff configuration
+        self._retry_max_attempts = int(max_attempts)
+        self._retry_base_backoff = float(base_backoff)
+        self._retry_min_backoff = float(min_backoff)
+        self._retry_backoff_cap = float(backoff_cap)
         self.model = model
         self._default_extra = default_extra or {}
         self._timeout = timeout
@@ -58,9 +63,23 @@ class OpenAIAsyncClient(LLMClient):
             opts = {"model": self.model, "messages": [m.model_dump() for m in messages]}
             opts.update(self._default_extra)
             # Retry loop for transient 429 responses
-            max_attempts = 5
-            base_backoff = 1.0
+            max_attempts = self._retry_max_attempts
+            base_backoff = self._retry_base_backoff
             resp = None
+            def _parse_reset(val: Optional[str]) -> Optional[float]:
+                if not val:
+                    return None
+                v = str(val).strip()
+                try:
+                    # ms, s, or plain number (seconds)
+                    if v.endswith("ms"):
+                        return float(v[:-2]) / 1000.0
+                    if v.endswith("s"):
+                        return float(v[:-1])
+                    return float(v)
+                except Exception:
+                    return None
+
             for attempt in range(1, max_attempts + 1):
                 try:
                     resp = await self._client.chat.completions.create(**opts)
@@ -80,15 +99,31 @@ class OpenAIAsyncClient(LLMClient):
                             hdr = getattr(resp_obj, "headers", {}) or {}
                             ra = hdr.get("retry-after")
                             if ra is not None:
-                                # try integer seconds first
                                 try:
                                     retry_after = float(ra)
                                 except Exception:
-                                    # ignore parse error; fall back to exponential backoff
                                     retry_after = None
+                            # If Retry-After absent, check x-ratelimit-reset-* headers
+                            if retry_after is None:
+                                reset_req = _parse_reset(hdr.get("x-ratelimit-reset-requests"))
+                                reset_tok = _parse_reset(hdr.get("x-ratelimit-reset-tokens"))
+                                # prefer the larger reset suggestion
+                                reset_suggest = None
+                                if reset_req is not None and reset_req > 0:
+                                    reset_suggest = reset_req
+                                if reset_tok is not None and (reset_suggest is None or reset_tok > reset_suggest):
+                                    reset_suggest = reset_tok
+                                if reset_suggest is not None:
+                                    # Use server suggestion but don't go below our computed backoff
+                                    computed = min(60.0, base_backoff * (2 ** (attempt - 1)))
+                                    retry_after = max(reset_suggest, computed)
                         except Exception:
                             retry_after = None
-                        wait = float(retry_after) if retry_after is not None else min(60.0, base_backoff * (2 ** (attempt - 1))) + random.random() * 0.5
+                        # Ensure wait respects configured minimum and cap
+                        if retry_after is not None:
+                            wait = max(retry_after, self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
+                        else:
+                            wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                         await asyncio.sleep(wait)
                         continue
@@ -163,9 +198,22 @@ class OpenAIAsyncClient(LLMClient):
             opts = {"model": self.model, "messages": msgs, "tools": tools, "tool_choice": "auto"}
             opts.update(self._default_extra)
             # Retry loop for transient 429 responses
-            max_attempts = 5
-            base_backoff = 1.0
+            max_attempts = self._retry_max_attempts
+            base_backoff = self._retry_base_backoff
             resp = None
+            def _parse_reset(val: Optional[str]) -> Optional[float]:
+                if not val:
+                    return None
+                v = str(val).strip()
+                try:
+                    if v.endswith("ms"):
+                        return float(v[:-2]) / 1000.0
+                    if v.endswith("s"):
+                        return float(v[:-1])
+                    return float(v)
+                except Exception:
+                    return None
+
             for attempt in range(1, max_attempts + 1):
                 try:
                     resp = await self._client.chat.completions.create(**opts)
@@ -188,9 +236,23 @@ class OpenAIAsyncClient(LLMClient):
                                     retry_after = float(ra)
                                 except Exception:
                                     retry_after = None
+                            if retry_after is None:
+                                reset_req = _parse_reset(hdr.get("x-ratelimit-reset-requests"))
+                                reset_tok = _parse_reset(hdr.get("x-ratelimit-reset-tokens"))
+                                reset_suggest = None
+                                if reset_req is not None and reset_req > 0:
+                                    reset_suggest = reset_req
+                                if reset_tok is not None and (reset_suggest is None or reset_tok > reset_suggest):
+                                    reset_suggest = reset_tok
+                                if reset_suggest is not None:
+                                    computed = min(60.0, base_backoff * (2 ** (attempt - 1)))
+                                    retry_after = max(reset_suggest, computed)
                         except Exception:
                             retry_after = None
-                        wait = float(retry_after) if retry_after is not None else min(60.0, base_backoff * (2 ** (attempt - 1))) + random.random() * 0.5
+                        if retry_after is not None:
+                            wait = max(retry_after, self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1))))
+                        else:
+                            wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                         await asyncio.sleep(wait)
                         continue
