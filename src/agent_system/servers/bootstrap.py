@@ -19,6 +19,15 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
     # filesystem discovery and rely only on entrypoint plugins.
     configured = config.mcp.plugin_dirs or []
     dirs = [Path(p) for p in configured if p]
+    # If no plugin_dirs configured, allow discovery from ./plugins in the
+    # current working directory. Tests create a `plugins/` folder in a
+    # temporary cwd and expect bootstrap to pick it up; this is a minimal
+    # local fallback that does not introduce repository-specific paths.
+    if not dirs:
+        cwd_plugins = Path.cwd() / "plugins"
+        if cwd_plugins.exists() and cwd_plugins.is_dir():
+            dirs = [cwd_plugins]
+
     plugins = discover_all_plugins(dirs=dirs if dirs else None)
 
     # Log discovered plugins for visibility at startup
@@ -39,7 +48,13 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                 desc = meta.get('description') or meta.get('summary') or ''
                 ver = meta.get('version') or ''
                 logger.info("Using plugin '%s' (version=%s) for server '%s': %s", typ, ver, key, desc)
-            registry.register(key, factory(key, server_cfg, ssl_verify=config.network.ssl_verify))
+            try:
+                inst = factory(key, server_cfg, ssl_verify=config.network.ssl_verify)
+                registry.register(key, inst)
+            except Exception as e:
+                logger.exception("Failed to instantiate/register plugin '%s' for server '%s': %s", typ, key, e)
+                # continue to try other servers
+            continue
             continue
         if typ == "google_search":
             from .google_search.server import GoogleSearchServer

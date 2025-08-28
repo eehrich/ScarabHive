@@ -185,12 +185,42 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
     """
     plugins: Dict[str, Callable[..., MCPServer]] = {}
 
-    # Use only explicitly provided `dirs` for filesystem discovery. Do not
-    # fall back to repository defaults or environment variables here — callers
-    # (CLI/bootstrap) should pass configured plugin directories from the
-    # loaded `mcp` configuration. If `dirs` is falsy, skip filesystem
-    # discovery and rely only on entrypoint plugins.
+    # Use only explicitly provided `dirs` for filesystem discovery when
+    # available. If none are provided, attempt to locate an importable
+    # `plugins` package (editable installs place `plugins/` under `src/`),
+    # and use its filesystem paths for discovery. This avoids hardcoding
+    # repository paths while ensuring discoverability in common dev
+    # and editable-install setups.
     source_dirs = list(dirs) if dirs else []
+    if not source_dirs:
+        try:
+            import importlib
+            spec = importlib.util.find_spec("plugins")
+            if spec is not None and getattr(spec, "submodule_search_locations", None):
+                for p in spec.submodule_search_locations:
+                    source_dirs.append(Path(p))
+        except Exception:
+            # ignore and continue — we'll still discover entrypoint plugins
+            pass
+        # If importlib couldn't find a spec, it's possible a previous
+        # discovery run created a synthetic 'plugins' module in
+        # sys.modules (we do this to load filesystem plugins under the
+        # 'plugins.<name>' namespace). In that case reuse its __path__
+        # entries so subsequent discovery (e.g. nested bootstraps) can
+        # still locate the filesystem plugins.
+        if not source_dirs:
+            try:
+                mod = sys.modules.get("plugins")
+                if mod is not None and getattr(mod, "__path__", None):
+                    for p in mod.__path__:
+                        source_dirs.append(Path(p))
+            except Exception:
+                pass
+    # debug: log resolved filesystem plugin search locations
+    try:
+        logger.debug("discover_all_plugins: scanning filesystem dirs: %s", [str(p) for p in source_dirs])
+    except Exception:
+        pass
 
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
