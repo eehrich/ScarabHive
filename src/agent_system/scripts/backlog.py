@@ -36,7 +36,7 @@ def cmd_add_task(args: argparse.Namespace) -> int:
     now = date.today().isoformat()
     entry = []
     entry.append(f"- ☐ Task XXXX: {args.title}")
-    entry.append(f"  - status: open")
+    entry.append("  - status: open")
     entry.append(f"  - added: {now}")
     if args.notes:
         entry.append("  - Notes:")

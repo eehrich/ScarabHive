@@ -13,10 +13,10 @@ BACKLOG_CONTENT = '''# Backlog
  - description: test epic
  - status: ☐
  - Subtasks:
-	 - Task 9000: done task
-		 - status: done
-	 - Task 9001: another done
-		 - status: done
+     - Task 9000: done task
+         - status: done
+     - Task 9001: another done
+         - status: done
 
 ## 2. Epics - finished
 
@@ -30,8 +30,8 @@ BACKLOG_NO_MOVE = '''# Backlog
  - description: test epic
  - status: ☐
  - Subtasks:
-	 - Task 9002: not done
-		 - status: open
+     - Task 9002: not done
+         - status: open
 
 ## 2. Epics - finished
 

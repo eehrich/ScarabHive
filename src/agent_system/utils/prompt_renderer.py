@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 import yaml
 from jinja2 import Template
 from datetime import datetime, timedelta

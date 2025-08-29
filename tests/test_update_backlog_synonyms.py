@@ -12,10 +12,10 @@ BACKLOG_SYNONYMS = '''# Backlog
  - description: test epic
  - status: ☐
  - Subtasks:
-	 - Task 9003: done task
-		 - status: Finished
-	 - Task 9004: another done
-		 - status: RESOLVED
+     - Task 9003: done task
+         - status: Finished
+     - Task 9004: another done
+         - status: RESOLVED
 
 ## 2. Epics - finished
 

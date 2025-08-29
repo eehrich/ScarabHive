@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
-import json
+from typing import Any, cast
 import datetime
 from urllib.parse import quote
 
@@ -23,9 +22,9 @@ async def fetch_wttr(location: str, days: int, units: str, ssl_verify: bool) -> 
         data = response.json()
 
         current = data.get("current_condition", [{}])[0]
-        weather_data = data.get("weather", [])[:days]
+        weather_data = cast(list[dict[str, Any]], data.get("weather", [])[:days])
 
-        result = {
+        result: dict[str, Any] = {
             "location": location,
             "source": "wttr.in",
             "units": "metric" if unit_param == "M" else "imperial",
@@ -44,7 +43,7 @@ async def fetch_wttr(location: str, days: int, units: str, ssl_verify: bool) -> 
         }
 
         for day_data in weather_data:
-            day_info = {
+            day_info: dict[str, Any] = {
                 "date": day_data.get("date"),
                 "max_temp": day_data.get("maxtempC" if unit_param == "M" else "maxtempF"),
                 "min_temp": day_data.get("mintempC" if unit_param == "M" else "mintempF"),
@@ -54,7 +53,8 @@ async def fetch_wttr(location: str, days: int, units: str, ssl_verify: bool) -> 
                 "hours": [],
             }
 
-            for hour_data in day_data.get("hourly", []):
+            hourly_list = day_data.get("hourly", [])
+            for hour_data in cast(list[dict[str, Any]], hourly_list):
                 hour_info = {
                     "time": hour_data.get("time"),
                     "temperature": hour_data.get("tempC" if unit_param == "M" else "tempF"),
@@ -78,8 +78,8 @@ async def fetch_weather_gov(location: str, days: int, units: str, ssl_verify: bo
     except ImportError:
         raise RuntimeError("httpx package required for weather server")
 
-    geocode_url = f"https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
-    geocode_params = {"address": location, "benchmark": "2020", "format": "json"}
+    geocode_url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+    geocode_params: dict[str, str] = {"address": location, "benchmark": "2020", "format": "json"}
 
     async with httpx.AsyncClient(verify=ssl_verify, timeout=30.0) as client:
         geocode_response = await client.get(geocode_url, params=geocode_params)
@@ -105,7 +105,7 @@ async def fetch_weather_gov(location: str, days: int, units: str, ssl_verify: bo
 
         periods = forecast_data["properties"]["periods"][: days * 2]
 
-        result = {
+        result: dict[str, Any] = {
             "location": location,
             "source": "weather.gov",
             "units": "imperial",
@@ -113,13 +113,13 @@ async def fetch_weather_gov(location: str, days: int, units: str, ssl_verify: bo
             "forecast": [],
         }
 
-        day_periods = []
+        day_periods: list[dict[str, Any]] = []
         for i in range(0, len(periods), 2):
             day_period = periods[i] if i < len(periods) else None
             night_period = periods[i + 1] if i + 1 < len(periods) else None
 
             if day_period:
-                day_info = {
+                day_info: dict[str, Any] = {
                     "date": day_period["startTime"][:10],
                     "day": {
                         "temperature": day_period["temperature"],
@@ -154,7 +154,7 @@ async def fetch_marine_weather_gov(location: str, days: int, units: str, ssl_ver
         raise RuntimeError("httpx package required for weather server")
 
     geocode_url = "https://nominatim.openstreetmap.org/search"
-    geocode_params = {"q": location, "format": "json", "limit": 1}
+    geocode_params: dict[str, str | int] = {"q": location, "format": "json", "limit": 1}
 
     async with httpx.AsyncClient(verify=ssl_verify, timeout=30.0) as client:
         geocode_response = await client.get(geocode_url, params=geocode_params)
@@ -218,13 +218,15 @@ async def fetch_marine_weather_gov(location: str, days: int, units: str, ssl_ver
         if include_marine:
             try:
                 current_date = datetime.date.today()
+                # Narrow marine_data to a concrete dict so mypy knows it's not None
+                marine_data = cast(dict[str, Any], result["marine_data"])
                 for day in range(days):
                     forecast_date = current_date + datetime.timedelta(days=day)
                     seasonal_adjustment = 2 * (datetime.datetime.now().month - 6) / 6
                     latitude_adjustment = (90 - abs(lat)) / 3
                     estimated_sst = 15 + latitude_adjustment + seasonal_adjustment
 
-                    result["marine_data"]["sea_surface_temperatures"].append(
+                    marine_data["sea_surface_temperatures"].append(
                         {
                             "date": forecast_date.isoformat(),
                             "temperature": round(estimated_sst, 1),
@@ -235,7 +237,7 @@ async def fetch_marine_weather_gov(location: str, days: int, units: str, ssl_ver
                     )
 
                     estimated_wave_height = max(0.5, min(4.0, abs(lat) / 20 + 0.5))
-                    result["marine_data"]["wave_heights"].append(
+                    marine_data["wave_heights"].append(
                         {
                             "date": forecast_date.isoformat(),
                             "significant_wave_height": round(estimated_wave_height, 1),
@@ -256,7 +258,7 @@ async def fetch_met_no(location: str, days: int, units: str, ssl_verify: bool) -
         raise RuntimeError("httpx package required for weather server")
 
     geocode_url = "https://nominatim.openstreetmap.org/search"
-    geocode_params = {"q": location, "format": "json", "limit": 1}
+    geocode_params: dict[str, str | int] = {"q": location, "format": "json", "limit": 1}
 
     headers = {"User-Agent": "AgentSystem-Weather/1.0 (github.com/agent-system)"}
 
@@ -271,16 +273,16 @@ async def fetch_met_no(location: str, days: int, units: str, ssl_verify: bool) -
         lat = float(geocode_data[0]["lat"])
         lon = float(geocode_data[0]["lon"])
 
-        weather_url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact"
-        weather_params = {"lat": lat, "lon": lon}
+        weather_url = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+        weather_params: dict[str, float] = {"lat": lat, "lon": lon}
 
         weather_response = await client.get(weather_url, params=weather_params)
         weather_response.raise_for_status()
         weather_data = weather_response.json()
 
-        timeseries = weather_data["properties"]["timeseries"]
+        timeseries = cast(list[dict[str, Any]], weather_data["properties"]["timeseries"])
 
-        result = {
+        result: dict[str, Any] = {
             "location": location,
             "source": "met.no",
             "units": "metric",
@@ -301,7 +303,7 @@ async def fetch_met_no(location: str, days: int, units: str, ssl_verify: bool) -
                 "wind_direction": instant_data.get("wind_from_direction"),
             }
 
-        daily_forecasts: dict[str, Any] = {}
+        daily_forecasts: dict[str, dict[str, Any]] = {}
         for entry in timeseries[: days * 8]:
             date = entry["time"][:10]
             data = entry["data"]
@@ -310,7 +312,7 @@ async def fetch_met_no(location: str, days: int, units: str, ssl_verify: bool) -
                 daily_forecasts[date] = {"date": date, "temperatures": [], "entries": []}
 
             instant = data["instant"]["details"]
-            entry_data = {
+            entry_data: dict[str, Any] = {
                 "time": entry["time"],
                 "temperature": instant.get("air_temperature"),
                 "humidity": instant.get("relative_humidity"),

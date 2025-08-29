@@ -7,7 +7,7 @@ behavior explicit and testable.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Any
 from pathlib import Path
 import os
 import yaml
@@ -47,7 +47,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentConfig:
         data = dict(master)
 
         # Load each included file (relative paths are resolved against master)
-        merged = {}
+        merged: dict[str, Any] = {}
         for inc in includes:
             inc_path = Path(inc)
             if not inc_path.is_absolute():

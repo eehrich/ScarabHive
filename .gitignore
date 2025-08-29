@@ -1,17 +1,13 @@
 .venv/
 __pycache__/
 *.pyc
-.pytest_cache/
+.*_cache/
+.backups/
 dist/
 build/
 *.egg-info/
 .DS_Store
-.vscode/*.log
 logs/
 *.log
-.backupa/
-    
-# Local debug helpers (not committed)
-tools/debug/
-tmp*
 
+tmp_backlog.md

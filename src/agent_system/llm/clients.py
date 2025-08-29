@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict, cast
 import json
-import re
 import uuid
 import asyncio
 import random
@@ -18,7 +17,7 @@ class ChatMessage(BaseModel):
     content: Optional[str] = None
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
-    tool_calls: Optional[list] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class LLMClient:
@@ -109,7 +108,10 @@ class OpenAIAsyncClient(LLMClient):
 
             for attempt in range(1, max_attempts + 1):
                 try:
-                    resp = await self._client.chat.completions.create(**opts)
+                    # SDK stubs vary by version; cast the client to Any to avoid
+                    # mypy overload/typing noise for dynamic SDK calls.
+                    client_any = cast(Any, self._client)
+                    resp = await client_any.chat.completions.create(**opts)
                     break
                 except Exception as e:
                     status = None
@@ -243,7 +245,8 @@ class OpenAIAsyncClient(LLMClient):
 
             for attempt in range(1, max_attempts + 1):
                 try:
-                    resp = await self._client.chat.completions.create(**opts)
+                    client_any = cast(Any, self._client)
+                    resp = await client_any.chat.completions.create(**opts)
                     break
                 except Exception as e:
                     status = None
@@ -398,22 +401,25 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
-    - provider=ollama: use AsyncOpenAI against Ollama's OpenAI-compatible endpoint at base_url .../v1.
+    - provider=ollama: use Ollama (native or openai-compat) depending on mode.
     """
+    import os
+
     if provider == "openai":
         # Prefer an explicit api key passed in, otherwise honor the
-        # OPENAI_API_KEY environment variable. Avoid implicitly loading
-        # repository config files (e.g. config/agent.yaml) here because
-        # that couples runtime initialization to repository state and
-        # can break unit tests which expect no LLM to be available.
-        import os
+        # OPENAI_API_KEY environment variable.
         if not openai_api_key:
             openai_api_key = os.getenv("OPENAI_API_KEY")
-
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
 
-    return OpenAIAsyncClient(model=model, api_key=openai_api_key, timeout=float(request_timeout) if request_timeout else None, verify=ssl_verify)
+        return OpenAIAsyncClient(
+            model=model,
+            api_key=openai_api_key,
+            timeout=float(request_timeout) if request_timeout else None,
+            verify=ssl_verify,
+        )
+
     if provider == "ollama":
         mode = (ollama_mode or "openai_compat").lower()
         if mode == "native":
@@ -421,9 +427,21 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
             options: dict[str, Any] = {}
             if context_window:
                 options["num_ctx"] = context_window
-            return OllamaNativeAsyncClient(model=model, base_url=base_native, options=options or None, timeout=float(request_timeout) if request_timeout else None)
-        # else: OpenAI-compatible path
+            return OllamaNativeAsyncClient(
+                model=model,
+                base_url=base_native,
+                options=options or None,
+                timeout=float(request_timeout) if request_timeout else None,
+            )
+        # else: OpenAI-compatible path using the OpenAI-compatible SDK client
         base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
         api_key = "ollama"  # required by SDK, ignored by Ollama
-    return OpenAIAsyncClient(model=model, api_key=api_key, base_url=base, timeout=float(request_timeout) if request_timeout else None, verify=ssl_verify)
+        return OpenAIAsyncClient(
+            model=model,
+            api_key=api_key,
+            base_url=base,
+            timeout=float(request_timeout) if request_timeout else None,
+            verify=ssl_verify,
+        )
+
     raise ValueError(f"Unknown LLM provider: {provider}")

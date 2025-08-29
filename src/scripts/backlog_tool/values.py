@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+from typing import Any, Dict
+
 try:
     import yaml
 except Exception:
     # PyYAML may not be installed in every test or runtime environment.
     yaml = None
 
-_config: dict | None = None
+
+# Module-level cached config
+_config: Dict[str, Any] | None = None
 
 
 def _default_config() -> dict:
@@ -34,7 +38,7 @@ def _default_config() -> dict:
     }
 
 
-def load() -> dict:
+def load() -> Dict[str, Any]:
     """Load backlog value config from `config/backlog_values.yaml` if present.
 
     The location can be overridden by the environment variable `BACKLOG_VALUES`.
@@ -71,6 +75,6 @@ def load() -> dict:
         return _config
 
 
-def get(key: str, default=None):
+def get(key: str, default: Any = None) -> Any:
     cfg = load()
     return cfg.get(key, default)

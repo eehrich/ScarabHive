@@ -9,7 +9,6 @@ class TwitterSearchServer(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool == "search":
             query = params.get("query", "")
-            limit = int(params.get("limit", 10))
             
             # Twitter/X search is now heavily restricted and requires official API access
             # snscrape has compatibility issues with modern Python versions

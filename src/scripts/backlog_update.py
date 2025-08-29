@@ -7,7 +7,6 @@ Notes:
 - Once a task is added to the backlog it should not be deleted; only the `status` field may change (including to `reverted`).
 """
 from pathlib import Path
-import sys
 import re
 import os
 from datetime import date
@@ -38,14 +37,10 @@ def validate(path: Path) -> int:
         s0 = s.strip().lower()
         # map common symbol forms to canonical names
         SYM = {
-            '\u2610': 'open',   # ☐
-            '☐': 'open',
-            '\u2705': 'done',   # ✅
-            '✅': 'done',
-            '\u274c': 'failed', # ❌
-            '❌': 'failed',
-            '\u23f3': 'in progress', # ⏳
-            '⏳': 'in progress',
+                '\u2610': 'open',   # ☐
+                '\u2705': 'done',   # ✅
+                '\u274c': 'failed', # ❌
+                '\u23f3': 'in progress', # ⏳
         }
         if s0 in SYM:
             return SYM[s0]
@@ -141,14 +136,10 @@ def move_finished_epics(path: Path, dry_run: bool = False, verbose: bool = False
             return None
         s0 = s.strip().lower()
         SYM = {
-            '\u2610': 'open',   # ☐
-            '☐': 'open',
-            '\u2705': 'done',   # ✅
-            '✅': 'done',
-            '\u274c': 'failed', # ❌
-            '❌': 'failed',
-            '\u23f3': 'in progress', # ⏳
-            '⏳': 'in progress',
+                '\u2610': 'open',   # ☐
+                '\u2705': 'done',   # ✅
+                '\u274c': 'failed', # ❌
+                '\u23f3': 'in progress', # ⏳
         }
         if s0 in SYM:
             return SYM[s0]

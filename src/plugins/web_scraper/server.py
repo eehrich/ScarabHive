@@ -54,11 +54,9 @@ class WebScraperServer(MCPServer):
             "user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
         )
-
         html: str = ""
         status_code: int = 0
         final_url: str = url
-        headers: dict[str, Any] = {}
 
         # Try httpx first (async); fall back to urllib if not available
         try:
@@ -72,7 +70,6 @@ class WebScraperServer(MCPServer):
                 resp = await client.get(url)
                 status_code = resp.status_code
                 final_url = str(resp.url)
-                headers = dict(resp.headers)
                 # Prefer server-declared encoding; httpx handles decoding via .text
                 html = resp.text or ""
         except Exception:
@@ -90,7 +87,6 @@ class WebScraperServer(MCPServer):
                 with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
                     final_url = r.geturl()
                     status_code = getattr(r, "status", 200)
-                    headers = dict(getattr(r, "headers", {}))
                     data = r.read()
                     try:
                         html = data.decode("utf-8", errors="ignore")
@@ -177,14 +173,14 @@ class WebScraperServer(MCPServer):
 
     def _extract_tables(self, soup) -> list[dict[str, Any]]:
         """Extract structured table data from HTML."""
-        tables = []
+        tables: list[dict[str, Any]] = []
         for i, table in enumerate(soup.find_all("table")):
             table_data = {
                 "table_id": i,
                 "headers": [],
                 "rows": [],
                 "caption": None,
-                "summary": None
+                "summary": None,
             }
 
             # Extract caption
@@ -215,14 +211,14 @@ class WebScraperServer(MCPServer):
 
     def _extract_forms(self, soup) -> list[dict[str, Any]]:
         """Extract structured form data from HTML."""
-        forms = []
+        forms: list[dict[str, Any]] = []
         for i, form in enumerate(soup.find_all("form")):
             form_data = {
                 "form_id": i,
                 "action": form.get("action", ""),
                 "method": form.get("method", "GET").upper(),
                 "fields": [],
-                "summary": None
+                "summary": None,
             }
 
             # Extract form fields
@@ -251,13 +247,13 @@ class WebScraperServer(MCPServer):
 
     def _extract_lists(self, soup) -> list[dict[str, Any]]:
         """Extract structured list data from HTML."""
-        lists = []
+        lists: list[dict[str, Any]] = []
         for i, list_elem in enumerate(soup.find_all(["ul", "ol", "dl"])):
             list_data = {
                 "list_id": i,
                 "type": list_elem.name,
                 "items": [],
-                "summary": None
+                "summary": None,
             }
 
             if list_elem.name in ["ul", "ol"]:

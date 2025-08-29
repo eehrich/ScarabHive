@@ -8,7 +8,7 @@ content.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 import re
 import os
 from datetime import date
@@ -167,14 +167,14 @@ def build_markdown(backlog: Backlog) -> str:
     lines: List[str] = []
     lines.extend(backlog.header)
     # Avoid duplicating the 'Epics - open' heading if it's already in the header
-    if not any(l.strip().startswith("## 1. Epics - open") for l in backlog.header):
+    if not any(line.strip().startswith("## 1. Epics - open") for line in backlog.header):
         lines.append("")
         lines.append("## 1. Epics - open")
         lines.append("")
     for e in backlog.epics_open:
         # Use configured symbol for open epic where available
         sym = None
-        sym_map = values.get('symbol_map', {}) or {}
+        sym_map = cast(Dict[str, Any], values.get('symbol_map', {}) or {})
         for k, v in sym_map.items():
             if v == (e.status or '').strip().lower():
                 sym = k
@@ -182,7 +182,7 @@ def build_markdown(backlog: Backlog) -> str:
         sym = sym or '☐'
         lines.append(f"- {sym} Epic {e.id}: {e.title}")
         lines.append(f"  - status: {e.status}")
-        lines.append(f"  - Subtasks:")
+        lines.append("  - Subtasks:")
         for t in e.subtasks:
             # task symbol resolved from status
             task_sym = None
@@ -198,13 +198,13 @@ def build_markdown(backlog: Backlog) -> str:
             if t.closed:
                 lines.append(f"      - closed: {t.closed}")
             if t.notes:
-                lines.append(f"      - Notes:")
+                lines.append("      - Notes:")
                 for n in t.notes:
                     lines.append(f"        - {n}")
         lines.extend(e.raw_lines)
         lines.append("")
     # Avoid duplicating the 'Epics - finished' heading if it's already in the footer
-    if not any(l.strip().startswith("## 2. Epics - finished") for l in backlog.footer):
+    if not any(line.strip().startswith("## 2. Epics - finished") for line in backlog.footer):
         lines.append("")
         lines.append("## 2. Epics - finished")
         lines.append("")
@@ -457,8 +457,6 @@ def normalize_backlog_format(backlog: Backlog) -> list[str]:
     """Normalize status tokens and empty/placeholder dates; returns list of change descriptions."""
     changes: list[str] = []
     from . import values as _values
-    allowed = set(_values.get('allowed_statuses', []))
-    finish_list = set(_values.get('finish_statuses', []))
     for e in backlog.epics_open + backlog.epics_finished:
         # normalize epic status word
         if e.status:
@@ -466,19 +464,22 @@ def normalize_backlog_format(backlog: Backlog) -> list[str]:
             n = norm.lower()
             # map symbols or words
             mapped = None
-            for k, v in _values.get('symbol_map', {}).items():
+            sym_map = cast(Dict[str, Any], _values.get('symbol_map', {}) or {})
+            for k, v in sym_map.items():
                 if k == norm or k == norm.strip():
                     mapped = v
                     break
             if not mapped:
-                mapped = _values.get('word_map', {}).get(n, n)
+                word_map = cast(Dict[str, str], _values.get('word_map', {}) or {})
+                mapped = word_map.get(n, n)
             if mapped != e.status:
                 changes.append(f"epic {e.id} status: {e.status} -> {mapped}")
                 e.status = mapped
         for t in e.subtasks:
             if t.status:
                 n = t.status.strip().lower()
-                mapped = _values.get('word_map', {}).get(n, t.status)
+                word_map = cast(Dict[str, str], _values.get('word_map', {}) or {})
+                mapped = word_map.get(n, t.status)
                 if mapped != t.status:
                     changes.append(f"task {t.id} status: {t.status} -> {mapped}")
                     t.status = mapped

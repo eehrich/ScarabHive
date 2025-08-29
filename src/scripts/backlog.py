@@ -41,7 +41,7 @@ def cmd_add_task(args: argparse.Namespace) -> int:
     now = date.today().isoformat()
     entry = []
     entry.append(f"- \u2610 Task XXXX: {args.title}")
-    entry.append(f"  - status: open")
+    entry.append("  - status: open")
     entry.append(f"  - added: {now}")
     if getattr(args, "notes", None):
         entry.append("  - Notes:")
@@ -259,8 +259,9 @@ def _normalize_status(s: str) -> str | None:
         return None
     s0 = s.strip().lower()
     from scripts.backlog_tool import values
+    # prefer escaped codepoints to avoid duplicated literal glyphs being treated as repeated keys
     SYM = values.get('symbol_map', {
-        '\u2610': 'open', '☐': 'open', '\u2705': 'done', '✅': 'done', '\u274c': 'failed', '❌': 'failed', '\u23f3': 'in progress', '⏳': 'in progress'
+        '\u2610': 'open', '\u2705': 'done', '\u274c': 'failed', '\u23f3': 'in progress'
     })
     if s0 in SYM:
         return SYM[s0]
@@ -361,7 +362,6 @@ def cmd_update(args: argparse.Namespace) -> int:
             continue
         norms = [_normalize_status(s) for s in status_lines]
         m = epic_header_re.search(block_text)
-        eid = m.group(1) if m else '<unknown>'
         if norms and all((n in acceptable_terminal) for n in norms):
             moved_blocks.append((start, end, block_text, norms, status_lines))
 
@@ -397,7 +397,8 @@ def cmd_update(args: argparse.Namespace) -> int:
         new_txt = prefix + new_open_text + full[start_finished:insertion_pos] + appended + full[insertion_pos:]
 
     # write atomically
-    import tempfile, os
+    import tempfile
+    import os
     dirp = p.parent
     fd, tmppath = tempfile.mkstemp(dir=dirp)
     try:

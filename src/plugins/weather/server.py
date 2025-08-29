@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
 
 from agent_system.mcp.base import MCPServer
 from .sources import fetch_wttr, fetch_weather_gov, fetch_marine_weather_gov, fetch_met_no

@@ -22,7 +22,7 @@ This README is a concise developer and user guide matching this repository layou
 - Optional: API key(s) for LLM providers (configured via env vars or `config/agent.yaml`)
 
 ## Recommended shell on Windows
-On Windows we recommend Git Bash for interactive debugging and venv activation. PowerShell examples remain supported but may require setting ExecutionPolicy.
+On Windows we recommend Git Bash (or another bash-compatible shell) for interactive debugging and venv activation. PowerShell examples remain supported but the repository's examples below use bash.
 
 ## Quickstart (Git Bash — recommended on Windows)
 1. Create and activate a virtualenv (Git Bash):
@@ -32,7 +32,7 @@ python -m venv .venv
 source .venv/Scripts/activate
 ```
 
-(PowerShell alternative)
+(PowerShell alternative shown for reference in Windows environments.)
 
 ```powershell
 python -m venv .venv
@@ -66,7 +66,7 @@ python -m pytest -q
 Start the API (recommended in a second terminal):
 
 ```bash
-# with venv activated in the terminal
+with venv activated in the terminal
 python -m agent_system.agent.interface_api
 # or the convenience wrapper (if installed in PATH)
 agent-api
@@ -160,6 +160,19 @@ pip install -e '.[dev]'
 
 - When changing behavior, update `README.md` and tests accordingly.
 - Maintain `backlog.md`
+
+## VS Code tasks (Git Bash)
+
+If you use Git Bash as the VS Code integrated terminal, the included `.vscode/tasks.json` is configured to run the project's checks using the venv Python and bash as the task shell. Example: open the Command Palette -> `Tasks: Run Task` -> choose `Python: Run all tests (venv)`.
+
+If your VS Code uses Git Bash, the task runner will execute commands like:
+
+```bash
+# runs pytest via the repository venv
+.venv/Scripts/python.exe -m pytest -q
+```
+
+If you prefer a different terminal, adjust the `options.shell.executable` in `.vscode/tasks.json`.
 
 ## Maintenance notes
 

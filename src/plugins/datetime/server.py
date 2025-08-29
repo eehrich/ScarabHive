@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional, cast
 import pytz
 import calendar
 
@@ -22,8 +21,8 @@ class DateTimeServer(MCPServer):
     - Business day calculations
     """
     
-    def __init__(self, name: str = "datetime", config: dict[str, Any] = None, ssl_verify: bool = True):
-        super().__init__(name, config, ssl_verify)
+    def __init__(self, name: str = "datetime", config: Optional[dict[str, Any]] = None, ssl_verify: bool = True):
+        super().__init__(name, cast(dict[str, Any] | None, config), ssl_verify)
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Execute datetime operations."""

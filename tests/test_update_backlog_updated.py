@@ -11,8 +11,8 @@ BACKLOG_WITHOUT_UPDATED = '''# Backlog
  - description: test epic
  - status: ☐
  - Subtasks:
-	 - Task 9005: done task
-		 - status: done
+     - Task 9005: done task
+         - status: done
 
 ## 2. Epics - finished
 

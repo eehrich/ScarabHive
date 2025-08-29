@@ -54,10 +54,23 @@ dev = [
     "wheel",
     "setuptools",
     "build",
+    "ruff>=0.12",
+    "mypy>=1.7",
 ]
 test = [
     "pytest>=8.4",
     "pytest-asyncio>=1.1.0",
     "anyio>=3.0",
 ]
+
+[tool.ruff]
+line-length = 100
+exclude = [".venv", ".pytest_cache", "*.egg-info", "logs", "docs", "src/**/__pycache__"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unreachable = true
+disable_error_code = ["misc"]
 

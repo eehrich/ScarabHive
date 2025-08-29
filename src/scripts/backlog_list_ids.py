@@ -10,8 +10,8 @@ def list_ids(path: Path):
         lines = f.readlines()
 
     occ = defaultdict(list)
-    for i, l in enumerate(lines, start=1):
-        for m in re.finditer(r"\b(?:Epic|Task)\s+(\d{4})\b", l):
+    for i, line in enumerate(lines, start=1):
+        for m in re.finditer(r"\b(?:Epic|Task)\s+(\d{4})\b", line):
             occ[m.group(1)].append(i)
     return occ
 

@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import yaml
+from typing import Any, Dict, List, Tuple
 
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
@@ -137,7 +138,7 @@ def main() -> None:
         if args.verbose:
             print(msg, flush=True)
 
-    vprint(f"[cli] verbose mode on")
+    vprint("[cli] verbose mode on")
     vprint(f"[cli] loading config: {args.config}")
     config = load_settings(args.config)
 
@@ -282,7 +283,7 @@ def main() -> None:
                     managed_path = cfg_path.with_name(cfg_path.stem + ".managed" + cfg_path.suffix)
 
             # load managed data (this is what we'll update)
-            managed_data = {}
+            managed_data: Dict[str, Any] = {}
             if managed_path.exists():
                 try:
                     managed_data = yaml.safe_load(managed_path.read_text(encoding="utf-8")) or {}
@@ -348,7 +349,7 @@ def main() -> None:
         if getattr(args, "action", None) == "status":
             # load config file to read enabled list
             cfg_path = Path(args.config)
-            data = {}
+            data: Dict[str, Any] = {}
             if cfg_path.exists():
                 try:
                     data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
@@ -370,7 +371,7 @@ def main() -> None:
     # they expect filesystem plugin metadata to be used.
         if args.out_format == "table":
             # nice table layout using tabulate if available
-            rows = []
+            rows: List[Tuple[str, str, str, str]] = []
             for p in listing:
                 enabled_flag = bool(p.get("enabled"))
                 enabled_text = "YES" if enabled_flag else "NO"
@@ -447,9 +448,7 @@ def main() -> None:
     logger.info("Running task: %s", args.task)
     # Stream execution and show MCP call/results on the fly in a human readable way.
     async def _stream_and_run(agent: Agent, task: str) -> dict:
-        final_result = {"task": task, "calls": []}
-        # buffer summary to print after streaming completes so it appears at the end
-        buffered_summary = None
+        final_result: Dict[str, Any] = {"task": task, "calls": []}
         try:
             async for ev in agent.run_events(task):
                 t = ev.get("type")
@@ -486,7 +485,6 @@ def main() -> None:
                     # buffer final summary; don't print immediately to avoid mid-stream placement
                     summary = ev.get("summary")
                     if summary:
-                        buffered_summary = summary
                         final_result["summary"] = summary
                 elif t == "error":
                     err = f"ERROR: {ev.get('message')}"

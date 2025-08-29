@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Callable
 
 
 def _ensure_repo_root_on_path() -> None:

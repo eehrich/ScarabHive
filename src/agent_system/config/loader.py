@@ -35,7 +35,7 @@ def load_config(path: str | Path) -> AgentConfig:
     if isinstance(includes, str):
         includes = [includes]
 
-    merged = {}
+    merged: dict[str, Any] = {}
     for inc in includes:
         try:
             inc_path = Path(inc)
