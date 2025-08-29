@@ -295,7 +295,21 @@ def cmd_list(args: argparse.Namespace) -> int:
     path = args.file or "backlog.md"
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
-    use_color = getattr(args, "color", False)
+    # Determine color usage: explicit flag wins, otherwise auto-detect TTY
+    use_color_flag = getattr(args, "color", None)
+    if use_color_flag is None:
+        use_color = sys.stdout.isatty()
+    else:
+        use_color = bool(use_color_flag)
+    # On Windows, enable ANSI handling in interactive TTYs via colorama.
+    # Avoid initializing colorama when stdout is being captured by tests
+    # (StringIO) since it can wrap streams and hide raw escape sequences.
+    if use_color and sys.stdout.isatty():
+        try:
+            import colorama
+            colorama.init()
+        except Exception:
+            pass
 
     # Determine which epics to inspect based on state
     state = getattr(args, "state", "open") or "open"
@@ -346,7 +360,17 @@ def cmd_show(args: argparse.Namespace) -> int:
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
     ident = args.id
-    use_color = getattr(args, "color", False)
+    use_color_flag = getattr(args, "color", None)
+    if use_color_flag is None:
+        use_color = sys.stdout.isatty()
+    else:
+        use_color = bool(use_color_flag)
+    if use_color and sys.stdout.isatty():
+        try:
+            import colorama
+            colorama.init()
+        except Exception:
+            pass
 
     # Try epic
     for e in backlog.epics_open + backlog.epics_finished:
@@ -530,7 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     v.set_defaults(func=cmd_validate)
 
-    a = sub.add_parser("add-task", help="Dry-run add a new task")
+    a = sub.add_parser("add-task", help="add a new task")
     a.add_argument("--title", required=True, help="Task title")
     # make --epic optional for dry-run compatibility; required when --write is used
     a.add_argument("--epic", required=False, help="Epic id to add the task under")
@@ -593,7 +617,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("list", help="List all epic and task ids with titles")
     ls.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    ls.add_argument("--color", action="store_true", help="Enable ANSI colorized output")
+    # color tri-state: --color, --no-color; default None means auto-detect tty
+    g = ls.add_mutually_exclusive_group()
+    g.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")
+    g.add_argument("--no-color", dest="color", action="store_false", help="Disable ANSI colorized output")
+    ls.set_defaults(color=True)
     ls.add_argument("--state", choices=["open", "finished", "all"], default="open",
                     help="Filter by epic state (default: open)")
     ls.add_argument("--only", choices=["epics", "tasks", "all"], default="epics",
@@ -605,7 +633,10 @@ def build_parser() -> argparse.ArgumentParser:
     sh = sub.add_parser("show", help="Show details for an epic or task by id")
     sh.add_argument("--id", required=True, help="Epic or Task numeric id (0001)")
     sh.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    sh.add_argument("--color", action="store_true", help="Enable ANSI colorized output")
+    g2 = sh.add_mutually_exclusive_group()
+    g2.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")
+    g2.add_argument("--no-color", dest="color", action="store_false", help="Disable ANSI colorized output")
+    sh.set_defaults(color=True)
     sh.set_defaults(func=cmd_show)
 
     return p

@@ -62,7 +62,8 @@ def main() -> None:
     prelim = argparse.ArgumentParser(add_help=False)
     prelim.add_argument("--config", dest="config", default=str(Path("config/agent.yaml")))
     prelim.add_argument("-v", "--verbose", dest="verbose", action="store_true")
-    prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto")
+    # color can be set to auto/always/never; --no-color is alias for never
+    prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always")
     prelim.add_argument("--no-color", dest="no_color", action="store_true")
     prelim.add_argument("--no-stream", dest="no_stream", action="store_true")
     prelim.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
@@ -75,6 +76,14 @@ def main() -> None:
         color_mode = "never"
     else:
         color_mode = getattr(ns, "color", "auto")
+
+    # Initialize colorama on interactive TTYs so ANSI renders on Windows
+    try:
+        if color_mode != "never" and sys.stdout.isatty():
+            import colorama
+            colorama.init()
+    except Exception:
+        pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
     known = ("plugins", "run", "-h", "--help")
@@ -108,7 +117,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Agent System CLI")
     parser.add_argument("--config", dest="config", default=str(Path("config/agent.yaml")), help="Path to config")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
-    parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="auto", help="Colorize output (auto|always|never)")
+    parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always", help="Colorize output (auto|always|never)")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
     parser.add_argument("--no-stream", dest="no_stream", action="store_true", help="Disable live MCP call/result streaming; print only final JSON result")
     parser.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
