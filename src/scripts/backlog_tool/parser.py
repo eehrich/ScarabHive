@@ -130,17 +130,39 @@ def parse(backlog_lines: List[str]) -> Backlog:
                 elif key == "closed":
                     current_task.closed = val.strip()
                 elif key == "notes":
-                    # start collecting subsequent indented note lines
-                    current_task.notes = []
-                    current_collect = ("notes", indent, "task")
+                    # if value present on same line, treat as single-line note
+                    if val.strip():
+                        current_task.notes = [val.strip()]
+                        current_collect = None
+                    else:
+                        current_task.notes = []
+                        current_collect = ("notes", indent, "task")
                 elif key == "description":
-                    current_task.description = []
-                    current_collect = ("description", indent, "task")
+                    if val.strip():
+                        current_task.description = [val.strip()]
+                        current_collect = None
+                    else:
+                        current_task.description = []
+                        current_collect = ("description", indent, "task")
                 continue
             # treat as epic-level field if indent < 4 and we have a current epic
             if indent < 4 and current_epic is not None:
                 if key == "status":
                     current_epic.status = val.strip()
+                elif key == "notes":
+                    if val.strip():
+                        current_epic.notes = [val.strip()]
+                        current_collect = None
+                    else:
+                        current_epic.notes = []
+                        current_collect = ("notes", indent, "epic")
+                elif key == "description":
+                    if val.strip():
+                        current_epic.description = [val.strip()]
+                        current_collect = None
+                    else:
+                        current_epic.description = []
+                        current_collect = ("description", indent, "epic")
                 else:
                     # preserve other epic-level fields in raw_lines, but
                     # avoid preserving a 'tasks:' heading which will be
@@ -153,6 +175,23 @@ def parse(backlog_lines: List[str]) -> Backlog:
         # If we are currently collecting a multiline field, capture lines
         if current_collect is not None:
             name, col_indent, target = current_collect
+            # Treat a blank line as part of the current collection. This
+            # preserves intentionally spaced list items and paragraph breaks
+            # inside notes/description blocks.
+            if ln.strip() == "":
+                if target == "task" and current_task is not None:
+                    if name == "notes":
+                        current_task.notes.append("")
+                    else:
+                        current_task.description.append("")
+                    continue
+                if target == "epic" and current_epic is not None:
+                    if name == "notes":
+                        current_epic.notes.append("")
+                    else:
+                        current_epic.description.append("")
+                    continue
+
             if indent > col_indent:
                 text = ln.strip()
                 # notes are usually list items starting with '- '
@@ -313,13 +352,25 @@ def build_markdown(backlog: Backlog) -> str:
         if e.closed:
             lines.append(f"  - closed: {e.closed}")
         if e.description:
-            lines.append("  - description:")
-            for d in e.description:
-                lines.append(f"    {d}")
+            # If description is a single short line, prefer inline form to
+            # preserve authoring style (avoid converting inline -> block).
+            if len(e.description) == 1 and e.description[0] != "" and "\n" not in e.description[0]:
+                lines.append(f"  - description: {e.description[0]}")
+            else:
+                lines.append("  - description:")
+                for d in e.description:
+                    if d == "":
+                        lines.append("")
+                    else:
+                        lines.append(f"    {d}")
         if e.notes:
             lines.append("  - notes:")
             for n in e.notes:
-                lines.append(f"    - {n}")
+                # render an explicit blank line between note list items
+                if n == "":
+                    lines.append("")
+                else:
+                    lines.append(f"    - {n}")
         # Preserve any raw_lines after structured fields
         if e.raw_lines:
             # Filter out raw_blocks corresponding to modeled fields (notes/description)
@@ -376,13 +427,23 @@ def build_markdown(backlog: Backlog) -> str:
             if t.closed:
                 lines.append(f"      - closed: {t.closed}")
             if t.description:
-                lines.append("      - description:")
-                for d in t.description:
-                    lines.append(f"        {d}")
+                # prefer inline when single-line
+                if len(t.description) == 1 and t.description[0] != "" and "\n" not in t.description[0]:
+                    lines.append(f"      - description: {t.description[0]}")
+                else:
+                    lines.append("      - description:")
+                    for d in t.description:
+                        if d == "":
+                            lines.append("")
+                        else:
+                            lines.append(f"        {d}")
             if t.notes:
                 lines.append("      - notes:")
                 for n in t.notes:
-                    lines.append(f"        - {n}")
+                    if n == "":
+                        lines.append("")
+                    else:
+                        lines.append(f"        - {n}")
         # separate epics with a blank line
         lines.append("")
     # Emit the Epics - finished section (render finished epics similar to open epics).
@@ -400,6 +461,29 @@ def build_markdown(backlog: Backlog) -> str:
         sym = sym or '\u2705'
         lines.append(f"- {sym} Epic {e.id}: {e.title}")
         lines.append(f"  - status: {e.status}")
+        # emit epic-level structured fields if present (same as open epics)
+        if e.added:
+            lines.append(f"  - added: {e.added}")
+        if e.closed:
+            lines.append(f"  - closed: {e.closed}")
+        if e.description:
+            if len(e.description) == 1 and e.description[0] != "" and "\n" not in e.description[0]:
+                lines.append(f"  - description: {e.description[0]}")
+            else:
+                lines.append("  - description:")
+                for d in e.description:
+                    if d == "":
+                        lines.append("")
+                    else:
+                        lines.append(f"    {d}")
+        if e.notes:
+            lines.append("  - notes:")
+            for n in e.notes:
+                if n == "":
+                    lines.append("")
+                else:
+                    lines.append(f"    - {n}")
+
         # preserve epic-level raw lines
         if e.raw_lines:
             rl = list(e.raw_lines)
@@ -432,11 +516,17 @@ def build_markdown(backlog: Backlog) -> str:
             if t.description:
                 lines.append("      - description:")
                 for d in t.description:
-                    lines.append(f"        {d}")
+                    if d == "":
+                        lines.append("")
+                    else:
+                        lines.append(f"        {d}")
             if t.notes:
                 lines.append("      - notes:")
                 for n in t.notes:
-                    lines.append(f"        - {n}")
+                    if n == "":
+                        lines.append("")
+                    else:
+                        lines.append(f"        - {n}")
         # separate epics with a blank line
         lines.append("")
 
@@ -680,19 +770,25 @@ def reassign_duplicate_task_ids(backlog: Backlog) -> list[Tuple[str, str]]:
 
     Returns list of tuples (old_id, new_id) for changed tasks.
     """
-    all_ids: list[str] = []
+    # Build a list of all task ids and detect duplicates among tasks only
+    all_task_ids: list[str] = []
     for e in backlog.epics_open + backlog.epics_finished:
         for t in e.tasks:
-            all_ids.append(t.id)
-    dup = {i for i in all_ids if all_ids.count(i) > 1}
+            all_task_ids.append(t.id)
+    dup = {i for i in all_task_ids if all_task_ids.count(i) > 1}
     changed: list[Tuple[str, str]] = []
     if not dup:
         return changed
 
-    existing = set(all_ids)
-    # helper to make next available id (0000..9999)
-    def next_id(start=0):
-        for i in range(start, 10000):
+    # existing pool must include epic ids as well to avoid collisions
+    existing = {e.id for e in backlog.epics_open + backlog.epics_finished} | set(all_task_ids)
+
+    # choose start = max numeric existing id + 1 for monotonic allocation
+    numeric_existing = [int(x) for x in existing if x.isdigit()]
+    start = (max(numeric_existing) + 1) if numeric_existing else 0
+
+    def next_id(start_idx=start):
+        for i in range(start_idx, 10000):
             cand = f"{i:04d}"
             if cand not in existing:
                 existing.add(cand)

@@ -421,11 +421,34 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
         print(c)
     if getattr(args, "write", False):
         bak = bl.make_backup(path)
-        bl.safe_write(path, bl.build_markdown(backlog))
-        print(f"Applied fixes; backup: {bak}")
-        if collision_changes:
-            for old, new in collision_changes:
-                print(f"reassign collision: {old} -> {new}")
+        # If ids-only was requested, apply targeted textual replacements so
+        # we preserve all authoring and formatting. Otherwise fall back to
+        # full reserialization from the normalized model (respecting the
+        # parser/writer rules).
+        if getattr(args, 'ids_only', False):
+            import re as _re
+            with open(path, 'r', encoding='utf-8') as _f:
+                _text = _f.read()
+
+            def _replace_with_new(old_id, new_id):
+                return lambda m: m.group(1) + new_id
+
+            for old, new in list(id_changes) + list(collision_changes):
+                _text = _re.sub(rf'(\bEpic\s+){_re.escape(old)}(?=\s*:)', _replace_with_new(old, new), _text)
+                _text = _re.sub(rf'(\bTask\s+){_re.escape(old)}(?=\s*:)', _replace_with_new(old, new), _text)
+
+            bl.safe_write(path, _text)
+            print(f"Applied id-only fixes; backup: {bak}")
+            if collision_changes:
+                for old, new in collision_changes:
+                    print(f"reassign collision: {old} -> {new}")
+        else:
+            # full reserialize path: write canonicalized markdown from model
+            bl.safe_write(path, bl.build_markdown(backlog))
+            print(f"Applied fixes; backup: {bak}")
+            if collision_changes:
+                for old, new in collision_changes:
+                    print(f"reassign collision: {old} -> {new}")
     return 0
 
 
@@ -909,6 +932,8 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("fix-format", help="Normalize status tokens and reassign duplicate ids")
     f.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     f.add_argument("--write", action="store_true", help="Apply fixes and persist to file")
+    f.add_argument("--ids-only", action="store_true", dest="ids_only",
+                   help="When writing, only rewrite numeric Task/Epic ids and leave formatting intact")
     f.set_defaults(func=cmd_fix_format)
 
     # legacy compatibility: expose the `update` command used by older scripts/tests
