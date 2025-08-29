@@ -47,8 +47,8 @@ class Backlog:
     footer: List[str]
 
 
-RE_EPIC_LINE = re.compile(r"^\s*(?:-\s*)?(?:☐|✅|❌|⏳|\[ ?\])?\s*Epic\s+(\d{1,4}):\s*(.*)$")
-RE_TASK_LINE = re.compile(r"^\s*(?:-\s*)?(?:☐|✅|❌|⏳|\[ ?\])?\s*Task\s+(\d{1,4}):\s*(.*)$")
+RE_EPIC_LINE = re.compile(r"^\s*(?:-\s*)?(?:☐|✅|❌|⏳|\[ ?\])?\s*Epic\s+(\d+):\s*(.*)$")
+RE_TASK_LINE = re.compile(r"^\s*(?:-\s*)?(?:☐|✅|❌|⏳|\[ ?\])?\s*Task\s+(\d+):\s*(.*)$")
 RE_FIELD_LINE = re.compile(r"^\s*-\s*(\w+):\s*(.*)$")
 
 

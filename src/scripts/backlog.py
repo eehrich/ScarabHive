@@ -209,8 +209,39 @@ def cmd_edit(args: argparse.Namespace) -> int:
     try:
         epic, task = bl.find_task(backlog, ident)
     except KeyError:
+        # Fallback: try to locate an epic with this id first, then try to
+        # locate a task by scanning all epics and matching numeric ids
         epic = next((e for e in backlog.epics_open + backlog.epics_finished if e.id == ident), None)
         task = None
+
+        def _canon_id(s: str) -> str:
+            s2 = str(s).strip()
+            if s2.isdigit():
+                # canonicalize numeric ids by removing leading zeros
+                return str(int(s2))
+            return s2
+
+        try:
+            ident_canon = _canon_id(ident)
+        except Exception:
+            ident_canon = str(ident)
+
+        # scan for task matches (ignore zero-padding differences)
+        for e in backlog.epics_open + backlog.epics_finished:
+            for t in getattr(e, 'tasks', []) or []:
+                t_id = getattr(t, 'id', None)
+                if t_id is None:
+                    continue
+                try:
+                    t_canon = _canon_id(t_id)
+                except Exception:
+                    t_canon = str(t_id)
+                if ident_canon == t_canon or str(t_id) == str(ident) or str(t_id).lstrip('0') == str(ident).lstrip('0'):
+                    epic = e
+                    task = t
+                    break
+            if task is not None:
+                break
 
     if task is not None:
         # Only allow explicit, known task-level keys to be edited.
@@ -240,11 +271,14 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 vv = v.replace('\\n', '\n')
                 task.description = vv.splitlines()
 
-        print(f"Dry-run: updated task {task.id} (Epic {epic.id})")
         if getattr(args, 'write', False):
+            # perform write and report the update
             bak = bl.make_backup(path)
             bl.safe_write(path, bl.build_markdown(backlog))
+            print(f"Updated task {task.id} (Epic {epic.id})")
             print(f"Wrote changes to {path}; backup: {bak}")
+        else:
+            print(f"Dry-run: updated task {task.id} (Epic {epic.id})")
         return 0
 
     if epic:
@@ -307,11 +341,13 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 epic.description = vv.splitlines()
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'description')
 
-        print(f"Dry-run: updated epic {epic.id}")
         if getattr(args, 'write', False):
             bak = bl.make_backup(path)
             bl.safe_write(path, bl.build_markdown(backlog))
+            print(f"Updated epic {epic.id}")
             print(f"Wrote changes to {path}; backup: {bak}")
+        else:
+            print(f"Dry-run: updated epic {epic.id}")
         return 0
 
     print(f"ERROR: id {ident} not found", file=sys.stderr)
