@@ -46,8 +46,11 @@ def cmd_add_task(args: argparse.Namespace) -> int:
     entry.append("  - status: open")
     entry.append(f"  - added: {now}")
     if getattr(args, "notes", None):
+        # Allow CLI users to pass literal '\\n' sequences which should
+        # be interpreted as real newlines. Normalize here for preview.
+        notes_raw = args.notes.replace('\\n', '\n')
         entry.append("  - Notes:")
-        for line in args.notes.splitlines():
+        for line in notes_raw.splitlines():
             entry.append(f"    - {line}")
     # Show preview only for dry-run mode
     if not getattr(args, 'write', False):
@@ -74,7 +77,25 @@ def cmd_add_task(args: argparse.Namespace) -> int:
         try:
             epic_id = _pad_id_input(getattr(args, 'epic', None))
             forced = _pad_id_input(getattr(args, 'forced_id', None))
-            t = bl.add_task_to_epic(backlog, epic_id, args.title, getattr(args, "notes", None), forced_id=forced)
+            # Normalize literal '\\n' sequences and strip any leading
+            # list marker from user-supplied lines so the writer does not
+            # produce nested '- - ...' bullets.
+            def _normalize_notes(s: str | None) -> str | None:
+                if s is None:
+                    return None
+                s2 = s.replace('\\n', '\n')
+                lines = []
+                for ln in s2.splitlines():
+                    l = ln
+                    if l.lstrip().startswith('- '):
+                        # remove the first hyphen and following space
+                        idx = l.find('- ')
+                        l = l[:idx] + l[idx+2:]
+                    lines.append(l.rstrip())
+                return '\n'.join(lines)
+
+            notes_arg = _normalize_notes(getattr(args, "notes", None))
+            t = bl.add_task_to_epic(backlog, epic_id, args.title, notes_arg, forced_id=forced)
         except KeyError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 2
@@ -263,13 +284,28 @@ def cmd_edit(args: argparse.Namespace) -> int:
             elif k == 'closed':
                 task.closed = v
             elif k == 'notes':
-                # Support literal '\n' sequences in CLI input by translating
-                # them to real newlines before splitting.
+                # Support literal '\\n' sequences and strip accidental
+                # leading list markers '- ' so we don't end up with nested
+                # bullets when writing back to markdown.
                 vv = v.replace('\\n', '\n')
-                task.notes = vv.splitlines()
+                normalized = []
+                for ln in vv.splitlines():
+                    l = ln
+                    if l.lstrip().startswith('- '):
+                        idx = l.find('- ')
+                        l = l[:idx] + l[idx+2:]
+                    normalized.append(l.rstrip())
+                task.notes = normalized
             elif k == 'description':
                 vv = v.replace('\\n', '\n')
-                task.description = vv.splitlines()
+                normalized = []
+                for ln in vv.splitlines():
+                    l = ln
+                    if l.lstrip().startswith('- '):
+                        idx = l.find('- ')
+                        l = l[:idx] + l[idx+2:]
+                    normalized.append(l.rstrip())
+                task.description = normalized
 
         if getattr(args, 'write', False):
             # perform write and report the update
@@ -329,16 +365,27 @@ def cmd_edit(args: argparse.Namespace) -> int:
             elif k == 'closed':
                 epic.closed = v
             elif k == 'notes':
-                # Support literal '\n' sequences in CLI input by translating
-                # them to real newlines before splitting.
+                # Normalize and strip accidental list markers
                 vv = v.replace('\\n', '\n')
-                epic.notes = vv.splitlines()
-                # remove any previous raw_lines that represent notes so we
-                # don't duplicate preserved unmodeled content.
+                normalized = []
+                for ln in vv.splitlines():
+                    l = ln
+                    if l.lstrip().startswith('- '):
+                        idx = l.find('- ')
+                        l = l[:idx] + l[idx+2:]
+                    normalized.append(l.rstrip())
+                epic.notes = normalized
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'notes')
             elif k == 'description':
                 vv = v.replace('\\n', '\n')
-                epic.description = vv.splitlines()
+                normalized = []
+                for ln in vv.splitlines():
+                    l = ln
+                    if l.lstrip().startswith('- '):
+                        idx = l.find('- ')
+                        l = l[:idx] + l[idx+2:]
+                    normalized.append(l.rstrip())
+                epic.description = normalized
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'description')
 
         if getattr(args, 'write', False):
