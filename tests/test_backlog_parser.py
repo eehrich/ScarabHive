@@ -9,7 +9,7 @@ def test_parse_minimal():
         "",
         "- ☐ Epic 0018: Backlog maintenance tool",
         "  - status: ☐",
-        "  - Subtasks:",
+    "  - tasks:",
         "    - ☐ Task 0189: Design CLI",
         "      - status: open",
     ]

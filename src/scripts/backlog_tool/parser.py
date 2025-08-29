@@ -182,7 +182,7 @@ def build_markdown(backlog: Backlog) -> str:
         sym = sym or '☐'
         lines.append(f"- {sym} Epic {e.id}: {e.title}")
         lines.append(f"  - status: {e.status}")
-        lines.append("  - Subtasks:")
+        lines.append("  - tasks:")
         for t in e.subtasks:
             # task symbol resolved from status
             task_sym = None
@@ -190,7 +190,7 @@ def build_markdown(backlog: Backlog) -> str:
                 if v == (t.status or '').strip().lower():
                     task_sym = k
                     break
-            task_sym = task_sym or '☐'
+            task_sym = task_sym or '\u2610'
             lines.append(f"    - {task_sym} Task {t.id}: {t.title}")
             lines.append(f"      - status: {t.status}")
             if t.added:

@@ -280,6 +280,109 @@ def _normalize_status(s: str) -> str | None:
     return WORD_MAP.get(first)
 
 
+def _ansi(text: str, code: str | None) -> str:
+    if not code:
+        return text
+    return f"\x1b[{code}m{text}\x1b[0m"
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    """List all epic and task ids with titles.
+
+    Supports optional ANSI colorization with --color.
+    """
+    from scripts.backlog_tool import parser as bl
+    path = args.file or "backlog.md"
+    lines = bl.read_file(path)
+    backlog = bl.parse(lines)
+    use_color = getattr(args, "color", False)
+
+    # Determine which epics to inspect based on state
+    state = getattr(args, "state", "open") or "open"
+    only = getattr(args, "only", "epics") or "epics"
+    ids_only = getattr(args, "ids_only", False)
+
+    epics: list = []
+    if state in ("open", "all"):
+        epics.extend(backlog.epics_open)
+    if state in ("finished", "all"):
+        epics.extend(backlog.epics_finished)
+
+    # Default behavior: only epics and open (handled by defaults above)
+
+    # Print epics when requested
+    if only in ("epics", "all"):
+        print("Epics:")
+        for e in epics:
+            if ids_only:
+                print(e.id)
+            else:
+                eid = _ansi(e.id, "36;1" if use_color else None)
+                title = _ansi(e.title, "32" if use_color else None)
+                print(f"  Epic {eid}: {title}")
+        print("")
+
+    # Print tasks when requested
+    if only in ("tasks", "all"):
+        print("Tasks:")
+        for e in epics:
+            for t in e.subtasks:
+                if ids_only:
+                    print(t.id)
+                else:
+                    tid = _ansi(t.id, "36;1" if use_color else None)
+                    title = _ansi(t.title, "33" if use_color else None)
+                    print(f"  Task {tid}: {title}  (Epic {e.id})")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    """Show a detailed view of an epic or task by numeric id.
+
+    --id accepts either an epic id or a task id.
+    """
+    from scripts.backlog_tool import parser as bl
+    path = args.file or "backlog.md"
+    lines = bl.read_file(path)
+    backlog = bl.parse(lines)
+    ident = args.id
+    use_color = getattr(args, "color", False)
+
+    # Try epic
+    for e in backlog.epics_open + backlog.epics_finished:
+        if e.id == ident:
+            print(_ansi(f"Epic {e.id}: {e.title}", "32;1" if use_color else None))
+            print(f"  status: {e.status}")
+            if e.raw_lines:
+                print("  (extra lines preserved)")
+            print("  - tasks:")
+            for t in e.subtasks:
+                tid = _ansi(t.id, "36;1" if use_color else None)
+                ttitle = _ansi(t.title, "33" if use_color else None)
+                print(f"    - Task {tid}: {ttitle}")
+                print(f"      - status: {t.status}")
+                if t.added:
+                    print(f"      - added: {t.added}")
+                if t.closed:
+                    print(f"      - closed: {t.closed}")
+            return 0
+
+    # Try task
+    try:
+        epic, task = bl.find_task(backlog, ident)
+    except KeyError:
+        print(f"ERROR: id {ident} not found", file=sys.stderr)
+        return 2
+    print(_ansi(f"Task {task.id}: {task.title}", "33;1" if use_color else None))
+    print(f"  status: {task.status}")
+    if task.added:
+        print(f"  added: {task.added}")
+    if task.closed:
+        print(f"  closed: {task.closed}")
+    print(f"  Parent Epic: {epic.id}: {epic.title}")
+    return 0
+
+
 def cmd_update(args: argparse.Namespace) -> int:
     """Validate and move finished epics (compat shim for legacy updater).
 
@@ -339,7 +442,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     finished_text = full[start_finished:]
 
     lines = open_text.splitlines(keepends=True)
-    epic_header_re = re.compile(r"^\s*(?:☐|✅|❌|⏳)?\s*Epic\s+(\d{4}):")
+    # accept optional leading '-' (markdown list) and optional symbol like '☐'
+    epic_header_re = re.compile(r"^\s*(?:-\s*)?(?:☐|✅|❌|⏳)?\s*Epic\s+(\d{4}):")
     epic_indices = [i for i, line in enumerate(lines) if epic_header_re.match(line)]
     if not epic_indices:
         return 0
@@ -352,7 +456,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     acceptable_terminal = set(bl_values.get('acceptable_terminal', ['done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed']))
     for start, end in blocks:
         block_text = ''.join(lines[start:end])
-        subtasks_match = re.search(r"-\s*Subtasks:\s*", block_text, flags=re.I)
+        # Strict: only accept the canonical 'tasks:' heading (no Subtasks synonyms)
+        subtasks_match = re.search(r"-\s*tasks:\s*", block_text, flags=re.I)
         if subtasks_match:
             subtasks_part = block_text[subtasks_match.end():]
             status_lines = re.findall(r"^\s*-\s*status:\s*(.+)$", subtasks_part, flags=re.M)
@@ -485,6 +590,23 @@ def build_parser() -> argparse.ArgumentParser:
     up = sub.add_parser("update", help="Validate and move finished epics (compat shim)")
     up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     up.set_defaults(func=cmd_update)
+
+    ls = sub.add_parser("list", help="List all epic and task ids with titles")
+    ls.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    ls.add_argument("--color", action="store_true", help="Enable ANSI colorized output")
+    ls.add_argument("--state", choices=["open", "finished", "all"], default="open",
+                    help="Filter by epic state (default: open)")
+    ls.add_argument("--only", choices=["epics", "tasks", "all"], default="epics",
+                    help="Show only epics, only tasks, or all (default: epics)")
+    ls.add_argument("--ids-only", action="store_true", dest="ids_only",
+                    help="Print only numeric ids, one per line")
+    ls.set_defaults(func=cmd_list)
+
+    sh = sub.add_parser("show", help="Show details for an epic or task by id")
+    sh.add_argument("--id", required=True, help="Epic or Task numeric id (0001)")
+    sh.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    sh.add_argument("--color", action="store_true", help="Enable ANSI colorized output")
+    sh.set_defaults(func=cmd_show)
 
     return p
 

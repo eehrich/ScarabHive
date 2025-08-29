@@ -11,7 +11,7 @@ GOOD = '''# Backlog
 ☐ Epic 9000: Test epic
   - description: test
   - status: open
-  - Subtasks:
+  - tasks:
     - Task 9001: subtask
       - status: done
 
@@ -24,7 +24,7 @@ BAD = '''# Backlog
 ☐ Epic 9002: Test epic bad
   - description: test
   - status: open
-  - Subtasks:
+  - tasks:
     - Task 9003: subtask
       - status: foobar
 
@@ -32,18 +32,20 @@ BAD = '''# Backlog
 
 
 def run_validator(path: Path) -> tuple[int, str]:
-  env = dict(**os.environ)
-  env['BACKLOG_MD'] = str(path)
-  # canonical implementation lives under src/scripts
-  script = Path('.') / 'src' / 'scripts' / 'update_backlog.py'
-  res = subprocess.run(
-    [sys.executable, str(script)],
-    cwd=Path('.'),
-    env=env,
-    capture_output=True,
-    text=True,
-  )
-  return res.returncode, res.stdout + res.stderr
+  # Run the canonical updater in-process and capture stdout/stderr.
+  import importlib
+  import io
+  import contextlib
+  os.environ['BACKLOG_MD'] = str(path)
+  mod = importlib.import_module('scripts.backlog')
+  buf = io.StringIO()
+  try:
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+      rc = mod.main(['update'])
+  except SystemExit as e:
+    rc = int(e.code or 0)
+  out = buf.getvalue()
+  return rc, out
 
 
 def test_good(tmp_path):

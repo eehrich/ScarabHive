@@ -13,7 +13,7 @@ def make_minimal_backlog(path: Path, epic_id: str = None) -> None:
         content.extend([
             f"- ☐ Epic {epic_id}: Sample Epic",
             "  - status: open",
-            "  - Subtasks:",
+            "  - tasks:",
             "",
         ])
     content.extend(["## 2. Epics - finished", ""]) 
@@ -70,7 +70,7 @@ def test_fix_format_reassigns_duplicates_and_backups(tmp_path):
         "",
         "- ☐ Epic 0001: Dup Epic",
         "  - status: open",
-        "  - Subtasks:",
+    "  - tasks:",
         "    - ☐ Task 0001: First",
         "      - status: open",
         "      - added: 2025-08-28",
@@ -106,7 +106,7 @@ def test_check_ids_detects_duplicates(tmp_path):
         "",
         "- ☐ Epic 0002: Example",
         "  - status: open",
-        "  - Subtasks:",
+    "  - tasks:",
         "    - ☐ Task 0100: A",
         "    - ☐ Task 0100: B",
         "",
@@ -126,14 +126,14 @@ SAMPLE = """
 
 - ☐ Epic 0001: First Epic
   - status: open
-  - Subtasks:
+    - tasks:
     - ☐ Task 0001: Task One
       - status: open
       - added: 2025-08-01
 
 - ☐ Epic 0002: Second Epic
   - status: open
-  - Subtasks:
+    - tasks:
 
 ## 2. Epics - finished
 

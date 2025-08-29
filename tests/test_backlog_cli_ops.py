@@ -8,14 +8,14 @@ SAMPLE = """
 
 - ☐ Epic 0001: First Epic
   - status: open
-  - Subtasks:
+  - tasks:
     - ☐ Task 0001: Task One
       - status: open
       - added: 2025-08-01
 
 - ☐ Epic 0002: Second Epic
   - status: open
-  - Subtasks:
+  - tasks:
 
 ## 2. Epics - finished
 

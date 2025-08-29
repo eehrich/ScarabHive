@@ -8,7 +8,7 @@ GOOD = '''# Backlog
 
 ☐ Epic 1000: OK epic
  - status: open
- - Subtasks:
+  - tasks:
     - ☐ Task 1001: task
       - status: open
 
@@ -22,13 +22,13 @@ DUP_TASK = '''# Backlog
 
 ☐ Epic 1001: Epic A
  - status: open
- - Subtasks:
+ - tasks:
     - ☐ Task 2001: task A
       - status: open
 
 ☐ Epic 1002: Epic B
  - status: open
- - Subtasks:
+ - tasks:
     - ☐ Task 2001: task B
       - status: open
 
@@ -42,7 +42,7 @@ BAD_DATES = '''# Backlog
 
 ☐ Epic 1003: Epic
  - status: open
- - Subtasks:
+ - tasks:
     - ☐ Task 3001: task
       - status: open
       - added: 2025-13-01
@@ -57,7 +57,7 @@ BAD_STATUS = '''# Backlog
 
 ☐ Epic 1004: Epic
  - status: foobar
- - Subtasks:
+ - tasks:
     - ☐ Task 4001: task
       - status: open
 
