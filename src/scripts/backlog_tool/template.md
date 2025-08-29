@@ -2,6 +2,10 @@
 
 ## Documentation and Guidelines
 
+DO NOT MODIFY THIS FILE DIRECTLY. USE backlog TOOL AS INTERFACE. see docs/backlog_tool.md
+
+The reason is to keep the syntax korrekt and check ids and validity.
+
 ### Legend
 
 Legend: ✅ = done, ☐ = open, ❌ = failed, ⏳ = in progress/started/partially finished
