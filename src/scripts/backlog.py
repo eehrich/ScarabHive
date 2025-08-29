@@ -210,15 +210,7 @@ def cmd_undo(args: argparse.Namespace) -> int:
     if not backups:
         print("No backups found", file=sys.stderr)
         return 3
-    # restore last backup by default
-    bl.restore_backup(path, backups[-1])
-    print(f"Restored backup: {backups[-1]}")
-    return 0
-    backups = bl.list_backups(path)
-    if not backups:
-        print("No backups found", file=sys.stderr)
-        return 3
-
+    # support listing, explicit restore, interactive choose, or default restore
     if getattr(args, "list", False):
         for i, b in enumerate(backups, 1):
             print(f"{i}: {b}")
@@ -255,7 +247,7 @@ def cmd_undo(args: argparse.Namespace) -> int:
         print(f"Restored backup: {chosen}")
         return 0
 
-    # allow selecting last by default
+    # default: restore last backup
     backup_path = backups[-1]
     bl.restore_backup(path, backup_path)
     print(f"Restored backup: {backup_path}")
