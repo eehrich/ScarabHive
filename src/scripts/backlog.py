@@ -73,8 +73,12 @@ def cmd_add_task(args: argparse.Namespace) -> int:
         backlog = bl.parse(lines)
         try:
             epic_id = _pad_id_input(getattr(args, 'epic', None))
-            t = bl.add_task_to_epic(backlog, epic_id, args.title, getattr(args, "notes", None))
+            forced = _pad_id_input(getattr(args, 'forced_id', None))
+            t = bl.add_task_to_epic(backlog, epic_id, args.title, getattr(args, "notes", None), forced_id=forced)
         except KeyError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+        except ValueError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 2
         bak = bl.make_backup(path)
@@ -141,14 +145,24 @@ def cmd_add_epic(args: argparse.Namespace) -> int:
 
             # Use the parser API to add the epic to the freshly copied template.
             backlog_obj = bl.parse(lines_orig)
-            e = bl.add_epic_to_backlog(backlog_obj, args.title)
+            forced = _pad_id_input(getattr(args, 'forced_id', None))
+            try:
+                e = bl.add_epic_to_backlog(backlog_obj, args.title, forced_id=forced)
+            except ValueError as ve:
+                print(f"ERROR: {ve}", file=sys.stderr)
+                return 2
             bak = bl.make_backup(path)
             bl.safe_write(path, bl.build_markdown(backlog_obj))
             print(f"Created epic {e.id}; backup: {bak}")
         else:
             lines = bl.read_file(path)
             backlog = bl.parse(lines)
-            e = bl.add_epic_to_backlog(backlog, args.title)
+            forced = _pad_id_input(getattr(args, 'forced_id', None))
+            try:
+                e = bl.add_epic_to_backlog(backlog, args.title, forced_id=forced)
+            except ValueError as ve:
+                print(f"ERROR: {ve}", file=sys.stderr)
+                return 2
             bak = bl.make_backup(path)
             bl.safe_write(path, bl.build_markdown(backlog))
             print(f"Created epic {e.id}; backup: {bak}")
@@ -882,6 +896,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--title", required=True, help="Task title")
     # make --epic optional for dry-run compatibility; required when --write is used
     a.add_argument("--epic", required=False, help="Epic id to add the task under")
+    a.add_argument("--id", dest="forced_id", help="Force a specific Task id (numeric or string). Will error if id exists")
     a.add_argument("--notes", help="Optional notes text")
     a.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     a.add_argument("--write", action="store_true", help="Persist changes to file")
@@ -889,6 +904,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ae = sub.add_parser("add-epic", help="Create a new epic")
     ae.add_argument("--title", required=True, help="Epic title")
+    ae.add_argument("--id", dest="forced_id", help="Force a specific Epic id (numeric or string). Will error if id exists")
     ae.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     ae.add_argument("--write", action="store_true", help="Persist changes to file")
     ae.set_defaults(func=cmd_add_epic)

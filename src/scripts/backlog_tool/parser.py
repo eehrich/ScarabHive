@@ -235,22 +235,36 @@ def parse(backlog_lines: List[str]) -> Backlog:
     return Backlog(header=header, epics_open=epics_open, epics_finished=epics_finished, footer=footer)
 
 
-def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional[str] = None) -> Task:
+def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional[str] = None, forced_id: Optional[str] = None) -> Task:
     # Build a global set of ids (epic + task) to avoid collisions across epics and tasks
     existing_ids = {e.id for e in backlog.epics_open + backlog.epics_finished}
     existing_ids.update(t.id for ep in backlog.epics_open + backlog.epics_finished for t in ep.tasks)
+    # normalize forced id if given (pad numeric form to 4 digits)
+    if forced_id is not None:
+        # Only numeric ids are allowed for consistency.
+        if not str(forced_id).isdigit():
+            raise ValueError("id must be numeric")
+        forced_id = f"{int(str(forced_id)):04d}"
+
     for e in backlog.epics_open:
         if e.id == epic_id:
-            # choose a monotonic id: max(existing numeric ids) + 1
-            numeric_ids = [int(x) for x in existing_ids if x.isdigit()]
-            start = (max(numeric_ids) + 1) if numeric_ids else 0
-            for i in range(start, 10000):
-                cand = f"{i:04d}"
-                if cand not in existing_ids:
-                    new_id = cand
-                    break
+            # If a forced id was provided, validate uniqueness and use it.
+            if forced_id:
+                if forced_id in existing_ids:
+                    raise ValueError(f"id {forced_id} already exists")
+                new_id = forced_id
             else:
-                raise RuntimeError("no available task ids")
+                # choose a monotonic id: max(existing numeric ids) + 1
+                numeric_ids = [int(x) for x in existing_ids if x.isdigit()]
+                start = (max(numeric_ids) + 1) if numeric_ids else 0
+                for i in range(start, 10000):
+                    cand = f"{i:04d}"
+                    if cand not in existing_ids:
+                        new_id = cand
+                        break
+                else:
+                    raise RuntimeError("no available task ids")
+
             t = Task(id=new_id, title=title, status="open", added=date.today().isoformat())
             if notes:
                 t.notes = notes.splitlines()
@@ -259,7 +273,7 @@ def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional
     raise KeyError(f"epic {epic_id} not found")
 
 
-def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open') -> Epic:
+def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open', forced_id: Optional[str] = None) -> Epic:
     """Create a new epic with a unique zero-padded 4-digit id and append to epics_open.
 
     The id generator finds the next unused numeric id (0000..9999) not present
@@ -268,14 +282,24 @@ def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open') -> E
     # Use a shared id pool between epics and tasks
     existing = {e.id for e in backlog.epics_open + backlog.epics_finished}
     existing.update(t.id for ep in backlog.epics_open + backlog.epics_finished for t in ep.tasks)
-    # find next available numeric id
-    for i in range(0, 10000):
-        cand = f"{i:04d}"
-        if cand not in existing:
-            new_id = cand
-            break
+
+    # normalize forced id if given (pad numeric form to 4 digits) and enforce numeric-only ids
+    if forced_id is not None:
+        if not str(forced_id).isdigit():
+            raise ValueError("id must be numeric")
+        forced_id = f"{int(str(forced_id)):04d}"
+        if forced_id in existing:
+            raise ValueError(f"id {forced_id} already exists")
+        new_id = forced_id
     else:
-        raise RuntimeError("no available epic ids")
+        # find next available numeric id
+        for i in range(0, 10000):
+            cand = f"{i:04d}"
+            if cand not in existing:
+                new_id = cand
+                break
+        else:
+            raise RuntimeError("no available epic ids")
 
     e = Epic(id=new_id, title=title, status=status)
     e.tasks = []
