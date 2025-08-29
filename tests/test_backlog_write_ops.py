@@ -89,7 +89,7 @@ def test_fix_format_reassigns_duplicates_and_backups(tmp_path):
     from scripts.backlog_tool import parser as bl
     blines = bl.read_file(str(p))
     backlog = bl.parse(blines)
-    ids = [t.id for e in backlog.epics_open + backlog.epics_finished for t in e.subtasks]
+    ids = [t.id for e in backlog.epics_open + backlog.epics_finished for t in e.tasks]
     assert len(ids) == len(set(ids)), "Expected duplicate task ids to be reassigned"
     backups = (p.parent / ".backups")
     assert backups.exists()
@@ -149,7 +149,7 @@ def test_move_task_write(tmp_path):
     lines = bl.read_file(str(p))
     backlog = bl.parse(lines)
     dest = next(e for e in backlog.epics_open if e.id == '0002')
-    assert any(t.id == '0001' for t in dest.subtasks)
+    assert any(t.id == '0001' for t in dest.tasks)
 
 
 def test_update_status_write(tmp_path):

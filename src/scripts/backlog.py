@@ -199,6 +199,13 @@ def cmd_edit(args: argparse.Namespace) -> int:
         task = None
 
     if task is not None:
+        # Only allow explicit, known task-level keys to be edited.
+        allowed_task_keys = {"title", "status", "added", "closed", "notes", "description"}
+        invalid = [k for k in sets.keys() if k not in allowed_task_keys]
+        if invalid:
+            print(f"ERROR: invalid task field(s): {', '.join(sorted(invalid))}", file=sys.stderr)
+            return 2
+
         for k, v in sets.items():
             if k == 'title':
                 task.title = v
@@ -211,11 +218,13 @@ def cmd_edit(args: argparse.Namespace) -> int:
             elif k == 'closed':
                 task.closed = v
             elif k == 'notes':
-                # replace notes with single entry (newline-supported)
-                task.notes = v.splitlines()
-            else:
-                # Unknown task-level field -> treat as note entry
-                task.notes = task.notes + [f"{k}: {v}"]
+                # Support literal '\n' sequences in CLI input by translating
+                # them to real newlines before splitting.
+                vv = v.replace('\\n', '\n')
+                task.notes = vv.splitlines()
+            elif k == 'description':
+                vv = v.replace('\\n', '\n')
+                task.description = vv.splitlines()
 
         print(f"Dry-run: updated task {task.id} (Epic {epic.id})")
         if getattr(args, 'write', False):
@@ -225,25 +234,65 @@ def cmd_edit(args: argparse.Namespace) -> int:
         return 0
 
     if epic:
-        # apply fields to epic
+        # Only allow explicit, known epic-level keys to be edited. Writing
+        # arbitrary keys into raw_lines is error-prone; require consumers to
+        # edit only modeled fields.
+        allowed_epic_keys = {"title", "status", "added", "closed", "notes", "description"}
+        invalid = [k for k in sets.keys() if k not in allowed_epic_keys]
+        if invalid:
+            print(f"ERROR: invalid epic field(s): {', '.join(sorted(invalid))}", file=sys.stderr)
+            return 2
+
+        def _strip_raw_block(raw_lines: list[str], key: str) -> list[str]:
+            """Remove any raw_lines block that starts with '- key:' and following indented lines."""
+            out: list[str] = []
+            i = 0
+            key_re = re.compile(rf"^\s*-\s*{re.escape(key)}:\b", flags=re.I)
+            while i < len(raw_lines):
+                ln = raw_lines[i]
+                if key_re.match(ln):
+                    # skip this line and any immediately following lines that
+                    # are indented more than this line.
+                    base_indent = len(ln) - len(ln.lstrip(' '))
+                    i += 1
+                    while i < len(raw_lines):
+                        nxt = raw_lines[i]
+                        nxt_indent = len(nxt) - len(nxt.lstrip(' '))
+                        if nxt.strip() == '':
+                            # blank lines are part of the block; skip
+                            i += 1
+                            continue
+                        if nxt_indent > base_indent:
+                            i += 1
+                            continue
+                        break
+                    continue
+                out.append(ln)
+                i += 1
+            return out
+
         for k, v in sets.items():
             if k == 'title':
                 epic.title = v
             elif k == 'status':
                 epic.status = v
-            else:
-                # Set or replace epic-level raw_lines entry like '  - key: value'
-                key_re = re.compile(rf"^\s*-\s*{re.escape(k)}:\s*", flags=re.I)
-                replaced = False
-                new_line = f"  - {k}: {v}"
-                for i, rl in enumerate(epic.raw_lines):
-                    if key_re.match(rl.strip()):
-                        epic.raw_lines[i] = new_line
-                        replaced = True
-                        break
-                if not replaced:
-                    # append at end of raw_lines
-                    epic.raw_lines.append(new_line)
+            elif k == 'added':
+                epic.added = v
+            elif k == 'closed':
+                epic.closed = v
+            elif k == 'notes':
+                # Support literal '\n' sequences in CLI input by translating
+                # them to real newlines before splitting.
+                vv = v.replace('\\n', '\n')
+                epic.notes = vv.splitlines()
+                # remove any previous raw_lines that represent notes so we
+                # don't duplicate preserved unmodeled content.
+                epic.raw_lines = _strip_raw_block(epic.raw_lines, 'notes')
+            elif k == 'description':
+                vv = v.replace('\\n', '\n')
+                epic.description = vv.splitlines()
+                epic.raw_lines = _strip_raw_block(epic.raw_lines, 'description')
+
         print(f"Dry-run: updated epic {epic.id}")
         if getattr(args, 'write', False):
             bak = bl.make_backup(path)
@@ -317,7 +366,7 @@ def cmd_check_ids(args: argparse.Namespace) -> int:
     epic_ids: list[str] = []
     for e in backlog.epics_open + backlog.epics_finished:
         epic_ids.append(e.id)
-        for t in e.subtasks:
+        for t in e.tasks:
             task_ids.append(t.id)
     # Treat numeric ids with/without leading zeros as the same id for
     # duplicate detection (e.g., '13' and '0013'). Canonicalize by
@@ -543,7 +592,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         # Print task ids when appropriate
         if effective_print_tasks:
             for e in epics:
-                for t in e.subtasks:
+                for t in e.tasks:
                     if t.id not in printed:
                         print(t.id)
                         printed.add(t.id)
@@ -562,7 +611,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     if only in ("tasks", "all"):
         print("Tasks:")
         for e in epics:
-            for t in e.subtasks:
+            for t in e.tasks:
                 tid = _ansi(t.id, "36;1" if use_color else None)
                 title = _ansi(t.title, "33" if use_color else None)
                 print(f"  Task {tid}: {title}  (Epic {e.id})")
@@ -611,7 +660,7 @@ def cmd_show(args: argparse.Namespace) -> int:
                 if e.raw_lines:
                     print("  (extra lines preserved)")
                 print("  - tasks:")
-                for t in e.subtasks:
+                for t in e.tasks:
                     tid = _ansi(t.id, "36;1" if use_color else None)
                     ttitle = _ansi(t.title, "33" if use_color else None)
                     print(f"    - Task {tid}: {ttitle}")

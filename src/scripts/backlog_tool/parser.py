@@ -22,18 +22,21 @@ class Task:
     id: str
     title: str
     status: str
+    # multiline description (optional)
+    description: List[str] = field(default_factory=list)
+    # timestamps
     added: Optional[str] = None
     closed: Optional[str] = None
+    # list of note lines
     notes: List[str] = field(default_factory=list)
+    # preserve any unknown lines so we can round-trip
+    raw_lines: List[str] = field(default_factory=list)
 
 
 @dataclass
-class Epic:
-    id: str
-    title: str
-    status: str
-    subtasks: List[Task] = field(default_factory=list)
-    raw_lines: List[str] = field(default_factory=list)
+class Epic(Task):
+    # the tasks contained by this epic
+    tasks: List[Task] = field(default_factory=list)
 
 
 @dataclass
@@ -64,6 +67,9 @@ def parse(backlog_lines: List[str]) -> Backlog:
     seen_epics_section = False
     current_epic: Optional[Epic] = None
     current_task: Optional[Task] = None
+    # when collecting multiline fields like description/notes we record
+    # a tuple (name, indent, target) where target is 'task' or 'epic'
+    current_collect: Optional[Tuple[str, int, str]] = None
 
     for ln in backlog_lines:
         s = ln.strip()
@@ -106,7 +112,7 @@ def parse(backlog_lines: List[str]) -> Backlog:
             tid_raw, title = m2.group(1), m2.group(2)
             tid = f"{int(tid_raw):04d}" if tid_raw.isdigit() else tid_raw
             current_task = Task(id=tid, title=title.strip(), status="open")
-            current_epic.subtasks.append(current_task)
+            current_epic.tasks.append(current_task)
             continue
         # fields under task or epic (e.g., - status: open)
         # Decide by indentation: task fields are indented more (built with 4/6 spaces)
@@ -124,7 +130,12 @@ def parse(backlog_lines: List[str]) -> Backlog:
                 elif key == "closed":
                     current_task.closed = val.strip()
                 elif key == "notes":
-                    pass
+                    # start collecting subsequent indented note lines
+                    current_task.notes = []
+                    current_collect = ("notes", indent, "task")
+                elif key == "description":
+                    current_task.description = []
+                    current_collect = ("description", indent, "task")
                 continue
             # treat as epic-level field if indent < 4 and we have a current epic
             if indent < 4 and current_epic is not None:
@@ -139,6 +150,31 @@ def parse(backlog_lines: List[str]) -> Backlog:
                 # clear current task context after epic-level field
                 current_task = None
                 continue
+        # If we are currently collecting a multiline field, capture lines
+        if current_collect is not None:
+            name, col_indent, target = current_collect
+            if indent > col_indent:
+                text = ln.strip()
+                # notes are usually list items starting with '- '
+                if name == "notes" and text.startswith("- "):
+                    content = text[2:].strip()
+                else:
+                    content = text
+                if target == "task" and current_task is not None:
+                    if name == "notes":
+                        current_task.notes.append(content)
+                    else:
+                        current_task.description.append(content)
+                    continue
+                if target == "epic" and current_epic is not None:
+                    if name == "notes":
+                        current_epic.notes.append(content)
+                    else:
+                        current_epic.description.append(content)
+                    continue
+            else:
+                # ended collection
+                current_collect = None
         # fallback: preserve in raw_lines of current epic if present
         if section == 'footer':
             footer.append(ln)
@@ -163,7 +199,7 @@ def parse(backlog_lines: List[str]) -> Backlog:
 def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional[str] = None) -> Task:
     # Build a global set of ids (epic + task) to avoid collisions across epics and tasks
     existing_ids = {e.id for e in backlog.epics_open + backlog.epics_finished}
-    existing_ids.update(t.id for ep in backlog.epics_open + backlog.epics_finished for t in ep.subtasks)
+    existing_ids.update(t.id for ep in backlog.epics_open + backlog.epics_finished for t in ep.tasks)
     for e in backlog.epics_open:
         if e.id == epic_id:
             # choose a monotonic id: max(existing numeric ids) + 1
@@ -179,7 +215,7 @@ def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional
             t = Task(id=new_id, title=title, status="open", added=date.today().isoformat())
             if notes:
                 t.notes = notes.splitlines()
-            e.subtasks.append(t)
+            e.tasks.append(t)
             return t
     raise KeyError(f"epic {epic_id} not found")
 
@@ -192,7 +228,7 @@ def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open') -> E
     """
     # Use a shared id pool between epics and tasks
     existing = {e.id for e in backlog.epics_open + backlog.epics_finished}
-    existing.update(t.id for ep in backlog.epics_open + backlog.epics_finished for t in ep.subtasks)
+    existing.update(t.id for ep in backlog.epics_open + backlog.epics_finished for t in ep.tasks)
     # find next available numeric id
     for i in range(0, 10000):
         cand = f"{i:04d}"
@@ -202,7 +238,9 @@ def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open') -> E
     else:
         raise RuntimeError("no available epic ids")
 
-    e = Epic(id=new_id, title=title, status=status, subtasks=[], raw_lines=[])
+    e = Epic(id=new_id, title=title, status=status)
+    e.tasks = []
+    e.raw_lines = []
     backlog.epics_open.append(e)
     return e
 
@@ -269,31 +307,61 @@ def build_markdown(backlog: Backlog) -> str:
         sym = sym or '☐'
         lines.append(f"- {sym} Epic {e.id}: {e.title}")
         lines.append(f"  - status: {e.status}")
-        # Emit any preserved epic-level raw lines (description/notes) before the tasks list.
-        # Normalize raw_lines by trimming leading/trailing blank lines and
-        # collapsing consecutive blank lines to a single blank line so
-        # adding new epics does not grow spurious vertical whitespace.
+        # emit epic-level structured fields if present
+        if e.added:
+            lines.append(f"  - added: {e.added}")
+        if e.closed:
+            lines.append(f"  - closed: {e.closed}")
+        if e.description:
+            lines.append("  - description:")
+            for d in e.description:
+                lines.append(f"    {d}")
+        if e.notes:
+            lines.append("  - notes:")
+            for n in e.notes:
+                lines.append(f"    - {n}")
+        # Preserve any raw_lines after structured fields
         if e.raw_lines:
-            # normalize: strip leading/trailing blank lines
-            rl = list(e.raw_lines)
-            # remove leading blanks
+            # Filter out raw_blocks corresponding to modeled fields (notes/description)
+            def _strip_modeled_blocks(raw_lines: list[str]) -> list[str]:
+                out: list[str] = []
+                i = 0
+                key_re = re.compile(r"^\s*-\s*(notes|description):", flags=re.I)
+                while i < len(raw_lines):
+                    ln = raw_lines[i]
+                    if key_re.match(ln.strip()):
+                        base_indent = len(ln) - len(ln.lstrip(' '))
+                        i += 1
+                        while i < len(raw_lines):
+                            nxt = raw_lines[i]
+                            nxt_indent = len(nxt) - len(nxt.lstrip(' '))
+                            if nxt.strip() == '':
+                                i += 1
+                                continue
+                            if nxt_indent > base_indent:
+                                i += 1
+                                continue
+                            break
+                        continue
+                    out.append(ln)
+                    i += 1
+                return out
+
+            rl = _strip_modeled_blocks(list(e.raw_lines))
             while rl and rl[0].strip() == "":
                 rl.pop(0)
-            # remove trailing blanks
             while rl and rl[-1].strip() == "":
                 rl.pop()
-            # collapse consecutive blank lines
             prev_blank = False
             for raw in rl:
                 is_blank = raw.strip() == ""
                 if is_blank and prev_blank:
-                    # skip duplicate blank
                     continue
                 lines.append(raw)
                 prev_blank = is_blank
         # Always emit the tasks section as the last modeled element for the epic
         lines.append("  - tasks:")
-        for t in e.subtasks:
+        for t in e.tasks:
             # task symbol resolved from status
             task_sym = None
             for k, v in sym_map.items():
@@ -307,8 +375,12 @@ def build_markdown(backlog: Backlog) -> str:
                 lines.append(f"      - added: {t.added}")
             if t.closed:
                 lines.append(f"      - closed: {t.closed}")
+            if t.description:
+                lines.append("      - description:")
+                for d in t.description:
+                    lines.append(f"        {d}")
             if t.notes:
-                lines.append("      - Notes:")
+                lines.append("      - notes:")
                 for n in t.notes:
                     lines.append(f"        - {n}")
         # separate epics with a blank line
@@ -344,7 +416,7 @@ def build_markdown(backlog: Backlog) -> str:
                 prev_blank = is_blank
         # emit tasks for finished epic
         lines.append("  - tasks:")
-        for t in e.subtasks:
+        for t in e.tasks:
             task_sym = None
             for k, v in sym_map.items():
                 if v == (t.status or '').strip().lower():
@@ -357,8 +429,12 @@ def build_markdown(backlog: Backlog) -> str:
                 lines.append(f"      - added: {t.added}")
             if t.closed:
                 lines.append(f"      - closed: {t.closed}")
+            if t.description:
+                lines.append("      - description:")
+                for d in t.description:
+                    lines.append(f"        {d}")
             if t.notes:
-                lines.append("      - Notes:")
+                lines.append("      - notes:")
                 for n in t.notes:
                     lines.append(f"        - {n}")
         # separate epics with a blank line
@@ -484,7 +560,7 @@ def prune_backups(path: str, keep: int | None = None, older_than_days: int | Non
 def find_task(backlog: Backlog, task_id: str) -> Tuple[Epic, Task]:
     """Return (epic, task) for the given task_id or raise KeyError."""
     for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.subtasks:
+        for t in e.tasks:
             if t.id == task_id:
                 return e, t
     raise KeyError(f"task {task_id} not found")
@@ -508,10 +584,10 @@ def move_task(backlog: Backlog, task_id: str, to_epic_id: str) -> Task:
         raise KeyError(f"epic {to_epic_id} not found")
 
     # remove from source
-    src_epic.subtasks = [t for t in src_epic.subtasks if t.id != task_id]
+    src_epic.tasks = [t for t in src_epic.tasks if t.id != task_id]
 
     # ensure unique id in destination; if conflict, generate a new one
-    existing = {t.id for t in dest_epic.subtasks}
+    existing = {t.id for t in dest_epic.tasks}
     if task.id in existing:
         i = 0
         while True:
@@ -520,7 +596,7 @@ def move_task(backlog: Backlog, task_id: str, to_epic_id: str) -> Task:
                 task.id = cand
                 break
             i += 1
-    dest_epic.subtasks.append(task)
+    dest_epic.tasks.append(task)
     return task
 
 
@@ -562,7 +638,7 @@ def validate_backlog(backlog: Backlog) -> list[str]:
     # check task ids
     task_ids: list[str] = []
     for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.subtasks:
+        for t in e.tasks:
             task_ids.append(t.id)
     dup_tasks = {i for i in task_ids if task_ids.count(i) > 1}
     for dt in sorted(dup_tasks):
@@ -581,7 +657,7 @@ def validate_backlog(backlog: Backlog) -> list[str]:
             return False
 
     for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.subtasks:
+        for t in e.tasks:
             if not is_iso_date(t.added):
                 errors.append(f"bad date (added) for task {t.id}: {t.added}")
             if not is_iso_date(t.closed):
@@ -592,7 +668,7 @@ def validate_backlog(backlog: Backlog) -> list[str]:
     for e in backlog.epics_open + backlog.epics_finished:
         if e.status and e.status.strip().lower() not in allowed:
             errors.append(f"unknown epic status for {e.id}: {e.status}")
-        for t in e.subtasks:
+        for t in e.tasks:
             if t.status and t.status.strip().lower() not in allowed:
                 errors.append(f"unknown task status for {t.id}: {t.status}")
 
@@ -606,7 +682,7 @@ def reassign_duplicate_task_ids(backlog: Backlog) -> list[Tuple[str, str]]:
     """
     all_ids: list[str] = []
     for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.subtasks:
+        for t in e.tasks:
             all_ids.append(t.id)
     dup = {i for i in all_ids if all_ids.count(i) > 1}
     changed: list[Tuple[str, str]] = []
@@ -624,7 +700,7 @@ def reassign_duplicate_task_ids(backlog: Backlog) -> list[Tuple[str, str]]:
         raise RuntimeError("no available task ids")
 
     for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.subtasks:
+        for t in e.tasks:
             if t.id in dup:
                 newid = next_id()
                 changed.append((t.id, newid))
@@ -639,7 +715,7 @@ def reassign_epic_task_collisions(backlog: Backlog) -> list[Tuple[str, str]]:
     """
     changes: list[Tuple[str, str]] = []
     epic_ids = {e.id for e in backlog.epics_open + backlog.epics_finished}
-    task_ids = [t.id for e in backlog.epics_open + backlog.epics_finished for t in e.subtasks]
+    task_ids = [t.id for e in backlog.epics_open + backlog.epics_finished for t in e.tasks]
     collisions = {tid for tid in task_ids if tid in epic_ids}
     if not collisions:
         return changes
@@ -655,7 +731,7 @@ def reassign_epic_task_collisions(backlog: Backlog) -> list[Tuple[str, str]]:
         raise RuntimeError("no available ids")
 
     for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.subtasks:
+        for t in e.tasks:
             if t.id in collisions:
                 new = next_id()
                 changes.append((t.id, new))
@@ -685,7 +761,7 @@ def normalize_backlog_format(backlog: Backlog) -> list[str]:
             if mapped != e.status:
                 changes.append(f"epic {e.id} status: {e.status} -> {mapped}")
                 e.status = mapped
-        for t in e.subtasks:
+    for t in e.tasks:
             if t.status:
                 n = t.status.strip().lower()
                 word_map = cast(Dict[str, str], _values.get('word_map', {}) or {})

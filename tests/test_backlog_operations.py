@@ -33,8 +33,8 @@ def test_move_task():
     parser.move_task(bl, '0002', '0002')
     src = next(e for e in bl.epics_open if e.id == '0001')
     dest = next(e for e in bl.epics_open if e.id == '0002')
-    assert all(t.id != '0002' for t in src.subtasks)
-    assert any(t.id == '0002' for t in dest.subtasks)
+    assert all(t.id != '0002' for t in src.tasks)
+    assert any(t.id == '0002' for t in dest.tasks)
 
 
 def test_update_task_status_sets_closed_date():

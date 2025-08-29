@@ -11,7 +11,9 @@ def test_emit_epics_before_eof_marker(tmp_path):
         "## 1. Epics - open",
         "",
     ]
-    b = bl.Backlog(header=header, epics_open=[bl.Epic(id='0001', title='T', status='open', raw_lines=['', '  - description: x', ''])], epics_finished=[], footer=['FOOT'])
+    e1 = bl.Epic(id='0001', title='T', status='open')
+    e1.raw_lines = ['', '  - description: x', '']
+    b = bl.Backlog(header=header, epics_open=[e1], epics_finished=[], footer=['FOOT'])
     out = bl.build_markdown(b)
     assert "## 1. Epics - open" in out
     # EOF should still appear after the epics/footers
@@ -22,7 +24,8 @@ def test_emit_epics_before_eof_marker(tmp_path):
 def test_collapse_blank_lines_in_raw_lines():
     header = ["# Backlog"]
     raw = ['', '', '  - notes:', '', '    - a', '', '']
-    e = bl.Epic(id='0002', title='T2', status='open', raw_lines=raw)
+    e = bl.Epic(id='0002', title='T2', status='open')
+    e.raw_lines = raw
     b = bl.Backlog(header=header, epics_open=[e], epics_finished=[], footer=[])
     out = bl.build_markdown(b)
     # ensure we don't have multiple consecutive blank lines where raw_lines were
