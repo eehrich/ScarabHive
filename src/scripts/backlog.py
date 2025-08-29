@@ -437,9 +437,24 @@ def cmd_update(args: argparse.Namespace) -> int:
         print('Duplicate numeric IDs found:', ', '.join(sorted(dup)))
         return 3
 
-    # status validation
+    # We'll validate status values, but only inside the Epics sections.
+    # The file can (and does) contain example/template blocks before the
+    # "## 1. Epics - open" header. Restricting the search to the two Epics
+    # sections prevents template placeholders (e.g. "<status> (mandatory)")
+    # from being treated as real status lines.
     from scripts.backlog_tool import values as bl_values
-    status_lines = re.findall(r"^\s*-\s*status:\s*(.+)$", txt, flags=re.M)
+    start_open = txt.find('## 1. Epics - open')
+    start_finished = txt.find('## 2. Epics - finished')
+    # If the open Epics section is missing, there is nothing to validate or move.
+    if start_open == -1:
+        return 0
+    # Don't require the finished section to exist for status validation —
+    # tests and minimal backlog files may omit it. Validation will scan
+    # from the open section onward and will still detect bad status tokens.
+
+    # Consider only the text that contains the open + finished epic sections
+    relevant_text = txt[start_open:]
+    status_lines = re.findall(r"^\s*-\s*status:\s*(.+)$", relevant_text, flags=re.M)
     bad = []
     canonical = set(bl_values.get('allowed_statuses', ['done', 'open', 'failed', 'in progress', 'reverted', 'rejected', 'cancelled']))
     for s in status_lines:
@@ -574,7 +589,6 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--to-epic", required=True, help="Destination epic id")
     m.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     m.add_argument("--write", action="store_true", help="Persist changes to file")
-    m.add_argument("--dry-run", action="store_true", help="Explicitly do not persist changes (default)")
     m.set_defaults(func=cmd_move_task)
 
     u = sub.add_parser("update-status", help="Update a task's status")
@@ -582,7 +596,6 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--status", required=True, help="New status value")
     u.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     u.add_argument("--write", action="store_true", help="Persist changes to file")
-    u.add_argument("--dry-run", action="store_true", help="Explicitly do not persist changes (default)")
     u.set_defaults(func=cmd_update_status)
 
     b = sub.add_parser("backup", help="Create a timestamped backup of the backlog file")
@@ -611,7 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.set_defaults(func=cmd_fix_format)
 
     # legacy compatibility: expose the `update` command used by older scripts/tests
-    up = sub.add_parser("update", help="Validate and move finished epics (compat shim)")
+    up = sub.add_parser("update", help="Validate and move finished epics")
     up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     up.set_defaults(func=cmd_update)
 
