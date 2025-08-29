@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import date
+import os
+import shutil
 
 __version__ = "0.1.0"
 
@@ -47,8 +49,10 @@ def cmd_add_task(args: argparse.Namespace) -> int:
         entry.append("  - Notes:")
         for line in args.notes.splitlines():
             entry.append(f"    - {line}")
-    print("Dry-run: task entry to insert:")
-    print("\n".join(entry))
+    # Show preview only for dry-run mode
+    if not getattr(args, 'write', False):
+        print("Dry-run: task entry to insert:")
+        print("\n".join(entry))
 
     if getattr(args, "write", False):
         # when persisting changes, an epic id is required
@@ -57,16 +61,25 @@ def cmd_add_task(args: argparse.Namespace) -> int:
             return 2
         from scripts.backlog_tool import parser as bl
         path = args.file or "backlog.md"
+        # create backlog from bundled template if it does not exist
+        if not os.path.exists(path):
+            tpl = os.path.join(os.path.dirname(__file__), 'backlog_tool', 'template.md')
+            if not os.path.exists(tpl):
+                print(f"ERROR: template not found: {tpl}", file=sys.stderr)
+                return 2
+            shutil.copy2(tpl, path)
+            print(f"Created backlog from template: {path}")
         lines = bl.read_file(path)
         backlog = bl.parse(lines)
         try:
-            t = bl.add_task_to_epic(backlog, args.epic, args.title, getattr(args, "notes", None))
+            epic_id = _pad_id_input(getattr(args, 'epic', None))
+            t = bl.add_task_to_epic(backlog, epic_id, args.title, getattr(args, "notes", None))
         except KeyError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 2
         bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
-        print(f"Created task {t.id} under epic {args.epic}; backup: {bak}")
+        print(f"Created task {t.id} under epic {epic_id}; backup: {bak}")
     return 0
 
 
@@ -76,12 +89,14 @@ def cmd_move_task(args: argparse.Namespace) -> int:
     path = args.file or "backlog.md"
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
+    task_id = _pad_id_input(getattr(args, 'task', None))
+    to_epic = _pad_id_input(getattr(args, 'to_epic', None))
     try:
-        moved = bl.move_task(backlog, args.task, args.to_epic)
+        moved = bl.move_task(backlog, task_id, to_epic)
     except KeyError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
-    print(f"Dry-run: moved task {args.task} -> epic {args.to_epic} (new id: {moved.id})")
+    print(f"Dry-run: moved task {task_id} -> epic {to_epic} (new id: {moved.id})")
     if getattr(args, "write", False):
         bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
@@ -92,35 +107,152 @@ def cmd_move_task(args: argparse.Namespace) -> int:
 def cmd_add_epic(args: argparse.Namespace) -> int:
     from scripts.backlog_tool import parser as bl
     path = args.file or "backlog.md"
-    # Dry-run: show what would be added
-    print(f"Dry-run: create epic -> title: {args.title}")
+    # Show intent. If --write was passed, this is not a dry-run.
     if args.write:
-        lines = bl.read_file(path)
-        backlog = bl.parse(lines)
-        e = bl.add_epic_to_backlog(backlog, args.title)
-        bak = bl.make_backup(path)
-        bl.safe_write(path, bl.build_markdown(backlog))
-        print(f"Created epic {e.id}; backup: {bak}")
+        print(f"Create epic -> title: {args.title}")
+    else:
+        print(f"Dry-run: create epic -> title: {args.title}")
+    if args.write:
+        # create from template if missing
+        if not os.path.exists(path):
+            tpl = os.path.join(os.path.dirname(__file__), 'backlog_tool', 'template.md')
+            if not os.path.exists(tpl):
+                print(f"ERROR: template not found: {tpl}", file=sys.stderr)
+                return 2
+            # copy the template first
+            shutil.copy2(tpl, path)
+            print(f"Created backlog from template: {path}")
+            # Directly insert the new epic text at the '## 1. Epics - open' marker
+            # but compute a real unique epic id from the (empty) template so
+            # subsequent `add-task --epic` calls find it.
+            lines_orig = bl.read_file(path)
+            backlog_obj = bl.parse(lines_orig)
+            # find next available epic id
+            existing = {e.id for e in backlog_obj.epics_open + backlog_obj.epics_finished}
+            new_id = None
+            for i in range(0, 10000):
+                cand = f"{i:04d}"
+                if cand not in existing:
+                    new_id = cand
+                    break
+            if new_id is None:
+                print("ERROR: no available epic ids", file=sys.stderr)
+                return 3
+
+            # Use the parser API to add the epic to the freshly copied template.
+            backlog_obj = bl.parse(lines_orig)
+            e = bl.add_epic_to_backlog(backlog_obj, args.title)
+            bak = bl.make_backup(path)
+            bl.safe_write(path, bl.build_markdown(backlog_obj))
+            print(f"Created epic {e.id}; backup: {bak}")
+        else:
+            lines = bl.read_file(path)
+            backlog = bl.parse(lines)
+            e = bl.add_epic_to_backlog(backlog, args.title)
+            bak = bl.make_backup(path)
+            bl.safe_write(path, bl.build_markdown(backlog))
+            print(f"Created epic {e.id}; backup: {bak}")
     return 0
 
 
-def cmd_update_status(args: argparse.Namespace) -> int:
+def cmd_edit(args: argparse.Namespace) -> int:
+    """Edit fields on an Epic or Task.
+
+    Usage: backlog edit <id> --set key=value [--set key=value ...] [--write]
+
+    Keys supported for tasks: title, status, added, closed, notes
+    Keys supported for epics: title, status, and arbitrary epic-level
+    fields (stored in raw_lines) such as description.
+    """
     from scripts.backlog_tool import parser as bl
+    import re
 
     path = args.file or "backlog.md"
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
-    try:
-        updated = bl.update_task_status(backlog, args.task, args.status)
-    except KeyError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+
+    # single id expected
+    ident = args.id[0] if isinstance(args.id, (list, tuple)) and args.id else getattr(args, 'legacy_id', [None])[0]
+    ident = _pad_id_input(ident)
+    if not ident:
+        print('ERROR: no id provided', file=sys.stderr)
         return 2
-    print(f"Dry-run: updated task {args.task} status -> {updated.status} (closed: {updated.closed})")
-    if getattr(args, "write", False):
-        bak = bl.make_backup(path)
-        bl.safe_write(path, bl.build_markdown(backlog))
-        print(f"Wrote changes to {path}; backup: {bak}")
-    return 0
+
+    # collect sets
+    sets = {}
+    for s in getattr(args, 'set', []) or []:
+        if '=' not in s:
+            print(f"ERROR: invalid --set value (expected key=value): {s}", file=sys.stderr)
+            return 2
+        k, v = s.split('=', 1)
+        sets[k.strip().lower()] = v
+
+    if not sets:
+        print('Nothing to change; provide --set key=value', file=sys.stderr)
+        return 2
+
+    # Prefer editing a Task if the id corresponds to a task; otherwise try epic.
+    try:
+        epic, task = bl.find_task(backlog, ident)
+    except KeyError:
+        epic = next((e for e in backlog.epics_open + backlog.epics_finished if e.id == ident), None)
+        task = None
+
+    if task is not None:
+        for k, v in sets.items():
+            if k == 'title':
+                task.title = v
+            elif k == 'status':
+                # Use the parser helper to apply status changes so closed date
+                # logic is applied consistently.
+                task = bl.update_task_status(backlog, task.id, v)
+            elif k == 'added':
+                task.added = v
+            elif k == 'closed':
+                task.closed = v
+            elif k == 'notes':
+                # replace notes with single entry (newline-supported)
+                task.notes = v.splitlines()
+            else:
+                # Unknown task-level field -> treat as note entry
+                task.notes = task.notes + [f"{k}: {v}"]
+
+        print(f"Dry-run: updated task {task.id} (Epic {epic.id})")
+        if getattr(args, 'write', False):
+            bak = bl.make_backup(path)
+            bl.safe_write(path, bl.build_markdown(backlog))
+            print(f"Wrote changes to {path}; backup: {bak}")
+        return 0
+
+    if epic:
+        # apply fields to epic
+        for k, v in sets.items():
+            if k == 'title':
+                epic.title = v
+            elif k == 'status':
+                epic.status = v
+            else:
+                # Set or replace epic-level raw_lines entry like '  - key: value'
+                key_re = re.compile(rf"^\s*-\s*{re.escape(k)}:\s*", flags=re.I)
+                replaced = False
+                new_line = f"  - {k}: {v}"
+                for i, rl in enumerate(epic.raw_lines):
+                    if key_re.match(rl.strip()):
+                        epic.raw_lines[i] = new_line
+                        replaced = True
+                        break
+                if not replaced:
+                    # append at end of raw_lines
+                    epic.raw_lines.append(new_line)
+        print(f"Dry-run: updated epic {epic.id}")
+        if getattr(args, 'write', False):
+            bak = bl.make_backup(path)
+            bl.safe_write(path, bl.build_markdown(backlog))
+            print(f"Wrote changes to {path}; backup: {bak}")
+        return 0
+
+    print(f"ERROR: id {ident} not found", file=sys.stderr)
+    return 2
 
 
 def cmd_backup(args: argparse.Namespace) -> int:
@@ -155,6 +287,26 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    """Create a new backlog file from the bundled template if it does not exist."""
+    import os
+    path = args.file or "backlog.md"
+    if os.path.exists(path):
+        print(f"Backlog already exists: {path}")
+        return 1
+    tpl = os.path.join(os.path.dirname(__file__), 'backlog_tool', 'template.md')
+    if not os.path.exists(tpl):
+        print(f"ERROR: template not found: {tpl}", file=sys.stderr)
+        return 2
+    try:
+        shutil.copy2(tpl, path)
+    except Exception as e:
+        print(f"ERROR: failed to create backlog from template: {e}", file=sys.stderr)
+        return 3
+    print(f"Created backlog from template: {path}")
+    return 0
+
+
 def cmd_check_ids(args: argparse.Namespace) -> int:
     from scripts.backlog_tool import parser as bl
     path = args.file or "backlog.md"
@@ -162,14 +314,38 @@ def cmd_check_ids(args: argparse.Namespace) -> int:
     backlog = bl.parse(lines)
     # detect duplicate task ids
     task_ids: list[str] = []
+    epic_ids: list[str] = []
     for e in backlog.epics_open + backlog.epics_finished:
+        epic_ids.append(e.id)
         for t in e.subtasks:
             task_ids.append(t.id)
-    dup_tasks = {i for i in task_ids if task_ids.count(i) > 1}
-    if dup_tasks:
-        print("Duplicate task ids:")
-        for d in sorted(dup_tasks):
-            print(d)
+    # Treat numeric ids with/without leading zeros as the same id for
+    # duplicate detection (e.g., '13' and '0013'). Canonicalize by
+    # converting numeric ids to their integer representation as strings.
+    def _canon(i: str) -> str:
+        s = str(i).strip()
+        if s.isdigit():
+            try:
+                return str(int(s))
+            except ValueError:
+                return s
+        return s
+
+    canon_tasks = [_canon(i) for i in task_ids]
+    dup_tasks = {i for i in canon_tasks if canon_tasks.count(i) > 1}
+    canon_epics = [_canon(i) for i in epic_ids]
+    # collisions where an id appears both as epic and task
+    cross = set(canon_tasks) & set(canon_epics)
+
+    if dup_tasks or cross:
+        if dup_tasks:
+            print("Duplicate task ids:")
+            for c in sorted(dup_tasks):
+                print(f"  {int(c):04d}" if c.isdigit() else c)
+        if cross:
+            print("ID collisions between epics and tasks:")
+            for c in sorted(cross):
+                print(f"  {int(c):04d}" if c.isdigit() else c)
         return 1
     print("No duplicate task ids found")
     return 0
@@ -182,19 +358,25 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
     id_changes = bl.reassign_duplicate_task_ids(backlog)
+    collision_changes = bl.reassign_epic_task_collisions(backlog)
     norm_changes = bl.normalize_backlog_format(backlog)
-    if not id_changes and not norm_changes:
+    if not id_changes and not norm_changes and not collision_changes:
         print("No formatting or id issues found")
         return 0
     print("Planned changes:")
     for old, new in id_changes:
         print(f"reassign: {old} -> {new}")
+    for old, new in collision_changes:
+        print(f"reassign collision: {old} -> {new}")
     for c in norm_changes:
         print(c)
     if getattr(args, "write", False):
         bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
         print(f"Applied fixes; backup: {bak}")
+        if collision_changes:
+            for old, new in collision_changes:
+                print(f"reassign collision: {old} -> {new}")
     return 0
 
 
@@ -286,6 +468,28 @@ def _ansi(text: str, code: str | None) -> str:
     return f"\x1b[{code}m{text}\x1b[0m"
 
 
+def _pad_id_input(ident: str | None) -> str | None:
+    """Pad numeric id inputs to four digits when plausible.
+
+    Examples: '13' -> '0013', '0001' -> '0001', non-numeric strings are
+    returned unchanged.
+    """
+    if ident is None:
+        return None
+    s = str(ident).strip()
+    if not s:
+        return s
+    if s.isdigit():
+        # pad small numeric ids to 4 digits
+        try:
+            n = int(s)
+        except ValueError:
+            return s
+        if 0 <= n <= 9999:
+            return f"{n:04d}"
+    return s
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """List all epic and task ids with titles.
 
@@ -324,16 +528,34 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     # Default behavior: only epics and open (handled by defaults above)
 
+    # If ids-only requested, print numeric ids (epics and tasks) one per line
+    if ids_only:
+        printed = set()
+        # If the user requested state=all but left --only as the default (epics),
+        # they likely want all ids; handle that case by printing both epics and tasks.
+        effective_print_tasks = (only in ("tasks", "all")) or (only == "epics" and state == "all")
+        # Print epic ids
+        if only in ("epics", "all"):
+            for e in epics:
+                if e.id not in printed:
+                    print(e.id)
+                    printed.add(e.id)
+        # Print task ids when appropriate
+        if effective_print_tasks:
+            for e in epics:
+                for t in e.subtasks:
+                    if t.id not in printed:
+                        print(t.id)
+                        printed.add(t.id)
+        return 0
+
     # Print epics when requested
     if only in ("epics", "all"):
         print("Epics:")
         for e in epics:
-            if ids_only:
-                print(e.id)
-            else:
-                eid = _ansi(e.id, "36;1" if use_color else None)
-                title = _ansi(e.title, "32" if use_color else None)
-                print(f"  Epic {eid}: {title}")
+            eid = _ansi(e.id, "36;1" if use_color else None)
+            title = _ansi(e.title, "32" if use_color else None)
+            print(f"  Epic {eid}: {title}")
         print("")
 
     # Print tasks when requested
@@ -341,12 +563,9 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("Tasks:")
         for e in epics:
             for t in e.subtasks:
-                if ids_only:
-                    print(t.id)
-                else:
-                    tid = _ansi(t.id, "36;1" if use_color else None)
-                    title = _ansi(t.title, "33" if use_color else None)
-                    print(f"  Task {tid}: {title}  (Epic {e.id})")
+                tid = _ansi(t.id, "36;1" if use_color else None)
+                title = _ansi(t.title, "33" if use_color else None)
+                print(f"  Task {tid}: {title}  (Epic {e.id})")
     return 0
 
 
@@ -359,7 +578,14 @@ def cmd_show(args: argparse.Namespace) -> int:
     path = args.file or "backlog.md"
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
-    ident = args.id
+    # Merge positional ids and legacy --id (stored in legacy_id) for
+    # backwards-compatibility. Ensure we have at least one id to show.
+    legacy = getattr(args, 'legacy_id', None) or []
+    positional = getattr(args, 'id', None) or []
+    ids = list(positional) + list(legacy)
+    if not ids:
+        print('ERROR: no id provided', file=sys.stderr)
+        return 2
     use_color_flag = getattr(args, "color", None)
     if use_color_flag is None:
         use_color = sys.stdout.isatty()
@@ -372,39 +598,50 @@ def cmd_show(args: argparse.Namespace) -> int:
         except Exception:
             pass
 
-    # Try epic
-    for e in backlog.epics_open + backlog.epics_finished:
-        if e.id == ident:
-            print(_ansi(f"Epic {e.id}: {e.title}", "32;1" if use_color else None))
-            print(f"  status: {e.status}")
-            if e.raw_lines:
-                print("  (extra lines preserved)")
-            print("  - tasks:")
-            for t in e.subtasks:
-                tid = _ansi(t.id, "36;1" if use_color else None)
-                ttitle = _ansi(t.title, "33" if use_color else None)
-                print(f"    - Task {tid}: {ttitle}")
-                print(f"      - status: {t.status}")
-                if t.added:
-                    print(f"      - added: {t.added}")
-                if t.closed:
-                    print(f"      - closed: {t.closed}")
-            return 0
+    missing = False
+    for ident in ids:
+        ident = _pad_id_input(ident)
+        # Try epic
+        found = False
+        for e in backlog.epics_open + backlog.epics_finished:
+            if e.id == ident:
+                found = True
+                print(_ansi(f"Epic {e.id}: {e.title}", "32;1" if use_color else None))
+                print(f"  status: {e.status}")
+                if e.raw_lines:
+                    print("  (extra lines preserved)")
+                print("  - tasks:")
+                for t in e.subtasks:
+                    tid = _ansi(t.id, "36;1" if use_color else None)
+                    ttitle = _ansi(t.title, "33" if use_color else None)
+                    print(f"    - Task {tid}: {ttitle}")
+                    print(f"      - status: {t.status}")
+                    if t.added:
+                        print(f"      - added: {t.added}")
+                    if t.closed:
+                        print(f"      - closed: {t.closed}")
+                break
 
-    # Try task
-    try:
-        epic, task = bl.find_task(backlog, ident)
-    except KeyError:
-        print(f"ERROR: id {ident} not found", file=sys.stderr)
-        return 2
-    print(_ansi(f"Task {task.id}: {task.title}", "33;1" if use_color else None))
-    print(f"  status: {task.status}")
-    if task.added:
-        print(f"  added: {task.added}")
-    if task.closed:
-        print(f"  closed: {task.closed}")
-    print(f"  Parent Epic: {epic.id}: {epic.title}")
-    return 0
+        if found:
+            continue
+
+        # Try task
+        try:
+            epic, task = bl.find_task(backlog, ident)
+        except KeyError:
+            print(f"ERROR: id {ident} not found", file=sys.stderr)
+            missing = True
+            continue
+
+        print(_ansi(f"Task {task.id}: {task.title}", "33;1" if use_color else None))
+        print(f"  status: {task.status}")
+        if task.added:
+            print(f"  added: {task.added}")
+        if task.closed:
+            print(f"  closed: {task.closed}")
+        print(f"  Parent Epic: {epic.id}: {epic.title}")
+
+    return 1 if missing else 0
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -591,12 +828,14 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--write", action="store_true", help="Persist changes to file")
     m.set_defaults(func=cmd_move_task)
 
-    u = sub.add_parser("update-status", help="Update a task's status")
-    u.add_argument("--task", required=True, help="Task id to update")
-    u.add_argument("--status", required=True, help="New status value")
+    # Replace legacy update-status with a more general `edit` command that
+    # can set arbitrary fields on epics or tasks.
+    u = sub.add_parser("edit", help="Edit epic or task fields (replaces update-status)")
+    u.add_argument("id", nargs="+", help="Epic or Task numeric id(s) (0001)")
+    u.add_argument("--set", dest="set", action="append", help="Set a field: --set key=value")
     u.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     u.add_argument("--write", action="store_true", help="Persist changes to file")
-    u.set_defaults(func=cmd_update_status)
+    u.set_defaults(func=cmd_edit)
 
     b = sub.add_parser("backup", help="Create a timestamped backup of the backlog file")
     b.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
@@ -628,6 +867,10 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     up.set_defaults(func=cmd_update)
 
+    ini = sub.add_parser("init", help="Create a new backlog.md from the bundled template if missing")
+    ini.add_argument("--file", help="Backlog file to create (default: backlog.md)")
+    ini.set_defaults(func=lambda args: cmd_init(args))
+
     ls = sub.add_parser("list", help="List all epic and task ids with titles")
     ls.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     # color tri-state: --color, --no-color; default None means auto-detect tty
@@ -644,7 +887,12 @@ def build_parser() -> argparse.ArgumentParser:
     ls.set_defaults(func=cmd_list)
 
     sh = sub.add_parser("show", help="Show details for an epic or task by id")
-    sh.add_argument("--id", required=True, help="Epic or Task numeric id (0001)")
+    # Accept one or more numeric ids as positional arguments, e.g.:
+    #   backlog show 0001 0002 0123
+    sh.add_argument("id", nargs="*", help="Epic or Task numeric id(s) (0001)")
+    # Backwards-compatibility: accept legacy `--id` into `legacy_id` and
+    # merge with positional ids inside `cmd_show`.
+    sh.add_argument("--id", dest="legacy_id", nargs="+", help=argparse.SUPPRESS)
     sh.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     g2 = sh.add_mutually_exclusive_group()
     g2.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")

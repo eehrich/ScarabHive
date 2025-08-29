@@ -1,5 +1,6 @@
 import importlib
 from pathlib import Path
+from scripts.backlog_tool import parser as bl
 
 
 def make_minimal_backlog(path: Path, epic_id: str = None) -> None:
@@ -116,8 +117,6 @@ def test_check_ids_detects_duplicates(tmp_path):
     p.write_text("\n".join(lines), encoding="utf-8")
     rc = mod.main(["check-ids", "--file", str(p)])
     assert rc != 0
-import importlib
-from scripts.backlog_tool import parser as bl
 
 SAMPLE = """
 # Backlog
@@ -157,7 +156,7 @@ def test_update_status_write(tmp_path):
     p = tmp_path / "b.md"
     p.write_text(SAMPLE, encoding="utf-8")
     mod = importlib.import_module("scripts.backlog")
-    rc = mod.main(["update-status", "--task", "0001", "--status", "done", "--file", str(p), "--write"])
+    rc = mod.main(["edit", "0001", "--set", "status=done", "--file", str(p), "--write"])
     assert rc == 0
     lines = bl.read_file(str(p))
     backlog = bl.parse(lines)
