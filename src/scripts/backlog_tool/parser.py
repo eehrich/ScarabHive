@@ -149,6 +149,10 @@ def parse(backlog_lines: List[str]) -> Backlog:
             if indent < 4 and current_epic is not None:
                 if key == "status":
                     current_epic.status = val.strip()
+                elif key == "added":
+                    current_epic.added = val.strip()
+                elif key == "closed":
+                    current_epic.closed = val.strip()
                 elif key == "notes":
                     if val.strip():
                         current_epic.notes = [val.strip()]
@@ -254,8 +258,12 @@ def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional
                     raise ValueError(f"id {forced_id} already exists")
                 new_id = forced_id
             else:
-                # choose a monotonic id: max(existing numeric ids) + 1
-                numeric_ids = [int(x) for x in existing_ids if x.isdigit()]
+                # choose a monotonic id: max(existing canonical numeric ids) + 1
+                # Only consider numeric ids that are 4 digits or less (canonical backlog ids).
+                # Migration artifacts or auxiliary ids may be longer (e.g. '900100') and
+                # should not be used to compute the next 4-digit id — they would push
+                # the starting point beyond the 4-digit range and make allocation fail.
+                numeric_ids = [int(x) for x in existing_ids if x.isdigit() and len(x) <= 4]
                 start = (max(numeric_ids) + 1) if numeric_ids else 0
                 for i in range(start, 10000):
                     cand = f"{i:04d}"
@@ -310,6 +318,31 @@ def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open', forc
 
 def build_markdown(backlog: Backlog) -> str:
     lines: List[str] = []
+    # Helper to remove raw_blocks corresponding to modeled fields
+    def _strip_modeled_blocks_global(raw_lines: list[str]) -> list[str]:
+        out: list[str] = []
+        i = 0
+        # include added/closed in modeled keys to avoid duplicate emission
+        key_re = re.compile(r"^\s*-\s*(notes|description|added|closed):", flags=re.I)
+        while i < len(raw_lines):
+            ln = raw_lines[i]
+            if key_re.match(ln.strip()):
+                base_indent = len(ln) - len(ln.lstrip(' '))
+                i += 1
+                while i < len(raw_lines):
+                    nxt = raw_lines[i]
+                    nxt_indent = len(nxt) - len(nxt.lstrip(' '))
+                    if nxt.strip() == '':
+                        i += 1
+                        continue
+                    if nxt_indent > base_indent:
+                        i += 1
+                        continue
+                    break
+                continue
+            out.append(ln)
+            i += 1
+        return out
     # If the original header contains explicit Epics section headings (from
     # the template), preserve their position by splicing our generated epic
     # content into the header in-place. This avoids moving the Epics sections
@@ -397,32 +430,7 @@ def build_markdown(backlog: Backlog) -> str:
                     lines.append(f"    - {n}")
         # Preserve any raw_lines after structured fields
         if e.raw_lines:
-            # Filter out raw_blocks corresponding to modeled fields (notes/description)
-            def _strip_modeled_blocks(raw_lines: list[str]) -> list[str]:
-                out: list[str] = []
-                i = 0
-                key_re = re.compile(r"^\s*-\s*(notes|description):", flags=re.I)
-                while i < len(raw_lines):
-                    ln = raw_lines[i]
-                    if key_re.match(ln.strip()):
-                        base_indent = len(ln) - len(ln.lstrip(' '))
-                        i += 1
-                        while i < len(raw_lines):
-                            nxt = raw_lines[i]
-                            nxt_indent = len(nxt) - len(nxt.lstrip(' '))
-                            if nxt.strip() == '':
-                                i += 1
-                                continue
-                            if nxt_indent > base_indent:
-                                i += 1
-                                continue
-                            break
-                        continue
-                    out.append(ln)
-                    i += 1
-                return out
-
-            rl = _strip_modeled_blocks(list(e.raw_lines))
+            rl = _strip_modeled_blocks_global(list(e.raw_lines))
             while rl and rl[0].strip() == "":
                 rl.pop(0)
             while rl and rl[-1].strip() == "":
@@ -508,9 +516,9 @@ def build_markdown(backlog: Backlog) -> str:
                 else:
                     lines.append(f"    - {n}")
 
-        # preserve epic-level raw lines
+        # preserve epic-level raw lines (strip modeled blocks like notes/description/added/closed)
         if e.raw_lines:
-            rl = list(e.raw_lines)
+            rl = _strip_modeled_blocks_global(list(e.raw_lines))
             while rl and rl[0].strip() == "":
                 rl.pop(0)
             while rl and rl and rl[-1].strip() == "":
@@ -786,6 +794,24 @@ def validate_backlog(backlog: Backlog) -> list[str]:
             if t.status and t.status.strip().lower() not in allowed:
                 errors.append(f"unknown task status for {t.id}: {t.status}")
 
+    # Ensure epics that have all tasks finished are themselves marked with a finishing status
+    finish_list = set(values.get('finish_statuses', ["done", "closed", "complete", "finished"]))
+    for e in backlog.epics_open + backlog.epics_finished:
+        # ignore epics with no tasks
+        if not getattr(e, 'tasks', None):
+            continue
+        # consider a task finished if its normalized status is in finish_list
+        all_finished = True
+        for t in e.tasks:
+            st = (t.status or '').strip().lower()
+            if st not in finish_list:
+                all_finished = False
+                break
+        if all_finished:
+            est = (e.status or '').strip().lower()
+            if est not in finish_list:
+                errors.append(f"epic {e.id} not finished but all tasks are finished")
+
     return errors
 
 
@@ -808,7 +834,11 @@ def reassign_duplicate_task_ids(backlog: Backlog) -> list[Tuple[str, str]]:
     existing = {e.id for e in backlog.epics_open + backlog.epics_finished} | set(all_task_ids)
 
     # choose start = max numeric existing id + 1 for monotonic allocation
-    numeric_existing = [int(x) for x in existing if x.isdigit()]
+    # Only consider numeric ids that are 4 digits or less (canonical backlog ids).
+    # Migration artifacts or auxiliary ids may be longer (e.g. '900100') and
+    # should not be used to compute the next 4-digit id — they would push the
+    # starting point beyond the 4-digit range and make allocation fail.
+    numeric_existing = [int(x) for x in existing if x.isdigit() and len(x) <= 4]
     start = (max(numeric_existing) + 1) if numeric_existing else 0
 
     def next_id(start_idx=start):

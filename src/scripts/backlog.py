@@ -121,11 +121,14 @@ def cmd_move_task(args: argparse.Namespace) -> int:
     except KeyError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
-    print(f"Dry-run: moved task {task_id} -> epic {to_epic} (new id: {moved.id})")
     if getattr(args, "write", False):
+        # perform the move and persist
         bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
+        print(f"Moved task {task_id} -> epic {to_epic} (new id: {moved.id})")
         print(f"Wrote changes to {path}; backup: {bak}")
+    else:
+        print(f"Dry-run: moved task {task_id} -> epic {to_epic} (new id: {moved.id})")
     return 0
 
 
@@ -362,8 +365,10 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 epic.status = v
             elif k == 'added':
                 epic.added = v
+                epic.raw_lines = _strip_raw_block(epic.raw_lines, 'added')
             elif k == 'closed':
                 epic.closed = v
+                epic.raw_lines = _strip_raw_block(epic.raw_lines, 'closed')
             elif k == 'notes':
                 # Normalize and strip accidental list markers
                 vv = v.replace('\\n', '\n')
@@ -926,10 +931,15 @@ def cmd_update(args: argparse.Namespace) -> int:
     appended = ''
     today = date.today().isoformat()
     for _, _, block, *_ in moved_blocks:
-        if '- updated:' not in block:
+        # When moving a finished epic, ensure we record a closing date on
+        # the epic (use '- closed: YYYY-MM-DD') rather than an undefined
+        # '- updated:' field. Insert the closed date after the epic header
+        # line if it isn't already present.
+        if '- closed:' not in block:
             parts = block.splitlines(keepends=True)
             if len(parts) >= 1:
-                parts.insert(1, f" - updated: {today}\n")
+                # use two-space indentation consistent with other epic fields
+                parts.insert(1, f"  - closed: {today}\n")
             block = ''.join(parts)
         appended += '\n' + block
 
