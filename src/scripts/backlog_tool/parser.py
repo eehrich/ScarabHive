@@ -319,11 +319,20 @@ def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open', forc
 def build_markdown(backlog: Backlog) -> str:
     lines: List[str] = []
     # Helper to remove raw_blocks corresponding to modeled fields
-    def _strip_modeled_blocks_global(raw_lines: list[str]) -> list[str]:
+    def _strip_modeled_blocks_global(raw_lines: list[str], modeled_keys: set[str] | None = None) -> list[str]:
+        """Remove raw_lines blocks that correspond to modeled fields.
+
+        Only removes blocks for keys that are present in `modeled_keys`.
+        This preserves explicit raw blocks like a `- notes:` block when the
+        epic/task does not have a modeled `notes` field parsed.
+        """
         out: list[str] = []
         i = 0
-        # include added/closed in modeled keys to avoid duplicate emission
-        key_re = re.compile(r"^\s*-\s*(notes|description|added|closed):", flags=re.I)
+        # If no modeled keys provided, return raw lines unchanged
+        if not modeled_keys:
+            return list(raw_lines)
+        key_pattern = '|'.join(re.escape(k) for k in modeled_keys)
+        key_re = re.compile(rf"^\s*-\s*({key_pattern}):", flags=re.I)
         while i < len(raw_lines):
             ln = raw_lines[i]
             if key_re.match(ln.strip()):
@@ -430,7 +439,11 @@ def build_markdown(backlog: Backlog) -> str:
                     lines.append(f"    - {n}")
         # Preserve any raw_lines after structured fields
         if e.raw_lines:
-            rl = _strip_modeled_blocks_global(list(e.raw_lines))
+            modeled = set()
+            for k in ('notes', 'description', 'added', 'closed'):
+                if getattr(e, k, None):
+                    modeled.add(k)
+            rl = _strip_modeled_blocks_global(list(e.raw_lines), modeled)
             while rl and rl[0].strip() == "":
                 rl.pop(0)
             while rl and rl[-1].strip() == "":
@@ -518,7 +531,11 @@ def build_markdown(backlog: Backlog) -> str:
 
         # preserve epic-level raw lines (strip modeled blocks like notes/description/added/closed)
         if e.raw_lines:
-            rl = _strip_modeled_blocks_global(list(e.raw_lines))
+            modeled = set()
+            for k in ('notes', 'description', 'added', 'closed'):
+                if getattr(e, k, None):
+                    modeled.add(k)
+            rl = _strip_modeled_blocks_global(list(e.raw_lines), modeled)
             while rl and rl[0].strip() == "":
                 rl.pop(0)
             while rl and rl and rl[-1].strip() == "":

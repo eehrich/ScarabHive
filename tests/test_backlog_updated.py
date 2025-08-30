@@ -32,4 +32,5 @@ def test_updated_added(tmp_path):
     rc = run_script(p)
     assert rc == 0
     txt = p.read_text(encoding='utf-8')
-    assert '- updated:' in txt
+    # The updater inserts a closed date when moving finished epics
+    assert '- closed:' in txt

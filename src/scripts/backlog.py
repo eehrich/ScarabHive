@@ -86,12 +86,12 @@ def cmd_add_task(args: argparse.Namespace) -> int:
                 s2 = s.replace('\\n', '\n')
                 lines = []
                 for ln in s2.splitlines():
-                    l = ln
-                    if l.lstrip().startswith('- '):
+                    line = ln
+                    if line.lstrip().startswith('- '):
                         # remove the first hyphen and following space
-                        idx = l.find('- ')
-                        l = l[:idx] + l[idx+2:]
-                    lines.append(l.rstrip())
+                        idx = line.find('- ')
+                        line = line[:idx] + line[idx+2:]
+                    lines.append(line.rstrip())
                 return '\n'.join(lines)
 
             notes_arg = _normalize_notes(getattr(args, "notes", None))
@@ -293,21 +293,21 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 vv = v.replace('\\n', '\n')
                 normalized = []
                 for ln in vv.splitlines():
-                    l = ln
-                    if l.lstrip().startswith('- '):
-                        idx = l.find('- ')
-                        l = l[:idx] + l[idx+2:]
-                    normalized.append(l.rstrip())
+                    line = ln
+                    if line.lstrip().startswith('- '):
+                        idx = line.find('- ')
+                        line = line[:idx] + line[idx+2:]
+                    normalized.append(line.rstrip())
                 task.notes = normalized
             elif k == 'description':
                 vv = v.replace('\\n', '\n')
                 normalized = []
                 for ln in vv.splitlines():
-                    l = ln
-                    if l.lstrip().startswith('- '):
-                        idx = l.find('- ')
-                        l = l[:idx] + l[idx+2:]
-                    normalized.append(l.rstrip())
+                    line = ln
+                    if line.lstrip().startswith('- '):
+                        idx = line.find('- ')
+                        line = line[:idx] + line[idx+2:]
+                    normalized.append(line.rstrip())
                 task.description = normalized
 
         if getattr(args, 'write', False):
@@ -374,22 +374,22 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 vv = v.replace('\\n', '\n')
                 normalized = []
                 for ln in vv.splitlines():
-                    l = ln
-                    if l.lstrip().startswith('- '):
-                        idx = l.find('- ')
-                        l = l[:idx] + l[idx+2:]
-                    normalized.append(l.rstrip())
+                    line = ln
+                    if line.lstrip().startswith('- '):
+                        idx = line.find('- ')
+                        line = line[:idx] + line[idx+2:]
+                    normalized.append(line.rstrip())
                 epic.notes = normalized
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'notes')
             elif k == 'description':
                 vv = v.replace('\\n', '\n')
                 normalized = []
                 for ln in vv.splitlines():
-                    l = ln
-                    if l.lstrip().startswith('- '):
-                        idx = l.find('- ')
-                        l = l[:idx] + l[idx+2:]
-                    normalized.append(l.rstrip())
+                    line = ln
+                    if line.lstrip().startswith('- '):
+                        idx = line.find('- ')
+                        line = line[:idx] + line[idx+2:]
+                    normalized.append(line.rstrip())
                 epic.description = normalized
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'description')
 
