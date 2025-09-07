@@ -1120,15 +1120,26 @@ def build_parser() -> argparse.ArgumentParser:
         prog="backlog",
         description="Backlog CLI - A lightweight tool for managing project backlogs in Markdown format.",
         epilog="""
-Examples:
-  backlog validate                    # Check backlog for errors
-  backlog add-task --title "Fix bug" --epic 0001 --write    # Add task to epic
-  backlog edit 0002 --set status=done --set closed=2025-09-07 --write    # Update task
-  backlog list --state open           # List open epics and tasks
-  backlog show 0001                   # Show details for epic/task 0001
+EXAMPLES:
+  Basic Operations:
+    backlog validate                    # Check backlog for errors
+    backlog list                        # Show open epics
+    backlog show 0001                   # View epic details
 
-Safety: All write operations create automatic backups. Use --write to persist changes.
-        """,
+  Task Management:
+    backlog add-task --title "Fix bug" --epic 0001 --write
+    backlog edit 0002 --set status=done --write
+    backlog move-task --task 0003 --to-epic 0004 --write
+
+  Safety & Recovery:
+    backlog backup --dry-run            # Preview backup creation
+    backlog undo --list                 # See available backups
+    backlog undo --choose               # Interactive restore
+
+SAFETY: Use --write to persist changes. All operations create backups automatically.
+COLOR: Auto-detected; use --color/--no-color to override.
+FILES: Default is backlog.md; use --file to specify alternative.
+""",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--version", action="store_true", help="Show version and exit")
@@ -1139,25 +1150,27 @@ Safety: All write operations create automatic backups. Use --write to persist ch
     v = sub.add_parser("validate", 
                       help="🔍 Validate backlog file for errors and inconsistencies",
                       description="Validate the backlog file for common issues like duplicate IDs, invalid dates, and malformed entries.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     v.add_argument("--verbose", action="store_true", help="Show detailed validation statistics")
     v.set_defaults(func=cmd_validate)
 
     a = sub.add_parser("add-task", 
                        help="➕ Add a new task to an epic",
-                       description="Add a new task to an existing epic. Use --write to persist changes.")
+                       description="Add a new task to an existing epic. Use --write to persist changes. The task will be added with 'open' status and today's date.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     a.add_argument("--title", required=True, help="Task title")
-    # make --epic optional for dry-run compatibility; required when --write is used
     a.add_argument("--epic", required=False, help="Epic id to add the task under (required with --write)")
-    a.add_argument("--id", dest="forced_id", help="Force a specific Task id (numeric or string). Will error if id exists")
     a.add_argument("--notes", help="Optional notes text (use \\n for line breaks)")
+    a.add_argument("--id", dest="forced_id", help="Force a specific Task id (numeric or string). Will error if id exists")
     a.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     a.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
     a.set_defaults(func=cmd_add_task)
 
     ae = sub.add_parser("add-epic", 
                        help="📋 Create a new epic",
-                       description="Create a new epic and add it to the backlog. Use --write to persist changes.")
+                       description="Create a new epic and add it to the backlog. Use --write to persist changes. The epic will be added with 'open' status and today's date.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     ae.add_argument("--title", required=True, help="Epic title")
     ae.add_argument("--id", dest="forced_id", help="Force a specific Epic id (numeric or string). Will error if id exists")
     ae.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
@@ -1167,6 +1180,7 @@ Safety: All write operations create automatic backups. Use --write to persist ch
     m = sub.add_parser("move-task", 
                       help="↔️  Move a task between epics",
                       description="Move an existing task from one epic to another. Use --write to persist changes.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     m.add_argument("--task", required=True, help="Task id to move")
     m.add_argument("--to-epic", required=True, help="Destination epic id")
     m.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
@@ -1177,7 +1191,8 @@ Safety: All write operations create automatic backups. Use --write to persist ch
     # can set arbitrary fields on epics or tasks.
     u = sub.add_parser("edit", 
                       help="✏️  Edit epic or task fields",
-                      description="Update fields on one or more epics/tasks. Supports bulk updates with --set key=value.")
+                      description="Update fields on one or more epics/tasks. Supports bulk updates with --set key=value. Use multiple --set for multiple fields.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     u.add_argument("id", nargs="+", help="Epic or Task numeric id(s) (0001)")
     u.add_argument("--set", dest="set", action="append", help="Set a field: --set key=value (can be used multiple times)")
     u.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
@@ -1186,7 +1201,8 @@ Safety: All write operations create automatic backups. Use --write to persist ch
 
     b = sub.add_parser("backup", 
                       help="💾 Create or manage backups",
-                      description="Create timestamped backups of the backlog file or manage existing backups.")
+                      description="Create timestamped backups of the backlog file or manage existing backups. Use --prune with --keep or --older-than to clean up old backups.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     b.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     b.add_argument("--prune", action="store_true", help="Remove old backups instead of creating a new one")
     b.add_argument("--keep", type=int, help="When pruning, keep the newest N backups (default: 10)")
@@ -1197,7 +1213,8 @@ Safety: All write operations create automatic backups. Use --write to persist ch
 
     r = sub.add_parser("undo", 
                       help="↶ Restore from backup",
-                      description="Restore the backlog file from a previous backup. Use --list to see available backups.")
+                      description="Restore the backlog file from a previous backup. Use --list to see available backups, --choose for interactive selection, or --backup for specific file.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     r.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     r.add_argument("--list", action="store_true", help="List available backups and exit")
     r.add_argument("--choose", action="store_true", help="Interactively choose a backup to restore")
@@ -1207,58 +1224,63 @@ Safety: All write operations create automatic backups. Use --write to persist ch
     c = sub.add_parser("check-ids", 
                       help="🔍 Check for duplicate IDs",
                       description="Scan the backlog for duplicate task IDs and epic/task ID collisions.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     c.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     c.set_defaults(func=cmd_check_ids)
 
     f = sub.add_parser("fix-format", 
                       help="🔧 Auto-fix formatting issues",
                       description="Normalize status tokens, fix date formats, and reassign duplicate IDs. Use --ids-only for safe ID-only fixes.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     f.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    f.add_argument("--write", action="store_true", help="⚠️  Apply fixes and persist to file (creates backup)")
     f.add_argument("--ids-only", action="store_true", dest="ids_only",
                    help="When writing, only rewrite numeric Task/Epic ids and leave formatting intact")
+    f.add_argument("--write", action="store_true", help="⚠️  Apply fixes and persist to file (creates backup)")
     f.set_defaults(func=cmd_fix_format)
 
     # legacy compatibility: expose the `update` command used by older scripts/tests
     up = sub.add_parser("update", 
                        help="📦 Move finished epics",
                        description="Legacy command: validate and move finished epics from open to finished section.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     up.set_defaults(func=cmd_update)
 
     ini = sub.add_parser("init", 
                         help="📄 Create new backlog file",
                         description="Create a new backlog.md file from the bundled template if it doesn't exist.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     ini.add_argument("--file", help="Backlog file to create (default: backlog.md)")
     ini.set_defaults(func=lambda args: cmd_init(args))
 
     ls = sub.add_parser("list", 
                        help="📋 List epics and tasks",
-                       description="List all epic and task IDs with their titles. Use filters to show specific subsets.")
+                       description="List all epic and task IDs with their titles. Use filters to show specific subsets. Combine --state and --only for precise filtering.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     ls.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    # color tri-state: --color, --no-color; default None means auto-detect tty
-    g = ls.add_mutually_exclusive_group()
-    g.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")
-    g.add_argument("--no-color", dest="color", action="store_false", help="Disable ANSI colorized output")
-    ls.set_defaults(color=True)
     ls.add_argument("--state", choices=["open", "finished", "all"], default="open",
                     help="Filter by epic state (default: open)")
     ls.add_argument("--only", choices=["epics", "tasks", "all"], default="epics",
                     help="Show only epics, only tasks, or all (default: epics)")
     ls.add_argument("--ids-only", action="store_true", dest="ids_only",
                     help="Print only numeric ids, one per line")
+    # color tri-state: --color, --no-color; default None means auto-detect tty
+    g = ls.add_mutually_exclusive_group()
+    g.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")
+    g.add_argument("--no-color", dest="color", action="store_false", help="Disable ANSI colorized output")
+    ls.set_defaults(color=True)
     ls.set_defaults(func=cmd_list)
 
     sh = sub.add_parser("show", 
                        help="👀 Show detailed information",
-                       description="Show detailed information for one or more epic/task IDs.")
-    # Accept one or more numeric ids as positional arguments, e.g.:
-    #   backlog show 0001 0002 0123
+                       description="Show detailed information for one or more epic/task IDs. Accepts multiple IDs and supports both epic and task identifiers.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
     sh.add_argument("id", nargs="*", help="Epic or Task numeric id(s) (0001)")
     # Backwards-compatibility: accept legacy `--id` into `legacy_id` and
     # merge with positional ids inside `cmd_show`.
     sh.add_argument("--id", dest="legacy_id", nargs="+", help=argparse.SUPPRESS)
     sh.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    # color tri-state: --color, --no-color; default None means auto-detect tty
     g2 = sh.add_mutually_exclusive_group()
     g2.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")
     g2.add_argument("--no-color", dest="color", action="store_false", help="Disable ANSI colorized output")
