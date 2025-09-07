@@ -2,9 +2,114 @@
 
 A short reference for the project's minimal backlog CLI. The console entrypoint is the `backlog` script (module `scripts.backlog`). This document lists commands, flags, and examples for common workflows.
 
-## Purpose
+## Quick Start
 
-The backlog CLI provides a lightweight, test-friendly interface to read, inspect, and mutate the project's `backlog.md` file. It is intentionally conservative: most operations are dry-run by default and writes create timestamped backups in a `.backups/` folder.
+### First Time Setup
+```bash
+# Create a new backlog file from template
+backlog init
+
+# Validate the new backlog
+backlog validate
+```
+
+### Common Workflows
+
+#### Adding Tasks
+```bash
+# Preview a new task (dry-run)
+backlog add-task --title "Implement user authentication" --epic 0001
+
+# Add the task for real
+backlog add-task --title "Implement user authentication" --epic 0001 --write
+
+# Add task with notes and custom ID
+backlog add-task --title "Fix login bug" --epic 0001 --id 0123 --notes "Issue reported by user\nNeed to test edge cases" --write
+```
+
+#### Updating Tasks
+```bash
+# Mark task as in progress
+backlog edit 0123 --set status="in progress" --write
+
+# Mark task as completed
+backlog edit 0123 --set status=done --set closed=2025-09-07 --write
+
+# Bulk update multiple tasks
+backlog edit 0123 0124 0125 --set status=done --write
+```
+
+#### Viewing Backlog
+```bash
+# List all open epics
+backlog list
+
+# List all tasks (open epics only)
+backlog list --only tasks
+
+# Show detailed info for specific items
+backlog show 0001 0123
+
+# List only IDs (useful for scripting)
+backlog list --ids-only
+```
+
+#### Safety & Recovery
+```bash
+# Create a backup manually
+backlog backup
+
+# List available backups
+backlog undo --list
+
+# Restore from latest backup
+backlog undo
+
+# Restore from specific backup
+backlog undo --backup ".backups/backlog.md.20250907_140000.bak"
+```
+
+## Safety Features
+
+### Automatic Backups
+- **Every write operation** creates a timestamped backup in `.backups/`
+- Format: `filename.YYYYMMDD_HHMMSS.bak`
+- Use `backlog undo` to restore from backups
+
+### Dry-Run Mode
+- **Most commands default to dry-run** - they show what would happen without making changes
+- Use `--write` flag to actually persist changes
+- Commands with `--write` show ⚠️ warning in help text
+
+### Validation
+- Use `backlog validate` before making bulk changes
+- Catches duplicate IDs, invalid dates, and formatting issues
+- Run validation in CI/CD pipelines
+
+## Best Practices
+
+### Workflow Recommendations
+1. **Always validate first**: `backlog validate`
+2. **Use dry-run for complex changes**: Run command without `--write` first
+3. **Check backups**: `backlog undo --list` to see available backups
+4. **Use descriptive commit messages** when updating backlog.md
+
+### Common Patterns
+```bash
+# Safe workflow for bulk updates
+backlog validate
+backlog edit 0001 0002 0003 --set status=done  # dry-run first
+backlog edit 0001 0002 0003 --set status=done --write  # then apply
+backlog validate  # verify changes
+```
+
+### Status Values
+- `open` - Task/epic is ready to work on
+- `in progress` - Currently being worked on
+- `done` - Completed successfully
+- `failed` - Could not be completed
+- `cancelled` - No longer needed
+- `reverted` - Change was undone
 
 ## Location
 
@@ -252,16 +357,49 @@ Show details for a task or epic:
 
     backlog show 0001
 
-## Contributing / Tests
+## Troubleshooting
 
-- New behavior must be covered with unit tests under `tests/` and a successful `pytest` run.
-- The parser and CLI modules are intentionally small and easy to test against small sample backlog snippets.
+### Common Issues
 
-## Where to change behaviour
+**"ERROR: backlog file not found"**
+```bash
+# Create a new backlog file
+backlog init
 
-- Parser and writer: `src/scripts/backlog_tool/parser.py`
-- CLI entrypoint: `src/scripts/backlog.py`
+# Or specify a different file
+backlog validate --file path/to/my-backlog.md
+```
 
-If you'd like, I can:
-- Add a short README section with these examples, or
-- Add CLI integration tests that run a subprocess and validate exit codes and outputs.
+**"ERROR: no id provided"**
+```bash
+# Use correct syntax for edit command
+backlog edit 0001 --set status=done --write
+```
+
+**"Duplicate IDs found"**
+```bash
+# Check for duplicates
+backlog check-ids
+
+# Auto-fix duplicate IDs (safe option)
+backlog fix-format --ids-only --write
+```
+
+**Accidentally made changes**
+```bash
+# See available backups
+backlog undo --list
+
+# Restore latest backup
+backlog undo
+```
+
+### Getting Help
+```bash
+# Main help
+backlog --help
+
+# Command-specific help
+backlog add-task --help
+backlog edit --help
+```

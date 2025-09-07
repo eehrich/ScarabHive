@@ -1117,87 +1117,125 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="backlog")
+    p = argparse.ArgumentParser(
+        prog="backlog",
+        description="Backlog CLI - A lightweight tool for managing project backlogs in Markdown format.",
+        epilog="""
+Examples:
+  backlog validate                    # Check backlog for errors
+  backlog add-task --title "Fix bug" --epic 0001 --write    # Add task to epic
+  backlog edit 0002 --set status=done --set closed=2025-09-07 --write    # Update task
+  backlog list --state open           # List open epics and tasks
+  backlog show 0001                   # Show details for epic/task 0001
+
+Safety: All write operations create automatic backups. Use --write to persist changes.
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--version", action="store_true", help="Show version and exit")
     p.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
 
-    sub = p.add_subparsers(dest="cmd")
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND", help="Available commands:")
 
-    v = sub.add_parser("validate", help="Validate the backlog file")
+    v = sub.add_parser("validate", 
+                      help="🔍 Validate backlog file for errors and inconsistencies",
+                      description="Validate the backlog file for common issues like duplicate IDs, invalid dates, and malformed entries.")
     v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     v.add_argument("--verbose", action="store_true", help="Show detailed validation statistics")
     v.set_defaults(func=cmd_validate)
 
-    a = sub.add_parser("add-task", help="add a new task")
+    a = sub.add_parser("add-task", 
+                       help="➕ Add a new task to an epic",
+                       description="Add a new task to an existing epic. Use --write to persist changes.")
     a.add_argument("--title", required=True, help="Task title")
     # make --epic optional for dry-run compatibility; required when --write is used
-    a.add_argument("--epic", required=False, help="Epic id to add the task under")
+    a.add_argument("--epic", required=False, help="Epic id to add the task under (required with --write)")
     a.add_argument("--id", dest="forced_id", help="Force a specific Task id (numeric or string). Will error if id exists")
-    a.add_argument("--notes", help="Optional notes text")
+    a.add_argument("--notes", help="Optional notes text (use \\n for line breaks)")
     a.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    a.add_argument("--write", action="store_true", help="Persist changes to file")
+    a.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
     a.set_defaults(func=cmd_add_task)
 
-    ae = sub.add_parser("add-epic", help="Create a new epic")
+    ae = sub.add_parser("add-epic", 
+                       help="📋 Create a new epic",
+                       description="Create a new epic and add it to the backlog. Use --write to persist changes.")
     ae.add_argument("--title", required=True, help="Epic title")
     ae.add_argument("--id", dest="forced_id", help="Force a specific Epic id (numeric or string). Will error if id exists")
     ae.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    ae.add_argument("--write", action="store_true", help="Persist changes to file")
+    ae.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
     ae.set_defaults(func=cmd_add_epic)
 
-    m = sub.add_parser("move-task", help="Move a task to another epic")
+    m = sub.add_parser("move-task", 
+                      help="↔️  Move a task between epics",
+                      description="Move an existing task from one epic to another. Use --write to persist changes.")
     m.add_argument("--task", required=True, help="Task id to move")
     m.add_argument("--to-epic", required=True, help="Destination epic id")
     m.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    m.add_argument("--write", action="store_true", help="Persist changes to file")
+    m.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
     m.set_defaults(func=cmd_move_task)
 
     # Replace legacy update-status with a more general `edit` command that
     # can set arbitrary fields on epics or tasks.
-    u = sub.add_parser("edit", help="Edit epic or task fields (replaces update-status)")
+    u = sub.add_parser("edit", 
+                      help="✏️  Edit epic or task fields",
+                      description="Update fields on one or more epics/tasks. Supports bulk updates with --set key=value.")
     u.add_argument("id", nargs="+", help="Epic or Task numeric id(s) (0001)")
-    u.add_argument("--set", dest="set", action="append", help="Set a field: --set key=value")
+    u.add_argument("--set", dest="set", action="append", help="Set a field: --set key=value (can be used multiple times)")
     u.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    u.add_argument("--write", action="store_true", help="Persist changes to file")
+    u.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
     u.set_defaults(func=cmd_edit)
 
-    b = sub.add_parser("backup", help="Create a timestamped backup of the backlog file")
+    b = sub.add_parser("backup", 
+                      help="💾 Create or manage backups",
+                      description="Create timestamped backups of the backlog file or manage existing backups.")
     b.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    b.add_argument("--prune", action="store_true", help="Prune old backups instead of creating a new one")
+    b.add_argument("--prune", action="store_true", help="Remove old backups instead of creating a new one")
     b.add_argument("--keep", type=int, help="When pruning, keep the newest N backups (default: 10)")
     b.add_argument("--older-than", type=int, help="When pruning, remove backups older than N days")
-    b.add_argument("--dry-run", action="store_true", help="Show which backups would be removed")
+    b.add_argument("--dry-run", action="store_true", help="Show which backups would be removed (with --prune)")
     b.add_argument("--yes", action="store_true", help="Confirm destructive prune without prompt")
     b.set_defaults(func=cmd_backup)
 
-    r = sub.add_parser("undo", help="Restore the last backup of the backlog file")
+    r = sub.add_parser("undo", 
+                      help="↶ Restore from backup",
+                      description="Restore the backlog file from a previous backup. Use --list to see available backups.")
     r.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     r.add_argument("--list", action="store_true", help="List available backups and exit")
     r.add_argument("--choose", action="store_true", help="Interactively choose a backup to restore")
     r.add_argument("--backup", help="Restore a specific backup file path (exact match from --list)")
     r.set_defaults(func=cmd_undo)
 
-    c = sub.add_parser("check-ids", help="Check for duplicate task ids")
+    c = sub.add_parser("check-ids", 
+                      help="🔍 Check for duplicate IDs",
+                      description="Scan the backlog for duplicate task IDs and epic/task ID collisions.")
     c.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     c.set_defaults(func=cmd_check_ids)
 
-    f = sub.add_parser("fix-format", help="Normalize status tokens and reassign duplicate ids")
+    f = sub.add_parser("fix-format", 
+                      help="🔧 Auto-fix formatting issues",
+                      description="Normalize status tokens, fix date formats, and reassign duplicate IDs. Use --ids-only for safe ID-only fixes.")
     f.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    f.add_argument("--write", action="store_true", help="Apply fixes and persist to file")
+    f.add_argument("--write", action="store_true", help="⚠️  Apply fixes and persist to file (creates backup)")
     f.add_argument("--ids-only", action="store_true", dest="ids_only",
                    help="When writing, only rewrite numeric Task/Epic ids and leave formatting intact")
     f.set_defaults(func=cmd_fix_format)
 
     # legacy compatibility: expose the `update` command used by older scripts/tests
-    up = sub.add_parser("update", help="Validate and move finished epics")
+    up = sub.add_parser("update", 
+                       help="📦 Move finished epics",
+                       description="Legacy command: validate and move finished epics from open to finished section.")
     up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     up.set_defaults(func=cmd_update)
 
-    ini = sub.add_parser("init", help="Create a new backlog.md from the bundled template if missing")
+    ini = sub.add_parser("init", 
+                        help="📄 Create new backlog file",
+                        description="Create a new backlog.md file from the bundled template if it doesn't exist.")
     ini.add_argument("--file", help="Backlog file to create (default: backlog.md)")
     ini.set_defaults(func=lambda args: cmd_init(args))
 
-    ls = sub.add_parser("list", help="List all epic and task ids with titles")
+    ls = sub.add_parser("list", 
+                       help="📋 List epics and tasks",
+                       description="List all epic and task IDs with their titles. Use filters to show specific subsets.")
     ls.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     # color tri-state: --color, --no-color; default None means auto-detect tty
     g = ls.add_mutually_exclusive_group()
@@ -1212,7 +1250,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Print only numeric ids, one per line")
     ls.set_defaults(func=cmd_list)
 
-    sh = sub.add_parser("show", help="Show details for an epic or task by id")
+    sh = sub.add_parser("show", 
+                       help="👀 Show detailed information",
+                       description="Show detailed information for one or more epic/task IDs.")
     # Accept one or more numeric ids as positional arguments, e.g.:
     #   backlog show 0001 0002 0123
     sh.add_argument("id", nargs="*", help="Epic or Task numeric id(s) (0001)")
