@@ -49,6 +49,9 @@ backlog = "scripts.backlog:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+agent_system = ["static/*", "templates/*"]
+
 [project.optional-dependencies]
 dev = [
     "wheel",

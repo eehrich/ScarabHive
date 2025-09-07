@@ -22,9 +22,10 @@ from ..utils.logging import setup_logging
 app = FastAPI(title="Agent System (MCP)")
 templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates"))
 
-# Mount static directory for CSS/JS
-static_path = str(Path(__file__).parents[3] / "static")
-app.mount("/static", StaticFiles(directory=static_path), name="static")
+# Mount static directory for CSS/JS if it exists
+static_path = Path(__file__).parents[3] / "static"
+if static_path.exists():
+    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:

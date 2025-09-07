@@ -658,8 +658,28 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
                 return lambda m: m.group(1) + new_id
 
             for old, new in list(id_changes) + list(collision_changes):
-                _text = _re.sub(rf'(\bEpic\s+){_re.escape(old)}(?=\s*:)', _replace_with_new(old, new), _text)
-                _text = _re.sub(rf'(\bTask\s+){_re.escape(old)}(?=\s*:)', _replace_with_new(old, new), _text)
+                # Match both normalized (0001) and original (1, 01, 001) ID formats
+                # The old_id from the model is normalized, but text may have original format
+                old_patterns = [old]  # Start with normalized format
+                
+                # Also try shorter versions of the ID if it's numeric
+                if old.isdigit():
+                    num = int(old)
+                    if num < 1000:  # Only for 4-digit or less
+                        old_patterns.extend([f"{num:01d}", f"{num:02d}", f"{num:03d}"])
+                
+                for old_id_pattern in old_patterns:
+                    # Match the actual format: optional status symbols + "Epic/Task" + ID + ":"
+                    # Use count=1 to replace only one occurrence at a time
+                    epic_pattern = rf'((?:☐|✅|❌|⏳|\[ ?\])?\s*Epic\s+){_re.escape(old_id_pattern)}(?=\s*:)'
+                    task_pattern = rf'((?:☐|✅|❌|⏳|\[ ?\])?\s*Task\s+){_re.escape(old_id_pattern)}(?=\s*:)'
+                    
+                    # Replace one occurrence at a time to avoid replacing all duplicates
+                    _text, epic_count = _re.subn(epic_pattern, _replace_with_new(old_id_pattern, new), _text, count=1)
+                    _text, task_count = _re.subn(task_pattern, _replace_with_new(old_id_pattern, new), _text, count=1)
+                    
+                    if epic_count > 0 or task_count > 0:
+                        break  # Successfully replaced one occurrence, move to next change
 
             bl.safe_write(path, _text)
             print(f"Applied id-only fixes; backup: {bak}")
