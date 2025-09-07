@@ -13,6 +13,7 @@ allowed_statuses:
   - reverted
   - rejected
   - cancelled
+  - failed
 
 finish_statuses:
   - done
@@ -25,7 +26,11 @@ finish_statuses:
 symbol_map:
   "☐": open
   "✅": done
-  "❌": failed
+  "❌": 
+    - failed
+    - cancelled
+    - rejected
+    - reverted
   "⏳": "in progress"
 
 word_map:
@@ -50,3 +55,4 @@ acceptable_terminal:
   - cancelled
   - implemented
   - fixed
+  - failed

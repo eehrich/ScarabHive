@@ -542,8 +542,13 @@ def build_markdown(backlog: Backlog) -> str:
         # Use configured symbol for open epic where available
         sym = None
         sym_map = cast(Dict[str, Any], values.get('symbol_map', {}) or {})
+        status_lower = (e.status or '').strip().lower()
         for k, v in sym_map.items():
-            if v == (e.status or '').strip().lower():
+            if isinstance(v, list):
+                if status_lower in v:
+                    sym = k
+                    break
+            elif v == status_lower:
                 sym = k
                 break
         sym = sym or '☐'
@@ -597,8 +602,13 @@ def build_markdown(backlog: Backlog) -> str:
         for t in e.tasks:
             # task symbol resolved from status
             task_sym = None
+            status_lower = (t.status or '').strip().lower()
             for k, v in sym_map.items():
-                if v == (t.status or '').strip().lower():
+                if isinstance(v, list):
+                    if status_lower in v:
+                        task_sym = k
+                        break
+                elif v == status_lower:
                     task_sym = k
                     break
             task_sym = task_sym or '\u2610'
@@ -636,8 +646,13 @@ def build_markdown(backlog: Backlog) -> str:
         # resolve symbol for epic status (default to done/checkmark)
         sym = None
         sym_map = cast(Dict[str, Any], values.get('symbol_map', {}) or {})
+        status_lower = (e.status or '').strip().lower()
         for k, v in sym_map.items():
-            if v == (e.status or '').strip().lower():
+            if isinstance(v, list):
+                if status_lower in v:
+                    sym = k
+                    break
+            elif v == status_lower:
                 sym = k
                 break
         sym = sym or '\u2705'
@@ -688,8 +703,13 @@ def build_markdown(backlog: Backlog) -> str:
         lines.append("  - tasks:")
         for t in e.tasks:
             task_sym = None
+            status_lower = (t.status or '').strip().lower()
             for k, v in sym_map.items():
-                if v == (t.status or '').strip().lower():
+                if isinstance(v, list):
+                    if status_lower in v:
+                        task_sym = k
+                        break
+                elif v == status_lower:
                     task_sym = k
                     break
             task_sym = task_sym or '\u2610'
@@ -946,10 +966,11 @@ def update_task_status(backlog: Backlog, task_id: str, new_status: str) -> Task:
     _, task = find_task(backlog, task_id)
     task.status = new_status
     lower = (new_status or "").strip().lower()
-    finish_list = set(values.get('finish_statuses', ["done", "closed", "complete", "finished"]))
-    if lower in finish_list:
+    terminal_list = set(values.get('acceptable_terminal', ["done", "reverted", "rejected", "cancelled", "implemented", "fixed", "failed"]))
+    if lower in terminal_list:
         if not task.closed:
             task.closed = date.today().isoformat()
+        # For terminal states, preserve existing closed date if present
     else:
         # opening a task clears closed date
         task.closed = None

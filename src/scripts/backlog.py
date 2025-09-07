@@ -274,7 +274,6 @@ def cmd_edit(args: argparse.Namespace) -> int:
     Keys supported for epics: title, status, added, closed, notes, description
     """
     from scripts.backlog_tool import parser as bl
-    import re
 
     path = args.file or "backlog.md"
     lines = bl.read_file(path)

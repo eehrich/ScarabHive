@@ -25,7 +25,7 @@ def _default_config() -> dict:
         'symbol_map': {
             '☐': 'open',
             '✅': 'done',
-            '❌': 'failed',
+            '❌': ['failed', 'cancelled', 'rejected', 'reverted'],
             '⏳': 'in progress',
         },
         'word_map': {
@@ -34,7 +34,7 @@ def _default_config() -> dict:
             'failed': 'failed', 'reverted': 'reverted', 'rejected': 'rejected',
             'cancelled': 'cancelled', 'canceled': 'cancelled',
         },
-        'acceptable_terminal': ['done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed'],
+        'acceptable_terminal': ['done', 'reverted', 'rejected', 'cancelled', 'implemented', 'fixed', 'failed'],
     }
 
 
