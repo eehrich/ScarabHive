@@ -110,7 +110,11 @@ Description
 
 Usage
 
-    backlog edit <id> --set key=value [--set key=value ...] [--file <path>] [--write]
+    backlog edit <id> [<id> ...] --set key=value [--set key=value ...] [--file <path>] [--write]
+
+Description
+- Update one or more epics/tasks in a single command. All ids receive the same set of key=value changes.
+- Performs a single write + backup when `--write` is provided (atomic across all ids).
 
 Supported keys for tasks: `title`, `status`, `added`, `closed`, `notes`, `description`.
 Supported keys for epics: `title`, `status`, `added`, `closed`, `notes`, `description`.
@@ -118,10 +122,18 @@ Supported keys for epics: `title`, `status`, `added`, `closed`, `notes`, `descri
 Notes
 - CLI `--set` values may contain literal `\n` sequences which are translated into real newlines for modeled fields like `notes` and `description`.
 - For epics, editing modeled fields removes corresponding raw blocks to avoid duplication.
+- Missing ids are reported as errors (non-zero exit); successfully updated ids are still applied unless validation failed earlier.
 
-Example
+Examples
 
+    # Update single task status and closed date
     backlog edit 0002 --set status=done --set closed=2025-08-29 --write
+
+    # Bulk update multiple tasks to in progress
+    backlog edit 0100 0101 0102 --set status="in progress" --write
+
+    # Dry-run a bulk title change (no --write)
+    backlog edit 0200 0201 --set title="Refined title"
 
 ### backup
 

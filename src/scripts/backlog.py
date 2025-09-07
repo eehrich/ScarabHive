@@ -194,13 +194,17 @@ def cmd_add_epic(args: argparse.Namespace) -> int:
 
 
 def cmd_edit(args: argparse.Namespace) -> int:
-    """Edit fields on an Epic or Task.
+    """Edit fields on one or more Epics or Tasks.
 
-    Usage: backlog edit <id> --set key=value [--set key=value ...] [--write]
+    Now supports multiple ids in a single invocation. All provided ids
+    receive the same set of key=value updates. The command remains
+    idempotent for each id and performs a single write/backup when
+    ``--write`` is supplied.
 
-    Keys supported for tasks: title, status, added, closed, notes
-    Keys supported for epics: title, status, and arbitrary epic-level
-    fields (stored in raw_lines) such as description.
+    Usage: backlog edit <id> [<id> ...] --set key=value [--set key=value ...] [--write]
+
+    Keys supported for tasks: title, status, added, closed, notes, description
+    Keys supported for epics: title, status, added, closed, notes, description
     """
     from scripts.backlog_tool import parser as bl
     import re
@@ -209,11 +213,19 @@ def cmd_edit(args: argparse.Namespace) -> int:
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
 
-    # single id expected
-    ident = args.id[0] if isinstance(args.id, (list, tuple)) and args.id else getattr(args, 'legacy_id', [None])[0]
-    ident = _pad_id_input(ident)
-    if not ident:
+    # Support one or more ids (existing parser already allows `nargs='+'`).
+    raw_ids = list(getattr(args, 'id', []) or [])
+    if not raw_ids:
         print('ERROR: no id provided', file=sys.stderr)
+        return 2
+    idents = []
+    for rid in raw_ids:
+        pid = _pad_id_input(rid)
+        if pid:
+            idents.append(pid)
+
+    if not idents:
+        print('ERROR: no valid ids provided', file=sys.stderr)
         return 2
 
     # collect sets
@@ -229,28 +241,28 @@ def cmd_edit(args: argparse.Namespace) -> int:
         print('Nothing to change; provide --set key=value', file=sys.stderr)
         return 2
 
-    # Prefer editing a Task if the id corresponds to a task; otherwise try epic.
-    try:
-        epic, task = bl.find_task(backlog, ident)
-    except KeyError:
-        # Fallback: try to locate an epic with this id first, then try to
-        # locate a task by scanning all epics and matching numeric ids
-        epic = next((e for e in backlog.epics_open + backlog.epics_finished if e.id == ident), None)
-        task = None
-
+    # Helpers reused for each id.
+    def _find_epic_or_task(identifier: str):
+        # Try task first
+        try:
+            e, t = bl.find_task(backlog, identifier)
+            return e, t
+        except KeyError:
+            pass
+        # Epic direct
+        for e in backlog.epics_open + backlog.epics_finished:
+            if e.id == identifier:
+                return e, None
+        # Fallback numeric canonical comparison for tasks
         def _canon_id(s: str) -> str:
             s2 = str(s).strip()
             if s2.isdigit():
-                # canonicalize numeric ids by removing leading zeros
                 return str(int(s2))
             return s2
-
         try:
-            ident_canon = _canon_id(ident)
+            ident_canon = _canon_id(identifier)
         except Exception:
-            ident_canon = str(ident)
-
-        # scan for task matches (ignore zero-padding differences)
+            ident_canon = str(identifier)
         for e in backlog.epics_open + backlog.epics_finished:
             for t in getattr(e, 'tasks', []) or []:
                 t_id = getattr(t, 'id', None)
@@ -260,104 +272,92 @@ def cmd_edit(args: argparse.Namespace) -> int:
                     t_canon = _canon_id(t_id)
                 except Exception:
                     t_canon = str(t_id)
-                if ident_canon == t_canon or str(t_id) == str(ident) or str(t_id).lstrip('0') == str(ident).lstrip('0'):
-                    epic = e
-                    task = t
+                if ident_canon == t_canon or str(t_id) == str(identifier) or str(t_id).lstrip('0') == str(identifier).lstrip('0'):
+                    return e, t
+        raise KeyError(identifier)
+
+    allowed_task_keys = {"title", "status", "added", "closed", "notes", "description"}
+    allowed_epic_keys = {"title", "status", "added", "closed", "notes", "description"}
+
+    import re as _re
+
+    def _strip_raw_block(raw_lines: list[str], key: str) -> list[str]:
+        out: list[str] = []
+        i = 0
+        key_re = _re.compile(rf"^\s*-\s*{_re.escape(key)}:\b", flags=_re.I)
+        while i < len(raw_lines):
+            ln = raw_lines[i]
+            if key_re.match(ln):
+                base_indent = len(ln) - len(ln.lstrip(' '))
+                i += 1
+                while i < len(raw_lines):
+                    nxt = raw_lines[i]
+                    nxt_indent = len(nxt) - len(nxt.lstrip(' '))
+                    if nxt.strip() == '':
+                        i += 1
+                        continue
+                    if nxt_indent > base_indent:
+                        i += 1
+                        continue
                     break
-            if task is not None:
-                break
+                continue
+            out.append(ln)
+            i += 1
+        return out
 
-    if task is not None:
-        # Only allow explicit, known task-level keys to be edited.
-        allowed_task_keys = {"title", "status", "added", "closed", "notes", "description"}
-        invalid = [k for k in sets.keys() if k not in allowed_task_keys]
-        if invalid:
-            print(f"ERROR: invalid task field(s): {', '.join(sorted(invalid))}", file=sys.stderr)
-            return 2
+    updated_tasks: list[str] = []
+    updated_epics: list[str] = []
+    missing: list[str] = []
 
-        for k, v in sets.items():
-            if k == 'title':
-                task.title = v
-            elif k == 'status':
-                # Use the parser helper to apply status changes so closed date
-                # logic is applied consistently.
-                task = bl.update_task_status(backlog, task.id, v)
-            elif k == 'added':
-                task.added = v
-            elif k == 'closed':
-                task.closed = v
-            elif k == 'notes':
-                # Support literal '\\n' sequences and strip accidental
-                # leading list markers '- ' so we don't end up with nested
-                # bullets when writing back to markdown.
-                vv = v.replace('\\n', '\n')
-                normalized = []
-                for ln in vv.splitlines():
-                    line = ln
-                    if line.lstrip().startswith('- '):
-                        idx = line.find('- ')
-                        line = line[:idx] + line[idx+2:]
-                    normalized.append(line.rstrip())
-                task.notes = normalized
-            elif k == 'description':
-                vv = v.replace('\\n', '\n')
-                normalized = []
-                for ln in vv.splitlines():
-                    line = ln
-                    if line.lstrip().startswith('- '):
-                        idx = line.find('- ')
-                        line = line[:idx] + line[idx+2:]
-                    normalized.append(line.rstrip())
-                task.description = normalized
+    for ident in idents:
+        try:
+            epic, task = _find_epic_or_task(ident)
+        except KeyError:
+            missing.append(ident)
+            continue
 
-        if getattr(args, 'write', False):
-            # perform write and report the update
-            bak = bl.make_backup(path)
-            bl.safe_write(path, bl.build_markdown(backlog))
-            print(f"Updated task {task.id} (Epic {epic.id})")
-            print(f"Wrote changes to {path}; backup: {bak}")
-        else:
-            print(f"Dry-run: updated task {task.id} (Epic {epic.id})")
-        return 0
+        if task is not None:
+            invalid = [k for k in sets.keys() if k not in allowed_task_keys]
+            if invalid:
+                print(f"ERROR: invalid task field(s): {', '.join(sorted(invalid))}", file=sys.stderr)
+                return 2
+            for k, v in sets.items():
+                if k == 'title':
+                    task.title = v
+                elif k == 'status':
+                    task = bl.update_task_status(backlog, task.id, v)
+                elif k == 'added':
+                    task.added = v
+                elif k == 'closed':
+                    task.closed = v
+                elif k == 'notes':
+                    vv = v.replace('\\n', '\n')
+                    normalized = []
+                    for ln in vv.splitlines():
+                        line = ln
+                        if line.lstrip().startswith('- '):
+                            idx = line.find('- ')
+                            line = line[:idx] + line[idx+2:]
+                        normalized.append(line.rstrip())
+                    task.notes = normalized
+                elif k == 'description':
+                    vv = v.replace('\\n', '\n')
+                    normalized = []
+                    for ln in vv.splitlines():
+                        line = ln
+                        if line.lstrip().startswith('- '):
+                            idx = line.find('- ')
+                            line = line[:idx] + line[idx+2:]
+                        normalized.append(line.rstrip())
+                    task.description = normalized
+            updated_tasks.append(task.id)
+            continue
 
-    if epic:
-        # Only allow explicit, known epic-level keys to be edited. Writing
-        # arbitrary keys into raw_lines is error-prone; require consumers to
-        # edit only modeled fields.
-        allowed_epic_keys = {"title", "status", "added", "closed", "notes", "description"}
+        # epic path
         invalid = [k for k in sets.keys() if k not in allowed_epic_keys]
         if invalid:
             print(f"ERROR: invalid epic field(s): {', '.join(sorted(invalid))}", file=sys.stderr)
             return 2
-
-        def _strip_raw_block(raw_lines: list[str], key: str) -> list[str]:
-            """Remove any raw_lines block that starts with '- key:' and following indented lines."""
-            out: list[str] = []
-            i = 0
-            key_re = re.compile(rf"^\s*-\s*{re.escape(key)}:\b", flags=re.I)
-            while i < len(raw_lines):
-                ln = raw_lines[i]
-                if key_re.match(ln):
-                    # skip this line and any immediately following lines that
-                    # are indented more than this line.
-                    base_indent = len(ln) - len(ln.lstrip(' '))
-                    i += 1
-                    while i < len(raw_lines):
-                        nxt = raw_lines[i]
-                        nxt_indent = len(nxt) - len(nxt.lstrip(' '))
-                        if nxt.strip() == '':
-                            # blank lines are part of the block; skip
-                            i += 1
-                            continue
-                        if nxt_indent > base_indent:
-                            i += 1
-                            continue
-                        break
-                    continue
-                out.append(ln)
-                i += 1
-            return out
-
         for k, v in sets.items():
             if k == 'title':
                 epic.title = v
@@ -370,7 +370,6 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 epic.closed = v
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'closed')
             elif k == 'notes':
-                # Normalize and strip accidental list markers
                 vv = v.replace('\\n', '\n')
                 normalized = []
                 for ln in vv.splitlines():
@@ -392,18 +391,61 @@ def cmd_edit(args: argparse.Namespace) -> int:
                     normalized.append(line.rstrip())
                 epic.description = normalized
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'description')
+        updated_epics.append(epic.id)
 
-        if getattr(args, 'write', False):
-            bak = bl.make_backup(path)
-            bl.safe_write(path, bl.build_markdown(backlog))
-            print(f"Updated epic {epic.id}")
-            print(f"Wrote changes to {path}; backup: {bak}")
-        else:
-            print(f"Dry-run: updated epic {epic.id}")
+    if not updated_tasks and not updated_epics and not missing:
+        print('Nothing updated')
         return 0
 
-    print(f"ERROR: id {ident} not found", file=sys.stderr)
-    return 2
+    single_mode = len(idents) == 1
+    # Record type for single legacy message formatting
+    single_kind: str | None = None
+    if single_mode:
+        # Peek classification without mutating
+        try:
+            e_tmp, t_tmp = _find_epic_or_task(idents[0])
+            single_kind = 'task' if t_tmp is not None else 'epic'
+        except KeyError:
+            single_kind = None
+    if getattr(args, 'write', False) and (updated_tasks or updated_epics):
+        bak = bl.make_backup(path)
+        bl.safe_write(path, bl.build_markdown(backlog))
+        if single_mode and single_kind == 'task' and updated_tasks:
+            parent_epic = None
+            for e in backlog.epics_open + backlog.epics_finished:
+                if any(t.id == updated_tasks[0] for t in e.tasks):
+                    parent_epic = e.id
+                    break
+            print(f"Updated task {updated_tasks[0]} (Epic {parent_epic})")
+        elif single_mode and single_kind == 'epic' and updated_epics:
+            print(f"Updated epic {updated_epics[0]}")
+        else:
+            if updated_epics:
+                print("Updated epics: " + ', '.join(sorted(updated_epics)))
+            if updated_tasks:
+                print("Updated tasks: " + ', '.join(sorted(updated_tasks)))
+        print(f"Wrote changes to {path}; backup: {bak}")
+    else:
+        if single_mode and single_kind == 'task' and updated_tasks:
+            parent_epic = None
+            for e in backlog.epics_open + backlog.epics_finished:
+                if any(t.id == updated_tasks[0] for t in e.tasks):
+                    parent_epic = e.id
+                    break
+            print(f"Dry-run: updated task {updated_tasks[0]} (Epic {parent_epic})")
+        elif single_mode and single_kind == 'epic' and updated_epics:
+            print(f"Dry-run: updated epic {updated_epics[0]}")
+        else:
+            if updated_epics:
+                print("Dry-run: would update epics: " + ', '.join(sorted(updated_epics)))
+            if updated_tasks:
+                print("Dry-run: would update tasks: " + ', '.join(sorted(updated_tasks)))
+
+    if missing:
+        for m in missing:
+            print(f"ERROR: id {m} not found", file=sys.stderr)
+        return 2
+    return 0
 
 
 def cmd_backup(args: argparse.Namespace) -> int:
