@@ -620,16 +620,29 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
     id_changes = bl.reassign_duplicate_task_ids(backlog)
     collision_changes = bl.reassign_epic_task_collisions(backlog)
     norm_changes = bl.normalize_backlog_format(backlog)
-    if not id_changes and not norm_changes and not collision_changes:
+    date_changes = bl.auto_fix_date_formats(backlog)
+    id_format_changes = bl.auto_fix_id_formats(backlog)
+    epic_completion_changes = bl.auto_complete_epics(backlog)
+    
+    all_changes = id_changes + collision_changes + norm_changes + date_changes + id_format_changes + epic_completion_changes
+    
+    if not all_changes:
         print("No formatting or id issues found")
         return 0
+        
     print("Planned changes:")
     for old, new in id_changes:
         print(f"reassign: {old} -> {new}")
     for old, new in collision_changes:
         print(f"reassign collision: {old} -> {new}")
     for c in norm_changes:
-        print(c)
+        print(f"normalize: {c}")
+    for c in date_changes:
+        print(f"date fix: {c}")
+    for c in id_format_changes:
+        print(f"id format: {c}")
+    for c in epic_completion_changes:
+        print(f"epic completion: {c}")
     if getattr(args, "write", False):
         bak = bl.make_backup(path)
         # If ids-only was requested, apply targeted textual replacements so
@@ -656,7 +669,7 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
         else:
             # full reserialize path: write canonicalized markdown from model
             bl.safe_write(path, bl.build_markdown(backlog))
-            print(f"Applied fixes; backup: {bak}")
+            print(f"Applied all fixes; backup: {bak}")
             if collision_changes:
                 for old, new in collision_changes:
                     print(f"reassign collision: {old} -> {new}")

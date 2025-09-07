@@ -163,3 +163,64 @@ def test_update_status_write(tmp_path):
     epic, t = bl.find_task(backlog, '0001')
     assert t.status == 'done'
     assert t.closed is not None
+
+
+def test_fix_format_enhanced_auto_fixes(tmp_path):
+    """Test enhanced auto-fix functionality for dates, IDs, and epic completion."""
+    mod = importlib.import_module("scripts.backlog")
+    p = tmp_path / "backlog.md"
+    
+    # Create a backlog with various issues that can be auto-fixed
+    lines = [
+        "# Backlog",
+        "",
+        "## 1. Epics - open",
+        "",
+        "- ☐ Epic 001: Test Epic",
+        "  - status: open",
+        "  - added: 08/15/2023",  # Non-ISO date
+        "  - tasks:",
+        "    - ☐ Task 123: Task One",  # Non-4-digit ID
+        "      - status: open",
+        "      - added: 2023/08/15",  # Non-ISO date
+        "    - ☐ Task 0123: Task Two",  # Non-4-digit ID
+        "      - status: done",
+        "      - added: 15-08-2023",  # Non-ISO date
+        "      - closed: 08/20/2023",  # Non-ISO date
+        "",
+        "## 2. Epics - finished",
+        "",
+    ]
+    p.write_text("\n".join(lines), encoding="utf-8")
+    
+    # Run fix-format with --write
+    rc = mod.main(["fix-format", "--file", str(p), "--write"])
+    assert rc == 0
+    
+    # Parse result and verify fixes
+    from scripts.backlog_tool import parser as bl
+    blines = bl.read_file(str(p))
+    backlog = bl.parse(blines)
+    
+    # Check epic
+    epic = backlog.epics_open[0]
+    assert epic.id == "0001", f"Expected epic ID to be normalized to 0001, got {epic.id}"
+    assert epic.added == "2023-08-15", f"Expected epic added date to be ISO format, got {epic.added}"
+    
+    # Check tasks - IDs should be unique due to duplicate detection
+    task_ids = [t.id for t in epic.tasks]
+    assert len(task_ids) == len(set(task_ids)), "Task IDs should be unique"
+    assert all(len(tid) == 4 and tid.isdigit() for tid in task_ids), "All task IDs should be 4-digit numeric"
+    
+    # Check that dates were converted to ISO format
+    for task in epic.tasks:
+        if task.added:
+            assert task.added == "2023-08-15", f"Expected task added date to be ISO format, got {task.added}"
+        if task.closed:
+            assert task.closed == "2023-08-20", f"Expected task closed date to be ISO format, got {task.closed}"
+    
+    # Verify backup was created
+    backups = (p.parent / ".backups")
+    assert backups.exists()
+    files = list(backups.glob(p.name + ".*.bak"))
+    assert files, "Expected a backup file to be created"
