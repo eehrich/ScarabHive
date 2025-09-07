@@ -90,3 +90,78 @@ def test_bad_dates():
 def test_bad_status():
     errors = run_validator_text(BAD_STATUS)
     assert any('unknown epic status' in e.lower() or 'unknown task status' in e.lower() for e in errors)
+
+
+def test_cli_validate_success(tmp_path):
+    """Test CLI validate command with valid backlog."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # Create a simple valid backlog
+    backlog_content = """# Backlog
+
+## 1. Epics - open
+
+- ☐ Epic 0001: Test Epic
+  - status: open
+  - tasks:
+    - ☐ Task 0001: Test Task
+      - status: open
+
+## 2. Epics - finished
+"""
+
+    backlog_file = tmp_path / "test_backlog.md"
+    backlog_file.write_text(backlog_content, encoding='utf-8')
+
+    # Run the validate command
+    result = subprocess.run([
+        sys.executable, "-m", "scripts.backlog", "validate",
+        "--file", str(backlog_file)
+    ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+
+    assert result.returncode == 0
+    assert "[SUCCESS] Backlog validation successful!" in result.stdout
+    assert "Total epics: 1" in result.stdout
+    assert "Total tasks: 1" in result.stdout
+
+
+def test_cli_validate_errors(tmp_path):
+    """Test CLI validate command with invalid backlog."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # Create a backlog with duplicate task IDs
+    backlog_content = """# Backlog
+
+## 1. Epics - open
+
+- ☐ Epic 0001: Test Epic 1
+  - status: open
+  - tasks:
+    - ☐ Task 0001: Test Task
+      - status: open
+
+- ☐ Epic 0002: Test Epic 2
+  - status: open
+  - tasks:
+    - ☐ Task 0001: Duplicate Task
+      - status: open
+
+## 2. Epics - finished
+"""
+
+    backlog_file = tmp_path / "test_backlog.md"
+    backlog_file.write_text(backlog_content, encoding='utf-8')
+
+    # Run the validate command
+    result = subprocess.run([
+        sys.executable, "-m", "scripts.backlog", "validate",
+        "--file", str(backlog_file)
+    ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+
+    assert result.returncode == 1
+    assert "[ERROR] Validation failed" in result.stderr
+    assert "duplicate task id" in result.stderr

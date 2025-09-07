@@ -19,7 +19,7 @@ __version__ = "0.1.0"
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    # Use the library validator for richer checks
+    """Validate backlog file with comprehensive checks and detailed reporting."""
     import os
     from scripts.backlog_tool import parser as bl
 
@@ -27,15 +27,82 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if not os.path.exists(path):
         print(f"ERROR: backlog file not found: {path}", file=sys.stderr)
         return 2
-    lines = bl.read_file(path)
-    backlog = bl.parse(lines)
-    errors = bl.validate_backlog(backlog)
-    if errors:
-        for e in errors:
-            print(f"ERROR: {e}", file=sys.stderr)
-        return 1
-    print("OK: backlog validated")
-    return 0
+
+    try:
+        lines = bl.read_file(path)
+        backlog = bl.parse(lines)
+        errors = bl.validate_backlog(backlog)
+
+        # Count items for summary
+        open_epics = len(backlog.epics_open)
+        finished_epics = len(backlog.epics_finished)
+        total_epics = open_epics + finished_epics
+        total_tasks = sum(len(e.tasks) for e in backlog.epics_open + backlog.epics_finished)
+
+        if errors:
+            print(f"[ERROR] Validation failed with {len(errors)} error(s):", file=sys.stderr)
+            print(file=sys.stderr)
+
+            # Group errors by type for better readability
+            error_types = {}
+            for error in errors:
+                error_type = error.split(':')[0] if ':' in error else 'other'
+                if error_type not in error_types:
+                    error_types[error_type] = []
+                error_types[error_type].append(error)
+
+            for error_type, type_errors in error_types.items():
+                print(f"[ERROR] {error_type.upper()}:", file=sys.stderr)
+                for error in type_errors:
+                    print(f"   - {error}", file=sys.stderr)
+                print(file=sys.stderr)
+
+            print(f"[INFO] Summary: {total_epics} epics ({open_epics} open, {finished_epics} finished), {total_tasks} tasks", file=sys.stderr)
+            return 1
+        else:
+            # Success case with detailed summary
+            print("[SUCCESS] Backlog validation successful!")
+            print()
+            print("[INFO] Summary:")
+            print(f"   - Total epics: {total_epics} ({open_epics} open, {finished_epics} finished)")
+            print(f"   - Total tasks: {total_tasks}")
+
+            # Show some additional stats if requested
+            if getattr(args, 'verbose', False):
+                print()
+                print("[INFO] Details:")
+
+                # Count tasks by status
+                status_counts = {}
+                for epic in backlog.epics_open + backlog.epics_finished:
+                    for task in epic.tasks:
+                        status = task.status or 'unknown'
+                        status_counts[status] = status_counts.get(status, 0) + 1
+
+                if status_counts:
+                    print("   - Task status distribution:")
+                    for status, count in sorted(status_counts.items()):
+                        print(f"     - {status}: {count} task(s)")
+
+                # Check for recent activity
+                recent_tasks = []
+                for epic in backlog.epics_open + backlog.epics_finished:
+                    for task in epic.tasks:
+                        if task.added:
+                            recent_tasks.append((task.added, task.id))
+
+                if recent_tasks:
+                    recent_tasks.sort(reverse=True)
+                    latest_date = recent_tasks[0][0]
+                    print(f"   - Latest task added: {latest_date} (Task {recent_tasks[0][1]})")
+
+            print()
+            print("[SUCCESS] All validation checks passed!")
+            return 0
+
+    except Exception as e:
+        print(f"ERROR: Validation failed with exception: {e}", file=sys.stderr)
+        return 2
 
 
 def cmd_add_task(args: argparse.Namespace) -> int:
@@ -1025,6 +1092,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("validate", help="Validate the backlog file")
     v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    v.add_argument("--verbose", action="store_true", help="Show detailed validation statistics")
     v.set_defaults(func=cmd_validate)
 
     a = sub.add_parser("add-task", help="add a new task")
