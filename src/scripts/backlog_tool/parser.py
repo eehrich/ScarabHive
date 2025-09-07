@@ -1,9 +1,16 @@
-"""A tiny, tolerant markdown backlog parser and writer.
+"""A robust, tolerant markdown backlog parser and writer with comprehensive error handling.
 
 The parser is conservative: it identifies top-level sections (Epics - open,
 Epics - finished) and parses epics/tasks with minimal structure. It intentionally
 keeps unknown content as raw lines so re-serialization preserves non-modeled
 content.
+
+Features:
+- Robust error handling and recovery
+- Comprehensive validation
+- Atomic file operations
+- Backup and restore capabilities
+- Detailed logging for debugging
 """
 from __future__ import annotations
 
@@ -11,10 +18,14 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, cast
 import re
 import os
+import logging
 from datetime import date
 from . import values
 import shutil
 import time
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -53,11 +64,80 @@ RE_FIELD_LINE = re.compile(r"^\s*-\s*(\w+):\s*(.*)$")
 
 
 def read_file(path: str) -> List[str]:
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read().splitlines()
+    """Read a file and return its lines with robust error handling.
+
+    Args:
+        path: Path to the file to read
+
+    Returns:
+        List of lines from the file
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        IOError: If reading fails
+        UnicodeDecodeError: If file encoding is invalid
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Invalid file path provided")
+
+    logger.debug(f"Reading file: {path}")
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # Ensure all lines end with newlines for consistency
+        processed_lines = []
+        for line in lines:
+            if not line.endswith('\n'):
+                line += '\n'
+            processed_lines.append(line)
+
+        logger.info(f"Successfully read {len(processed_lines)} lines from {path}")
+        return processed_lines
+
+    except FileNotFoundError:
+        logger.error(f"File not found: {path}")
+        raise
+    except UnicodeDecodeError as e:
+        logger.error(f"Encoding error reading {path}: {e}")
+        raise
+    except IOError as e:
+        logger.error(f"IO error reading {path}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error reading {path}: {e}")
+        raise IOError(f"Failed to read file {path}: {e}") from e
 
 
 def parse(backlog_lines: List[str]) -> Backlog:
+    """Parse backlog markdown lines into a Backlog object with robust error handling.
+
+    Args:
+        backlog_lines: List of markdown lines to parse
+
+    Returns:
+        Backlog object with parsed content
+
+    Raises:
+        ValueError: If input is severely malformed and cannot be parsed
+    """
+    logger.debug(f"Starting parse of {len(backlog_lines)} lines")
+
+    # Input validation
+    if not isinstance(backlog_lines, list):
+        raise ValueError("backlog_lines must be a list of strings")
+
+    if not backlog_lines:
+        logger.warning("Empty backlog_lines provided, returning empty backlog")
+        return Backlog(header=[], epics_open=[], epics_finished=[], footer=[])
+
+    # Validate that all lines are strings
+    for i, line in enumerate(backlog_lines):
+        if not isinstance(line, str):
+            logger.error(f"Line {i} is not a string: {type(line)}")
+            raise ValueError(f"All lines must be strings, but line {i} is {type(line)}")
+
     header: List[str] = []
     footer: List[str] = []
     epics_open: List[Epic] = []
@@ -67,175 +147,232 @@ def parse(backlog_lines: List[str]) -> Backlog:
     seen_epics_section = False
     current_epic: Optional[Epic] = None
     current_task: Optional[Task] = None
-    # when collecting multiline fields like description/notes we record
-    # a tuple (name, indent, target) where target is 'task' or 'epic'
     current_collect: Optional[Tuple[str, int, str]] = None
+    parse_errors: List[str] = []
 
-    for ln in backlog_lines:
-        s = ln.strip()
-        # detect section headers
-        if s.startswith('## 1. Epics - open'):
-            section = 'epics_open'
-            seen_epics_section = True
-            continue
-        if s.startswith('## 2. Epics - finished'):
-            section = 'epics_finished'
-            seen_epics_section = True
-            continue
-        # Any other top-level '##' header after we've seen the Epics sections
-        # should be treated as the start of the footer (do not attempt to
-        # parse epics or tasks past this point).
-        if s.startswith('## ') and seen_epics_section:
-            section = 'footer'
-            # append this heading to footer and skip parsing as epic/task
-            footer.append(ln)
-            current_epic = None
-            current_task = None
-            continue
-        m = RE_EPIC_LINE.match(ln)
-        if m:
-            eid_raw, title = m.group(1), m.group(2)
-            # normalize numeric ids to zero-padded 4-digit form when possible
-            eid = f"{int(eid_raw):04d}" if eid_raw.isdigit() else eid_raw
-            current_epic = Epic(id=eid, title=title.strip(), status="open")
-            if section == "header":
-                section = "epics_open"
-            if section == "epics_open":
-                epics_open.append(current_epic)
-            elif section == "epics_finished":
-                epics_finished.append(current_epic)
-            # reset current task context when a new epic starts
-            current_task = None
-            continue
-        m2 = RE_TASK_LINE.match(ln)
-        if m2 and current_epic is not None:
-            tid_raw, title = m2.group(1), m2.group(2)
-            tid = f"{int(tid_raw):04d}" if tid_raw.isdigit() else tid_raw
-            current_task = Task(id=tid, title=title.strip(), status="open")
-            current_epic.tasks.append(current_task)
-            continue
-        # fields under task or epic (e.g., - status: open)
-        # Decide by indentation: task fields are indented more (built with 4/6 spaces)
-        indent = len(ln) - len(ln.lstrip(' '))
-        m3 = RE_FIELD_LINE.match(ln.strip())
-        if m3:
-            key, val = m3.group(1), m3.group(2)
-            key = key.strip().lower()
-            # treat as task-level field if indent >= 4 and we have a current task
-            if indent >= 4 and current_task is not None:
-                if key == "status":
-                    current_task.status = val.strip()
-                elif key == "added":
-                    current_task.added = val.strip()
-                elif key == "closed":
-                    current_task.closed = val.strip()
-                elif key == "notes":
-                    # if value present on same line, treat as single-line note
-                    if val.strip():
-                        current_task.notes = [val.strip()]
+    try:
+        for line_num, ln in enumerate(backlog_lines, 1):
+            try:
+                s = ln.strip()
+
+                # detect section headers
+                if s.startswith('## 1. Epics - open'):
+                    section = 'epics_open'
+                    seen_epics_section = True
+                    logger.debug(f"Found epics_open section at line {line_num}")
+                    continue
+                if s.startswith('## 2. Epics - finished'):
+                    section = 'epics_finished'
+                    seen_epics_section = True
+                    logger.debug(f"Found epics_finished section at line {line_num}")
+                    continue
+
+                # Any other top-level '##' header after we've seen the Epics sections
+                # should be treated as the start of the footer
+                if s.startswith('## ') and seen_epics_section:
+                    section = 'footer'
+                    logger.debug(f"Found footer section at line {line_num}")
+                    footer.append(ln)
+                    current_epic = None
+                    current_task = None
+                    continue
+
+                m = RE_EPIC_LINE.match(ln)
+                if m:
+                    try:
+                        eid_raw, title = m.group(1), m.group(2)
+                        # normalize numeric ids to zero-padded 4-digit form when possible
+                        if eid_raw.isdigit():
+                            eid = f"{int(eid_raw):04d}"
+                        else:
+                            eid = eid_raw
+
+                        current_epic = Epic(id=eid, title=title.strip(), status="open")
+                        if section == "header":
+                            section = "epics_open"
+
+                        if section == "epics_open":
+                            epics_open.append(current_epic)
+                            logger.debug(f"Added epic {eid} to open section")
+                        elif section == "epics_finished":
+                            epics_finished.append(current_epic)
+                            logger.debug(f"Added epic {eid} to finished section")
+                        else:
+                            logger.warning(f"Epic {eid} found in unexpected section '{section}' at line {line_num}")
+
+                        # reset current task context when a new epic starts
+                        current_task = None
+                        continue
+                    except (ValueError, IndexError) as e:
+                        parse_errors.append(f"Failed to parse epic at line {line_num}: {e}")
+                        logger.error(f"Epic parsing error at line {line_num}: {e}")
+                        continue
+
+                m2 = RE_TASK_LINE.match(ln)
+                if m2 and current_epic is not None:
+                    try:
+                        tid_raw, title = m2.group(1), m2.group(2)
+                        if tid_raw.isdigit():
+                            tid = f"{int(tid_raw):04d}"
+                        else:
+                            tid = tid_raw
+
+                        current_task = Task(id=tid, title=title.strip(), status="open")
+                        current_epic.tasks.append(current_task)
+                        logger.debug(f"Added task {tid} to epic {current_epic.id}")
+                        continue
+                    except (ValueError, IndexError) as e:
+                        parse_errors.append(f"Failed to parse task at line {line_num}: {e}")
+                        logger.error(f"Task parsing error at line {line_num}: {e}")
+                        continue
+                elif m2 and current_epic is None:
+                    parse_errors.append(f"Task found at line {line_num} but no current epic")
+                    logger.warning(f"Orphaned task at line {line_num}: {ln.strip()}")
+                    continue
+
+                # fields under task or epic
+                indent = len(ln) - len(ln.lstrip(' '))
+                m3 = RE_FIELD_LINE.match(ln.strip())
+                if m3:
+                    try:
+                        key, val = m3.group(1), m3.group(2)
+                        key = key.strip().lower()
+
+                        # treat as task-level field if indent >= 4 and we have a current task
+                        if indent >= 4 and current_task is not None:
+                            if key == "status":
+                                current_task.status = val.strip()
+                            elif key == "added":
+                                current_task.added = val.strip()
+                            elif key == "closed":
+                                current_task.closed = val.strip()
+                            elif key == "notes":
+                                if val.strip():
+                                    current_task.notes = [val.strip()]
+                                    current_collect = None
+                                else:
+                                    current_task.notes = []
+                                    current_collect = ("notes", indent, "task")
+                            elif key == "description":
+                                if val.strip():
+                                    current_task.description = [val.strip()]
+                                    current_collect = None
+                                else:
+                                    current_task.description = []
+                                    current_collect = ("description", indent, "task")
+                            continue
+
+                        # treat as epic-level field if indent < 4 and we have a current epic
+                        if indent < 4 and current_epic is not None:
+                            if key == "status":
+                                current_epic.status = val.strip()
+                            elif key == "added":
+                                current_epic.added = val.strip()
+                            elif key == "closed":
+                                current_epic.closed = val.strip()
+                            elif key == "notes":
+                                if val.strip():
+                                    current_epic.notes = [val.strip()]
+                                    current_collect = None
+                                else:
+                                    current_epic.notes = []
+                                    current_collect = ("notes", indent, "epic")
+                            elif key == "description":
+                                if val.strip():
+                                    current_epic.description = [val.strip()]
+                                    current_collect = None
+                                else:
+                                    current_epic.description = []
+                                    current_collect = ("description", indent, "epic")
+                            else:
+                                # preserve other epic-level fields in raw_lines
+                                if not ln.strip().lower().startswith("- tasks:"):
+                                    current_epic.raw_lines.append(ln)
+                            # clear current task context after epic-level field
+                            current_task = None
+                            continue
+                    except (ValueError, IndexError) as e:
+                        parse_errors.append(f"Failed to parse field at line {line_num}: {e}")
+                        logger.error(f"Field parsing error at line {line_num}: {e}")
+                        continue
+
+                # Handle multiline field collection
+                if current_collect is not None:
+                    try:
+                        name, col_indent, target = current_collect
+
+                        if ln.strip() == "":
+                            if target == "task" and current_task is not None:
+                                if name == "notes":
+                                    current_task.notes.append("")
+                                else:
+                                    current_task.description.append("")
+                                continue
+                            if target == "epic" and current_epic is not None:
+                                if name == "notes":
+                                    current_epic.notes.append("")
+                                else:
+                                    current_epic.description.append("")
+                                continue
+
+                        if indent > col_indent:
+                            text = ln.strip()
+                            if name == "notes" and text.startswith("- "):
+                                content = text[2:].strip()
+                            else:
+                                content = text
+
+                            if target == "task" and current_task is not None:
+                                if name == "notes":
+                                    current_task.notes.append(content)
+                                else:
+                                    current_task.description.append(content)
+                                continue
+                            if target == "epic" and current_epic is not None:
+                                if name == "notes":
+                                    current_epic.notes.append(content)
+                                else:
+                                    current_epic.description.append(content)
+                                continue
+                        else:
+                            # ended collection
+                            current_collect = None
+                    except Exception as e:
+                        parse_errors.append(f"Failed to collect multiline field at line {line_num}: {e}")
+                        logger.error(f"Multiline collection error at line {line_num}: {e}")
                         current_collect = None
-                    else:
-                        current_task.notes = []
-                        current_collect = ("notes", indent, "task")
-                elif key == "description":
-                    if val.strip():
-                        current_task.description = [val.strip()]
-                        current_collect = None
-                    else:
-                        current_task.description = []
-                        current_collect = ("description", indent, "task")
-                continue
-            # treat as epic-level field if indent < 4 and we have a current epic
-            if indent < 4 and current_epic is not None:
-                if key == "status":
-                    current_epic.status = val.strip()
-                elif key == "added":
-                    current_epic.added = val.strip()
-                elif key == "closed":
-                    current_epic.closed = val.strip()
-                elif key == "notes":
-                    if val.strip():
-                        current_epic.notes = [val.strip()]
-                        current_collect = None
-                    else:
-                        current_epic.notes = []
-                        current_collect = ("notes", indent, "epic")
-                elif key == "description":
-                    if val.strip():
-                        current_epic.description = [val.strip()]
-                        current_collect = None
-                    else:
-                        current_epic.description = []
-                        current_collect = ("description", indent, "epic")
-                else:
-                    # preserve other epic-level fields in raw_lines, but
-                    # avoid preserving a 'tasks:' heading which will be
-                    # rendered by the writer.
+                        continue
+
+                # fallback: preserve in raw_lines or header/footer
+                if section == 'footer':
+                    footer.append(ln)
+                    continue
+
+                if current_epic is not None:
+                    current_task = None
                     if not ln.strip().lower().startswith("- tasks:"):
                         current_epic.raw_lines.append(ln)
-                # clear current task context after epic-level field
-                current_task = None
-                continue
-        # If we are currently collecting a multiline field, capture lines
-        if current_collect is not None:
-            name, col_indent, target = current_collect
-            # Treat a blank line as part of the current collection. This
-            # preserves intentionally spaced list items and paragraph breaks
-            # inside notes/description blocks.
-            if ln.strip() == "":
-                if target == "task" and current_task is not None:
-                    if name == "notes":
-                        current_task.notes.append("")
-                    else:
-                        current_task.description.append("")
-                    continue
-                if target == "epic" and current_epic is not None:
-                    if name == "notes":
-                        current_epic.notes.append("")
-                    else:
-                        current_epic.description.append("")
-                    continue
-
-            if indent > col_indent:
-                text = ln.strip()
-                # notes are usually list items starting with '- '
-                if name == "notes" and text.startswith("- "):
-                    content = text[2:].strip()
                 else:
-                    content = text
-                if target == "task" and current_task is not None:
-                    if name == "notes":
-                        current_task.notes.append(content)
-                    else:
-                        current_task.description.append(content)
-                    continue
-                if target == "epic" and current_epic is not None:
-                    if name == "notes":
-                        current_epic.notes.append(content)
-                    else:
-                        current_epic.description.append(content)
-                    continue
-            else:
-                # ended collection
-                current_collect = None
-        # fallback: preserve in raw_lines of current epic if present
-        if section == 'footer':
-            footer.append(ln)
-            # ensure we don't accidentally treat footer lines as header
-            continue
+                    header.append(ln)
 
-        if current_epic is not None:
-            # clear current_task context so subsequent epic-level fields
-            # (e.g., '  - status: open') are not mistakenly applied to the
-            # previous task
-            current_task = None
-            # Avoid preserving a redundant 'tasks:' heading in raw_lines.
-            if not ln.strip().lower().startswith("- tasks:"):
-                current_epic.raw_lines.append(ln)
-        else:
-            header.append(ln)
+            except Exception as e:
+                parse_errors.append(f"Unexpected error at line {line_num}: {e}")
+                logger.error(f"Unexpected parsing error at line {line_num}: {e}")
+                continue
 
-    # as a simple model, put footer empty
+    except Exception as e:
+        logger.error(f"Critical parsing error: {e}")
+        raise ValueError(f"Failed to parse backlog: {e}") from e
+
+    # Log parsing summary
+    total_epics = len(epics_open) + len(epics_finished)
+    total_tasks = sum(len(e.tasks) for e in epics_open + epics_finished)
+    logger.info(f"Parsed {total_epics} epics with {total_tasks} tasks")
+
+    if parse_errors:
+        logger.warning(f"Encountered {len(parse_errors)} parsing errors: {parse_errors[:3]}...")
+        # Don't fail completely, but log the issues
+
     return Backlog(header=header, epics_open=epics_open, epics_finished=epics_finished, footer=footer)
 
 
@@ -607,27 +744,88 @@ def build_markdown(backlog: Backlog) -> str:
 
 
 def safe_write(path: str, text: str) -> None:
+    """Atomically write text to file with backup and error handling.
+
+    Args:
+        path: File path to write to
+        text: Content to write
+
+    Raises:
+        IOError: If writing fails
+        OSError: If file system operations fail
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Invalid file path provided")
+
+    if not isinstance(text, str):
+        raise ValueError("Text content must be a string")
+
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    logger.debug(f"Starting atomic write to {path}")
+
+    try:
+        # Ensure the directory exists (only if path contains directories)
+        dir_path = os.path.dirname(path)
+        if dir_path and dir_path != '.':
+            os.makedirs(dir_path, exist_ok=True)
+
+        # Write to temporary file first
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        # Atomic replace
+        os.replace(tmp, path)
+        logger.info(f"Successfully wrote {len(text)} characters to {path}")
+
+    except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass  # Ignore cleanup errors
+
+        logger.error(f"Failed to write to {path}: {e}")
+        raise IOError(f"Failed to write file {path}: {e}") from e
 
 
 def make_backup(path: str) -> str:
     """Create a timestamped backup of `path` under a .backups directory.
 
-    Returns the backup file path as a string.
+    Args:
+        path: File path to backup
+
+    Returns:
+        Path to the created backup file
+
+    Raises:
+        IOError: If backup creation fails
+        FileNotFoundError: If source file doesn't exist
     """
-    p = os.path.abspath(path)
-    d = os.path.dirname(p)
-    backups_dir = os.path.join(d, '.backups')
-    os.makedirs(backups_dir, exist_ok=True)
-    ts = time.strftime('%Y%m%d_%H%M%S')
-    base = os.path.basename(p)
-    bak = f"{base}.{ts}.bak"
-    dest = os.path.join(backups_dir, bak)
-    shutil.copy2(p, dest)
-    return dest
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Invalid file path provided")
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Source file does not exist: {path}")
+
+    try:
+        p = os.path.abspath(path)
+        d = os.path.dirname(p)
+        backups_dir = os.path.join(d, '.backups')
+        os.makedirs(backups_dir, exist_ok=True)
+
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        base = os.path.basename(p)
+        bak = f"{base}.{ts}.bak"
+        dest = os.path.join(backups_dir, bak)
+
+        shutil.copy2(p, dest)
+        logger.info(f"Created backup: {dest}")
+        return dest
+
+    except Exception as e:
+        logger.error(f"Failed to create backup for {path}: {e}")
+        raise IOError(f"Failed to create backup: {e}") from e
 
 
 def list_backups(path: str) -> list[str]:
@@ -759,75 +957,120 @@ def update_task_status(backlog: Backlog, task_id: str, new_status: str) -> Task:
 
 
 def validate_backlog(backlog: Backlog) -> list[str]:
-    """Run lightweight validation rules and return list of error strings.
+    """Run comprehensive validation rules and return list of error strings.
 
-    Rules implemented:
+    Validation rules:
     - Epic ids must be unique across open and finished lists.
     - Task ids must be unique across all epics.
     - Date fields (added, closed) must be ISO dates YYYY-MM-DD when present.
-    - Status values must be among a permissive allowed set.
+    - Status values must be among allowed set.
+    - Epics with all tasks finished should be marked as finished.
+    - ID format validation (4-digit numeric preferred).
+    - Required fields presence.
+
+    Args:
+        backlog: Backlog object to validate
+
+    Returns:
+        List of error messages (empty if valid)
     """
+    if not isinstance(backlog, Backlog):
+        return ["Invalid backlog object provided"]
+
     errors: list[str] = []
-    # check epic ids
-    epic_ids = [e.id for e in backlog.epics_open + backlog.epics_finished]
-    dup_epics = {i for i in epic_ids if epic_ids.count(i) > 1}
-    for de in sorted(dup_epics):
-        errors.append(f"duplicate epic id: {de}")
+    logger.debug("Starting backlog validation")
 
-    # check task ids
-    task_ids: list[str] = []
-    for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.tasks:
-            task_ids.append(t.id)
-    dup_tasks = {i for i in task_ids if task_ids.count(i) > 1}
-    for dt in sorted(dup_tasks):
-        errors.append(f"duplicate task id: {dt}")
+    try:
+        # Check epic ids uniqueness
+        epic_ids = [e.id for e in backlog.epics_open + backlog.epics_finished]
+        dup_epics = {i for i in epic_ids if epic_ids.count(i) > 1}
+        for de in sorted(dup_epics):
+            errors.append(f"duplicate epic id: {de}")
 
-    # date format check
-    import datetime
-    def is_iso_date(s: Optional[str]) -> bool:
-        if not s:
-            return True
-        try:
-            # datetime.date.fromisoformat enforces YYYY-MM-DD
-            datetime.date.fromisoformat(s)
-            return True
-        except Exception:
-            return False
+        # Check task ids uniqueness
+        task_ids: list[str] = []
+        for e in backlog.epics_open + backlog.epics_finished:
+            for t in e.tasks:
+                task_ids.append(t.id)
+        dup_tasks = {i for i in task_ids if task_ids.count(i) > 1}
+        for dt in sorted(dup_tasks):
+            errors.append(f"duplicate task id: {dt}")
 
-    for e in backlog.epics_open + backlog.epics_finished:
-        for t in e.tasks:
-            if not is_iso_date(t.added):
-                errors.append(f"bad date (added) for task {t.id}: {t.added}")
-            if not is_iso_date(t.closed):
-                errors.append(f"bad date (closed) for task {t.id}: {t.closed}")
+        # Date format validation
+        import datetime
+        def is_iso_date(s: Optional[str]) -> bool:
+            if not s:
+                return True
+            try:
+                datetime.date.fromisoformat(s)
+                return True
+            except Exception:
+                return False
 
-    # status values
-    allowed = set(values.get('allowed_statuses', ["open", "done", "closed", "complete", "finished", "resolved", "in progress", "todo"]))
-    for e in backlog.epics_open + backlog.epics_finished:
-        if e.status and e.status.strip().lower() not in allowed:
-            errors.append(f"unknown epic status for {e.id}: {e.status}")
-        for t in e.tasks:
-            if t.status and t.status.strip().lower() not in allowed:
-                errors.append(f"unknown task status for {t.id}: {t.status}")
+        # Validate epic fields
+        for e in backlog.epics_open + backlog.epics_finished:
+            if not e.id or not e.id.strip():
+                errors.append(f"epic missing id: {e.title}")
+            if not e.title or not e.title.strip():
+                errors.append(f"epic {e.id} missing title")
 
-    # Ensure epics that have all tasks finished are themselves marked with a finishing status
-    finish_list = set(values.get('finish_statuses', ["done", "closed", "complete", "finished"]))
-    for e in backlog.epics_open + backlog.epics_finished:
-        # ignore epics with no tasks
-        if not getattr(e, 'tasks', None):
-            continue
-        # consider a task finished if its normalized status is in finish_list
-        all_finished = True
-        for t in e.tasks:
-            st = (t.status or '').strip().lower()
-            if st not in finish_list:
-                all_finished = False
-                break
-        if all_finished:
-            est = (e.status or '').strip().lower()
-            if est not in finish_list:
-                errors.append(f"epic {e.id} not finished but all tasks are finished")
+            if not is_iso_date(e.added):
+                errors.append(f"bad date (added) for epic {e.id}: {e.added}")
+            if not is_iso_date(e.closed):
+                errors.append(f"bad date (closed) for epic {e.id}: {e.closed}")
+
+            # Validate task fields
+            for t in e.tasks:
+                if not t.id or not t.id.strip():
+                    errors.append(f"task in epic {e.id} missing id: {t.title}")
+                if not t.title or not t.title.strip():
+                    errors.append(f"task {t.id} in epic {e.id} missing title")
+
+                if not is_iso_date(t.added):
+                    errors.append(f"bad date (added) for task {t.id}: {t.added}")
+                if not is_iso_date(t.closed):
+                    errors.append(f"bad date (closed) for task {t.id}: {t.closed}")
+
+        # Status values validation
+        allowed = set(values.get('allowed_statuses', ["open", "done", "closed", "complete", "finished", "resolved", "in progress", "todo"]))
+        for e in backlog.epics_open + backlog.epics_finished:
+            if e.status and e.status.strip().lower() not in allowed:
+                errors.append(f"unknown epic status for {e.id}: {e.status}")
+            for t in e.tasks:
+                if t.status and t.status.strip().lower() not in allowed:
+                    errors.append(f"unknown task status for {t.id}: {t.status}")
+
+        # Check if epics should be finished
+        finish_list = set(values.get('finish_statuses', ["done", "closed", "complete", "finished"]))
+        for e in backlog.epics_open + backlog.epics_finished:
+            if not getattr(e, 'tasks', None):
+                continue
+
+            all_finished = True
+            for t in e.tasks:
+                st = (t.status or '').strip().lower()
+                if st not in finish_list:
+                    all_finished = False
+                    break
+
+            if all_finished:
+                est = (e.status or '').strip().lower()
+                if est not in finish_list:
+                    errors.append(f"epic {e.id} not finished but all tasks are finished")
+
+        # ID format validation (prefer 4-digit numeric)
+        for e in backlog.epics_open + backlog.epics_finished:
+            if e.id and e.id.isdigit() and len(e.id) != 4:
+                errors.append(f"epic id {e.id} should be 4 digits")
+            for t in e.tasks:
+                if t.id and t.id.isdigit() and len(t.id) != 4:
+                    errors.append(f"task id {t.id} should be 4 digits")
+
+        logger.info(f"Validation completed: {len(errors)} errors found")
+
+    except Exception as e:
+        errors.append(f"Validation failed with exception: {e}")
+        logger.error(f"Validation exception: {e}")
 
     return errors
 
