@@ -48,6 +48,6 @@ def test_edit_multi_ids_missing_id(tmp_path: pathlib.Path):
     r = run(['edit', '0002', '9999', '--set', 'status=done'], tmp_path)
     # Should return non-zero because one id missing
     assert r.returncode != 0
-    assert 'ERROR: id 9999 not found' in r.stderr
+    assert "ERROR: id '9999' not found. Use 'backlog list' to see available items." in r.stderr
     # existing id should still show dry-run message
     assert 'Dry-run: would update tasks: 0002' in r.stdout

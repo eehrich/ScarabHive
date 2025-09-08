@@ -164,10 +164,10 @@ def cmd_add_task(args: argparse.Namespace) -> int:
             notes_arg = _normalize_notes(getattr(args, "notes", None))
             t = bl.add_task_to_epic(backlog, epic_id, args.title, notes_arg, forced_id=forced)
         except KeyError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
+            print(f"ERROR: Epic '{epic_id}' not found. Use 'backlog list' to see available epics.", file=sys.stderr)
             return 2
         except ValueError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
+            print(f"ERROR: {e}. Check task title and id format.", file=sys.stderr)
             return 2
         bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
@@ -186,7 +186,7 @@ def cmd_move_task(args: argparse.Namespace) -> int:
     try:
         moved = bl.move_task(backlog, task_id, to_epic)
     except KeyError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(f"ERROR: Task '{task_id}' or epic '{to_epic}' not found. Use 'backlog list' to see available items.", file=sys.stderr)
         return 2
     if getattr(args, "write", False):
         # perform the move and persist
@@ -509,7 +509,7 @@ def cmd_edit(args: argparse.Namespace) -> int:
 
     if missing:
         for m in missing:
-            print(f"ERROR: id {m} not found", file=sys.stderr)
+            print(f"ERROR: id '{m}' not found. Use 'backlog list' to see available items.", file=sys.stderr)
         return 2
     return 0
 
@@ -944,7 +944,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         try:
             epic, task = bl.find_task(backlog, ident)
         except KeyError:
-            print(f"ERROR: id {ident} not found", file=sys.stderr)
+            print(f"ERROR: id '{ident}' not found. Use 'backlog list' to see available items.", file=sys.stderr)
             missing = True
             continue
 
