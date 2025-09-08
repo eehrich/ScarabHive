@@ -59,12 +59,8 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         # google_search migrated to plugins; discovery will provide the factory.
         # yahoo_finance migrated to plugin package; filesystem or entrypoint discovery
         # will provide the factory when configured via `mcp.plugin_dirs` or entrypoints.
-        if typ == "llm_router":
-            from .llm_router.server import LLMRouterServer
-            registry.register(key, LLMRouterServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
-        elif typ == "web_scraper":
-            from .web_scraper.server import WebScraperServer
-            registry.register(key, WebScraperServer(key, server_cfg, ssl_verify=config.network.ssl_verify))
+        # llm_router migrated to plugins; discovery will provide the factory.
+        # web_scraper migrated to plugins; discovery will provide the factory.
         # legacy weather server removed; prefer plugin discovery above. If a
         # non-plugin implementation is required in future, add it here.
         elif typ == "agent":
