@@ -118,7 +118,8 @@ class TestLLMRouterServer:
         server = LLMRouterServer("llm_router", config, False)
         assert server.name == "llm_router"
         assert server.ssl_verify is False
-        assert server.default_provider == "ollama"
+        # Since openai_api_key is provided, it should use "openai" as default
+        assert server.default_provider == "openai"
         assert server.default_model == "llama3"
         assert server.openai_api_key == "test_key"
 
@@ -250,7 +251,7 @@ class TestLLMRouterServer:
             result = await server.call("chat", {"message": "Hello"})
 
             # Verify error response structure
-            assert result["error"] == "API Error"
+            assert result["error"] == "Chat failed with provider 'openai': API Error"
             assert result["provider"] == "openai"
             assert result["model"] == "gpt-4o-mini"
             assert "content" not in result
@@ -271,11 +272,12 @@ class TestLLMRouterPluginFactory:
         """Test plugin factory with configuration."""
         from plugins.llm_router.plugin import PLUGIN_FACTORY
 
-        config = {"default_provider": "ollama", "model": "llama3"}
+        # Test with OpenAI API key - should use openai provider
+        config = {"default_provider": "ollama", "model": "llama3", "openai_api_key": "test_key"}
         server = PLUGIN_FACTORY("llm_router", config, False)
         assert server.name == "llm_router"
         assert server.ssl_verify is False
-        assert server.default_provider == "ollama"
+        assert server.default_provider == "openai"  # Should use openai when key is available
         assert server.default_model == "llama3"
 
     def test_plugin_factory_name_parameter(self):
