@@ -163,7 +163,7 @@ def cmd_add_task(args: argparse.Namespace) -> int:
 
             notes_arg = _normalize_notes(getattr(args, "notes", None))
             t = bl.add_task_to_epic(backlog, epic_id, args.title, notes_arg, forced_id=forced)
-        except KeyError as e:
+        except KeyError:
             print(f"ERROR: Epic '{epic_id}' not found. Use 'backlog list' to see available epics.", file=sys.stderr)
             return 2
         except ValueError as e:
@@ -185,7 +185,7 @@ def cmd_move_task(args: argparse.Namespace) -> int:
     to_epic = _pad_id_input(getattr(args, 'to_epic', None))
     try:
         moved = bl.move_task(backlog, task_id, to_epic)
-    except KeyError as e:
+    except KeyError:
         print(f"ERROR: Task '{task_id}' or epic '{to_epic}' not found. Use 'backlog list' to see available items.", file=sys.stderr)
         return 2
     if getattr(args, "write", False):
@@ -1117,8 +1117,6 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 def cmd_completion(args: argparse.Namespace) -> int:
     """Generate shell completion scripts for bash, zsh, or fish."""
-    import os
-    import pathlib
     
     shell = args.shell
     
@@ -1147,7 +1145,12 @@ def _generate_bash_completion() -> str:
 
 _backlog_complete() {
     local cur prev words cword
-    _init_completion || return
+    
+    # Manual completion initialization (compatible with bash without bash-completion)
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    words=("${COMP_WORDS[@]}")
+    cword=$COMP_CWORD
     
     # Available commands
     local commands="validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show completion"
@@ -1159,16 +1162,9 @@ _backlog_complete() {
     local file_commands="validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show"
     
     case $prev in
-        --file)
-            _filedir
-            return
-            ;;
-        --backup)
-            _filedir
-            return
-            ;;
-        --path)
-            _filedir
+        --file|--backup|--path)
+            # Simple file completion using compgen
+            COMPREPLY=( $(compgen -f -- "$cur") )
             return
             ;;
         --set)
@@ -1198,12 +1194,27 @@ _backlog_complete() {
         if [[ $cword -eq 2 ]]; then
             # Try to get IDs from backlog list --ids-only
             local ids
-            if ids=$(backlog list --ids-only 2>/dev/null); then
+            if command -v python >/dev/null 2>&1 && python -m scripts.backlog list --ids-only >/dev/null 2>&1; then
+                ids=$(python -m scripts.backlog list --ids-only 2>/dev/null | sed 's/\\r$//')
+            elif command -v backlog >/dev/null 2>&1; then
+                ids=$(backlog list --ids-only 2>/dev/null | sed 's/\\r$//')
+            fi
+            if [[ -n "$ids" ]]; then
                 COMPREPLY=( $(compgen -W "$ids" -- "$cur") )
             fi
             return
         fi
     fi
+    
+    # Complete positional arguments for subcommands
+    case $cmd in
+        completion)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+                return
+            fi
+            ;;
+    esac
     
     # Complete options for current command
     case $cmd in
@@ -1252,7 +1263,9 @@ _backlog_complete() {
     esac
 }
 
-complete -F _backlog_complete backlog'''
+complete -F _backlog_complete backlog
+complete -F _backlog_complete backlog.exe
+'''
 
 
 def _generate_zsh_completion() -> str:
@@ -1505,16 +1518,57 @@ complete -c backlog -n "__fish_seen_subcommand_from completion" -l help -d "Show
 
 def _install_completion_script(script: str, shell: str, custom_path: str | None) -> int:
     """Install completion script to appropriate location."""
-    import os
     import pathlib
+    import platform
     
     if custom_path:
         install_path = pathlib.Path(custom_path)
     else:
         home = pathlib.Path.home()
         if shell == "bash":
-            install_path = home / ".bashrc.d" / "backlog-completion.bash"
-            install_path.parent.mkdir(parents=True, exist_ok=True)
+            # Check if we're on Windows (Git Bash/MSYS2)
+            is_windows = platform.system() == "Windows"
+            bashrc_path = home / ".bashrc"
+            
+            if is_windows:
+                # For Git Bash on Windows, install directly and update .bashrc
+                install_path = home / ".backlog-completion.bash"
+                
+                # Create or update .bashrc to source the completion
+                bashrc_content = ""
+                if bashrc_path.exists():
+                    bashrc_content = bashrc_path.read_text(encoding='utf-8')
+                
+                # Remove any existing Windows-style source lines
+                lines = bashrc_content.split('\n')
+                filtered_lines = []
+                skip_next = False
+                for line in lines:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    # Skip Windows-style source lines for backlog completion
+                    if line.strip().startswith('source C:') and '.backlog-completion.bash' in line:
+                        # Also skip the comment line above it
+                        if filtered_lines and filtered_lines[-1].strip() == '# Backlog CLI completion':
+                            filtered_lines.pop()
+                        continue
+                    filtered_lines.append(line)
+                
+                bashrc_content = '\n'.join(filtered_lines)
+                
+                # Check if completion is already sourced with Unix path
+                source_line = f"source ~/.backlog-completion.bash"
+                if source_line not in bashrc_content:
+                    if bashrc_content and not bashrc_content.endswith('\n'):
+                        bashrc_content += '\n'
+                    bashrc_content += f'\n# Backlog CLI completion\n{source_line}\n'
+                    bashrc_path.write_text(bashrc_content, encoding='utf-8')
+                    print("✅ Updated ~/.bashrc to source completion")
+            else:
+                # Standard Linux/Unix approach
+                install_path = home / ".bashrc.d" / "backlog-completion.bash"
+                install_path.parent.mkdir(parents=True, exist_ok=True)
         elif shell == "zsh":
             # Try common zsh completion directories
             zsh_dirs = [
@@ -1539,18 +1593,29 @@ def _install_completion_script(script: str, shell: str, custom_path: str | None)
     
     try:
         install_path.write_text(script, encoding='utf-8')
-        print(f"✅ Completion script installed to: {install_path}")
+        
+        # Convert path to Unix-style for display in bash environments
+        if shell == "bash" and platform.system() == "Windows":
+            display_path = install_path.as_posix().replace('C:', '/c')
+        else:
+            display_path = str(install_path)
+            
+        print(f"✅ Completion script installed to: {display_path}")
         
         if shell == "bash":
-            print(f"💡 Add this to your ~/.bashrc:")
-            print(f"   source {install_path}")
+            if platform.system() == "Windows":
+                print("💡 Completion will be loaded automatically in new Git Bash sessions")
+                print(f"   Or run: source {display_path}")
+            else:
+                print("💡 Add this to your ~/.bashrc:")
+                print(f"   source {display_path}")
         elif shell == "zsh":
-            print(f"💡 Add this to your ~/.zshrc:")
+            print("💡 Add this to your ~/.zshrc:")
             print(f"   fpath+={install_path.parent}")
-            print(f"   autoload -U compinit && compinit")
+            print("   autoload -U compinit && compinit")
         elif shell == "fish":
-            print(f"💡 Restart your fish shell or run:")
-            print(f"   source {install_path}")
+            print("💡 Restart your fish shell or run:")
+            print(f"   source {display_path}")
             
         return 0
     except Exception as e:
