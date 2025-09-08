@@ -215,12 +215,6 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
                         source_dirs.append(Path(p))
             except Exception:
                 pass
-    # debug: log resolved filesystem plugin search locations
-    try:
-        logger.debug("discover_all_plugins: scanning filesystem dirs: %s", [str(p) for p in source_dirs])
-    except Exception:
-        pass
-
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
         try:

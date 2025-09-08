@@ -136,6 +136,22 @@ prompts:
 max_steps: 50
 ```
 
+### Include Pattern and Managed Files
+
+The `includes:` field allows you to split your configuration across multiple YAML files. This is useful for separating sensitive or frequently changing settings from the main manifest.
+
+- The primary `config/agent.yaml` should contain core settings and list included files.
+- CLI commands that modify configuration (e.g., enabling/disabling plugins) write changes only to the included files, preserving the master manifest.
+- Example: `includes: - mcp.yaml` means MCP-related settings are in `config/mcp.yaml`.
+
+### Plugin Directory Overrides
+
+Plugin discovery can be customized via environment variables:
+
+- `AGENT_PLUGIN_DIR`: Single directory to search for plugins (overrides config).
+- `AGENT_PLUGIN_DIRS`: Comma-separated list of directories (overrides config).
+- If not set, falls back to `mcp.plugin_dirs` in config, then repository `plugins/` directory.
+
 ## Plugins
 Plugins live under `plugins/<name>/` and should expose a package-style layout with `plugin.py` and optional `plugin.yaml` for metadata. The loader also supports legacy single-file plugins.
 
