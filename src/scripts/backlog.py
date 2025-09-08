@@ -1151,8 +1151,8 @@ FILES: Default is backlog.md; use --file to specify alternative.
                       help="🔍 Validate backlog file for errors and inconsistencies",
                       description="Validate the backlog file for common issues like duplicate IDs, invalid dates, and malformed entries.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     v.add_argument("--verbose", action="store_true", help="Show detailed validation statistics")
+    v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     v.set_defaults(func=cmd_validate)
 
     a = sub.add_parser("add-task", 
@@ -1203,10 +1203,10 @@ FILES: Default is backlog.md; use --file to specify alternative.
                       help="💾 Create or manage backups",
                       description="Create timestamped backups of the backlog file or manage existing backups. Use --prune with --keep or --older-than to clean up old backups.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    b.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     b.add_argument("--prune", action="store_true", help="Remove old backups instead of creating a new one")
     b.add_argument("--keep", type=int, help="When pruning, keep the newest N backups (default: 10)")
     b.add_argument("--older-than", type=int, help="When pruning, remove backups older than N days")
+    b.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     b.add_argument("--dry-run", action="store_true", help="Show which backups would be removed (with --prune)")
     b.add_argument("--yes", action="store_true", help="Confirm destructive prune without prompt")
     b.set_defaults(func=cmd_backup)
@@ -1215,10 +1215,10 @@ FILES: Default is backlog.md; use --file to specify alternative.
                       help="↶ Restore from backup",
                       description="Restore the backlog file from a previous backup. Use --list to see available backups, --choose for interactive selection, or --backup for specific file.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    r.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     r.add_argument("--list", action="store_true", help="List available backups and exit")
     r.add_argument("--choose", action="store_true", help="Interactively choose a backup to restore")
     r.add_argument("--backup", help="Restore a specific backup file path (exact match from --list)")
+    r.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     r.set_defaults(func=cmd_undo)
 
     c = sub.add_parser("check-ids", 
@@ -1232,9 +1232,9 @@ FILES: Default is backlog.md; use --file to specify alternative.
                       help="🔧 Auto-fix formatting issues",
                       description="Normalize status tokens, fix date formats, and reassign duplicate IDs. Use --ids-only for safe ID-only fixes.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    f.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     f.add_argument("--ids-only", action="store_true", dest="ids_only",
                    help="When writing, only rewrite numeric Task/Epic ids and leave formatting intact")
+    f.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     f.add_argument("--write", action="store_true", help="⚠️  Apply fixes and persist to file (creates backup)")
     f.set_defaults(func=cmd_fix_format)
 
@@ -1257,13 +1257,13 @@ FILES: Default is backlog.md; use --file to specify alternative.
                        help="📋 List epics and tasks",
                        description="List all epic and task IDs with their titles. Use filters to show specific subsets. Combine --state and --only for precise filtering.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    ls.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     ls.add_argument("--state", choices=["open", "finished", "all"], default="open",
                     help="Filter by epic state (default: open)")
     ls.add_argument("--only", choices=["epics", "tasks", "all"], default="epics",
                     help="Show only epics, only tasks, or all (default: epics)")
     ls.add_argument("--ids-only", action="store_true", dest="ids_only",
                     help="Print only numeric ids, one per line")
+    ls.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     # color tri-state: --color, --no-color; default None means auto-detect tty
     g = ls.add_mutually_exclusive_group()
     g.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")
