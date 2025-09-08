@@ -2256,11 +2256,33 @@ def load_config() -> dict[str, str]:
     return config
 
 
+def handle_command_shortcuts(argv: list[str]) -> list[str]:
+    """Convert command shortcuts to full command names."""
+    if not argv:
+        return argv
+    
+    shortcuts = {
+        'a': 'add-task',
+        'e': 'edit', 
+        'l': 'list',
+        's': 'show'
+    }
+    
+    first_arg = argv[0]
+    if first_arg in shortcuts:
+        return [shortcuts[first_arg]] + argv[1:]
+    
+    return argv
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv or sys.argv[1:])
     
     # Load configuration from .backlogrc
     config = load_config()
+    
+    # Handle command shortcuts before parsing
+    argv = handle_command_shortcuts(argv)
     
     parser = build_parser()
     
@@ -2275,7 +2297,12 @@ def main(argv: list[str] | None = None) -> int:
     
     # Apply configuration defaults for arguments that weren't provided
     # We can detect this by checking if the argument value matches the action's default
+    # Skip certain arguments that are commonly overridden or have complex detection
+    skip_config_keys = {'color'}  # Skip color since --color/--no-color detection is unreliable
+    
     for key, value in config.items():
+        if key in skip_config_keys:
+            continue
         if hasattr(args, key):
             # Check if this argument was provided on command line
             # If it matches the default, it probably wasn't provided

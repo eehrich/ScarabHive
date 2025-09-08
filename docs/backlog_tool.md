@@ -244,6 +244,30 @@ On Windows development machines we recommend using the project's virtual environ
 Both approaches are useful in CI or automation where activating the venv isn't desirable. On POSIX systems the equivalent is `.venv/bin/python` or `.venv/bin/backlog`.
 
 
+## Command Shortcuts
+
+For power users, the CLI supports single-letter shortcuts for common commands:
+
+- `a` → `add-task` - Add a new task
+- `e` → `edit` - Edit existing epics/tasks  
+- `l` → `list` - List epics and tasks
+- `s` → `show` - Show details of specific items
+
+Examples:
+```bash
+# These are equivalent:
+backlog add-task --title "New feature" --epic 0001 --write
+backlog a --title "New feature" --epic 0001 --write
+
+# List all open epics
+backlog list --state open
+backlog l --state open
+
+# Show details of epic 0001
+backlog show 0001
+backlog s 0001
+```
+
 ### validate
 
 Usage
