@@ -1115,6 +1115,449 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_completion(args: argparse.Namespace) -> int:
+    """Generate shell completion scripts for bash, zsh, or fish."""
+    import os
+    import pathlib
+    
+    shell = args.shell
+    
+    if shell == "bash":
+        script = _generate_bash_completion()
+    elif shell == "zsh":
+        script = _generate_zsh_completion()
+    elif shell == "fish":
+        script = _generate_fish_completion()
+    else:
+        print(f"ERROR: Unsupported shell: {shell}", file=sys.stderr)
+        return 1
+    
+    if args.install:
+        return _install_completion_script(script, shell, args.path)
+    else:
+        print(script)
+        return 0
+
+
+def _generate_bash_completion() -> str:
+    """Generate bash completion script."""
+    return '''# backlog bash completion
+# Install with: source <(backlog completion bash)
+# Or add to ~/.bashrc: eval "$(backlog completion bash)"
+
+_backlog_complete() {
+    local cur prev words cword
+    _init_completion || return
+    
+    # Available commands
+    local commands="validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show completion"
+    
+    # Commands that take IDs
+    local id_commands="edit show"
+    
+    # Commands that take file arguments
+    local file_commands="validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show"
+    
+    case $prev in
+        --file)
+            _filedir
+            return
+            ;;
+        --backup)
+            _filedir
+            return
+            ;;
+        --path)
+            _filedir
+            return
+            ;;
+        --set)
+            # Complete field=value for edit command
+            COMPREPLY=( $(compgen -W "status= title= notes= added= closed=" -- "$cur") )
+            return
+            ;;
+        --state)
+            COMPREPLY=( $(compgen -W "open finished all" -- "$cur") )
+            return
+            ;;
+        --only)
+            COMPREPLY=( $(compgen -W "epics tasks all" -- "$cur") )
+            return
+            ;;
+    esac
+    
+    # Complete commands
+    if [[ $cword -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return
+    fi
+    
+    # Complete IDs for commands that take them
+    local cmd=${words[1]}
+    if [[ " $id_commands " == *" $cmd "* ]]; then
+        if [[ $cword -eq 2 ]]; then
+            # Try to get IDs from backlog list --ids-only
+            local ids
+            if ids=$(backlog list --ids-only 2>/dev/null); then
+                COMPREPLY=( $(compgen -W "$ids" -- "$cur") )
+            fi
+            return
+        fi
+    fi
+    
+    # Complete options for current command
+    case $cmd in
+        validate)
+            COMPREPLY=( $(compgen -W "--verbose --file --help" -- "$cur") )
+            ;;
+        add-task)
+            COMPREPLY=( $(compgen -W "--title --epic --notes --id --file --write --help" -- "$cur") )
+            ;;
+        add-epic)
+            COMPREPLY=( $(compgen -W "--title --id --file --write --help" -- "$cur") )
+            ;;
+        move-task)
+            COMPREPLY=( $(compgen -W "--task --to-epic --file --write --help" -- "$cur") )
+            ;;
+        edit)
+            COMPREPLY=( $(compgen -W "--set --file --write --help" -- "$cur") )
+            ;;
+        backup)
+            COMPREPLY=( $(compgen -W "--prune --keep --older-than --file --dry-run --yes --help" -- "$cur") )
+            ;;
+        undo)
+            COMPREPLY=( $(compgen -W "--list --choose --backup --file --help" -- "$cur") )
+            ;;
+        check-ids)
+            COMPREPLY=( $(compgen -W "--file --help" -- "$cur") )
+            ;;
+        fix-format)
+            COMPREPLY=( $(compgen -W "--ids-only --file --write --help" -- "$cur") )
+            ;;
+        update)
+            COMPREPLY=( $(compgen -W "--file --help" -- "$cur") )
+            ;;
+        init)
+            COMPREPLY=( $(compgen -W "--file --help" -- "$cur") )
+            ;;
+        list)
+            COMPREPLY=( $(compgen -W "--state --only --ids-only --file --color --no-color --help" -- "$cur") )
+            ;;
+        show)
+            COMPREPLY=( $(compgen -W "--id --file --color --no-color --help" -- "$cur") )
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "--install --path --help" -- "$cur") )
+            ;;
+    esac
+}
+
+complete -F _backlog_complete backlog'''
+
+
+def _generate_zsh_completion() -> str:
+    """Generate zsh completion script."""
+    return '''# backlog zsh completion
+# Install with: backlog completion zsh > /usr/local/share/zsh/site-functions/_backlog
+# Or add to ~/.zshrc: autoload -U compinit && compinit
+
+#compdef backlog
+
+_backlog() {
+    local -a commands id_commands file_commands
+    
+    commands=(
+        "validate:Validate backlog file for errors"
+        "add-task:Add a new task to an epic"
+        "add-epic:Create a new epic"
+        "move-task:Move a task between epics"
+        "edit:Edit epic or task fields"
+        "backup:Create or manage backups"
+        "undo:Restore from backup"
+        "check-ids:Check for duplicate IDs"
+        "fix-format:Auto-fix formatting issues"
+        "update:Move finished epics"
+        "init:Create new backlog file"
+        "list:List epics and tasks"
+        "show:Show detailed information"
+        "completion:Generate shell completion scripts"
+    )
+    
+    id_commands=(edit show)
+    file_commands=(validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show)
+    
+    _arguments -C \\
+        "1: :{_describe 'command' commands}" \\
+        "*::arg:->args"
+    
+    case $line[1] in
+        validate)
+            _arguments \\
+                "--verbose[Show detailed validation statistics]" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--help[Show help message]"
+            ;;
+        add-task)
+            _arguments \\
+                "--title[Task title]:title" \\
+                "--epic[Epic id to add the task under]:epic_id" \\
+                "--notes[Optional notes text]:notes" \\
+                "--id[Force a specific Task id]:task_id" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--write[Persist changes to file]" \\
+                "--help[Show help message]"
+            ;;
+        add-epic)
+            _arguments \\
+                "--title[Epic title]:title" \\
+                "--id[Force a specific Epic id]:epic_id" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--write[Persist changes to file]" \\
+                "--help[Show help message]"
+            ;;
+        move-task)
+            _arguments \\
+                "--task[Task id to move]:task_id" \\
+                "--to-epic[Destination epic id]:epic_id" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--write[Persist changes to file]" \\
+                "--help[Show help message]"
+            ;;
+        edit)
+            _arguments \\
+                "*:task/epic id: " \\
+                "--set[Set a field]:field:((status\\: "title\\: "notes\\: "added\\: "closed\\:))" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--write[Persist changes to file]" \\
+                "--help[Show help message]"
+            ;;
+        backup)
+            _arguments \\
+                "--prune[Remove old backups instead of creating]" \\
+                "--keep[When pruning, keep the newest N backups]:number" \\
+                "--older-than[When pruning, remove backups older than N days]:days" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--dry-run[Show which backups would be removed]" \\
+                "--yes[Confirm destructive prune without prompt]" \\
+                "--help[Show help message]"
+            ;;
+        undo)
+            _arguments \\
+                "--list[List available backups and exit]" \\
+                "--choose[Interactively choose a backup to restore]" \\
+                "--backup[Restore a specific backup file path]:backup_file:_files" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--help[Show help message]"
+            ;;
+        check-ids)
+            _arguments \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--help[Show help message]"
+            ;;
+        fix-format)
+            _arguments \\
+                "--ids-only[Only rewrite numeric Task/Epic ids]" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--write[Apply fixes and persist to file]" \\
+                "--help[Show help message]"
+            ;;
+        update)
+            _arguments \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--help[Show help message]"
+            ;;
+        init)
+            _arguments \\
+                "--file[Backlog file to create]:file:_files" \\
+                "--help[Show help message]"
+            ;;
+        list)
+            _arguments \\
+                "--state[Filter by epic state]:(open finished all)" \\
+                "--only[Show only epics, tasks, or all]:(epics tasks all)" \\
+                "--ids-only[Print only numeric ids]" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--color[Enable ANSI colorized output]" \\
+                "--no-color[Disable ANSI colorized output]" \\
+                "--help[Show help message]"
+            ;;
+        show)
+            _arguments \\
+                "*:task/epic id: " \\
+                "--id[Epic or Task numeric id]:id" \\
+                "--file[Backlog file to operate on]:file:_files" \\
+                "--color[Enable ANSI colorized output]" \\
+                "--no-color[Disable ANSI colorized output]" \\
+                "--help[Show help message]"
+            ;;
+        completion)
+            _arguments \\
+                "1:shell:(bash zsh fish)" \\
+                "--install[Install completion script to shell config directory]" \\
+                "--path[Custom installation path]:path:_files -/" \\
+                "--help[Show help message]"
+            ;;
+    esac
+}'''
+
+
+def _generate_fish_completion() -> str:
+    """Generate fish completion script."""
+    return '''# backlog fish completion
+# Install with: backlog completion fish > ~/.config/fish/completions/backlog.fish
+
+# Commands
+complete -c backlog -f -n "__fish_use_subcommand" -a "validate" -d "Validate backlog file for errors"
+complete -c backlog -f -n "__fish_use_subcommand" -a "add-task" -d "Add a new task to an epic"
+complete -c backlog -f -n "__fish_use_subcommand" -a "add-epic" -d "Create a new epic"
+complete -c backlog -f -n "__fish_use_subcommand" -a "move-task" -d "Move a task between epics"
+complete -c backlog -f -n "__fish_use_subcommand" -a "edit" -d "Edit epic or task fields"
+complete -c backlog -f -n "__fish_use_subcommand" -a "backup" -d "Create or manage backups"
+complete -c backlog -f -n "__fish_use_subcommand" -a "undo" -d "Restore from backup"
+complete -c backlog -f -n "__fish_use_subcommand" -a "check-ids" -d "Check for duplicate IDs"
+complete -c backlog -f -n "__fish_use_subcommand" -a "fix-format" -d "Auto-fix formatting issues"
+complete -c backlog -f -n "__fish_use_subcommand" -a "update" -d "Move finished epics"
+complete -c backlog -f -n "__fish_use_subcommand" -a "init" -d "Create new backlog file"
+complete -c backlog -f -n "__fish_use_subcommand" -a "list" -d "List epics and tasks"
+complete -c backlog -f -n "__fish_use_subcommand" -a "show" -d "Show detailed information"
+complete -c backlog -f -n "__fish_use_subcommand" -a "completion" -d "Generate shell completion scripts"
+
+# Global options
+complete -c backlog -l file -d "Backlog file to operate on" -r
+
+# validate command
+complete -c backlog -n "__fish_seen_subcommand_from validate" -l verbose -d "Show detailed validation statistics"
+complete -c backlog -n "__fish_seen_subcommand_from validate" -l help -d "Show help message"
+
+# add-task command
+complete -c backlog -n "__fish_seen_subcommand_from add-task" -l title -d "Task title" -r
+complete -c backlog -n "__fish_seen_subcommand_from add-task" -l epic -d "Epic id to add the task under" -r
+complete -c backlog -n "__fish_seen_subcommand_from add-task" -l notes -d "Optional notes text" -r
+complete -c backlog -n "__fish_seen_subcommand_from add-task" -l id -d "Force a specific Task id" -r
+complete -c backlog -n "__fish_seen_subcommand_from add-task" -l write -d "Persist changes to file"
+complete -c backlog -n "__fish_seen_subcommand_from add-task" -l help -d "Show help message"
+
+# add-epic command
+complete -c backlog -n "__fish_seen_subcommand_from add-epic" -l title -d "Epic title" -r
+complete -c backlog -n "__fish_seen_subcommand_from add-epic" -l id -d "Force a specific Epic id" -r
+complete -c backlog -n "__fish_seen_subcommand_from add-epic" -l write -d "Persist changes to file"
+complete -c backlog -n "__fish_seen_subcommand_from add-epic" -l help -d "Show help message"
+
+# move-task command
+complete -c backlog -n "__fish_seen_subcommand_from move-task" -l task -d "Task id to move" -r
+complete -c backlog -n "__fish_seen_subcommand_from move-task" -l to-epic -d "Destination epic id" -r
+complete -c backlog -n "__fish_seen_subcommand_from move-task" -l write -d "Persist changes to file"
+complete -c backlog -n "__fish_seen_subcommand_from move-task" -l help -d "Show help message"
+
+# edit command
+complete -c backlog -n "__fish_seen_subcommand_from edit" -l set -d "Set a field" -r -a "status= title= notes= added= closed="
+complete -c backlog -n "__fish_seen_subcommand_from edit" -l write -d "Persist changes to file"
+complete -c backlog -n "__fish_seen_subcommand_from edit" -l help -d "Show help message"
+
+# backup command
+complete -c backlog -n "__fish_seen_subcommand_from backup" -l prune -d "Remove old backups instead of creating"
+complete -c backlog -n "__fish_seen_subcommand_from backup" -l keep -d "When pruning, keep the newest N backups" -r
+complete -c backlog -n "__fish_seen_subcommand_from backup" -l older-than -d "When pruning, remove backups older than N days" -r
+complete -c backlog -n "__fish_seen_subcommand_from backup" -l dry-run -d "Show which backups would be removed"
+complete -c backlog -n "__fish_seen_subcommand_from backup" -l yes -d "Confirm destructive prune without prompt"
+complete -c backlog -n "__fish_seen_subcommand_from backup" -l help -d "Show help message"
+
+# undo command
+complete -c backlog -n "__fish_seen_subcommand_from undo" -l list -d "List available backups and exit"
+complete -c backlog -n "__fish_seen_subcommand_from undo" -l choose -d "Interactively choose a backup to restore"
+complete -c backlog -n "__fish_seen_subcommand_from undo" -l backup -d "Restore a specific backup file path" -r
+complete -c backlog -n "__fish_seen_subcommand_from undo" -l help -d "Show help message"
+
+# check-ids command
+complete -c backlog -n "__fish_seen_subcommand_from check-ids" -l help -d "Show help message"
+
+# fix-format command
+complete -c backlog -n "__fish_seen_subcommand_from fix-format" -l ids-only -d "Only rewrite numeric Task/Epic ids"
+complete -c backlog -n "__fish_seen_subcommand_from fix-format" -l write -d "Apply fixes and persist to file"
+complete -c backlog -n "__fish_seen_subcommand_from fix-format" -l help -d "Show help message"
+
+# update command
+complete -c backlog -n "__fish_seen_subcommand_from update" -l help -d "Show help message"
+
+# init command
+complete -c backlog -n "__fish_seen_subcommand_from init" -l help -d "Show help message"
+
+# list command
+complete -c backlog -n "__fish_seen_subcommand_from list" -l state -d "Filter by epic state" -a "open finished all"
+complete -c backlog -n "__fish_seen_subcommand_from list" -l only -d "Show only epics, tasks, or all" -a "epics tasks all"
+complete -c backlog -n "__fish_seen_subcommand_from list" -l ids-only -d "Print only numeric ids"
+complete -c backlog -n "__fish_seen_subcommand_from list" -l color -d "Enable ANSI colorized output"
+complete -c backlog -n "__fish_seen_subcommand_from list" -l no-color -d "Disable ANSI colorized output"
+complete -c backlog -n "__fish_seen_subcommand_from list" -l help -d "Show help message"
+
+# show command
+complete -c backlog -n "__fish_seen_subcommand_from show" -l id -d "Epic or Task numeric id" -r
+complete -c backlog -n "__fish_seen_subcommand_from show" -l color -d "Enable ANSI colorized output"
+complete -c backlog -n "__fish_seen_subcommand_from show" -l no-color -d "Disable ANSI colorized output"
+complete -c backlog -n "__fish_seen_subcommand_from show" -l help -d "Show help message"
+
+# completion command
+complete -c backlog -n "__fish_seen_subcommand_from completion" -a "bash zsh fish" -d "Shell type to generate completion for"
+complete -c backlog -n "__fish_seen_subcommand_from completion" -l install -d "Install completion script to shell config directory"
+complete -c backlog -n "__fish_seen_subcommand_from completion" -l path -d "Custom installation path" -r
+complete -c backlog -n "__fish_seen_subcommand_from completion" -l help -d "Show help message"'''
+
+
+def _install_completion_script(script: str, shell: str, custom_path: str | None) -> int:
+    """Install completion script to appropriate location."""
+    import os
+    import pathlib
+    
+    if custom_path:
+        install_path = pathlib.Path(custom_path)
+    else:
+        home = pathlib.Path.home()
+        if shell == "bash":
+            install_path = home / ".bashrc.d" / "backlog-completion.bash"
+            install_path.parent.mkdir(parents=True, exist_ok=True)
+        elif shell == "zsh":
+            # Try common zsh completion directories
+            zsh_dirs = [
+                home / ".zsh" / "completions",
+                pathlib.Path("/usr/local/share/zsh/site-functions"),
+                pathlib.Path("/usr/share/zsh/site-functions"),
+            ]
+            install_path = None
+            for zsh_dir in zsh_dirs:
+                if zsh_dir.exists() or zsh_dir.parent.exists():
+                    install_path = zsh_dir / "_backlog"
+                    break
+            if not install_path:
+                install_path = home / ".zsh" / "completions" / "_backlog"
+                install_path.parent.mkdir(parents=True, exist_ok=True)
+        elif shell == "fish":
+            install_path = home / ".config" / "fish" / "completions" / "backlog.fish"
+            install_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            print(f"ERROR: Unsupported shell: {shell}", file=sys.stderr)
+            return 1
+    
+    try:
+        install_path.write_text(script, encoding='utf-8')
+        print(f"✅ Completion script installed to: {install_path}")
+        
+        if shell == "bash":
+            print(f"💡 Add this to your ~/.bashrc:")
+            print(f"   source {install_path}")
+        elif shell == "zsh":
+            print(f"💡 Add this to your ~/.zshrc:")
+            print(f"   fpath+={install_path.parent}")
+            print(f"   autoload -U compinit && compinit")
+        elif shell == "fish":
+            print(f"💡 Restart your fish shell or run:")
+            print(f"   source {install_path}")
+            
+        return 0
+    except Exception as e:
+        print(f"ERROR: Failed to install completion script: {e}", file=sys.stderr)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="backlog",
@@ -1292,6 +1735,15 @@ FILES: Default is backlog.md; use --file to specify alternative.
     g2.add_argument("--no-color", dest="color", action="store_false", help="Disable ANSI colorized output")
     sh.set_defaults(color=True)
     sh.set_defaults(func=cmd_show)
+
+    comp = sub.add_parser("completion", 
+                         help="🔧 Generate shell completion scripts",
+                         description="Generate shell completion scripts for bash, zsh, or fish. Install the generated script to enable tab completion for backlog commands.")
+    # Standardized option ordering: positional → required → optional → file → safety → output
+    comp.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell type to generate completion for")
+    comp.add_argument("--install", action="store_true", help="Install completion script to shell config directory")
+    comp.add_argument("--path", help="Custom installation path (with --install)")
+    comp.set_defaults(func=cmd_completion)
 
     return p
 
