@@ -1,0 +1,19 @@
+name: http_server
+version: 1.0.0
+description: HTTP adapter for MCP servers - exposes MCP servers via REST API endpoints
+summary: FastAPI-based HTTP server adapter for MCP protocol servers
+author: AgentSystem
+license: MIT
+homepage: https://github.com/your-org/agent-system
+repository: https://github.com/your-org/agent-system
+keywords:
+  - mcp
+  - http
+  - rest
+  - api
+  - adapter
+  - fastapi
+dependencies: []
+entry_points:
+  console_scripts:
+    - http_server = plugins.http_server.__main__:cli_main
