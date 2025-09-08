@@ -16,19 +16,29 @@ Supported keys for epics: title, status, added, closed, notes, descriptionQuick 
 
 ### First Time Setup
 ```bash
-# Create a new backlog f### show
-
-Usage
-
-    backlog show <id> [<id> ...] [--file <path>] [--interactive] [--color|--no-color]
-
-Description
-- Show detailed information for one or more epic/task IDs.
-- With `--interactive`, if no IDs are provided, prompts the user to select items from a numbered list. template
+# Create a new backlog file
 backlog init
 
 # Validate the new backlog
 backlog validate
+
+# Add your first epic
+backlog add-epic --title "Project Setup" --write
+
+# Add your first task
+backlog add-task --title "Set up development environment" --epic 0001 --write
+```
+
+### Bulk Operations Quick Start
+```bash
+# Create a CSV file with multiple tasks
+echo "title,epic,notes
+Setup CI/CD pipeline,0001,Automate deployment
+Write documentation,0001,User and API docs
+Add unit tests,0001,Increase code coverage" > tasks.csv
+
+# Bulk add all tasks at once
+backlog add-task --from-file tasks.csv --write
 ```
 
 ### Common Workflows
@@ -55,6 +65,21 @@ backlog edit 0123 --set status=done --set closed=2025-09-07 --write
 
 # Bulk update multiple tasks
 backlog edit 0123 0124 0125 --set status=done --write
+```
+
+#### Bulk Operations
+```bash
+# Bulk add tasks from CSV file
+backlog add-task --from-file tasks.csv --write
+
+# Bulk add epics from JSON file
+backlog add-epic --from-file epics.json --write
+
+# Bulk move tasks from CSV file
+backlog move-task --from-file moves.csv --write
+
+# Preview bulk operations (dry-run)
+backlog add-task --from-file tasks.csv
 ```
 
 #### Viewing Backlog
@@ -85,6 +110,48 @@ backlog undo
 
 # Restore from specific backup
 backlog undo --backup ".backups/backlog.md.20250907_140000.bak"
+```
+
+## Configuration File Support
+
+The backlog tool supports configuration files for setting default values. Create a `.backlogrc` file in your current directory or home directory:
+
+```ini
+[backlog]
+default_file = backlog.md
+default_color = true
+backup_dir = /path/to/backups
+max_backups = 10
+```
+
+### Configuration Options
+
+- `default_file`: Default backlog file path (default: `backlog.md`)
+- `default_color`: Enable/disable colored output (`true`, `false`, or `auto`)
+- `backup_dir`: Directory for backup files (default: same as backlog file)
+- `max_backups`: Maximum number of backups to keep (default: 10)
+
+### Configuration File Locations
+
+The tool looks for `.backlogrc` in this order:
+1. Current working directory (`./.backlogrc`)
+2. Home directory (`~/.backlogrc`)
+
+Current directory settings take precedence over home directory settings.
+
+### Example Usage
+
+```bash
+# Create a project-specific config
+echo "[backlog]
+default_file = project_backlog.md
+default_color = true
+backup_dir = ./backups
+max_backups = 20" > .backlogrc
+
+# Now commands will use these defaults
+backlog list  # Uses project_backlog.md
+backlog validate  # Uses project_backlog.md
 ```
 
 ## Safety Features
@@ -119,6 +186,12 @@ backlog validate
 backlog edit 0001 0002 0003 --set status=done  # dry-run first
 backlog edit 0001 0002 0003 --set status=done --write  # then apply
 backlog validate  # verify changes
+
+# Bulk operations workflow
+backlog validate
+backlog add-task --from-file new_tasks.csv  # preview bulk changes
+backlog add-task --from-file new_tasks.csv --write  # apply bulk changes
+backlog validate  # verify bulk changes
 ```
 
 ### Status Values
@@ -186,48 +259,166 @@ Description
 Usage
 
     backlog add-task --title <title> [--epic <epic-id>] [--id <id>] [--notes <text>] [--file <path>] [--write]
+    backlog add-task --from-file <csv-or-json-file> [--file <path>] [--write]
 
 Description
 - Creates a new task under an epic.
-- Dry-run by default (prints the snippet it would insert).
-- When `--write` is provided the CLI will insert the task into the backlog and write the updated file (with backup).
-- `--epic` must be provided when using `--write`.
+- **Single task mode**: Use `--title`, `--epic`, etc. for individual tasks
+- **Bulk mode**: Use `--from-file` to add multiple tasks from a CSV or JSON file
+- Dry-run by default (prints what would be inserted).
+- When `--write` is provided the CLI will insert the task(s) into the backlog and write the updated file (with backup).
+- `--epic` must be provided when using `--write` in single mode.
 - `--id` forces a specific numeric id (error if the id exists already).
 - `--notes` accepts a string; use `\n` to include literal newlines in the CLI (the code converts `\n` into real newlines for modeled fields).
 
-Example
+#### File Formats for Bulk Operations
 
+**CSV Format:**
+```csv
+title,epic,notes,id
+"Implement user authentication","0001","Issue reported by user\nNeed to test edge cases","1001"
+"Fix login bug","0002","High priority","1002"
+```
+
+**JSON Format:**
+```json
+[
+  {
+    "title": "Implement user authentication",
+    "epic": "0001",
+    "notes": "Issue reported by user\nNeed to test edge cases",
+    "id": "1001"
+  },
+  {
+    "title": "Fix login bug", 
+    "epic": "0002",
+    "notes": "High priority",
+    "id": "1002"
+  }
+]
+```
+
+Examples
+
+    # Single task
     backlog add-task --title "Fix login" --epic 0001 --notes "Investigate\nAdd tests" --write
 
-Or force id (numeric-only):
-
+    # Single task with forced id
     backlog add-task --title "Hotfix" --epic 0001 --id 1234 --write
+
+    # Bulk tasks from CSV
+    backlog add-task --from-file tasks.csv --write
+
+    # Bulk tasks from JSON
+    backlog add-task --from-file tasks.json --write
+
+    # Preview bulk operations (dry-run)
+    backlog add-task --from-file tasks.csv
 
 ### add-epic
 
 Usage
 
     backlog add-epic --title <title> [--id <id>] [--file <path>] [--write]
+    backlog add-epic --from-file <csv-or-json-file> [--file <path>] [--write]
 
 Description
 - Create a new epic and append it to the `## 1. Epics - open` section.
+- **Single epic mode**: Use `--title`, `--id`, etc. for individual epics
+- **Bulk mode**: Use `--from-file` to add multiple epics from a CSV or JSON file
 - `--id` forces a numeric id (errors on collision); otherwise the tool picks the next unused numeric id.
 - Dry-run unless `--write` is specified.
 
-Example
+#### File Formats for Bulk Epic Operations
 
+**CSV Format:**
+```csv
+title,id,notes
+"User Authentication Module","1001","Core security feature"
+"API Integration","1002","Third-party service integration"
+```
+
+**JSON Format:**
+```json
+[
+  {
+    "title": "User Authentication Module",
+    "id": "1001",
+    "notes": "Core security feature"
+  },
+  {
+    "title": "API Integration",
+    "id": "1002", 
+    "notes": "Third-party service integration"
+  }
+]
+```
+
+Examples
+
+    # Single epic
     backlog add-epic --title "New Integration" --write
     backlog add-epic --title "Urgent" --id 2000 --write
+
+    # Bulk epics from CSV
+    backlog add-epic --from-file epics.csv --write
+
+    # Bulk epics from JSON
+    backlog add-epic --from-file epics.json --write
+
+    # Preview bulk operations (dry-run)
+    backlog add-epic --from-file epics.csv
 
 ### move-task
 
 Usage
 
     backlog move-task --task <task-id> --to-epic <epic-id> [--file <path>] [--write]
+    backlog move-task --from-file <csv-or-json-file> [--file <path>] [--write]
 
 Description
+- Move a task from one epic to another.
+- **Single task mode**: Use `--task` and `--to-epic` for individual moves
+- **Bulk mode**: Use `--from-file` to move multiple tasks from a CSV or JSON file
 - Dry-run by default; with `--write` persists the change.
 - If the destination epic already contains a task with the same id, the CLI will generate a new unique id for the moved task.
+
+#### File Formats for Bulk Move Operations
+
+**CSV Format:**
+```csv
+task,to_epic
+"0001","0002"
+"0003","0004"
+```
+
+**JSON Format:**
+```json
+[
+  {
+    "task": "0001",
+    "to_epic": "0002"
+  },
+  {
+    "task": "0003", 
+    "to_epic": "0004"
+  }
+]
+```
+
+Examples
+
+    # Single task move
+    backlog move-task --task 0001 --to-epic 0002 --write
+
+    # Bulk moves from CSV
+    backlog move-task --from-file moves.csv --write
+
+    # Bulk moves from JSON
+    backlog move-task --from-file moves.json --write
+
+    # Preview bulk moves (dry-run)
+    backlog move-task --from-file moves.csv
 
 ### edit
 
@@ -363,6 +554,56 @@ Force a specific (numeric) id for a new epic:
 
     backlog add-epic --title "Urgent ops" --id 3000 --write
 
+### Bulk Operations Examples
+
+Create a CSV file with multiple tasks:
+
+```csv
+title,epic,notes,id
+"Implement user authentication","0001","Issue reported by user\nNeed to test edge cases","1001"
+"Fix login bug","0002","High priority","1002"
+"Add unit tests","0001","Coverage for auth module","1003"
+```
+
+Preview bulk task addition:
+
+    backlog add-task --from-file tasks.csv
+
+Apply the bulk changes:
+
+    backlog add-task --from-file tasks.csv --write
+
+Create a JSON file for bulk epic creation:
+
+```json
+[
+  {
+    "title": "User Authentication Module",
+    "id": "2001",
+    "notes": "Core security feature"
+  },
+  {
+    "title": "API Integration",
+    "id": "2002", 
+    "notes": "Third-party service integration"
+  }
+]
+```
+
+Add multiple epics at once:
+
+    backlog add-epic --from-file epics.json --write
+
+Bulk move tasks between epics:
+
+```csv
+task,to_epic
+"1001","2001"
+"1002","2002"
+```
+
+    backlog move-task --from-file moves.csv --write
+
 Safely update ids only (recommended when you don't want formatting changes):
 
     backlog fix-format --file backlog.md --write --ids-only
@@ -401,6 +642,39 @@ backlog check-ids
 
 # Auto-fix duplicate IDs (safe option)
 backlog fix-format --ids-only --write
+```
+
+**"ERROR: File not found"**
+```bash
+# Check if the bulk file exists
+ls -la tasks.csv
+
+# Use absolute path if needed
+backlog add-task --from-file /full/path/to/tasks.csv --write
+```
+
+**"ERROR: Invalid CSV file"**
+```bash
+# Check CSV format - must have headers: title,epic,notes,id
+head -1 tasks.csv
+
+# Validate CSV structure
+python -c "import csv; print(list(csv.DictReader(open('tasks.csv'))))"
+```
+
+**"ERROR: Missing required fields"**
+```bash
+# For tasks, CSV must have 'title' and 'epic' columns
+# For epics, CSV must have 'title' column
+# Check your CSV headers match expected format
+```
+
+**"ERROR: Epic 'XXXX' not found"**
+```bash
+# Verify the epic ID exists in your backlog
+backlog list --only epics
+
+# Check for typos in epic IDs in your bulk file
 ```
 
 **Accidentally made changes**

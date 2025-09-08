@@ -107,7 +107,132 @@ def cmd_validate(args: argparse.Namespace) -> int:
         return 2
 
 
+def _cmd_add_task_bulk(args: argparse.Namespace) -> int:
+    """Handle bulk task addition from file."""
+    import csv
+    import json
+    
+    file_path = args.from_file
+    if not os.path.exists(file_path):
+        print(f"ERROR: File not found: {file_path}", file=sys.stderr)
+        return 2
+    
+    # Determine file type and parse
+    if file_path.endswith('.json'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Invalid JSON file: {e}", file=sys.stderr)
+            return 2
+    elif file_path.endswith('.csv'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                data = list(reader)
+        except csv.Error as e:
+            print(f"ERROR: Invalid CSV file: {e}", file=sys.stderr)
+            return 2
+    else:
+        print("ERROR: File must be .csv or .json", file=sys.stderr)
+        return 2
+    
+    if not data:
+        print("ERROR: File contains no data", file=sys.stderr)
+        return 2
+    
+    # Validate data structure
+    required_fields = ['title', 'epic']
+    for item in data:
+        missing = [field for field in required_fields if field not in item or not item[field]]
+        if missing:
+            print(f"ERROR: Missing required fields in data: {missing}", file=sys.stderr)
+            return 2
+    
+    from scripts.backlog_tool import parser as bl
+    path = args.file or "backlog.md"
+    
+    # create backlog from bundled template if it does not exist
+    if not os.path.exists(path):
+        tpl = os.path.join(os.path.dirname(__file__), 'backlog_tool', 'template.md')
+        if not os.path.exists(tpl):
+            print(f"ERROR: template not found: {tpl}", file=sys.stderr)
+            return 2
+        shutil.copy2(tpl, path)
+        print(f"Created backlog from template: {path}")
+    
+    lines = bl.read_file(path)
+    backlog = bl.parse(lines)
+    
+    created_tasks = []
+    errors = []
+    
+    for i, item in enumerate(data):
+        try:
+            epic_id = _pad_id_input(item['epic'])
+            forced = _pad_id_input(item.get('id')) if item.get('id') else None
+            
+            # Normalize notes if present
+            def _normalize_notes(s: str | None) -> str | None:
+                if s is None:
+                    return None
+                s2 = s.replace('\\n', '\n')
+                lines = []
+                for ln in s2.splitlines():
+                    line = ln
+                    if line.lstrip().startswith('- '):
+                        # remove the first hyphen and following space
+                        idx = line.find('- ')
+                        line = line[:idx] + line[idx+2:]
+                    lines.append(line.rstrip())
+                return '\n'.join(lines)
+            
+            notes_arg = _normalize_notes(item.get('notes'))
+            t = bl.add_task_to_epic(backlog, epic_id, item['title'], notes_arg, forced_id=forced)
+            created_tasks.append((t.id, epic_id))
+            
+        except KeyError:
+            errors.append(f"Row {i+1}: Epic '{item.get('epic', 'unknown')}' not found")
+        except ValueError as e:
+            errors.append(f"Row {i+1}: {e}")
+        except Exception as e:
+            errors.append(f"Row {i+1}: Unexpected error: {e}")
+    
+    # Report results
+    if created_tasks:
+        print(f"Successfully created {len(created_tasks)} tasks:")
+        for task_id, epic_id in created_tasks:
+            print(f"  - Task {task_id} under epic {epic_id}")
+    
+    if errors:
+        print(f"\nErrors encountered ({len(errors)}):", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+    
+    if getattr(args, "write", False) and created_tasks:
+        bak = bl.make_backup(path)
+        bl.safe_write(path, bl.build_markdown(backlog))
+        print(f"\nWrote changes to {path}; backup: {bak}")
+    elif not getattr(args, "write", False):
+        print(f"\nDry-run: would create {len(created_tasks)} tasks")
+    
+    # Return error code if any tasks failed
+    return 1 if errors else 0
+
+
 def cmd_add_task(args: argparse.Namespace) -> int:
+    import csv
+    import json
+    
+    # Check if we're doing bulk add from file
+    if getattr(args, 'from_file', None):
+        return _cmd_add_task_bulk(args)
+    
+    # Validate required arguments for single task
+    if not getattr(args, 'title', None):
+        print("ERROR: --title is required when not using --from-file", file=sys.stderr)
+        return 2
+    
     # Dry-run add: print a formatted snippet that would be inserted
     now = date.today().isoformat()
     entry = []
@@ -177,7 +302,100 @@ def cmd_add_task(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_move_task_bulk(args: argparse.Namespace) -> int:
+    """Handle bulk task moves from file."""
+    import csv
+    import json
+    
+    file_path = args.from_file
+    if not os.path.exists(file_path):
+        print(f"ERROR: File not found: {file_path}", file=sys.stderr)
+        return 2
+    
+    # Determine file type and parse
+    if file_path.endswith('.json'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Invalid JSON file: {e}", file=sys.stderr)
+            return 2
+    elif file_path.endswith('.csv'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                data = list(reader)
+        except csv.Error as e:
+            print(f"ERROR: Invalid CSV file: {e}", file=sys.stderr)
+            return 2
+    else:
+        print("ERROR: File must be .csv or .json", file=sys.stderr)
+        return 2
+    
+    if not data:
+        print("ERROR: File contains no data", file=sys.stderr)
+        return 2
+    
+    # Validate data structure
+    required_fields = ['task', 'to_epic']
+    for item in data:
+        missing = [field for field in required_fields if field not in item or not item[field]]
+        if missing:
+            print(f"ERROR: Missing required fields in data: {missing}", file=sys.stderr)
+            return 2
+    
+    from scripts.backlog_tool import parser as bl
+    path = args.file or "backlog.md"
+    lines = bl.read_file(path)
+    backlog = bl.parse(lines)
+    
+    moved_tasks = []
+    errors = []
+    
+    for i, item in enumerate(data):
+        try:
+            task_id = _pad_id_input(item['task'])
+            to_epic = _pad_id_input(item['to_epic'])
+            moved = bl.move_task(backlog, task_id, to_epic)
+            moved_tasks.append((task_id, to_epic, moved.id))
+            
+        except KeyError:
+            errors.append(f"Row {i+1}: Task '{item.get('task', 'unknown')}' or epic '{item.get('to_epic', 'unknown')}' not found")
+        except Exception as e:
+            errors.append(f"Row {i+1}: Unexpected error: {e}")
+    
+    # Report results
+    if moved_tasks:
+        print(f"Successfully moved {len(moved_tasks)} tasks:")
+        for old_id, to_epic, new_id in moved_tasks:
+            print(f"  - Task {old_id} -> epic {to_epic} (new id: {new_id})")
+    
+    if errors:
+        print(f"\nErrors encountered ({len(errors)}):", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+    
+    if getattr(args, "write", False) and moved_tasks:
+        bak = bl.make_backup(path)
+        bl.safe_write(path, bl.build_markdown(backlog))
+        print(f"\nWrote changes to {path}; backup: {bak}")
+    elif not getattr(args, "write", False):
+        print(f"\nDry-run: would move {len(moved_tasks)} tasks")
+    
+    # Return error code if any moves failed
+    return 1 if errors else 0
+
+
 def cmd_move_task(args: argparse.Namespace) -> int:
+    # Check if we're doing bulk move from file
+    if getattr(args, 'from_file', None):
+        return _cmd_move_task_bulk(args)
+    
+    # Validate required arguments for single move
+    if not getattr(args, 'task', None) or not getattr(args, 'to_epic', None):
+        print("ERROR: --task and --to-epic are required when not using --from-file", file=sys.stderr)
+        return 2
+    
     from scripts.backlog_tool import parser as bl
 
     path = args.file or "backlog.md"
@@ -201,7 +419,107 @@ def cmd_move_task(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_add_epic_bulk(args: argparse.Namespace) -> int:
+    """Handle bulk epic addition from file."""
+    import csv
+    import json
+    
+    file_path = args.from_file
+    if not os.path.exists(file_path):
+        print(f"ERROR: File not found: {file_path}", file=sys.stderr)
+        return 2
+    
+    # Determine file type and parse
+    if file_path.endswith('.json'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Invalid JSON file: {e}", file=sys.stderr)
+            return 2
+    elif file_path.endswith('.csv'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                data = list(reader)
+        except csv.Error as e:
+            print(f"ERROR: Invalid CSV file: {e}", file=sys.stderr)
+            return 2
+    else:
+        print("ERROR: File must be .csv or .json", file=sys.stderr)
+        return 2
+    
+    if not data:
+        print("ERROR: File contains no data", file=sys.stderr)
+        return 2
+    
+    # Validate data structure
+    for item in data:
+        if 'title' not in item or not item['title']:
+            print("ERROR: Missing required 'title' field in data", file=sys.stderr)
+            return 2
+    
+    from scripts.backlog_tool import parser as bl
+    path = args.file or "backlog.md"
+    
+    # create backlog from bundled template if it does not exist
+    if not os.path.exists(path):
+        tpl = os.path.join(os.path.dirname(__file__), 'backlog_tool', 'template.md')
+        if not os.path.exists(tpl):
+            print(f"ERROR: template not found: {tpl}", file=sys.stderr)
+            return 2
+        shutil.copy2(tpl, path)
+        print(f"Created backlog from template: {path}")
+    
+    lines = bl.read_file(path)
+    backlog = bl.parse(lines)
+    
+    created_epics = []
+    errors = []
+    
+    for i, item in enumerate(data):
+        try:
+            forced = _pad_id_input(item.get('id')) if item.get('id') else None
+            e = bl.add_epic_to_backlog(backlog, item['title'], forced_id=forced)
+            created_epics.append(e.id)
+            
+        except ValueError as ve:
+            errors.append(f"Row {i+1}: {ve}")
+        except Exception as e:
+            errors.append(f"Row {i+1}: Unexpected error: {e}")
+    
+    # Report results
+    if created_epics:
+        print(f"Successfully created {len(created_epics)} epics:")
+        for epic_id in created_epics:
+            print(f"  - Epic {epic_id}")
+    
+    if errors:
+        print(f"\nErrors encountered ({len(errors)}):", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+    
+    if getattr(args, "write", False) and created_epics:
+        bak = bl.make_backup(path)
+        bl.safe_write(path, bl.build_markdown(backlog))
+        print(f"\nWrote changes to {path}; backup: {bak}")
+    elif not getattr(args, "write", False):
+        print(f"\nDry-run: would create {len(created_epics)} epics")
+    
+    # Return error code if any epics failed
+    return 1 if errors else 0
+
+
 def cmd_add_epic(args: argparse.Namespace) -> int:
+    # Check if we're doing bulk add from file
+    if getattr(args, 'from_file', None):
+        return _cmd_add_epic_bulk(args)
+    
+    # Validate required arguments for single epic
+    if not getattr(args, 'title', None):
+        print("ERROR: --title is required when not using --from-file", file=sys.stderr)
+        return 2
+    
     from scripts.backlog_tool import parser as bl
     path = args.file or "backlog.md"
     # Show intent. If --write was passed, this is not a dry-run.
@@ -1688,8 +2006,10 @@ EXAMPLES:
 
   Bulk Operations:
     backlog edit 0001 0002 --set status=done --write  # Update multiple items
-    backlog list --state all --only tasks             # List all tasks
     backlog show 0001 0002 0003                       # Show multiple items
+    backlog add-task --from-file tasks.csv --write    # Bulk add from CSV
+    backlog add-epic --from-file epics.json --write   # Bulk add from JSON
+    backlog move-task --from-file moves.csv --write   # Bulk moves from file
 
   Safety & Recovery:
     backlog backup --dry-run            # Preview backup creation
@@ -1712,7 +2032,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     sub = p.add_subparsers(dest="cmd", metavar="COMMAND", help="Available commands:")
 
     v = sub.add_parser("validate", 
-                      help="🔍 Validate backlog file for errors and inconsistencies",
+                      help="Validate backlog file for errors and inconsistencies",
                       description="Validate the backlog file for common issues like duplicate IDs, invalid dates, and malformed entries.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     v.add_argument("--verbose", action="store_true", help="Show detailed validation statistics")
@@ -1720,52 +2040,55 @@ FILES: Default is backlog.md; use --file to specify alternative.
     v.set_defaults(func=cmd_validate)
 
     a = sub.add_parser("add-task", 
-                       help="➕ Add a new task to an epic",
-                       description="Add a new task to an existing epic. Use --write to persist changes. The task will be added with 'open' status and today's date.")
+                       help="Add a new task to an epic",
+                       description="Add a new task to an existing epic. Use --write to persist changes. The task will be added with 'open' status and today's date. Use --from-file for bulk operations.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    a.add_argument("--title", required=True, help="Task title")
-    a.add_argument("--epic", required=False, help="Epic id to add the task under (required with --write)")
+    a.add_argument("--title", help="Task title (required unless --from-file is used)")
+    a.add_argument("--epic", help="Epic id to add the task under (required with --write unless --from-file specifies epics)")
     a.add_argument("--notes", help="Optional notes text (use \\n for line breaks)")
     a.add_argument("--id", dest="forced_id", help="Force a specific Task id (numeric or string). Will error if id exists")
+    a.add_argument("--from-file", help="CSV/JSON file with tasks to add (columns: title,epic,notes,id)")
     a.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    a.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
+    a.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     a.set_defaults(func=cmd_add_task)
 
     ae = sub.add_parser("add-epic", 
-                       help="📋 Create a new epic",
-                       description="Add a new epic to the backlog. Use --write to persist changes. The epic will be added with 'open' status and today's date.")
+                       help="Create a new epic",
+                       description="Add a new epic to the backlog. Use --write to persist changes. The epic will be added with 'open' status and today's date. Use --from-file for bulk operations.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    ae.add_argument("--title", required=True, help="Epic title")
+    ae.add_argument("--title", help="Epic title (required unless --from-file is used)")
     ae.add_argument("--id", dest="forced_id", help="Force a specific Epic id (numeric or string). Will error if id exists")
+    ae.add_argument("--from-file", help="CSV/JSON file with epics to add (columns: title,id)")
     ae.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    ae.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
+    ae.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     ae.set_defaults(func=cmd_add_epic)
 
     m = sub.add_parser("move-task", 
-                      help="↔️ Move a task between epics",
-                      description="Move an existing task from one epic to another. Use --write to persist changes.")
+                      help="Move a task between epics",
+                      description="Move an existing task from one epic to another. Use --write to persist changes. Use --from-file for bulk operations.")
     # Standardized option ordering: positional → required → optional → file → safety → output
-    m.add_argument("--task", required=True, help="Task id to move")
-    m.add_argument("--to-epic", required=True, help="Destination epic id")
+    m.add_argument("--task", help="Task id to move (required unless --from-file is used)")
+    m.add_argument("--to-epic", help="Destination epic id (required unless --from-file is used)")
+    m.add_argument("--from-file", help="CSV/JSON file with moves to perform (columns: task,to_epic)")
     m.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    m.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
+    m.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     m.set_defaults(func=cmd_move_task)
 
     # Replace legacy update-status with a more general `edit` command that
     # can set arbitrary fields on epics or tasks.
     u = sub.add_parser("edit", 
-                      help="✏️ Edit epic or task fields",
+                      help="Edit epic or task fields",
                       description="Update fields on one or more epics/tasks. Supports bulk updates with --set key=value. Use multiple --set for multiple fields.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     u.add_argument("id", nargs="+", help="Epic or Task numeric id(s) (0001)")
     u.add_argument("--set", dest="set", action="append", help="Set a field: --set key=value (can be used multiple times)")
     u.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     u.add_argument("--interactive", action="store_true", help="Interactively prompt for fields to edit")
-    u.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
+    u.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     u.set_defaults(func=cmd_edit)
 
     b = sub.add_parser("backup", 
-                      help="💾 Create or manage backups",
+                      help="Create or manage backups",
                       description="Create timestamped backups of the backlog file or manage existing backups. Use --prune with --keep or --older-than to clean up old backups.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     b.add_argument("--prune", action="store_true", help="Remove old backups instead of creating a new one")
@@ -1777,7 +2100,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     b.set_defaults(func=cmd_backup)
 
     r = sub.add_parser("undo", 
-                      help="↶ Restore from backup",
+                      help="Restore from backup",
                       description="Restore the backlog file from a previous backup. Use --list to see available backups, --choose for interactive selection, or --backup for specific file.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     r.add_argument("--list", action="store_true", help="List available backups and exit")
@@ -1787,39 +2110,39 @@ FILES: Default is backlog.md; use --file to specify alternative.
     r.set_defaults(func=cmd_undo)
 
     c = sub.add_parser("check-ids", 
-                      help="🔍 Check for duplicate IDs",
+                      help="Check for duplicate IDs",
                       description="Scan the backlog for duplicate task IDs and epic/task ID collisions.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     c.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     c.set_defaults(func=cmd_check_ids)
 
     f = sub.add_parser("fix-format", 
-                      help="🔧 Auto-fix formatting issues",
+                      help="Auto-fix formatting issues",
                       description="Normalize status tokens, fix date formats, and reassign duplicate IDs. Use --ids-only for safe ID-only fixes.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     f.add_argument("--ids-only", action="store_true", dest="ids_only",
                    help="When writing, only rewrite numeric Task/Epic ids and leave formatting intact")
     f.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
-    f.add_argument("--write", action="store_true", help="⚠️  Apply fixes and persist to file (creates backup)")
+    f.add_argument("--write", action="store_true", help="Apply fixes and persist to file (creates backup)")
     f.set_defaults(func=cmd_fix_format)
 
     # legacy compatibility: expose the `update` command used by older scripts/tests
     up = sub.add_parser("update", 
-                       help="📦 Move finished epics",
+                       help="Move finished epics",
                        description="Legacy command: validate and move finished epics from open to finished section.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     up.set_defaults(func=cmd_update)
 
     ini = sub.add_parser("init", 
-                        help="📄 Create new backlog file",
+                        help="Create new backlog file",
                         description="Create a new backlog.md file from the bundled template if it doesn't exist.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     ini.add_argument("--file", help="Backlog file to create (default: backlog.md)")
     ini.set_defaults(func=lambda args: cmd_init(args))
 
     ls = sub.add_parser("list", 
-                       help="📋 List epics and tasks",
+                       help="List epics and tasks",
                        description="List all epic and task IDs with their titles. Use filters to show specific subsets. Combine --state and --only for precise filtering.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     ls.add_argument("--state", choices=["open", "finished", "all"], default="open",
@@ -1837,7 +2160,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     ls.set_defaults(func=cmd_list)
 
     sh = sub.add_parser("show", 
-                       help="👀 Show detailed information",
+                       help="Show detailed information",
                        description="Show detailed information for one or more epic/task IDs. Accepts multiple IDs and supports both epic and task identifiers.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     sh.add_argument("id", nargs="*", help="Epic or Task numeric id(s) (0001)")
@@ -1854,7 +2177,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     sh.set_defaults(func=cmd_show)
 
     comp = sub.add_parser("completion", 
-                         help="🔧 Generate shell completion scripts",
+                         help="Generate shell completion scripts",
                          description="Generate shell completion scripts for bash, zsh, or fish. Install the generated script to enable tab completion for backlog commands.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     comp.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell type to generate completion for")
@@ -1913,13 +2236,16 @@ def load_config() -> dict[str, str]:
                             config[arg_name] = True
                         elif value.lower() in ('false', '0', 'no', 'off'):
                             config[arg_name] = False
-                        # else keep as string for auto/default
+                        else:
+                            # Keep as string for auto/default values
+                            config[arg_name] = value
                     elif arg_name == 'max_backups':
                         # Convert to int for max_backups
                         try:
                             config[arg_name] = int(value)
                         except ValueError:
-                            pass  # Keep original string if not a valid int
+                            # Keep as string if not a valid int
+                            config[arg_name] = value
                     else:
                         config[arg_name] = value
                     
@@ -1967,3 +2293,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     return func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
