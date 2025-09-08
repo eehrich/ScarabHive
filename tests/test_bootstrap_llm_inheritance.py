@@ -44,5 +44,5 @@ def test_web_research_agent_server_override():
     bootstrap_servers(cfg, registry)
 
     agent = registry.get("web_research_agent")
-    assert agent.agent_config.llm.provider == "openai"
-    assert agent.agent_config.llm.model == "gpt-5-mini"
+    assert agent.cfg.get("default_provider") == "openai"
+    assert agent.cfg.get("model") == "gpt-5-mini"

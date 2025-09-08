@@ -4,7 +4,7 @@ Tests for WebResearchAgent functionality.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from agent_system.servers.web_research_agent.server import WebResearchAgent, create_web_research_agent
+from plugins.web_research_agent.server import WebResearchAgent, create_web_research_agent
 from agent_system.servers.agent.server import Agent
 
 
