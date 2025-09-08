@@ -53,5 +53,9 @@ def main(argv: list[str] | None = None) -> None:
     print(json.dumps(summary))
 
 
-if __name__ == "__main__":
+def cli_main():
     main()
+
+
+if __name__ == "__main__":
+    cli_main()
