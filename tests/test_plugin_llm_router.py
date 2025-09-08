@@ -10,7 +10,8 @@ from plugins.llm_router.server import LLMRouterServer
 from plugins.llm_router.__main__ import main, build_parser, cli_main
 
 
-def test_llm_router_plugin_discovered():
+@pytest.mark.asyncio
+async def test_llm_router_plugin_discovered():
     repo_root = Path(__file__).resolve().parents[1]
     default_dir = repo_root / 'plugins'
     if not default_dir.exists():
@@ -27,7 +28,8 @@ def test_llm_router_plugin_discovered():
 class TestLLMRouterCLI:
     """Test the LLM router plugin CLI functionality."""
 
-    def test_build_parser_basic_args(self):
+    @pytest.mark.asyncio
+    async def test_build_parser_basic_args(self):
         """Test basic argument parsing."""
         parser = build_parser()
         args = parser.parse_args(['--message', 'Hello world'])
@@ -38,7 +40,8 @@ class TestLLMRouterCLI:
         assert args.server is False
         assert args.port == 8081
 
-    def test_build_parser_all_args(self):
+    @pytest.mark.asyncio
+    async def test_build_parser_all_args(self):
         """Test parsing with all arguments."""
         parser = build_parser()
         args = parser.parse_args([
@@ -59,14 +62,16 @@ class TestLLMRouterCLI:
         assert args.server is True
         assert args.port == 9001
 
-    def test_build_parser_prompt_alias(self):
+    @pytest.mark.asyncio
+    async def test_build_parser_prompt_alias(self):
         """Test that --prompt works as alias for --message."""
         parser = build_parser()
         args = parser.parse_args(['--prompt', 'Hello with prompt'])
 
         assert args.message == 'Hello with prompt'
 
-    def test_build_parser_defaults(self):
+    @pytest.mark.asyncio
+    async def test_build_parser_defaults(self):
         """Test default values."""
         parser = build_parser()
         args = parser.parse_args([])
@@ -79,7 +84,8 @@ class TestLLMRouterCLI:
         assert args.server is False
         assert args.port == 8081
 
-    def test_main_function_output(self, capsys):
+    @pytest.mark.asyncio
+    async def test_main_function_output(self, capsys):
         """Test main function output."""
         main(['--message', 'Test message', '--provider', 'ollama'])
 
@@ -100,7 +106,8 @@ class TestLLMRouterCLI:
 class TestLLMRouterServer:
     """Test the LLMRouterServer class functionality."""
 
-    def test_llm_router_server_initialization(self):
+    @pytest.mark.asyncio
+    async def test_llm_router_server_initialization(self):
         """Test LLM router server initialization."""
         server = LLMRouterServer("llm_router", {}, True)
         assert server.name == "llm_router"
@@ -108,7 +115,8 @@ class TestLLMRouterServer:
         assert server.default_provider == "openai"
         assert server.default_model == "gpt-4o-mini"
 
-    def test_llm_router_server_initialization_with_config(self):
+    @pytest.mark.asyncio
+    async def test_llm_router_server_initialization_with_config(self):
         """Test LLM router server initialization with config."""
         config = {
             "default_provider": "ollama",
@@ -123,7 +131,8 @@ class TestLLMRouterServer:
         assert server.default_model == "llama3"
         assert server.openai_api_key == "test_key"
 
-    def test_llm_router_server_schema(self):
+    @pytest.mark.asyncio
+    async def test_llm_router_server_schema(self):
         """Test LLM router server schema structure."""
         server = LLMRouterServer("llm_router", {}, True)
         schema = server.get_schema()
@@ -140,7 +149,8 @@ class TestLLMRouterServer:
         assert "provider" in params["properties"]
         assert "model" in params["properties"]
 
-    def test_llm_router_server_default_action(self):
+    @pytest.mark.asyncio
+    async def test_llm_router_server_default_action(self):
         """Test LLM router server default action."""
         server = LLMRouterServer("llm_router", {}, True)
         assert server.get_default_action() == "chat"
@@ -260,7 +270,8 @@ class TestLLMRouterServer:
 class TestLLMRouterPluginFactory:
     """Test the LLM router plugin factory function."""
 
-    def test_plugin_factory_basic(self):
+    @pytest.mark.asyncio
+    async def test_plugin_factory_basic(self):
         """Test basic plugin factory functionality."""
         from plugins.llm_router.plugin import PLUGIN_FACTORY
 
@@ -268,7 +279,8 @@ class TestLLMRouterPluginFactory:
         assert server.name == "llm_router"
         assert server.ssl_verify is True
 
-    def test_plugin_factory_with_config(self):
+    @pytest.mark.asyncio
+    async def test_plugin_factory_with_config(self):
         """Test plugin factory with configuration."""
         from plugins.llm_router.plugin import PLUGIN_FACTORY
 
@@ -280,7 +292,8 @@ class TestLLMRouterPluginFactory:
         assert server.default_provider == "openai"  # Should use openai when key is available
         assert server.default_model == "llama3"
 
-    def test_plugin_factory_name_parameter(self):
+    @pytest.mark.asyncio
+    async def test_plugin_factory_name_parameter(self):
         """Test plugin factory with custom name."""
         from plugins.llm_router.plugin import PLUGIN_FACTORY
 

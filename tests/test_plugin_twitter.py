@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from agent_system.mcp.plugins import discover_all_plugins
 
 
-def test_twitter_plugin_discovered():
+@pytest.mark.asyncio
+async def test_twitter_plugin_discovered():
     repo_root = Path(__file__).resolve().parents[1]
     default_dir = repo_root / 'plugins'
     if not default_dir.exists():

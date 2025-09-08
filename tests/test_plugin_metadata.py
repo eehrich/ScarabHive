@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from agent_system.mcp import plugins
 
 
-def test_discovered_plugin_has_metadata():
+@pytest.mark.asyncio
+async def test_discovered_plugin_has_metadata():
     # discover plugins under the project plugins/ directory
     default_dir = Path('plugins')
     if not default_dir.exists():

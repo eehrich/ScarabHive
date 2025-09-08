@@ -4,7 +4,8 @@ import pytest
 from plugins.web_research_agent.plugin import PLUGIN_NAME, PLUGIN_FACTORY
 
 
-def test_plugin_discovery():
+@pytest.mark.asyncio
+async def test_plugin_discovery():
     """Test that the plugin can be discovered and instantiated."""
     assert PLUGIN_NAME == "web_research_agent"
 
