@@ -1240,10 +1240,10 @@ _backlog_complete() {
         if [[ $cword -eq 2 ]]; then
             # Try to get IDs from backlog list --ids-only
             local ids
-            if command -v python >/dev/null 2>&1 && python -m scripts.backlog list --ids-only >/dev/null 2>&1; then
-                ids=$(python -m scripts.backlog list --ids-only 2>/dev/null | sed 's/\\r$//')
-            elif command -v backlog >/dev/null 2>&1; then
+            if command -v backlog >/dev/null 2>&1; then
                 ids=$(backlog list --ids-only 2>/dev/null | sed 's/\\r$//')
+            elif command -v python >/dev/null 2>&1 && python -m scripts.backlog list --ids-only >/dev/null 2>&1; then
+                ids=$(python -m scripts.backlog list --ids-only 2>/dev/null | sed 's/\\r$//')
             fi
             if [[ -n "$ids" ]]; then
                 COMPREPLY=( $(compgen -W "$ids" -- "$cur") )
