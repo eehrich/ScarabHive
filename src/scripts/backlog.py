@@ -16,8 +16,46 @@ import os
 import shutil
 import configparser
 from pathlib import Path
+import time
 
 __version__ = "0.1.0"
+
+
+class ProgressBar:
+    """Simple progress bar for terminal output."""
+    
+    def __init__(self, total: int, description: str = "", width: int = 50):
+        self.total = total
+        self.current = 0
+        self.description = description
+        self.width = width
+        self.start_time = time.time()
+    
+    def update(self, n: int = 1) -> None:
+        """Update progress by n steps."""
+        self.current += n
+        self._display()
+    
+    def _display(self) -> None:
+        """Display the progress bar."""
+        if self.total == 0:
+            return
+            
+        percentage = min(100, (self.current / self.total) * 100)
+        filled = int(self.width * (self.current / self.total))
+        bar = "█" * filled + "░" * (self.width - filled)
+        
+        elapsed = time.time() - self.start_time
+        if self.current > 0:
+            eta = elapsed * (self.total - self.current) / self.current
+            eta_str = f" ETA {eta:.1f}s"
+        else:
+            eta_str = ""
+        
+        print(f"\r{self.description} [{bar}] {percentage:.1f}% ({self.current}/{self.total}){eta_str}", end="", flush=True)
+        
+        if self.current >= self.total:
+            print()  # New line when complete
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -31,8 +69,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
         return 2
 
     try:
+        print("Reading backlog file...")
         lines = bl.read_file(path)
+        print(f"Parsing {len(lines)} lines...")
         backlog = bl.parse(lines)
+        print("Validating backlog structure...")
         errors = bl.validate_backlog(backlog)
 
         # Count items for summary
@@ -167,6 +208,11 @@ def _cmd_add_task_bulk(args: argparse.Namespace) -> int:
     created_tasks = []
     errors = []
     
+    # Show progress for bulk operations with many items
+    show_progress = len(data) > 5
+    if show_progress:
+        progress = ProgressBar(len(data), "Processing tasks")
+    
     for i, item in enumerate(data):
         try:
             epic_id = _pad_id_input(item['epic'])
@@ -197,6 +243,9 @@ def _cmd_add_task_bulk(args: argparse.Namespace) -> int:
             errors.append(f"Row {i+1}: {e}")
         except Exception as e:
             errors.append(f"Row {i+1}: Unexpected error: {e}")
+        
+        if show_progress:
+            progress.update()
     
     # Report results
     if created_tasks:
@@ -352,6 +401,11 @@ def _cmd_move_task_bulk(args: argparse.Namespace) -> int:
     moved_tasks = []
     errors = []
     
+    # Show progress for bulk operations with many items
+    show_progress = len(data) > 5
+    if show_progress:
+        progress = ProgressBar(len(data), "Moving tasks")
+    
     for i, item in enumerate(data):
         try:
             task_id = _pad_id_input(item['task'])
@@ -363,6 +417,9 @@ def _cmd_move_task_bulk(args: argparse.Namespace) -> int:
             errors.append(f"Row {i+1}: Task '{item.get('task', 'unknown')}' or epic '{item.get('to_epic', 'unknown')}' not found")
         except Exception as e:
             errors.append(f"Row {i+1}: Unexpected error: {e}")
+        
+        if show_progress:
+            progress.update()
     
     # Report results
     if moved_tasks:
@@ -477,6 +534,11 @@ def _cmd_add_epic_bulk(args: argparse.Namespace) -> int:
     created_epics = []
     errors = []
     
+    # Show progress for bulk operations with many items
+    show_progress = len(data) > 5
+    if show_progress:
+        progress = ProgressBar(len(data), "Creating epics")
+    
     for i, item in enumerate(data):
         try:
             forced = _pad_id_input(item.get('id')) if item.get('id') else None
@@ -487,6 +549,9 @@ def _cmd_add_epic_bulk(args: argparse.Namespace) -> int:
             errors.append(f"Row {i+1}: {ve}")
         except Exception as e:
             errors.append(f"Row {i+1}: Unexpected error: {e}")
+        
+        if show_progress:
+            progress.update()
     
     # Report results
     if created_epics:
@@ -874,10 +939,25 @@ def cmd_backup(args: argparse.Namespace) -> int:
         if not getattr(args, "yes", False):
             print("Prune backups will remove files. Re-run with --yes to confirm.")
             return 3
+        
+        print("Analyzing backups to prune...")
         removed = bl.prune_backups(path, keep=keep, older_than_days=older)
-        print("Pruned backups:")
-        for r in removed:
-            print(r)
+        
+        if removed:
+            print(f"Pruning {len(removed)} backup files...")
+            # Show progress for bulk file operations
+            if len(removed) > 5:
+                progress = ProgressBar(len(removed), "Removing backups")
+                for i, r in enumerate(removed):
+                    print(r)
+                    progress.update()
+            else:
+                print("Pruned backups:")
+                for r in removed:
+                    print(r)
+        else:
+            print("No backups to prune.")
+        
         return 0
 
     bak = bl.make_backup(path)

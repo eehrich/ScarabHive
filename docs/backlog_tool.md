@@ -82,6 +82,29 @@ backlog move-task --from-file moves.csv --write
 backlog add-task --from-file tasks.csv
 ```
 
+#### Progress Indicators
+
+For long-running operations, the CLI displays progress indicators to keep you informed:
+
+```bash
+# Bulk operations with 6+ items show progress bars
+backlog add-task --from-file large_tasks.csv --write
+# Shows: Processing tasks [████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 40.0% (12/30) ETA 2.1s
+
+# Validation shows progress messages
+backlog validate
+# Shows: Reading backlog file...
+#        Parsing 150 lines...
+#        Validating backlog structure...
+
+# Backup pruning shows progress for many files
+backlog backup --prune --keep 5 --yes
+# Shows: Analyzing backups to prune...
+#        Pruning 15 backup files...
+```
+
+Progress bars appear automatically for operations with 6+ items. For smaller operations, progress messages are shown instead.
+
 #### Viewing Backlog
 ```bash
 # List all open epics
