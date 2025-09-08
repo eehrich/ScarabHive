@@ -303,8 +303,24 @@ def cmd_edit(args: argparse.Namespace) -> int:
         k, v = s.split('=', 1)
         sets[k.strip().lower()] = v
 
+    # Interactive mode: prompt for fields if no sets provided
+    if not sets and getattr(args, 'interactive', False):
+        print("Available fields: title, status, added, closed, notes, description")
+        try:
+            field_input = input("Enter field to edit (or 'done' to finish): ").strip().lower()
+            while field_input and field_input != 'done':
+                if field_input in ['title', 'status', 'added', 'closed', 'notes', 'description']:
+                    value = input(f"Enter new value for {field_input}: ").strip()
+                    sets[field_input] = value
+                else:
+                    print("Invalid field. Available: title, status, added, closed, notes, description")
+                field_input = input("Enter field to edit (or 'done' to finish): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return 0
+
     if not sets:
-        print('Nothing to change; provide --set key=value', file=sys.stderr)
+        print('Nothing to change; provide --set key=value or use --interactive', file=sys.stderr)
         return 2
 
     # Helpers reused for each id.
@@ -898,9 +914,34 @@ def cmd_show(args: argparse.Namespace) -> int:
     legacy = getattr(args, 'legacy_id', None) or []
     positional = getattr(args, 'id', None) or []
     ids = list(positional) + list(legacy)
-    if not ids:
+    if not ids and not getattr(args, 'interactive', False):
         print('ERROR: no id provided', file=sys.stderr)
         return 2
+    
+    # Interactive mode: prompt user to select items
+    if not ids and getattr(args, 'interactive', False):
+        print("Available items:")
+        all_items = []
+        idx = 1
+        for e in backlog.epics_open + backlog.epics_finished:
+            print(f"{idx}. Epic {e.id}: {e.title}")
+            all_items.append(('epic', e.id))
+            idx += 1
+            for t in e.tasks:
+                print(f"{idx}. Task {t.id}: {t.title}")
+                all_items.append(('task', t.id))
+                idx += 1
+        try:
+            selections = input("Enter item numbers to show (comma-separated, e.g. 1,3,5): ").strip()
+            if not selections:
+                print("No selection made.")
+                return 0
+            selected_indices = [int(x.strip()) - 1 for x in selections.split(',') if x.strip().isdigit()]
+            ids = [all_items[i][1] for i in selected_indices if 0 <= i < len(all_items)]
+        except (ValueError, IndexError, EOFError):
+            print("Invalid input or no items selected.")
+            return 2
+    
     use_color_flag = getattr(args, "color", None)
     if use_color_flag is None:
         use_color = sys.stdout.isatty()
@@ -1710,6 +1751,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     u.add_argument("id", nargs="+", help="Epic or Task numeric id(s) (0001)")
     u.add_argument("--set", dest="set", action="append", help="Set a field: --set key=value (can be used multiple times)")
     u.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    u.add_argument("--interactive", action="store_true", help="Interactively prompt for fields to edit")
     u.add_argument("--write", action="store_true", help="⚠️  Persist changes to file (creates backup)")
     u.set_defaults(func=cmd_edit)
 
@@ -1794,6 +1836,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     # merge with positional ids inside `cmd_show`.
     sh.add_argument("--id", dest="legacy_id", nargs="+", help=argparse.SUPPRESS)
     sh.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    sh.add_argument("--interactive", action="store_true", help="Interactively select items to show if no IDs provided")
     # color tri-state: --color, --no-color; default None means auto-detect tty
     g2 = sh.add_mutually_exclusive_group()
     g2.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")

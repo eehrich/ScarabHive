@@ -1,12 +1,30 @@
 # Backlog CLI (backlog)
 
-A short reference for the project's minimal backlog CLI. The console entrypoint is the `backlog` script (module `scripts.backlog`). This document lists commands, flags, and examples for common workflows.
+A short reference for the project's minimal backlog CLI. The console entrypoint is the `backlog` script (module `scripts.backlog`). This document lists commands, flags, and examples for common wor### edit
 
-## Quick Start
+Usage
+
+    backlog edit <id> [<id> ...] --set key=value [--set key=value ...] [--file <path>] [--interactive] [--write]
+
+Description
+- Update fields on one or more epics/tasks in a single command. All ids receive the same set of key=value updates.
+- Performs a single write + backup when `--write` is provided (atomic across all ids).
+- With `--interactive`, if no `--set` options are provided, prompts the user to enter fields and values interactively.
+
+Supported keys for tasks: title, status, added, closed, notes, description
+Supported keys for epics: title, status, added, closed, notes, descriptionQuick Start
 
 ### First Time Setup
 ```bash
-# Create a new backlog file from template
+# Create a new backlog f### show
+
+Usage
+
+    backlog show <id> [<id> ...] [--file <path>] [--interactive] [--color|--no-color]
+
+Description
+- Show detailed information for one or more epic/task IDs.
+- With `--interactive`, if no IDs are provided, prompts the user to select items from a numbered list. template
 backlog init
 
 # Validate the new backlog

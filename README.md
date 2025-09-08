@@ -183,6 +183,7 @@ Dry-run vs write semantics (backlog CLI):
 
 - Dry-run (default): most `backlog` subcommands (for example `add-task`, `add-epic`, `move-task`, `update-status`, `fix-format`) show what would change without modifying files. This mode is safe and suitable for CI / automated checks.
 - Write (`--write`): when provided, the CLI will perform an atomic write to the target backlog file. Before the write, a timestamped backup is created in a `.backups` directory adjacent to the backlog file. When using `--write`, some arguments that are optional for dry-run (for example `--epic` on `add-task`) become required; missing required information for a write will produce a non-zero exit code and an explanatory error message.
+- Interactive (`--interactive`): available for `show` and `edit` commands. For `show`, prompts to select items from a list if no IDs provided. For `edit`, prompts for fields and values if no `--set` options given.
 
 Always run subcommands in dry-run first to inspect changes, then re-run with `--write` to persist when you're confident.
 - Record short "lessons learned" entries in `.prompts/lessons_learned.md` when a non-trivial architectural decision or incident occurs.
