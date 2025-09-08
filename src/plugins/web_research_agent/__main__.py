@@ -56,5 +56,9 @@ async def async_main():
             print(f"Error: {e}")
 
 
-if __name__ == "__main__":
+def cli_main():
     asyncio.run(async_main())
+
+
+if __name__ == "__main__":
+    cli_main()
