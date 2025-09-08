@@ -1,113 +1,40 @@
-"""A robust, tolerant markdown backlog parser and writer with comprehensive error handling.
+"""Main parser module for backlog markdown parsing and manipulation.
 
-The parser is conservative: it identifies top-level sections (Epics - open,
-Epics - finished) and parses epics/tasks with minimal structure. It intentionally
-keeps unknown content as raw lines so re-serialization preserves non-modeled
-content.
-
-Features:
-- Robust error handling and recovery
-- Comprehensive validation
-- Atomic file operations
-- Backup and restore capabilities
-- Detailed logging for debugging
+This module serves as the main entry point for parsing backlog files and
+provides access to all parsing, building, and manipulation functionality.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, cast
-import re
-import os
 import logging
-from datetime import date
-from . import values
+import os
+import re
 import shutil
 import time
+from datetime import date
+from typing import List, cast, Dict, Any, Optional, Tuple
+
+from .models import Backlog, Epic, Task
+from .file_ops import read_file, safe_write, make_backup, list_backups, restore_backup, prune_backups
+from .builder import build_markdown
+from .operations import add_task_to_epic, add_epic_to_backlog, find_task, move_task, update_task_status
+from .validation import validate_backlog
+from .fixes import (
+    reassign_duplicate_task_ids,
+    reassign_epic_task_collisions,
+    normalize_backlog_format,
+    auto_fix_date_formats,
+    auto_fix_id_formats,
+    auto_complete_epics,
+)
+from . import values
 
 # Set up logger
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class Task:
-    id: str
-    title: str
-    status: str
-    # multiline description (optional)
-    description: List[str] = field(default_factory=list)
-    # timestamps
-    added: Optional[str] = None
-    closed: Optional[str] = None
-    # list of note lines
-    notes: List[str] = field(default_factory=list)
-    # preserve any unknown lines so we can round-trip
-    raw_lines: List[str] = field(default_factory=list)
-
-
-@dataclass
-class Epic(Task):
-    # the tasks contained by this epic
-    tasks: List[Task] = field(default_factory=list)
-
-
-@dataclass
-class Backlog:
-    header: List[str]
-    epics_open: List[Epic]
-    epics_finished: List[Epic]
-    footer: List[str]
-
-
+# Regular expressions for parsing
 RE_EPIC_LINE = re.compile(r"^\s*(?:-\s*)?(?:☐|✅|❌|⏳|\[ ?\])?\s*Epic\s+(\d+):\s*(.*)$")
 RE_TASK_LINE = re.compile(r"^\s*(?:-\s*)?(?:☐|✅|❌|⏳|\[ ?\])?\s*Task\s+(\d+):\s*(.*)$")
 RE_FIELD_LINE = re.compile(r"^\s*-\s*(\w+):\s*(.*)$")
-
-
-def read_file(path: str) -> List[str]:
-    """Read a file and return its lines with robust error handling.
-
-    Args:
-        path: Path to the file to read
-
-    Returns:
-        List of lines from the file
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        IOError: If reading fails
-        UnicodeDecodeError: If file encoding is invalid
-    """
-    if not isinstance(path, str) or not path.strip():
-        raise ValueError("Invalid file path provided")
-
-    logger.debug(f"Reading file: {path}")
-
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        # Ensure all lines end with newlines for consistency
-        processed_lines = []
-        for line in lines:
-            if not line.endswith('\n'):
-                line += '\n'
-            processed_lines.append(line)
-
-        logger.info(f"Successfully read {len(processed_lines)} lines from {path}")
-        return processed_lines
-
-    except FileNotFoundError:
-        logger.error(f"File not found: {path}")
-        raise
-    except UnicodeDecodeError as e:
-        logger.error(f"Encoding error reading {path}: {e}")
-        raise
-    except IOError as e:
-        logger.error(f"IO error reading {path}: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error reading {path}: {e}")
-        raise IOError(f"Failed to read file {path}: {e}") from e
 
 
 def parse(backlog_lines: List[str]) -> Backlog:
@@ -145,9 +72,9 @@ def parse(backlog_lines: List[str]) -> Backlog:
 
     section = "header"
     seen_epics_section = False
-    current_epic: Optional[Epic] = None
-    current_task: Optional[Task] = None
-    current_collect: Optional[Tuple[str, int, str]] = None
+    current_epic = None
+    current_task = None
+    current_collect = None
     parse_errors: List[str] = []
 
     try:
@@ -374,6 +301,26 @@ def parse(backlog_lines: List[str]) -> Backlog:
         # Don't fail completely, but log the issues
 
     return Backlog(header=header, epics_open=epics_open, epics_finished=epics_finished, footer=footer)
+
+
+# Re-export all functions for backward compatibility
+__all__ = [
+    # Models
+    'Backlog', 'Epic', 'Task',
+    # File operations
+    'read_file', 'safe_write', 'make_backup', 'list_backups', 'restore_backup', 'prune_backups',
+    # Parsing
+    'parse',
+    # Building
+    'build_markdown',
+    # Operations
+    'add_task_to_epic', 'add_epic_to_backlog', 'find_task', 'move_task', 'update_task_status',
+    # Validation
+    'validate_backlog',
+    # Fixes
+    'reassign_duplicate_task_ids', 'reassign_epic_task_collisions', 'normalize_backlog_format',
+    'auto_fix_date_formats', 'auto_fix_id_formats', 'auto_complete_epics',
+]
 
 
 def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional[str] = None, forced_id: Optional[str] = None) -> Task:
