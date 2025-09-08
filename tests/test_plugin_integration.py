@@ -22,8 +22,8 @@ from typing import Any, Dict, List
 import pytest
 import yaml
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# Temporarily removed sys.path manipulation to avoid conflicts
+# sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
 @pytest.fixture
@@ -44,7 +44,9 @@ def temp_workspace():
         if source_plugins.exists():
             for plugin_dir in source_plugins.iterdir():
                 if plugin_dir.is_dir():
+                    # Copy to both locations for compatibility
                     shutil.copytree(plugin_dir, temp_path / "plugins" / plugin_dir.name)
+                    shutil.copytree(plugin_dir, temp_path / "src" / "plugins" / plugin_dir.name)
 
         # Create test configuration files
         create_test_config(temp_path)
@@ -83,11 +85,19 @@ def create_test_config(workspace_path: Path):
 def run_cli_command(workspace_path: Path, command: List[str], env: Dict[str, str] = None) -> subprocess.CompletedProcess:
     """Run a CLI command in the test workspace."""
     cmd_env = os.environ.copy()
-    cmd_env["PYTHONPATH"] = str(workspace_path / "src")
+    # Include both the workspace src and the original src directory
+    original_src = Path(__file__).parent.parent / "src"
+    path_sep = ";" if os.name == "nt" else ":"
+    cmd_env["PYTHONPATH"] = f"{workspace_path / 'src'}{path_sep}{original_src}"
     # Ensure we're using the test workspace and not the main project
     cmd_env["PWD"] = str(workspace_path)
     if env:
         cmd_env.update(env)
+
+    # Use the same Python executable that's running pytest
+    python_exe = sys.executable
+    if command[0] == "python":
+        command[0] = python_exe
 
     # Change to workspace directory
     result = subprocess.run(

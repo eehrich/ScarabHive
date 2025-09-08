@@ -1,38 +1,53 @@
 #!/usr/bin/env python3
-"""DateTime MCP Server main entry point (plugin-local).
+"""CLI entrypoint for the datetime plugin.
 
-This is the CLI entry for the datetime plugin. It mirrors the original
-`agent_system.servers.datetime.__main__` behavior but lives under
-`plugins.datetime` so the implementation is contained in the plugin.
+Provides a help/CLI surface so `python -m plugins.datetime --help` works
+for tooling and tests.
 """
 
 from __future__ import annotations
 
-import asyncio
 import argparse
-from .server import DateTimeServer
+import asyncio
+import json
+from typing import Any
 
 
-async def main():
-    parser = argparse.ArgumentParser(description="DateTime MCP Server")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="plugins.datetime", description="DateTime MCP Server")
+
+    # Core datetime parameters
     parser.add_argument("--timezone", default="UTC", help="Timezone for datetime operations")
     parser.add_argument("--format", default="%Y-%m-%d %H:%M:%S", help="Datetime format string")
-    parser.add_argument("--server", action="store_true", help="Run as HTTP server")
-    parser.add_argument("--port", type=int, default=9003, help="Server port")
+
+    # Server mode options
+    parser.add_argument("--server", action="store_true", help="Run in server mode (MCP server)")
+    parser.add_argument("--port", type=int, default=9003, help="Port to listen on when in server mode")
+
+    # Misc
+    parser.add_argument("--version", action="version", version="datetime plugin 1.0.0")
+
+    return parser
+
+
+async def async_main():
+    """Async main function for actual execution."""
+    parser = build_parser()
     args = parser.parse_args()
-    
+
+    from .server import DateTimeServer
     server = DateTimeServer()
-    
+
     if args.server:
         print(f"Starting DateTime MCP Server on port {args.port}")
         try:
             # Import lazily because the test subprocess may not have the full package on sys.path
-            from agent_system.http_server import serve_mcp_server
+            from agent_system.servers.http_server import serve_mcp_server
         except Exception:
             print("serve_mcp_server not available; cannot start HTTP server in this environment")
             return
 
-        serve_mcp_server(server, port=args.port)
+        await serve_mcp_server(server, port=args.port)
     else:
         try:
             # Show current time
@@ -41,7 +56,7 @@ async def main():
                 "format": args.format
             })
             print(f"Current time ({args.timezone}): {result}")
-            
+
             # Show available functions via schema
             schema = server.get_schema()
             print("\nAvailable datetime functions:")
@@ -53,9 +68,27 @@ async def main():
             print(f"Error: {e}")
 
 
+def main(argv: list[str] | None = None) -> None:
+    """Main function for test/validation purposes."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # For tests, print a concise summary showing that the parser accepted the args.
+    summary: dict[str, Any] = {
+        "description": "DateTime MCP Server",
+        "timezone": args.timezone,
+        "format": args.format,
+        "server_mode": args.server,
+        "port": args.port,
+    }
+
+    print("DateTime MCP Server")
+    print(json.dumps(summary))
+
+
 def cli_main():
     """Synchronous entry point for console script."""
-    asyncio.run(main())
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
