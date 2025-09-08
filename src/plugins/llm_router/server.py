@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...llm.clients import ChatMessage, make_llm
-from ...mcp.base import MCPServer
+from agent_system.llm.clients import ChatMessage, make_llm
+from agent_system.mcp.base import MCPServer
 
 
 class LLMRouterServer(MCPServer):
@@ -12,7 +12,7 @@ class LLMRouterServer(MCPServer):
         self.config = config or {}
         # Store base configuration but don't create a fixed client
         self.default_provider = self.config.get("default_provider", "openai")
-        self.default_model = self.config.get("model", "gpt-5-mini")
+        self.default_model = self.config.get("model", "gpt-4o-mini")
         self.openai_api_key = self.config.get("openai_api_key")
         self.ollama_url = self.config.get("ollama_url")
         self.context_window = self.config.get("context_window")
@@ -36,21 +36,21 @@ class LLMRouterServer(MCPServer):
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool == "chat":
-            # Extract provider and model from parameters
-            provider = params.get("provider")
-            model = params.get("model")
-            
-            # Create appropriate client
-            client = self._make_client(provider, model)
-            
-            # Handle both message formats
+            # Handle both message formats first
             if "messages" in params:
                 messages = [ChatMessage(**m) for m in params["messages"]]
             elif "message" in params:
                 messages = [ChatMessage(role="user", content=params["message"])]
             else:
                 return {"error": "No message or messages provided"}
-            
+
+            # Extract provider and model from parameters
+            provider = params.get("provider")
+            model = params.get("model")
+
+            # Create appropriate client
+            client = self._make_client(provider, model)
+
             try:
                 content = await client.chat(messages)
                 return {
@@ -78,7 +78,7 @@ class LLMRouterServer(MCPServer):
                     "properties": {
                         "action": {"type": "string", "enum": ["chat"], "description": "Use 'chat' to send message to LLM"},
                         "messages": {
-                            "type": "array", 
+                            "type": "array",
                             "description": "Array of message objects with role and content",
                             "items": {
                                 "type": "object",
