@@ -14,6 +14,8 @@ import sys
 from datetime import date
 import os
 import shutil
+import configparser
+from pathlib import Path
 
 __version__ = "0.1.0"
 
@@ -541,6 +543,9 @@ def cmd_backup(args: argparse.Namespace) -> int:
     if getattr(args, "prune", False):
         # pruning behavior
         keep = getattr(args, "keep", None)
+        # Use max_backups config as default if keep not specified
+        if keep is None:
+            keep = getattr(args, "max_backups", 10)
         older = getattr(args, "older_than", None)
         if getattr(args, "dry_run", False):
             removed = bl.prune_backups(path, keep=keep, older_than_days=older)
@@ -1699,6 +1704,10 @@ FILES: Default is backlog.md; use --file to specify alternative.
     )
     p.add_argument("--version", action="store_true", help="Show version and exit")
     p.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    p.add_argument("--color", dest="color", action="store_true", help="Enable ANSI colorized output")
+    p.add_argument("--no-color", dest="color", action="store_false", help="Disable ANSI colorized output")
+    p.add_argument("--backup-dir", help="Directory to store backup files (default: same as backlog file)")
+    p.add_argument("--max-backups", type=int, help="Maximum number of backups to keep (default: 10)")
 
     sub = p.add_subparsers(dest="cmd", metavar="COMMAND", help="Available commands:")
 
@@ -1707,7 +1716,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
                       description="Validate the backlog file for common issues like duplicate IDs, invalid dates, and malformed entries.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     v.add_argument("--verbose", action="store_true", help="Show detailed validation statistics")
-    v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
+    v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)", default=argparse.SUPPRESS)
     v.set_defaults(func=cmd_validate)
 
     a = sub.add_parser("add-task", 
@@ -1856,9 +1865,79 @@ FILES: Default is backlog.md; use --file to specify alternative.
     return p
 
 
+def load_config() -> dict[str, str]:
+    """Load configuration from .backlogrc file if it exists.
+    
+    Returns a dictionary of configuration values that can be used as defaults
+    for command line arguments.
+    """
+    config = {}
+    
+    # Look for .backlogrc in current directory first, then home directory
+    config_paths = [
+        Path.cwd() / ".backlogrc",
+        Path.home() / ".backlogrc"
+    ]
+    
+    config_file = None
+    for path in config_paths:
+        if path.exists():
+            config_file = path
+            break
+    
+    if config_file is None:
+        return config
+    
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(config_file)
+        
+        if 'backlog' in parser:
+            section = parser['backlog']
+            
+            # Map config keys to command line argument names
+            config_mappings = {
+                'default_file': 'file',
+                'default_color': 'color',
+                'backup_dir': 'backup_dir', 
+                'max_backups': 'max_backups'
+            }
+            
+            for config_key, arg_name in config_mappings.items():
+                if config_key in section and section[config_key]:
+                    value = section[config_key]
+                    
+                    # Handle boolean values for color
+                    if arg_name == 'color':
+                        if value.lower() in ('true', '1', 'yes', 'on'):
+                            config[arg_name] = True
+                        elif value.lower() in ('false', '0', 'no', 'off'):
+                            config[arg_name] = False
+                        # else keep as string for auto/default
+                    elif arg_name == 'max_backups':
+                        # Convert to int for max_backups
+                        try:
+                            config[arg_name] = int(value)
+                        except ValueError:
+                            pass  # Keep original string if not a valid int
+                    else:
+                        config[arg_name] = value
+                    
+    except Exception:
+        # If config file is malformed, just ignore it
+        pass
+        
+    return config
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv or sys.argv[1:])
+    
+    # Load configuration from .backlogrc
+    config = load_config()
+    
     parser = build_parser()
+    
     if not argv:
         parser.print_help()
         return 0
@@ -1867,12 +1946,24 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     args = parser.parse_args(argv)
+    
+    # Apply configuration defaults for arguments that weren't provided
+    # We can detect this by checking if the argument value matches the action's default
+    for key, value in config.items():
+        if hasattr(args, key):
+            # Check if this argument was provided on command line
+            # If it matches the default, it probably wasn't provided
+            action = None
+            for a in parser._actions:
+                if hasattr(a, 'dest') and a.dest == key:
+                    action = a
+                    break
+            
+            if action and getattr(args, key) == action.default:
+                setattr(args, key, value)
+    
     func = getattr(args, "func", None)
     if func is None:
         parser.print_help()
         return 0
     return func(args)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
