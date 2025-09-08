@@ -99,13 +99,6 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
 
             agent_registry = MCPRegistry()  # Empty registry for this agent
             registry.register(key, Agent(key, agent_cfg, agent_registry, server_cfg, ssl_verify=config.network.ssl_verify))
-        elif typ == "web_research_agent":
-            # Specialized web research agent
-            from .web_research_agent.server import WebResearchAgent
-            # Build config that inherits top-level LLM but allows server overrides
-            wr_cfg = server_cfg or {}
-            # If server specifies LLM options, pass them into WebResearchAgent via config
-            registry.register(key, WebResearchAgent(key, wr_cfg, ssl_verify=config.network.ssl_verify))
         else:
             # ignore unknown for now
             continue
