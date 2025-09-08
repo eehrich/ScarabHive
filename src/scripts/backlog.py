@@ -1724,7 +1724,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
 
     ae = sub.add_parser("add-epic", 
                        help="📋 Create a new epic",
-                       description="Create a new epic and add it to the backlog. Use --write to persist changes. The epic will be added with 'open' status and today's date.")
+                       description="Add a new epic to the backlog. Use --write to persist changes. The epic will be added with 'open' status and today's date.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     ae.add_argument("--title", required=True, help="Epic title")
     ae.add_argument("--id", dest="forced_id", help="Force a specific Epic id (numeric or string). Will error if id exists")
@@ -1733,7 +1733,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     ae.set_defaults(func=cmd_add_epic)
 
     m = sub.add_parser("move-task", 
-                      help="↔️  Move a task between epics",
+                      help="↔️ Move a task between epics",
                       description="Move an existing task from one epic to another. Use --write to persist changes.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     m.add_argument("--task", required=True, help="Task id to move")
@@ -1745,7 +1745,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     # Replace legacy update-status with a more general `edit` command that
     # can set arbitrary fields on epics or tasks.
     u = sub.add_parser("edit", 
-                      help="✏️  Edit epic or task fields",
+                      help="✏️ Edit epic or task fields",
                       description="Update fields on one or more epics/tasks. Supports bulk updates with --set key=value. Use multiple --set for multiple fields.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     u.add_argument("id", nargs="+", help="Epic or Task numeric id(s) (0001)")
