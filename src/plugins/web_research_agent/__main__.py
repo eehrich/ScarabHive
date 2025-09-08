@@ -24,9 +24,9 @@ async def async_main():
     server = WebResearchAgent("web_research_agent")
 
     if args.server:
-        from agent_system.http_server import serve_mcp_server
+        from agent_system.servers.http_server import serve_mcp_server
         print(f"Starting Web Research Agent MCP Server on port {args.port}")
-        serve_mcp_server(server, port=args.port)
+        await serve_mcp_server(server, port=args.port)
     else:
         try:
             if args.action == "research":

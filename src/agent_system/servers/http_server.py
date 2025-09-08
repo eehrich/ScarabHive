@@ -15,7 +15,7 @@ class CallRequest(BaseModel):
     params: dict[str, Any] = {}
 
 
-def serve_mcp_server(server: MCPServer, host: str | None = None, port: int | None = None) -> None:
+async def serve_mcp_server(server: MCPServer, host: str | None = None, port: int | None = None) -> None:
     app = FastAPI(title=f"MCP Server: {server.name}")
 
     @app.get("/health")
@@ -26,4 +26,10 @@ def serve_mcp_server(server: MCPServer, host: str | None = None, port: int | Non
     async def call(req: CallRequest):
         return await server.call(req.tool, req.params)
 
-    uvicorn.run(app, host=host or os.getenv("HOST", "127.0.0.1"), port=port or int(os.getenv("PORT", "9000")))
+    config = uvicorn.Config(
+        app,
+        host=host or os.getenv("HOST", "127.0.0.1"),
+        port=port or int(os.getenv("PORT", "9000"))
+    )
+    server_uvicorn = uvicorn.Server(config)
+    await server_uvicorn.serve()
