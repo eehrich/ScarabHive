@@ -67,7 +67,7 @@ class TestMCPServerCLI:
     def test_llm_router_cli_help(self):
         """Test LLM Router server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "agent_system.servers.llm_router",
+            sys.executable, "-m", "plugins.llm_router",
             "--help"
         ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -138,18 +138,14 @@ class TestMCPServerCLI:
         ]
         
         for server in servers:
-            # Use plugins package for datetime, duckduckgo_search, weather and yahoo_finance;
-            # otherwise import the legacy server shim under agent_system.servers.
-            # Prefer plugin packages for migrated servers; fall back to legacy server shim
-            # Try importing the plugin package first, fall back to legacy shim.
+            # All servers have been migrated to plugins
             py = (
                 "import importlib\n"
                 f"try:\n"
                 f"    import plugins.{server}.__main__\n"
                 f"    print('OK')\n"
-                f"except Exception:\n"
-                f"    import agent_system.servers.{server}.__main__\n"
-                f"    print('OK')\n"
+                f"except Exception as e:\n"
+                f"    print(f'FAILED: {{e}}')\n"
             )
 
             result = subprocess.run([
