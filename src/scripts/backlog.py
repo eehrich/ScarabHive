@@ -1130,6 +1130,12 @@ EXAMPLES:
     backlog add-task --title "Fix bug" --epic 0001 --write
     backlog edit 0002 --set status=done --write
     backlog move-task --task 0003 --to-epic 0004 --write
+    backlog add-epic --title "New Feature" --write
+
+  Bulk Operations:
+    backlog edit 0001 0002 --set status=done --write  # Update multiple items
+    backlog list --state all --only tasks             # List all tasks
+    backlog show 0001 0002 0003                       # Show multiple items
 
   Safety & Recovery:
     backlog backup --dry-run            # Preview backup creation
