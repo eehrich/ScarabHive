@@ -20,5 +20,17 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           pip install -e .
+      - name: Verify console scripts
+        run: |
+          . .venv/bin/activate
+          # Test that all MCP console scripts are available and working
+          for script in mcp-duckduckgo-search mcp-google-search mcp-yahoo-finance mcp-twitter-search mcp-llm-router mcp-weather mcp-datetime mcp-web-research-agent mcp-web-scraper mcp-http-server; do
+            echo "Testing $script --help"
+            if ! $script --help > /dev/null 2>&1; then
+              echo "ERROR: $script failed"
+              exit 1
+            fi
+          done
+          echo "All console scripts verified successfully"
       - name: Run tests
         run: . .venv/bin/activate; python -m pytest -q
