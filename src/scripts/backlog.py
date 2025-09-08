@@ -1118,7 +1118,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="backlog",
-        description="Backlog CLI - A lightweight tool for managing project backlogs in Markdown format.",
+        description="Backlog CLI - A lightweight tool for managing project backlogs in Markdown format. Commands are grouped by function: management (add-task, add-epic, edit, move-task), viewing (list, show, validate), maintenance (backup, undo, check-ids, fix-format), legacy (update, init).",
         epilog="""
 EXAMPLES:
   Basic Operations:
