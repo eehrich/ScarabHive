@@ -10,10 +10,13 @@ from __future__ import annotations
 import asyncio
 import argparse
 import json
+import logging
+import sys
 from typing import Any
 
 from .server import LLMRouterServer
 from agent_system.servers.http_server import serve_mcp_server
+from agent_system.utils.logging import setup_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def async_main():
+    # Setup logging for proper color output
+    setup_logging(True, "INFO", "logs/llm_router.log")
+    
     parser = build_parser()
     args = parser.parse_args()
 
@@ -71,6 +77,9 @@ async def async_main():
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Setup logging for proper color output
+    setup_logging(True, "INFO", "logs/llm_router.log")
+    
     parser = build_parser()
     args = parser.parse_args(argv)
 

@@ -6,9 +6,13 @@ from __future__ import annotations
 import asyncio
 import argparse
 from plugins.google_search.server import GoogleSearchServer
+from agent_system.utils.logging import setup_logging
 
 
 async def async_main():
+    # Setup logging for proper color output
+    setup_logging(True, "INFO", "logs/google_search.log")
+    
     parser = argparse.ArgumentParser(description="Google Search MCP Server")
     parser.add_argument("--query", default="Python programming", help="Search query")
     parser.add_argument("--max-results", type=int, default=5, help="Maximum number of results")

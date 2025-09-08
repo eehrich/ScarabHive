@@ -2,17 +2,54 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from typing import Optional
 
 
 class SafeUnicodeFormatter(logging.Formatter):
-    """Formatter that safely handles Unicode characters by replacing problematic ones."""
+    """Formatter that safely handles Unicode characters and preserves ANSI colors on TTY."""
+    
+    # ANSI escape sequence pattern
+    ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[mG]')
+    
+    def __init__(self, fmt=None, datefmt=None, style='%', preserve_colors=True):
+        super().__init__(fmt, datefmt, style)
+        self.preserve_colors = preserve_colors
     
     def format(self, record):
         # Get the formatted message
         formatted = super().format(record)
-        # Replace problematic Unicode characters with safe alternatives
+        
+        # Check if we should preserve ANSI colors (TTY output)
+        is_tty = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+        if self.preserve_colors and is_tty:
+            # Preserve ANSI escape sequences but still handle Unicode issues
+            try:
+                # Only replace problematic characters, not ANSI codes
+                # Split by ANSI codes, clean each part, then rejoin
+                parts = self.ANSI_ESCAPE.split(formatted)
+                cleaned_parts = []
+                for part in parts:
+                    if part:  # Skip empty parts from split
+                        try:
+                            cleaned_parts.append(part.encode('utf-8', errors='replace').decode('utf-8'))
+                        except Exception:
+                            cleaned_parts.append(part.encode('ascii', errors='replace').decode('ascii'))
+                
+                # Rejoin with ANSI codes (they're preserved in the split result)
+                result = formatted
+                for i, part in enumerate(parts):
+                    if i < len(cleaned_parts):
+                        result = result.replace(part, cleaned_parts[i], 1)
+                return result
+            except Exception:
+                pass
+        
+        # For file output or when not preserving colors, strip ANSI codes
+        formatted = self.ANSI_ESCAPE.sub('', formatted)
+        
+        # Handle Unicode characters
         try:
             # Try to encode with the target encoding and replace errors
             formatted = formatted.encode('utf-8', errors='replace').decode('utf-8')
@@ -33,6 +70,14 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     if not enabled:
         return None
 
+    # Initialize colorama on interactive TTYs so ANSI renders on Windows
+    try:
+        if sys.stdout.isatty():
+            import colorama
+            colorama.init()
+    except Exception:
+        pass
+
     os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
     lvl = getattr(logging, level.upper(), logging.INFO)
 
@@ -46,17 +91,18 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     # Capture everything at root; handlers will filter by their levels
     root.setLevel(logging.DEBUG)
 
-    # File handler (truncate on each start)
+    # File handler (truncate on each start) - strip ANSI codes for files
     file_handler = logging.FileHandler(file_path, mode="w", encoding="utf-8")
     file_handler.setLevel(lvl)
-    formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-    file_handler.setFormatter(formatter)
+    file_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=False)
+    file_handler.setFormatter(file_formatter)
     root.addHandler(file_handler)
 
-    # Console handler (level adjusted by CLI depending on --verbose)
+    # Console handler (level adjusted by CLI depending on --verbose) - preserve ANSI codes for TTY
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(lvl)
-    console_handler.setFormatter(formatter)
+    console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=True)
+    console_handler.setFormatter(console_formatter)
     # Set encoding to handle Unicode characters properly
     if hasattr(console_handler.stream, 'reconfigure'):
         try:

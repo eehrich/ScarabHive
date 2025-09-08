@@ -6,6 +6,7 @@ import sys
 from typing import Any
 
 from agent_system.mcp.plugins import discover_all_plugins
+from agent_system.utils.logging import setup_logging
 
 from .server import HTTPServer
 
@@ -66,6 +67,9 @@ Examples:
 
 def cli_main() -> None:
     """Main CLI entry point."""
+    # Setup logging for proper color output
+    setup_logging(True, "INFO", "logs/http_server.log")
+    
     parser = build_parser()
     args = parser.parse_args()
 

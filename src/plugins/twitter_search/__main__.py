@@ -3,9 +3,13 @@
 
 import asyncio
 import argparse
+from agent_system.utils.logging import setup_logging
 
 
 async def main():
+    # Setup logging for proper color output
+    setup_logging(True, "INFO", "logs/twitter_search.log")
+    
     parser = argparse.ArgumentParser(description="Twitter Search MCP Server")
     parser.add_argument("--query", default="Python", help="Search query")
     parser.add_argument("--max-results", type=int, default=10, help="Maximum number of tweets")

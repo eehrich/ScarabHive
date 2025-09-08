@@ -3,8 +3,13 @@
 import argparse
 import asyncio
 
+from agent_system.utils.logging import setup_logging
+
 
 def main():
+    # Setup logging for proper color output
+    setup_logging(True, "INFO", "logs/web_scraper.log")
+    
     parser = argparse.ArgumentParser(description="Web Scraper MCP Server")
     parser.add_argument("--url", default="https://example.com", help="URL to scrape for testing")
     parser.add_argument("--max-chars", type=int, default=1000, help="Maximum characters to return")
@@ -14,7 +19,7 @@ def main():
 
     # Lazy imports
     from .plugin import PLUGIN_FACTORY
-    from agent_system.http_server import serve_mcp_server
+    from agent_system.servers.http_server import serve_mcp_server
 
     server = PLUGIN_FACTORY("web_scraper", {})
 
