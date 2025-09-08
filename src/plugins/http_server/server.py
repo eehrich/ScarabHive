@@ -13,6 +13,8 @@ from agent_system.mcp.base import MCPServer
 class CallRequest(BaseModel):
     tool: str
     params: dict[str, Any] = {}
+    provider: str | None = None
+    model: str | None = None
 
 
 class HTTPServer(MCPServer):
@@ -73,7 +75,29 @@ class HTTPServer(MCPServer):
 
         @app.post("/call")
         async def call(req: CallRequest):
-            return await self.wrapped_server.call(req.tool, req.params)
+            # Prepare params with provider/model overrides if specified
+            call_params = dict(req.params)
+            if req.provider:
+                call_params["provider"] = req.provider
+            if req.model:
+                call_params["model"] = req.model
+
+            try:
+                return await self.wrapped_server.call(req.tool, call_params)
+            except ValueError as e:
+                if "API_KEY" in str(e) or "api_key" in str(e):
+                    return {
+                        "error": "LLM provider requires API key configuration",
+                        "details": str(e),
+                        "suggestion": "Configure API keys or use a local provider like Ollama"
+                    }
+                raise
+            except Exception as e:
+                return {
+                    "error": f"Call failed: {str(e)}",
+                    "tool": req.tool,
+                    "params": call_params
+                }
 
         return app
 

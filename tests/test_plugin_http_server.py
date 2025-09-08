@@ -121,6 +121,63 @@ class TestHTTPServer:
         # Verify the call was forwarded correctly
         mock_server.call.assert_called_once_with("test_tool", {"key": "value"})
 
+    @pytest.mark.asyncio
+    async def test_create_fastapi_app_call_endpoint_with_provider_override(self):
+        """Test FastAPI app call endpoint with provider/model override."""
+        # Create mock wrapped server
+        mock_server = AsyncMock()
+        mock_server.name = "test_server"
+        mock_server.call.return_value = {"result": "ollama_response"}
+
+        # Create HTTP server and wrap it
+        server = HTTPServer("http_server", {}, True)
+        server.wrap_server(mock_server)
+
+        # Create FastAPI app and test client
+        app = server.create_fastapi_app()
+        client = TestClient(app)
+
+        # Test call endpoint with provider/model override
+        response = client.post("/call", json={
+            "tool": "chat",
+            "params": {"message": "Hello"},
+            "provider": "ollama",
+            "model": "llama3"
+        })
+        assert response.status_code == 200
+        assert response.json() == {"result": "ollama_response"}
+
+        # Verify the call was made with provider/model in params
+        mock_server.call.assert_called_once_with("chat", {
+            "message": "Hello",
+            "provider": "ollama",
+            "model": "llama3"
+        })
+
+    @pytest.mark.asyncio
+    async def test_create_fastapi_app_call_endpoint_error_handling(self):
+        """Test FastAPI app call endpoint error handling."""
+        # Create mock wrapped server that raises API key error
+        mock_server = AsyncMock()
+        mock_server.name = "test_server"
+        mock_server.call.side_effect = ValueError("OPENAI_API_KEY is required when provider=openai")
+
+        # Create HTTP server and wrap it
+        server = HTTPServer("http_server", {}, True)
+        server.wrap_server(mock_server)
+
+        # Create FastAPI app and test client
+        app = server.create_fastapi_app()
+        client = TestClient(app)
+
+        # Test call endpoint with API key error
+        response = client.post("/call", json={"tool": "chat", "params": {"message": "Hello"}})
+        assert response.status_code == 200
+        result = response.json()
+        assert "error" in result
+        assert "API key configuration" in result["error"]
+        assert "Ollama" in result["suggestion"]
+
 
 class TestHTTPPluginFactory:
     """Test the HTTP server plugin factory function."""
