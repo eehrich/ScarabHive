@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
 from .sources import fetch_wttr, fetch_weather_gov, fetch_marine_weather_gov, fetch_met_no
@@ -55,28 +56,11 @@ class WeatherServer(MCPServer):
             }
 
     def get_schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Get weather forecast and current conditions for any location worldwide.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["forecast", "search", "query", "get", "check", "lookup"]},
-                        "location": {"type": "string"},
-                        "source": {"type": "string", "enum": ["wttr.in", "weather.gov", "met.no", "marine.weather.gov"], "default": "met.no"},
-                        "days": {"type": "integer", "minimum": 1, "maximum": 7, "default": 3},
-                        "units": {"type": "string", "enum": ["metric", "imperial"], "default": "metric"},
-                        "include_marine": {"type": "boolean", "default": False},
-                        "summary_format": {"type": "string", "enum": ["detailed", "daily_summary", "hourly"], "default": "detailed"},
-                        "include_radiation": {"type": "boolean", "default": False},
-                    },
-                    "required": ["location"],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for weather plugin")
+        return schema
 
     def get_default_action(self) -> str:
         return "forecast"

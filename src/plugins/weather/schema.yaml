@@ -1,0 +1,35 @@
+type: function
+function:
+  name: {{name}}
+  description: Get weather forecast and current conditions for any location worldwide.
+  parameters:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [forecast, search, query, get, check, lookup]
+      location:
+        type: string
+      source:
+        type: string
+        enum: [wttr.in, weather.gov, met.no, marine.weather.gov]
+        default: met.no
+      days:
+        type: integer
+        minimum: 1
+        maximum: 7
+        default: 3
+      units:
+        type: string
+        enum: [metric, imperial]
+        default: metric
+      include_marine:
+        type: boolean
+      summary_format:
+        type: string
+        enum: [detailed, daily_summary, hourly]
+        default: detailed
+      include_radiation:
+        type: boolean
+    required: [location]
+    additionalProperties: true

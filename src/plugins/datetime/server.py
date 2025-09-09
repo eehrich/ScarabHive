@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, cast
+from pathlib import Path
 import pytz
 import calendar
 
@@ -565,92 +566,11 @@ class DateTimeServer(MCPServer):
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for datetime operations."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Get current date/time, format dates, perform date calculations, timezone conversions, and calendar operations. Provides comprehensive datetime functionality.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string", 
-                            "enum": ["current", "format", "parse", "add", "subtract", "convert_timezone", "timestamp", "calendar_info", "business_days", "day_of_week", "days_until"],
-                            "description": "DateTime operation: 'current' (get current date/time), 'format' (format datetime), 'parse' (parse datetime string), 'add'/'subtract' (date arithmetic), 'convert_timezone' (timezone conversion), 'timestamp' (Unix timestamp conversion), 'calendar_info' (calendar details), 'business_days' (business day calculations), 'day_of_week' (get day of week), 'days_until' (calculate days until target date)"
-                        },
-                        "timezone": {
-                            "type": "string",
-                            "description": "Timezone (e.g., 'UTC', 'Europe/Berlin', 'America/New_York', 'LOCAL'). Default: UTC"
-                        },
-                        "format": {
-                            "type": "string",
-                            "description": "Output format: 'iso', 'human', 'date_only', 'time_only', 'custom', or strftime format string"
-                        },
-                        "datetime": {
-                            "type": "string",
-                            "description": "Input datetime string in various formats (ISO, human readable, etc.)"
-                        },
-                        "custom_format": {
-                            "type": "string",
-                            "description": "Custom strftime format string when format='custom'"
-                        },
-                        "input_format": {
-                            "type": "string",
-                            "description": "Expected input format for parsing ('auto' for automatic detection)"
-                        },
-                        "years": {"type": "integer", "description": "Years to add/subtract"},
-                        "months": {"type": "integer", "description": "Months to add/subtract"},
-                        "weeks": {"type": "integer", "description": "Weeks to add/subtract"},
-                        "days": {"type": "integer", "description": "Days to add/subtract"},
-                        "hours": {"type": "integer", "description": "Hours to add/subtract"},
-                        "minutes": {"type": "integer", "description": "Minutes to add/subtract"},
-                        "seconds": {"type": "integer", "description": "Seconds to add/subtract"},
-                        "from_timezone": {
-                            "type": "string",
-                            "description": "Source timezone for conversion"
-                        },
-                        "to_timezone": {
-                            "type": "string",
-                            "description": "Target timezone for conversion"
-                        },
-                        "timestamp": {
-                            "type": "number",
-                            "description": "Unix timestamp to convert to datetime"
-                        },
-                        "start_date": {
-                            "type": "string",
-                            "description": "Start date for business day calculations"
-                        },
-                        "end_date": {
-                            "type": "string",
-                            "description": "End date for business day calculations"
-                        },
-                        "add_business_days": {
-                            "type": "integer",
-                            "description": "Number of business days to add to start_date"
-                        },
-                        "datetime_string": {
-                            "type": "string",
-                            "description": "Datetime string to parse (alternative to 'datetime' parameter)"
-                        },
-                        "target_date": {
-                            "type": "string",
-                            "description": "Target date for days_until calculation"
-                        },
-                        "year": {
-                            "type": "integer",
-                            "description": "Year for calendar_info (use with month)"
-                        },
-                        "month": {
-                            "type": "integer",
-                            "description": "Month for calendar_info (use with year)"
-                        }
-                    },
-                    "required": [],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": Path(__file__).parent.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for datetime plugin")
+        return schema
 
     def get_default_action(self) -> str:
         """Return the default action for datetime operations."""

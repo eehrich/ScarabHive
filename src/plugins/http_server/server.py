@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from pathlib import Path
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -38,23 +39,11 @@ class HTTPServer(MCPServer):
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAPI function schema for HTTP server."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "HTTP adapter for MCP servers - exposes wrapped MCP servers via REST API endpoints",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["health", "call"], "description": "HTTP server action"},
-                        "tool": {"type": "string", "description": "MCP tool to call (when action is 'call')"},
-                        "params": {"type": "object", "description": "Parameters for the MCP tool call"}
-                    },
-                    "required": ["action"],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for http_server plugin")
+        return schema
 
     def get_default_action(self) -> str:
         """Return the default action for HTTP server."""

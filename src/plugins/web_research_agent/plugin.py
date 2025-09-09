@@ -21,6 +21,7 @@ class WebResearchAgentServer:
         # Delegate schema to the underlying implementation
         from .server import WebResearchAgent
         srv = WebResearchAgent(self.name, self.cfg, ssl_verify=self.ssl_verify)
+        # This will raise if schema.yaml is missing, as required
         return srv.get_schema()
 
     def get_default_action(self):

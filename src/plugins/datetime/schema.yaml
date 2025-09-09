@@ -1,0 +1,37 @@
+type: function
+function:
+  name: {{name}}
+  description: >-
+    Get current date/time, format dates, perform date calculations, timezone conversions,
+    and calendar operations.
+  parameters:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [current, format, parse, add, subtract, convert_timezone, timestamp, calendar_info, business_days, day_of_week, days_until]
+      timezone:
+        type: string
+      format:
+        type: string
+      datetime:
+        type: string
+      custom_format:
+        type: string
+      input_format:
+        type: string
+      years:
+        type: integer
+      months:
+        type: integer
+      weeks:
+        type: integer
+      days:
+        type: integer
+      hours:
+        type: integer
+      minutes:
+        type: integer
+      seconds:
+        type: integer
+    additionalProperties: true

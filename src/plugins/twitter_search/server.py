@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
 
@@ -29,24 +30,11 @@ class TwitterSearchServer(MCPServer):
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for Twitter search."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Get information about Twitter/X search limitations and suggested alternatives for social media and stock trend analysis.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["search"], "description": "Use 'search' to find tweets"},
-                        "query": {"type": "string", "description": "Search terms for finding tweets"},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Number of tweets to return"},
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Alternative name for limit"},
-                    },
-                    "required": ["query"],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for twitter_search plugin")
+        return schema
 
     def get_default_action(self) -> str:
         """Return the default action for Twitter search."""

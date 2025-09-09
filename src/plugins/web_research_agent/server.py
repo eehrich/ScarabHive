@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict
+from pathlib import Path
 
 from agent_system.config.models import AgentConfig, MCPConfig, LLMConfig
 from agent_system.mcp.base import MCPRegistry
@@ -251,46 +252,11 @@ class WebResearchAgent(Agent):
         Returns:
             Enhanced OpenAI function schema for web research
         """
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Advanced web research agent for comprehensive topic research, fact-checking, and source comparison. Use for: detailed research on specific topics, fact-checking claims, comparing multiple sources, analyzing contradictory information, or when standard search is insufficient and you need thorough analysis.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["run", "execute", "ask", "research", "fact_check", "compare_sources"],
-                            "description": "Action to perform: 'research' for comprehensive topic research, 'fact_check' for verifying claims, 'compare_sources' for analyzing multiple sources, 'run/execute/ask' for general queries"
-                        },
-                        "task": {
-                            "type": "string",
-                            "description": "General task/query for run/execute/ask actions"
-                        },
-                        "topic": {
-                            "type": "string",
-                            "description": "Research topic for comprehensive research action (use with action='research')"
-                        },
-                        "claim": {
-                            "type": "string",
-                            "description": "Claim to fact-check for fact_check action (use with action='fact_check')"
-                        },
-                        "source_urls": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "URLs to compare for compare_sources action (use with action='compare_sources')"
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "default": 5,
-                            "description": "Maximum results for research action (1-10)"
-                        }
-                    },
-                    "required": ["action"],
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for web_research_agent plugin")
+        return schema
 
     async def call(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """

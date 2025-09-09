@@ -103,8 +103,8 @@ async def test_scraper(server, args):
         display_limit = int(getattr(args, "max_links", 0) or 0)
         if display_limit <= 0:
             display_limit = len(links)
-        for i, l in enumerate(links[:display_limit]):
-            print(f"{i+1}. {l.get('abs_url')} ({l.get('text')})")
+        for i, link in enumerate(links[:display_limit]):
+            print(f"{i+1}. {link.get('abs_url')} ({link.get('text')})")
         return
 
     # Default human-friendly output (text preview)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
 
@@ -44,23 +45,11 @@ class GoogleSearchServer(MCPServer):
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for Google search."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Search the web using Google Custom Search API. Returns search results with titles, URLs, and snippets.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["search"], "description": "Use 'search' to perform web search"},
-                        "query": {"type": "string", "description": "Search query terms"},
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5, "description": "Number of search results to return"},
-                    },
-                    "required": ["query"],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": Path(__file__).parent.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for google_search plugin")
+        return schema
 
     def get_default_action(self) -> str:
         """Return the default action for Google search."""

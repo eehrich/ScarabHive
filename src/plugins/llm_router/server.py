@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from pathlib import Path
 
 from agent_system.llm.clients import ChatMessage, make_llm
 from agent_system.mcp.base import MCPServer
@@ -123,36 +124,11 @@ class LLMRouterServer(MCPServer):
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for LLM router."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Route requests to different LLM providers for specialized tasks or alternative AI models.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["chat"], "description": "Use 'chat' to send message to LLM"},
-                        "messages": {
-                            "type": "array",
-                            "description": "Array of message objects with role and content",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "role": {"type": "string", "description": "Message role (user, assistant, system)"},
-                                    "content": {"type": "string", "description": "Message content"}
-                                },
-                                "required": ["role", "content"]
-                            }
-                        },
-                        "message": {"type": "string", "description": "Single message or prompt to send to the LLM"},
-                        "provider": {"type": "string", "description": "Specific LLM provider to use (optional)"},
-                        "model": {"type": "string", "description": "Specific model to use (optional)"},
-                    },
-                    "required": [],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for llm_router plugin")
+        return schema
 
     def get_default_action(self) -> str:
         """Return the default action for LLM router."""

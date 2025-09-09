@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 import re
 import urllib.parse
+from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
 
@@ -392,32 +393,12 @@ class WebScraperServer(MCPServer):
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for web scraper."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Fetch and read a web page by URL to extract text content and structured data (tables, forms, lists). Enhanced with structured data extraction to reduce parsing errors and improve data quality.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["fetch", "links"], "description": "Use 'fetch' to download the page or 'links' to extract anchor hrefs"},
-                        "url": {"type": "string", "description": "The absolute URL to fetch"},
-                        "timeout": {"type": "number", "default": 20, "description": "Request timeout in seconds"},
-                        "include_html": {"type": "boolean", "default": False, "description": "Include raw HTML in response"},
-                        "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length (0 = unlimited)"},
-                        "extract_tables": {"type": "boolean", "default": False, "description": "Extract structured table data with headers and rows"},
-                        "extract_forms": {"type": "boolean", "default": False, "description": "Extract form structure with fields and validation info"},
-                        "extract_lists": {"type": "boolean", "default": False, "description": "Extract structured list data (ul, ol, dl)"},
-                        "include_nofollow": {"type": "boolean", "default": False, "description": "Include links marked rel=nofollow when extracting links"},
-                        "only_same_domain": {"type": "boolean", "default": False, "description": "When extracting links, return only those on the same domain as the fetched page"},
-                        "max_links": {"type": "integer", "default": 0, "description": "Maximum number of links to return (0 = unlimited)"},
-                        "user_agent": {"type": "string", "description": "Custom User-Agent header for the request"},
-                    },
-                    "required": ["url"],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        # Try loading schema from a schema.yaml in the plugin directory
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for web_scraper plugin")
+        return schema
 
     def get_default_action(self) -> str:
         """Return the default action for web scraper."""

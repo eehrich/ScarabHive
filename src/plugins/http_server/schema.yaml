@@ -1,0 +1,16 @@
+type: function
+function:
+  name: {{name}}
+  description: HTTP adapter for MCP servers - exposes wrapped MCP servers via REST API endpoints
+  parameters:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [health, call]
+      tool:
+        type: string
+      params:
+        type: object
+    required: [action]
+    additionalProperties: true

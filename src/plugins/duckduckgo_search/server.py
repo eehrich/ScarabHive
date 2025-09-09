@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from pathlib import Path
 
 from agent_system.mcp.base import MCPServer  # absolute import to work when executed with -m
 
@@ -47,23 +48,11 @@ class DuckDuckGoSearchServer(MCPServer):
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": "Search the web using DuckDuckGo search engine. Returns search results with titles, URLs, and snippets.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["search"], "description": "Use 'search' to perform web search"},
-                        "query": {"type": "string", "description": "Search query terms"},
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5, "description": "Number of search results to return"},
-                    },
-                    "required": ["query"],
-                    "additionalProperties": True,
-                },
-            },
-        }
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": Path(__file__).parent.name})
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml for duckduckgo_search plugin")
+        return schema
 
     def get_default_action(self) -> str:
         return "search"

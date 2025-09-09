@@ -1,0 +1,26 @@
+type: function
+function:
+  name: {{name}}
+  description: >-
+    Advanced web research agent for comprehensive topic research, fact-checking,
+    and source comparison.
+  parameters:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [run, execute, ask, research, fact_check, compare_sources]
+      task:
+        type: string
+      topic:
+        type: string
+      claim:
+        type: string
+      source_urls:
+        type: array
+        items:
+          type: string
+      max_results:
+        type: integer
+        default: 5
+    required: [action]
