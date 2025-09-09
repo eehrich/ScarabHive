@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import sys
-from typing import Any
 
 from agent_system.mcp.plugins import discover_all_plugins
 from agent_system.utils.logging import setup_logging

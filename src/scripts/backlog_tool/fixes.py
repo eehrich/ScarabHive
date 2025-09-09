@@ -5,10 +5,9 @@ and normalizing backlog data.
 """
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, Tuple, cast
 
 from .models import Backlog
-from . import values
 from . import values
 
 

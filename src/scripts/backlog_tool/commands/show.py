@@ -1,11 +1,8 @@
 """Show-related commands for the backlog CLI."""
 import argparse
 import sys
-from pathlib import Path
-from typing import List
 
 from .. import parser as bl
-from ..parser import Backlog, Epic, Task
 
 
 def _ansi(text: str, code: str | None) -> str:

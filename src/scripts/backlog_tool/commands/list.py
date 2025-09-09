@@ -1,11 +1,17 @@
 """List-related commands for the backlog CLI."""
 import argparse
 import sys
-from pathlib import Path
 from typing import List, Tuple
 
 from .. import parser as bl
 from ..parser import Backlog, Epic, Task
+
+
+def _ansi(text: str, code: str | None) -> str:
+    """Apply ANSI color codes to text."""
+    if not code:
+        return text
+    return f"\x1b[{code}m{text}\x1b[0m"
 
 
 def _get_epics_and_tasks(backlog: Backlog, state: str, only: str) -> Tuple[List[Epic], List[Task]]:
@@ -27,31 +33,76 @@ def _get_epics_and_tasks(backlog: Backlog, state: str, only: str) -> Tuple[List[
 
 
 def _format_epic_line(epic: Epic, color: bool) -> str:
-    """Format an epic line for output."""
+    """Format an epic line for output.
+
+    Match `show.py` styling: ID -> light cyan (36;1), title -> yellow (33).
+    """
+    def _sanitize(text: str, max_len: int = 120) -> str:
+        """Normalize whitespace and truncate long titles for single-line output.
+
+        This keeps `backlog list` compact and prevents long or multiline titles
+        from merging with subsequent items in the summary view.
+        """
+        if text is None:
+            return ""
+        # Replace newlines and carriage returns with spaces
+        s = text.replace("\r", " ").replace("\n", " ")
+        # Collapse repeated whitespace
+        s = " ".join(s.split())
+        if len(s) > max_len:
+            return s[: max_len - 1].rstrip() + "…"
+        return s
+
     if color:
-        # Use color codes for status
-        status_symbol = '☐' if epic.status == 'open' else '✅'
-        if epic.status == 'open':
-            return f"\033[1;34m{status_symbol} Epic {epic.id}: {epic.title}\033[0m"
-        else:
-            return f"\033[1;32m{status_symbol} Epic {epic.id}: {epic.title}\033[0m"
-    else:
-        status_symbol = '☐' if epic.status == 'open' else '✅'
-        return f"{status_symbol} Epic {epic.id}: {epic.title}"
+        # In `show.py` the epic header is printed in green bold for the whole
+        # line. Mirror that here for exact parity with the canonical output,
+        # but sanitize the title so the summary is always a single line.
+        tid = _sanitize(epic.id, max_len=20)
+        title = _sanitize(epic.title, max_len=120)
+        return _ansi(f"Epic {tid}: {title}", "32;1")
+    return f"Epic {epic.id}: {epic.title}"
 
 
 def _format_task_line(task: Task, epic: Epic, color: bool) -> str:
-    """Format a task line for output."""
+    """Format a task line for output.
+
+    Match `show.py` styling: ID -> light cyan (36;1), title -> yellow (33).
+    """
+    def _sanitize(text: str, max_len: int = 100) -> str:
+        if text is None:
+            return ""
+        s = text.replace("\r", " ").replace("\n", " ")
+        s = " ".join(s.split())
+        if len(s) > max_len:
+            return s[: max_len - 1].rstrip() + "…"
+        return s
+
     if color:
-        # Use color codes for status
-        status_symbol = '☐' if task.status == 'open' else '✅'
-        if task.status == 'open':
-            return f"\033[1;33m{status_symbol} Task {task.id}: {task.title}\033[0m (Epic {epic.id})"
-        else:
-            return f"\033[1;32m{status_symbol} Task {task.id}: {task.title}\033[0m (Epic {epic.id})"
-    else:
-        status_symbol = '☐' if task.status == 'open' else '✅'
-        return f"{status_symbol} Task {task.id}: {task.title} (Epic {epic.id})"
+        tid = _ansi(_sanitize(task.id, max_len=20), "36;1")
+        ttitle = _ansi(_sanitize(task.title, max_len=100), "33")
+        return f"Task {tid}: {ttitle}"
+    return f"Task {task.id}: {task.title}"
+
+
+def _format_epic_inline(epic: Epic, color: bool) -> str:
+    """Format an epic as an inline summary (ID cyan, title yellow).
+
+    This is used for the compact `--only epics` view to match task styling.
+    """
+    def _sanitize(text: str, max_len: int = 100) -> str:
+        if text is None:
+            return ""
+        s = text.replace("\r", " ").replace("\n", " ")
+        s = " ".join(s.split())
+        if len(s) > max_len:
+            return s[: max_len - 1].rstrip() + "…"
+        return s
+
+    if color:
+        eid = _ansi(_sanitize(epic.id, max_len=20), "36;1")
+        title = _ansi(_sanitize(epic.title, max_len=100), "33")
+        return f"Epic {eid}: {title}"
+    return f"Epic {epic.id}: {epic.title}"
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -80,6 +131,12 @@ def cmd_list(args: argparse.Namespace) -> int:
     color = args.color
     if color is None:  # Auto-detect
         color = sys.stdout.isatty()
+    if color and sys.stdout.isatty():
+        try:
+            import colorama
+            colorama.init()
+        except Exception:
+            pass
 
     # Handle ids-only mode
     if getattr(args, 'ids_only', False):
@@ -98,7 +155,11 @@ def cmd_list(args: argparse.Namespace) -> int:
         if args.only == 'all' or (args.only == 'epics' and not getattr(args, 'ids_only', False)):
             print("Epics:")
         for epic in epics:
-            print(_format_epic_line(epic, color))
+            # Default to inline epic formatting (ID cyan + title yellow) to
+            # keep the summary/list views visually consistent with task lines.
+            # The legacy full-green header helper `_format_epic_line` is still
+            # available for callers that explicitly need the `show.py` style.
+            print(_format_epic_inline(epic, color))
 
     if tasks:
         if args.only == 'all' and epics:

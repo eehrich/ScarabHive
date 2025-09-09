@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 import argparse
 import json
-import logging
-import sys
 from typing import Any
 
 from .server import LLMRouterServer
