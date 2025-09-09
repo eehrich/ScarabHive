@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 import re
+import urllib.parse
 
 from agent_system.mcp.base import MCPServer
 
@@ -38,72 +39,94 @@ class WebScraperServer(MCPServer):
         return text.strip()
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        if tool != "fetch":
-            raise ValueError(f"Unknown tool: {tool}")
+        # support two actions: 'fetch' (existing) and 'links' (new)
+        action = params.get("action") or params.get("task") or "fetch"
+
+        # normalize action name when provided as top-level tool param
+        if tool and tool != "fetch":
+            # Allow callers to specify action via tool parameter (backwards compat)
+            action = tool
+
+        if action not in ("fetch", "links"):
+            raise ValueError(f"Unknown action: {action}")
 
         url = params.get("url") or ""
         if not url or not isinstance(url, str):
             raise ValueError("Missing 'url' (string)")
+
         timeout = float(params.get("timeout", 20))
+        user_agent = params.get(
+            "user_agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        )
+
         include_html = bool(params.get("include_html", False))
         max_chars = int(params.get("max_chars", 0))
         extract_tables = bool(params.get("extract_tables", False))
         extract_forms = bool(params.get("extract_forms", False))
         extract_lists = bool(params.get("extract_lists", False))
-        user_agent = params.get(
-            "user_agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-        )
-        html: str = ""
-        status_code: int = 0
-        final_url: str = url
 
-        # Try httpx first (async); fall back to urllib if not available
-        try:
-            import httpx  # type: ignore
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                verify=self.ssl_verify,
-                headers={"User-Agent": user_agent},
-                timeout=timeout,
-            ) as client:
-                resp = await client.get(url)
-                status_code = resp.status_code
-                final_url = str(resp.url)
-                # Prefer server-declared encoding; httpx handles decoding via .text
-                html = resp.text or ""
-        except Exception:
-            # Fallback: urllib (sync) with simple decoding
-            import ssl
-            from urllib.request import Request, urlopen
-            from urllib.error import URLError, HTTPError
-            ctx = None
-            if not self.ssl_verify:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
+        # Links-specific options
+        include_nofollow = bool(params.get("include_nofollow", False))
+        only_same_domain = bool(params.get("only_same_domain", False))
+        max_links = int(params.get("max_links", 0))
+
+        async def _fetch_html(target_url: str) -> tuple[str, int, str]:
+            html: str = ""
+            status_code: int = 0
+            final_url: str = target_url
             try:
-                req = Request(url, headers={"User-Agent": user_agent})
-                with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
-                    final_url = r.geturl()
-                    status_code = getattr(r, "status", 200)
-                    data = r.read()
-                    try:
-                        html = data.decode("utf-8", errors="ignore")
-                    except Exception:
-                        html = data.decode(errors="ignore")
-            except (URLError, HTTPError):
-                # Bubble up a minimal error payload
-                return {
-                    "url": url,
-                    "final_url": final_url,
-                    "status_code": status_code or 0,
-                    "title": None,
-                    "text": "",
-                    "html": html if include_html else None,
-                }
+                import httpx  # type: ignore
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    verify=self.ssl_verify,
+                    headers={"User-Agent": user_agent},
+                    timeout=timeout,
+                ) as client:
+                    resp = await client.get(target_url)
+                    status_code = resp.status_code
+                    final_url = str(resp.url)
+                    html = resp.text or ""
+            except Exception:
+                # Fallback sync approach
+                import ssl
+                from urllib.request import Request, urlopen
+                from urllib.error import URLError, HTTPError
+                ctx = None
+                if not self.ssl_verify:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                try:
+                    req = Request(target_url, headers={"User-Agent": user_agent})
+                    with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
+                        final_url = r.geturl()
+                        status_code = getattr(r, "status", 200)
+                        data = r.read()
+                        try:
+                            html = data.decode("utf-8", errors="ignore")
+                        except Exception:
+                            html = data.decode(errors="ignore")
+                except (URLError, HTTPError):
+                    return "", status_code or 0, final_url
 
-        # Extract readable text and title
+            return html, status_code, final_url
+
+        # fetch HTML (async) and parse according to requested action
+        html, status_code, final_url = await _fetch_html(url)
+
+        # If fetch failed, return minimal payload
+        if not html and status_code == 0:
+            return {
+                "url": url,
+                "final_url": final_url,
+                "status_code": status_code,
+                "title": None,
+                "text": "",
+                "html": html if include_html else None,
+            }
+
+        # Extract readable text and structured data when needed
         title: str | None = None
         text: str = ""
         tables: list[dict[str, Any]] = []
@@ -137,19 +160,107 @@ class WebScraperServer(MCPServer):
             text = self._clean_text(text)
         except Exception:
             # Naive fallback: strip tags
-            # Remove script/style blocks
             no_script = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
             no_style = re.sub(r"<style[\s\S]*?</style>", " ", no_script, flags=re.IGNORECASE)
-            # Title
             m = re.search(r"<title[^>]*>([\s\S]*?)</title>", html, flags=re.IGNORECASE)
             title = m.group(1).strip() if m else None
-            # Strip all remaining tags
             text = re.sub(r"<[^>]+>", " ", no_style)
-            # Apply the same cleaning as BeautifulSoup path
             text = self._clean_text(text)
 
         if max_chars and max_chars > 0:
             text = text[:max_chars]
+
+        # By default include extracted links in the fetch result. This
+        # mirrors the 'links' action but is returned automatically so
+        # callers get anchor metadata without extra parameters.
+        links: list[dict[str, Any]] = []
+        try:
+            from bs4 import BeautifulSoup  # type: ignore
+            soup_links = soup.find_all("a", href=True)
+            for a in soup_links:
+                href = a.get("href")
+                if not href:
+                    continue
+                abs_url = urllib.parse.urljoin(final_url, href)
+                rel = a.get("rel") or []
+                if isinstance(rel, str):
+                    rel_list = [r.strip().lower() for r in rel.split()]
+                else:
+                    rel_list = [r.strip().lower() for r in rel]
+                # exclude nofollow by default
+                if "nofollow" in rel_list:
+                    continue
+                links.append({
+                    "href": href,
+                    "abs_url": abs_url,
+                    "text": a.get_text(strip=True) or None,
+                    "rel": rel_list,
+                })
+        except Exception:
+            hrefs = re.findall(r'href\s*=\s*"([^"]+)"', html, flags=re.IGNORECASE)
+            for href in hrefs:
+                try:
+                    abs_url = urllib.parse.urljoin(final_url, href)
+                except Exception:
+                    abs_url = href
+                links.append({"href": href, "abs_url": abs_url, "text": None, "rel": []})
+
+
+        # If caller asked for links, extract anchors and return them
+        if action == "links":
+            links: list[dict[str, Any]] = []
+            try:
+                from bs4 import BeautifulSoup  # type: ignore
+                soup = BeautifulSoup(html, "html.parser")
+                anchors = soup.find_all("a", href=True)
+                for a in anchors:
+                    href = a.get("href")
+                    if not href:
+                        continue
+                    abs_url = urllib.parse.urljoin(final_url, href)
+                    rel = a.get("rel") or []
+                    # normalize rel list to strings
+                    if isinstance(rel, str):
+                        rel_list = [r.strip().lower() for r in rel.split()]
+                    else:
+                        rel_list = [r.strip().lower() for r in rel]
+
+                    if not include_nofollow and "nofollow" in rel_list:
+                        continue
+
+                    if only_same_domain:
+                        try:
+                            base_net = urllib.parse.urlparse(final_url).netloc
+                            link_net = urllib.parse.urlparse(abs_url).netloc
+                            if base_net != link_net:
+                                continue
+                        except Exception:
+                            pass
+
+                    link_obj = {
+                        "href": href,
+                        "abs_url": abs_url,
+                        "text": a.get_text(strip=True) or None,
+                        "rel": rel_list,
+                    }
+                    links.append(link_obj)
+                    if max_links and len(links) >= max_links:
+                        break
+            except Exception:
+                # fallback regex approach: find href="..."
+                hrefs = re.findall(r'href\s*=\s*"([^"]+)"', html, flags=re.IGNORECASE)
+                for href in hrefs:
+                    try:
+                        abs_url = urllib.parse.urljoin(final_url, href)
+                    except Exception:
+                        abs_url = href
+                    links.append({"href": href, "abs_url": abs_url, "text": None, "rel": []})
+                    if max_links and len(links) >= max_links:
+                        break
+
+            return {"url": url, "final_url": final_url, "status_code": status_code, "links": links}
+
+        # otherwise return full fetch-style result
 
         result: dict[str, Any] = {
             "url": url,
@@ -169,6 +280,9 @@ class WebScraperServer(MCPServer):
 
         if include_html:
             result["html"] = html
+        # attach default links list
+        if links:
+            result["links"] = links
         return result
 
     def _extract_tables(self, soup) -> list[dict[str, Any]]:
@@ -286,14 +400,17 @@ class WebScraperServer(MCPServer):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["fetch"], "description": "Use 'fetch' to download the page"},
+                        "action": {"type": "string", "enum": ["fetch", "links"], "description": "Use 'fetch' to download the page or 'links' to extract anchor hrefs"},
                         "url": {"type": "string", "description": "The absolute URL to fetch"},
                         "timeout": {"type": "number", "default": 20, "description": "Request timeout in seconds"},
                         "include_html": {"type": "boolean", "default": False, "description": "Include raw HTML in response"},
-                        "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length"},
+                        "max_chars": {"type": "integer", "default": 0, "description": "If >0, truncate extracted text to this length (0 = unlimited)"},
                         "extract_tables": {"type": "boolean", "default": False, "description": "Extract structured table data with headers and rows"},
                         "extract_forms": {"type": "boolean", "default": False, "description": "Extract form structure with fields and validation info"},
                         "extract_lists": {"type": "boolean", "default": False, "description": "Extract structured list data (ul, ol, dl)"},
+                        "include_nofollow": {"type": "boolean", "default": False, "description": "Include links marked rel=nofollow when extracting links"},
+                        "only_same_domain": {"type": "boolean", "default": False, "description": "When extracting links, return only those on the same domain as the fetched page"},
+                        "max_links": {"type": "integer", "default": 0, "description": "Maximum number of links to return (0 = unlimited)"},
                         "user_agent": {"type": "string", "description": "Custom User-Agent header for the request"},
                     },
                     "required": ["url"],
