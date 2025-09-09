@@ -109,6 +109,15 @@ class WebResearchAgent(Agent):
             if server_cfg.get(key) is not None:
                 llm_kwargs[key] = server_cfg.get(key)
 
+        # Inherit missing LLM fields from a provided parent/global config dict (if caller
+        # passed a reference containing top-level llm info under 'parent_llm'). This avoids
+        # forcing duplication of openai_api_key or model in server-specific config.
+        parent_llm = server_cfg.get("parent_llm") if isinstance(server_cfg, dict) else None
+        if isinstance(parent_llm, dict):  # expected shape: {'provider':..., 'model':..., 'openai_api_key':...}
+            for field in ("provider", "model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout"):
+                if field not in llm_kwargs and parent_llm.get(field) is not None:
+                    llm_kwargs[field] = parent_llm[field]
+
         research_llm = LLMConfig(**llm_kwargs) if llm_kwargs else LLMConfig()
         research_config = AgentConfig(
             llm=research_llm,
