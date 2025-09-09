@@ -134,6 +134,7 @@ def main() -> None:
     plugins_parser.add_argument("--yes", dest="yes", action="store_true", help="Assume yes for confirmations")
     plugins_parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Don't persist changes; show preview")
     plugins_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for plugin listing")
+    plugins_parser.add_argument("--show-metadata", dest="show_metadata", action="store_true", help="Also display plugin._plugin_metadata in listing (JSON output only)")
     plugins_parser.add_argument("--raw", dest="raw", action="store_true", help="Show raw factory information for 'info' action")
 
     args = parser.parse_args(argv[1:])
@@ -150,7 +151,6 @@ def main() -> None:
     vprint("[cli] verbose mode on")
     vprint(f"[cli] loading config: {args.config}")
     config = load_settings(args.config)
-
     # If user requested plugin listing, handle and exit early (no heavy bootstrap)
     if args.subcommand == "plugins":
         # Use the configured plugin_dirs from the loaded settings. The
@@ -373,11 +373,17 @@ def main() -> None:
 
         # list action: either json or simple table
         listing = to_list()
-    # Metadata should have been attached by discover_all_plugins() when
-    # filesystem plugin dirs were provided. If any metadata is still
-    # missing, leave it blank rather than attempting to read repository
-    # paths — callers should configure plugin_dirs in `mcp.yaml` if
-    # they expect filesystem plugin metadata to be used.
+        # If user requested metadata in the listing and JSON format, attach it
+        if getattr(args, "show_metadata", False) and args.out_format == "json":
+            for item in listing:
+                factory = plugins.get(item.get("name"))
+                item["metadata"] = getattr(factory, "_plugin_metadata", None) or {}
+
+        # Metadata should have been attached by discover_all_plugins() when
+        # filesystem plugin dirs were provided. If any metadata is still
+        # missing, leave it blank rather than attempting to read repository
+        # paths — callers should configure plugin_dirs in `mcp.yaml` if
+        # they expect filesystem plugin metadata to be used.
         if args.out_format == "table":
             # nice table layout using tabulate if available
             rows: List[Tuple[str, str, str, str]] = []

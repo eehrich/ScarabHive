@@ -164,7 +164,44 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
             try:
                 factory = ep.load()
                 name = getattr(ep, "name", None) or getattr(factory, "__name__", None)
+                # Try to attach plugin metadata from the package where the
+                # entry-point factory is defined. This allows packaged
+                # plugins to include a `plugin.yaml` alongside their code.
+                metadata_obj = None
+                try:
+                    mod_name = getattr(factory, "__module__", None)
+                    if mod_name:
+                        # Top-level package containing the factory
+                        pkg = mod_name.split('.')[0]
+                        try:
+                            spec = importlib.util.find_spec(pkg)
+                            if spec is not None:
+                                # package (has submodule_search_locations)
+                                if getattr(spec, "submodule_search_locations", None):
+                                    pkg_path = Path(spec.submodule_search_locations[0])
+                                    meta_path = pkg_path / "plugin.yaml"
+                                    if meta_path.exists():
+                                        metadata_obj = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                                else:
+                                    # single-module distribution: check module file's parent
+                                    origin = getattr(spec, "origin", None)
+                                    if origin:
+                                        mod_path = Path(origin).parent
+                                        meta_path = mod_path / "plugin.yaml"
+                                        if meta_path.exists():
+                                            metadata_obj = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                        except Exception:
+                            # best-effort; don't fail discovery on metadata lookup
+                            metadata_obj = None
+                except Exception:
+                    metadata_obj = None
+
                 if name and callable(factory):
+                    if metadata_obj:
+                        try:
+                            setattr(factory, "_plugin_metadata", metadata_obj)
+                        except Exception:
+                            pass
                     out[name] = factory
             except Exception as e:
                 logger.warning("Failed to load entrypoint plugin %s: %s", ep, e)

@@ -68,6 +68,16 @@ Testing
 - Use `discover_all_plugins()` to find both filesystem and entry-point plugins.
 - Unit tests can monkeypatch `importlib.metadata.entry_points()` to simulate installed plugins.
 
+CLI helper: show metadata
+
+- The CLI includes a convenience flag for operators and tests: when running
+    `agent_system.cli plugins list --format json --show-metadata` the CLI will
+    include the discovered plugin's parsed `plugin.yaml` contents under a
+    top-level `metadata` key for each plugin in the JSON output. This is
+    helpful for debugging discovery and for automated systems that need
+    to inspect plugin metadata without importing plugin modules directly.
+
+
 Testing notes
 
 - For quick unit tests, monkeypatching `importlib.metadata.entry_points()` or
