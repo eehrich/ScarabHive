@@ -57,6 +57,14 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                 desc = meta.get('description') or meta.get('summary') or ''
                 ver = meta.get('version') or ''
                 logger.info("Using plugin '%s' (version=%s) for server '%s': %s", typ, ver, key, desc)
+            # Provide inheritance hook: if plugin server config lacks explicit LLM
+            # fields, inject a parent_llm snapshot so specialized plugins (e.g.
+            # web_research_agent) can inherit without duplicating credentials.
+            try:  # pragma: no cover - defensive
+                if isinstance(server_cfg, dict) and 'parent_llm' not in server_cfg and getattr(config, 'llm', None):
+                    server_cfg['parent_llm'] = config.llm.model_dump()
+            except Exception:
+                pass
             try:
                 inst = factory(key, server_cfg, ssl_verify=config.network.ssl_verify)
                 registry.register(key, inst)
