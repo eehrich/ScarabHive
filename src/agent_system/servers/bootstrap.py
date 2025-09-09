@@ -27,6 +27,15 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
         cwd_plugins = Path.cwd() / "plugins"
         if cwd_plugins.exists() and cwd_plugins.is_dir():
             dirs = [cwd_plugins]
+        else:
+            # Fallback for development: check src/plugins
+            src_plugins = Path.cwd() / "src" / "plugins"
+            if src_plugins.exists() and src_plugins.is_dir():
+                dirs = [src_plugins]
+    # Always include src/plugins as a fallback for development
+    src_plugins = Path.cwd() / "src" / "plugins"
+    if src_plugins.exists() and src_plugins.is_dir() and src_plugins not in dirs:
+        dirs.append(src_plugins)
 
     plugins = discover_all_plugins(dirs=dirs if dirs else None)
 
@@ -53,6 +62,9 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                 registry.register(key, inst)
             except Exception as e:
                 logger.exception("Failed to instantiate/register plugin '%s' for server '%s': %s", typ, key, e)
+                # For debugging, re-raise in tests
+                if "test" in str(Path.cwd()):
+                    raise
                 # continue to try other servers
             continue
 

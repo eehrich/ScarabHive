@@ -1,8 +1,10 @@
-"""Weather plugin entrypoint for AgentSystem plugin loader."""
+"""Weather plugin entrypoint (standardized)."""
+
+from __future__ import annotations
+from typing import Any
 
 from .server import WeatherServer
 
-PLUGIN_NAME = "weather"
 
-def PLUGIN_FACTORY(name: str, config: dict | None = None, ssl_verify: bool = True):
-    return WeatherServer(name, config=config, ssl_verify=ssl_verify)
+PLUGIN_FACTORY = WeatherServer
+

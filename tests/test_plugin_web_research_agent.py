@@ -1,13 +1,13 @@
 """Tests for web_research_agent plugin."""
 
 import pytest
-from plugins.web_research_agent.plugin import PLUGIN_NAME, PLUGIN_FACTORY
+from plugins.web_research_agent.plugin import PLUGIN_FACTORY
 
 
 @pytest.mark.asyncio
 async def test_plugin_discovery():
     """Test that the plugin can be discovered and instantiated."""
-    assert PLUGIN_NAME == "web_research_agent"
+    # Name is implied by folder. No PLUGIN_NAME constant anymore.
 
     # Test factory instantiation
     factory = PLUGIN_FACTORY

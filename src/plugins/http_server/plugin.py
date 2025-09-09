@@ -1,24 +1,22 @@
-"""HTTP Server Plugin Factory."""
+"""HTTP server plugin entrypoint.
+
+Unified factory pattern: expose PLUGIN_NAME and PLUGIN_FACTORY
+with signature (name: str, config: dict|None = None, ssl_verify: bool = True)
+returning the concrete server implementation. Lazy import keeps import-time
+overhead minimal and avoids loading heavy dependencies unless instantiated.
+"""
+
+from __future__ import annotations
 
 from typing import Any
 
-from .server import HTTPServer
+from .server import HTTPServer  # lazy import
 
 
-def create_plugin(name: str, config: dict[str, Any] | None = None, ssl_verify: bool = True) -> HTTPServer:
-    """Create an HTTP server plugin instance.
+PLUGIN_FACTORY = HTTPServer
 
-    Args:
-        name: Plugin name
-        config: Plugin configuration
-        ssl_verify: Whether to verify SSL certificates
-
-    Returns:
-        HTTPServer instance
-    """
-    return HTTPServer(name, config, ssl_verify)
+# Backward compatibility for tests/imports expecting create_plugin()
+def create_plugin(name: str, config: dict[str, Any] | None = None, ssl_verify: bool = True):  # pragma: no cover - shim
+    return PLUGIN_FACTORY(name, config=config, ssl_verify=ssl_verify)
 
 
-# Plugin discovery interface
-PLUGIN_NAME = "http_server"
-PLUGIN_FACTORY = create_plugin

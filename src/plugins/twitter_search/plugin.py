@@ -1,13 +1,11 @@
-"""Plugin factory for twitter_search"""
+"""Twitter search plugin entrypoint (standardized)."""
 
+from __future__ import annotations
 from typing import Any
 
-PLUGIN_NAME = "twitter_search"
+from .server import TwitterSearchServer
 
 
-def PLUGIN_FACTORY(key: str, cfg: dict[str, Any], ssl_verify: bool = True):
-    # Lazy import to avoid heavy deps at import time
-    from .server import TwitterSearchServer
+PLUGIN_FACTORY = TwitterSearchServer
 
-    return TwitterSearchServer(key, cfg, ssl_verify=ssl_verify)
 

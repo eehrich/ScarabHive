@@ -1,5 +1,10 @@
-PLUGIN_NAME = "google_search"
+"""Google search plugin entrypoint (standardized)."""
 
-def PLUGIN_FACTORY(name: str, config: dict | None = None, ssl_verify: bool = True):
-    from plugins.google_search.server import GoogleSearchServer
-    return GoogleSearchServer(name, config=config, ssl_verify=ssl_verify)
+from __future__ import annotations
+from typing import Any
+
+from .server import GoogleSearchServer
+
+
+PLUGIN_FACTORY = GoogleSearchServer
+

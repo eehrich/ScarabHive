@@ -1,32 +1,22 @@
-PLUGIN_NAME = "web_research_agent"
+"""Web research agent plugin entrypoint.
 
-class WebResearchAgentServer:
-    def __init__(self, name, cfg=None, ssl_verify=True):
-        self.name = name
-        self.cfg = cfg or {}
-        self.ssl_verify = ssl_verify
+Provides a PLUGIN_FACTORY with historical (name, cfg, ssl_verify) signature
+so bootstrap discovery and tests can instantiate consistently.
+"""
 
-    @property
-    def description(self):
-        # Get description from config or provide default
-        return self.cfg.get("description", "Specialized web research agent combining DuckDuckGo search with web scraping capabilities")
+from __future__ import annotations
+from typing import Any
 
-    async def call(self, tool: str, params: dict):
-        # Simple wrapper delegating to server implementation in server.py
-        from .server import WebResearchAgent
-        srv = WebResearchAgent(self.name, self.cfg, ssl_verify=self.ssl_verify)
-        return await srv.call(tool, params)
+from .server import WebResearchAgent as WebResearchAgentServer
 
-    def get_schema(self):
-        # Delegate schema to the underlying implementation
-        from .server import WebResearchAgent
-        srv = WebResearchAgent(self.name, self.cfg, ssl_verify=self.ssl_verify)
-        # This will raise if schema.yaml is missing, as required
-        return srv.get_schema()
 
-    def get_default_action(self):
-        from .server import WebResearchAgent
-        srv = WebResearchAgent(self.name, self.cfg, ssl_verify=self.ssl_verify)
-        return srv.get_default_action()
+def _factory(name: str, cfg: dict[str, Any] | None = None, ssl_verify: bool = True):
+	return WebResearchAgentServer(name, config=cfg, ssl_verify=ssl_verify)
 
-PLUGIN_FACTORY = WebResearchAgentServer
+PLUGIN_FACTORY = _factory  # discovery export
+
+# Backwards compatibility: some tests import PLUGIN_FACTORY and call with (name, cfg, ssl_verify)
+def factory(name: str, cfg: dict[str, Any] | None = None, ssl_verify: bool = True):  # pragma: no cover
+	return _factory(name, cfg=cfg, ssl_verify=ssl_verify)
+
+

@@ -1,5 +1,5 @@
 import pytest
-from plugins.datetime.plugin import factory as datetime_factory
+from plugins.datetime.plugin import PLUGIN_FACTORY as datetime_factory
 from plugins.datetime.server import DateTimeServer
 
 def test_plugin_factory_creates_server():

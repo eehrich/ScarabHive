@@ -15,105 +15,89 @@ logger = logging.getLogger(__name__)
 
 
 def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
-    """Discover plugin modules under `path` and return a mapping of
-    plugin name -> factory function/class that constructs an MCPServer.
+    """Discover plugins in a directory.
 
-    Each plugin should expose a `register()` function that returns a
-    tuple (name, factory) or directly expose `PLUGIN_NAME` and `PLUGIN_FACTORY`.
+    Rules:
+    - Folder plugin: <dir>/<plugin>/plugin.py must export PLUGIN_FACTORY or register().
+      Name = folder name.
+    - Single file plugin: <dir>/<name>.py with PLUGIN_FACTORY or register(). Name = file stem.
+    - If a PLUGIN_NAME constant is present it overrides the folder/file name (backwards compatibility).
     """
     out: Dict[str, Callable[..., MCPServer]] = {}
-    if not path or not path.exists() or not path.is_dir():
+    if not (path and path.exists() and path.is_dir()):
         return out
 
-    # Support two layouts:
-    # 1) plugin as a single python file: plugins/foo.py
-    # 2) plugin as a package folder: plugins/foo/plugin.py (recommended)
-
-    # First, discover plugin folders with plugin.py
     for d in path.iterdir():
-        if d.is_dir():
-            plugin_file = d / "plugin.py"
-            if plugin_file.exists():
-                # Ensure a top-level 'plugins' package exists in sys.modules
-                # and that a package entry for this plugin is present so
-                # imports like `from plugins.<name> import server` work.
-                pkg_name = "plugins"
-                plugin_pkg = f"{pkg_name}.{d.name}"
-                try:
-                    if pkg_name not in sys.modules:
-                        pkg_mod = types.ModuleType(pkg_name)
-                        # point package path to the discovered plugins directory
-                        pkg_mod.__path__ = [str(path.resolve())]
-                        sys.modules[pkg_name] = pkg_mod
-                    # create the plugin subpackage module pointing at the plugin dir
-                    if plugin_pkg not in sys.modules:
-                        sub_mod = types.ModuleType(plugin_pkg)
-                        sub_mod.__path__ = [str(d.resolve())]
-                        sys.modules[plugin_pkg] = sub_mod
-                except Exception:
-                    # best-effort: if sys.modules manipulation fails, continue
-                    pass
-
-                # Load the plugin module under the `plugins.<name>` namespace to
-                # avoid collisions with stdlib modules (for example `datetime`).
-                spec = importlib.util.spec_from_file_location(f"{plugin_pkg}.plugin", str(plugin_file))
-                if spec is None or spec.loader is None:
-                    logger.debug("Skipping plugin %s: cannot create spec", plugin_file)
-                    continue
-                mod = importlib.util.module_from_spec(spec)
-                try:
-                    spec.loader.exec_module(mod)
-                except Exception as e:
-                    logger.warning("Failed to load plugin module %s: %s", plugin_file, e)
-                    continue
-
-                # same registration logic as single-file plugins
-                try:
-                    if hasattr(mod, "register") and inspect.isfunction(mod.register):
-                        name, factory = mod.register()
-                        out[name] = factory
-                        continue
-                except Exception as e:
-                    logger.warning("Plugin %s register() failed: %s", plugin_file, e)
-                    continue
-
-                name = getattr(mod, "PLUGIN_NAME", None)
-                factory = getattr(mod, "PLUGIN_FACTORY", None)
-                # Load optional plugin metadata file (plugin.yaml) if present
-                metadata = None
-                meta_file = d / "plugin.yaml"
-                if meta_file.exists():
-                    try:
-                        with open(meta_file, 'r', encoding='utf-8') as fh:
-                            metadata = yaml.safe_load(fh) or {}
-                    except Exception as e:
-                        logger.warning("Failed to read metadata %s: %s", meta_file, e)
-
-                if name and factory:
-                    # attach metadata to factory for downstream use
-                    try:
-                        setattr(factory, '_plugin_metadata', metadata)
-                    except Exception:
-                        pass
-                    out[name] = factory
-
-    # Then, discover legacy single-file plugins for backward compatibility
-    for p in path.glob("*.py"):
-        # Single-file plugins are also loaded under the `plugins.` namespace to
-        # keep imports inside the plugin consistent and avoid name clashes.
-        # ensure top-level 'plugins' package exists so absolute imports work
+        if not d.is_dir():
+            continue
+        plugin_file = d / "plugin.py"
+        if not plugin_file.exists():
+            continue
+        pkg_name = "plugins"
+        plugin_pkg = f"{pkg_name}.{d.name}"
         try:
-            pkg_name = "plugins"
+            if pkg_name not in sys.modules:
+                pkg_mod = types.ModuleType(pkg_name)
+                pkg_mod.__path__ = [str(path.resolve())]
+                sys.modules[pkg_name] = pkg_mod
+            if plugin_pkg not in sys.modules:
+                sub_mod = types.ModuleType(plugin_pkg)
+                sub_mod.__path__ = [str(d.resolve())]
+                sys.modules[plugin_pkg] = sub_mod
+        except Exception:
+            pass
+
+        spec = importlib.util.spec_from_file_location(f"{plugin_pkg}.plugin", str(plugin_file))
+        if spec is None or spec.loader is None:
+            logger.debug("Skipping plugin %s: cannot create spec", plugin_file)
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception as e:
+            logger.warning("Failed to load plugin module %s: %s", plugin_file, e)
+            continue
+
+        try:
+            if hasattr(mod, "register") and inspect.isfunction(mod.register):
+                name, factory = mod.register()
+                out[name] = factory
+                continue
+        except Exception as e:
+            logger.warning("Plugin %s register() failed: %s", plugin_file, e)
+            continue
+
+        # Determine plugin name: prefer PLUGIN_NAME constant if present for backwards compatibility
+        name = getattr(mod, "PLUGIN_NAME", None) or d.name
+        factory = getattr(mod, "PLUGIN_FACTORY", None)
+        metadata = None
+        meta_file = d / "plugin.yaml"
+        if meta_file.exists():
+            try:
+                with meta_file.open('r', encoding='utf-8') as fh:
+                    metadata = yaml.safe_load(fh) or {}
+            except Exception as e:
+                logger.warning("Failed to read metadata %s: %s", meta_file, e)
+        if factory:
+            try:
+                setattr(factory, '_plugin_metadata', metadata)
+            except Exception:
+                pass
+            out[name] = factory
+
+    for p in path.glob("*.py"):
+        if p.name == "__init__.py":
+            continue
+        pkg_name = "plugins"
+        try:
             if pkg_name not in sys.modules:
                 pkg_mod = types.ModuleType(pkg_name)
                 pkg_mod.__path__ = [str(path.resolve())]
                 sys.modules[pkg_name] = pkg_mod
         except Exception:
             pass
-
         spec = importlib.util.spec_from_file_location(f"plugins.{p.stem}", str(p))
         if spec is None or spec.loader is None:
-            logger.debug("Skipping plugin %s: cannot create spec", p)
             continue
         mod = importlib.util.module_from_spec(spec)
         try:
@@ -121,8 +105,6 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         except Exception as e:
             logger.warning("Failed to load plugin module %s: %s", p, e)
             continue
-
-        # Try register() function
         try:
             if hasattr(mod, "register") and inspect.isfunction(mod.register):
                 name, factory = mod.register()
@@ -131,13 +113,10 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         except Exception as e:
             logger.warning("Plugin %s register() failed: %s", p, e)
             continue
-
-        # Try constants
-        name = getattr(mod, "PLUGIN_NAME", None)
         factory = getattr(mod, "PLUGIN_FACTORY", None)
-        if name and factory:
+        if factory:
+            name = getattr(mod, "PLUGIN_NAME", None) or p.stem
             out[name] = factory
-
     return out
 
 
