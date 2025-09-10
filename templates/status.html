@@ -97,6 +97,7 @@
       let total = 0;
       let es;
       let reconnectTimer;
+      let allEvents = []; // Store all received events for re-filtering
 
       function esc(s){return (s+"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
       function fmtTime(ts){try{return new Date(ts).toLocaleTimeString();}catch(e){return ts;}}
@@ -107,9 +108,8 @@
         if (rf && ev.request_id !== rf) return false;
         return true;
       }
-      function addEvent(ev){
-        if(!applyFilters(ev)) return;
-        total++; counts.textContent = total + ' event' + (total!==1?'s':'');
+      
+      function createEventElement(ev) {
         const div = document.createElement('div');
         div.className = 'event ' + esc(ev.phase || 'progress');
 
@@ -144,7 +144,29 @@
           dlg.showModal();
         });
 
-        tl.appendChild(div);
+        return div;
+      }
+      
+      function refreshTimeline() {
+        tl.innerHTML = '';
+        total = 0;
+        allEvents.filter(applyFilters).forEach(ev => {
+          total++;
+          tl.appendChild(createEventElement(ev));
+        });
+        counts.textContent = total + ' event' + (total!==1?'s':'');
+        if (autoScrollChk.checked && total > 0) { 
+          requestAnimationFrame(()=>window.scrollTo({top:document.body.scrollHeight})); 
+        }
+      }
+      
+      function addEvent(ev){
+        allEvents.push(ev); // Store the event
+        if(!applyFilters(ev)) return;
+        total++; counts.textContent = total + ' event' + (total!==1?'s':'');
+        
+        const eventElement = createEventElement(ev);
+        tl.appendChild(eventElement);
         if (autoScrollChk.checked){ requestAnimationFrame(()=>window.scrollTo({top:document.body.scrollHeight})); }
       }
       function connect(){
@@ -156,7 +178,7 @@
         es.onmessage=(e)=>{ try{ const ev = JSON.parse(e.data); addEvent(ev);}catch(err){} };
       }
       connect();
-      [serverFilter, requestFilter].forEach(inp=>inp.addEventListener('input',()=>{ tl.innerHTML=''; total=0; counts.textContent='0 events'; }));
+      [serverFilter, requestFilter].forEach(inp=>inp.addEventListener('input', refreshTimeline));
     </script>
   </body>
 </html>
