@@ -478,7 +478,19 @@
         box.innerHTML = `
           <details id="thinkingBox"><summary>Thinking…</summary><pre id="thinking"></pre></details>
           <div id="conversationFlow" class="conversation-flow">
-            <div id="statusContainer" class="status-container"></div>
+            <div id="statusContainer" class="status-container">
+              <div class="status-header">
+                <span class="response-icon">
+                  <!-- Inline SVG: status icon (list/check) -->
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="2" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
+                    <path d="M7 9l2 2 4-4" stroke="#56d364" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span class="response-label">Status</span>
+              </div>
+              <div id="statusBody" class="status-body"></div>
+            </div>
             <div id="assistantText" class="response-content"></div>
           </div>
         `;
@@ -490,7 +502,8 @@
           box,
           t: box.querySelector('#assistantText'),
           think: box.querySelector('#thinking'),
-          status: box.querySelector('#statusContainer'),
+          // statusBody is where status events should be appended
+          status: box.querySelector('#statusBody'),
           thinkBox: box.querySelector('#thinkingBox'),
           conversationFlow: box.querySelector('#conversationFlow')
         };

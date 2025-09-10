@@ -464,10 +464,11 @@ pre {
 }
 
 .status-container {
-  background: #0d1117;
-  border: 1px solid #21262d;
-  border-radius: 6px;
-  padding: 8px;
+  /* Outer wrapper should be visually neutral so the inner header/body form the single box */
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
@@ -484,12 +485,13 @@ pre {
 
 /* Status container improvements */
 #statusContainer {
-  background: #0d1117;
-  border: 1px solid #21262d;
-  border-radius: 6px;
-  padding: 8px;
-  max-height: 200px;
-  overflow-y: auto;
+  /* neutral wrapper: inner .status-header and .status-body draw the visible box */
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  max-height: none;
+  overflow: visible;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
@@ -500,12 +502,52 @@ pre {
   font-size: 12px;
 }
 
+/* Status header/body should match the response box style so they look unified */
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0px;
+  padding: 8px 12px;
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-radius: 8px 8px 0 0;
+  font-weight: 500;
+}
+.status-body {
+  padding: 12px; /* match .response-text padding */
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-top: none; /* visually merge with header */
+  border-radius: 0 0 8px 8px;
+  color: #e6edf3;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Remove top margin on the first status item so spacing matches response-text's first-child rule */
+.status-body .operation-progress:first-child {
+  margin-top: 0;
+}
+
+/* Also normalize any block element's top margin inside status-body */
+.status-body > *:first-child {
+  margin-top: 0;
+}
+
+.status-header .response-icon svg,
+.status-header .response-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
 /* Response header icon styling */
 .response-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 0px;
 }
 .response-icon svg {
   display: block;
