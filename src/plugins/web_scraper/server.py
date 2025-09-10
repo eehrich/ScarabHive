@@ -131,10 +131,11 @@ class WebScraperServer(MCPServer):
         only_same_domain = bool(params.get("only_same_domain", False))
         max_links = int(params.get("max_links", 0))
 
-        async def _fetch_html(target_url: str) -> tuple[str, int, str]:
+        async def _fetch_html(target_url: str) -> tuple[str, int, str, str]:
             html: str = ""
             status_code: int = 0
             final_url: str = target_url
+            content_type: str = ""
             try:
                 import httpx  # type: ignore
                 async with httpx.AsyncClient(
@@ -146,7 +147,14 @@ class WebScraperServer(MCPServer):
                     resp = await client.get(target_url)
                     status_code = resp.status_code
                     final_url = str(resp.url)
-                    html = resp.text or ""
+                    content_type = resp.headers.get("content-type", "").lower()
+                    
+                    # Check if content is actually HTML/text before processing
+                    if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]):
+                        html = resp.text or ""
+                    else:
+                        # Non-HTML content detected
+                        html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
             except Exception:
                 # Fallback sync approach
                 import ssl
@@ -162,15 +170,22 @@ class WebScraperServer(MCPServer):
                     with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
                         final_url = r.geturl()
                         status_code = getattr(r, "status", 200)
+                        content_type = r.headers.get("content-type", "").lower()
                         data = r.read()
-                        try:
-                            html = data.decode("utf-8", errors="ignore")
-                        except Exception:
-                            html = data.decode(errors="ignore")
+                        
+                        # Check content type and data header for binary content
+                        if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]) and not data.startswith(b'%PDF'):
+                            try:
+                                html = data.decode("utf-8", errors="ignore")
+                            except Exception:
+                                html = data.decode(errors="ignore")
+                        else:
+                            # Non-HTML content detected
+                            html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
                 except (URLError, HTTPError):
-                    return "", status_code or 0, final_url
+                    return "", status_code or 0, final_url, content_type
 
-            return html, status_code, final_url
+            return html, status_code, final_url, content_type
 
         # fetch HTML (async) and parse according to requested action
         # notify start of fetch
@@ -180,7 +195,7 @@ class WebScraperServer(MCPServer):
             # status publishing must not break functionality
             pass
 
-        html, status_code, final_url = await _fetch_html(url)
+        html, status_code, final_url, content_type = await _fetch_html(url)
 
         # Sanitize HTML before processing to remove problematic characters
         html = self._sanitize_html(html)
@@ -204,7 +219,35 @@ class WebScraperServer(MCPServer):
                 "title": None,
                 "text": "",
                 "html": html if include_html else None,
+                "content_type": content_type,
             }
+
+        # Check if content is non-HTML and handle appropriately
+        if html.startswith("[Non-HTML content detected:"):
+            # Return early for non-HTML content with appropriate message
+            result = {
+                "url": url,
+                "final_url": final_url,
+                "status_code": status_code,
+                "title": None,
+                "text": html,  # Contains the descriptive message about non-HTML content
+                "content_type": content_type,
+            }
+            
+            if include_html:
+                result["html"] = html
+                
+            try:
+                await publish_status(
+                    self.name,
+                    f"Completed fetch {url} - non-HTML content detected ({content_type})",
+                    request_id=request_id,
+                    phase=PHASE_END,
+                    meta={"final_url": final_url, "status_code": status_code, "content_type": content_type},
+                )
+            except Exception:
+                pass
+            return result
 
         # Extract readable text and structured data when needed
         title: str | None = None
@@ -351,6 +394,7 @@ class WebScraperServer(MCPServer):
             "status_code": status_code,
             "title": title,
             "text": text,
+            "content_type": content_type,
         }
 
         # Add structured data if requested
@@ -373,7 +417,7 @@ class WebScraperServer(MCPServer):
                 f"Completed fetch {url} (status={status_code})",
                 request_id=request_id,
                 phase=PHASE_END,
-                meta={"final_url": final_url, "status_code": status_code},
+                meta={"final_url": final_url, "status_code": status_code, "content_type": content_type},
             )
         except Exception:
             pass
