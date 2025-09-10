@@ -75,13 +75,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.post("/run")
     async def run(task: str, traceparent: Optional[str] = Header(default=None)):
         logging.getLogger(__name__).info("/run invoked, task=%s", task)
-        # naive correlation id: use first 8 chars of trace id if present
-        request_id = None
-        if traceparent and len(traceparent) >= 55:
-            try:
-                request_id = traceparent.split('-')[1][:8]
-            except Exception:
-                request_id = None
         return await agent.run(task)
 
     @app.get("/events")
@@ -193,11 +186,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        return templates.TemplateResponse("index.html", {"request": request})
+        # Updated to new Starlette signature: TemplateResponse(request, name)
+        return templates.TemplateResponse(request, "index.html")
 
     @app.get("/status", response_class=HTMLResponse)
     async def status_page(request: Request):
-        return templates.TemplateResponse("status.html", {"request": request})
+        # Updated to new Starlette signature
+        return templates.TemplateResponse(request, "status.html")
 
     @app.get("/status/meta")
     async def status_meta(request: Request):  # pragma: no cover - simple diagnostics
