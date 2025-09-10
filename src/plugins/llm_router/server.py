@@ -6,6 +6,7 @@ from pathlib import Path
 
 from agent_system.llm.clients import ChatMessage, make_llm
 from agent_system.mcp.base import MCPServer
+from agent_system.utils.text_sanitizer import sanitize_for_llm
 from agent_system.mcp.status import (
     publish_status,
     PHASE_START,
@@ -74,8 +75,12 @@ class LLMRouterServer(MCPServer):
             # Handle both message formats first
             if "messages" in params:
                 messages = [ChatMessage(**m) for m in params["messages"]]
+                # Sanitize message content
+                for msg in messages:
+                    if msg.content:
+                        msg.content = sanitize_for_llm(msg.content)
             elif "message" in params:
-                messages = [ChatMessage(role="user", content=params["message"])]
+                messages = [ChatMessage(role="user", content=sanitize_for_llm(params["message"]))]
             else:
                 return {"error": "No message or messages provided"}
 
