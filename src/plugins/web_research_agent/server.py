@@ -168,30 +168,35 @@ class WebResearchAgent(Agent):
                             request_id=request_id, 
                             phase=PHASE_PROGRESS
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to publish start status: {e}")
                 
-                elif event_type == "tool_calls":
+                elif event_type == "mcp_call":
                     step_count += 1
-                    tool_names = [tc.get("function", {}).get("name", "unknown") for tc in event.get("tool_calls", [])]
-                    tool_list = ", ".join(tool_names)
+                    tool_name = event.get("server", "unknown")
+                    action = event.get("action", "unknown")
                     try:
                         await publish_status(
                             self.name, 
-                            f"{operation_name}: Step {step_count} - Using tools: {tool_list}", 
+                            f"{operation_name}: Step {step_count} - Using {tool_name} ({action})", 
                             request_id=request_id, 
                             phase=PHASE_PROGRESS
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to publish mcp_call status: {e}")
                     
-                    # Store tool calls in results
+                    # Store tool calls in results - convert to expected format
                     if "calls" not in results:
                         results["calls"] = []
-                    results["calls"].extend(event.get("tool_calls", []))
+                    results["calls"].append({
+                        "function": {"name": tool_name}, 
+                        "server": tool_name,
+                        "action": action,
+                        "params": event.get("params", {})
+                    })
                 
-                elif event_type == "tool_result":
-                    tool_name = event.get("tool_name", "unknown")
+                elif event_type == "mcp_result":
+                    tool_name = event.get("server", "unknown")
                     try:
                         await publish_status(
                             self.name, 
@@ -199,8 +204,8 @@ class WebResearchAgent(Agent):
                             request_id=request_id, 
                             phase=PHASE_PROGRESS
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to publish mcp_result status: {e}")
                 
                 elif event_type == "final":
                     results["summary"] = event.get("summary", "")
@@ -211,8 +216,8 @@ class WebResearchAgent(Agent):
                             request_id=request_id, 
                             phase=PHASE_PROGRESS
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to publish final status: {e}")
                     break
                 
                 elif event_type == "error":
@@ -268,8 +273,9 @@ class WebResearchAgent(Agent):
         # publish research start
         try:
             await publish_status(self.name, f"Research started: {topic}", request_id=request_id, phase=PHASE_START)
-        except Exception:
-            pass
+            logger.info(f"Published research start status for request_id={request_id}")
+        except Exception as e:
+            logger.error(f"Failed to publish research start status: {e}")
         
         try:
             res = await self._run_with_progress(research_prompt, f"Researching '{topic}'", request_id)
@@ -278,8 +284,9 @@ class WebResearchAgent(Agent):
             res["agent"] = self.name
             try:
                 await publish_status(self.name, f"Research completed: {topic}", request_id=request_id, phase=PHASE_END)
-            except Exception:
-                pass
+                logger.info(f"Published research end status for request_id={request_id}")
+            except Exception as e:
+                logger.error(f"Failed to publish research end status: {e}")
             return res
         except Exception as e:
             try:
@@ -385,17 +392,25 @@ class WebResearchAgent(Agent):
                 return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
             max_results = params.get("max_results", 5)
             return await self.research(topic, max_results, request_id)
-        if action == "fact_check":
+        elif action == "fact_check":
             claim = params.get("claim")
             if not claim:
                 return {"status": "error", "error": "Missing required parameter 'claim' for fact_check action"}
             return await self.fact_check(claim, request_id)
-        if action == "compare_sources":
+        elif action == "compare_sources":
             source_urls = params.get("source_urls")
             topic = params.get("topic")
             if not topic or not source_urls:
                 return {"status": "error", "error": "Missing required parameters 'topic' and 'source_urls' for compare_sources action"}
             return await self.compare_sources(topic, source_urls, request_id)
+        elif action in ("run", "execute", "ask"):
+            # Handle general task requests by routing to research with progress tracking
+            task = params.get("task") or params.get("query") or params.get("prompt")
+            if not task:
+                return {"status": "error", "error": f"Missing required parameter 'task' for {action} action"}
+            # Route general tasks to research method with progress tracking
+            return await self.research(task, params.get("max_results", 5), request_id)
+        
         return await super().call(action, params)
 
     def get_default_action(self) -> str:

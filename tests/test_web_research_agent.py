@@ -209,6 +209,25 @@ class TestWebResearchAgent:
         assert "Missing required parameter 'topic'" in result["error"]
         
     @pytest.mark.asyncio
+    async def test_call_run_action_routing(self):
+        """Test that run action with task parameter routes to research method."""
+        agent = WebResearchAgent("task_router")
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.return_value = {"summary": "research done via routing"}
+        
+        # Test run action with task parameter (how main agent calls web_research_agent)
+        result = await agent.call("run", {"task": "research about quantum computing"})
+        
+        assert result["status"] == "success"
+        assert result["agent"] == "task_router"
+        
+        # Verify _run_with_progress was called (indicating routing to research method)
+        agent._run_with_progress.assert_called_once()
+        call_args = agent._run_with_progress.call_args[0]
+        assert "research about quantum computing" in call_args[0]  # task in prompt
+        assert "Researching 'research about quantum computing'" == call_args[1]  # operation_name
+        
+    @pytest.mark.asyncio
     async def test_call_fact_check_missing_claim(self):
         """Test fact_check action with missing claim parameter."""
         agent = WebResearchAgent("error_agent")
