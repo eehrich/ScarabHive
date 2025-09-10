@@ -73,11 +73,17 @@ def parse(backlog_lines: List[str]) -> Backlog:
 
                 # detect section headers
                 if s.startswith('## 1. Epics - open'):
+                    # Preserve the marker line in the header so the writer can
+                    # splice generated Epics content in-place at the exact
+                    # position originally present in the template.
+                    header.append(ln)
                     section = 'epics_open'
                     seen_epics_section = True
                     logger.debug(f"Found epics_open section at line {line_num}")
                     continue
                 if s.startswith('## 2. Epics - finished'):
+                    # Preserve finished marker similarly
+                    header.append(ln)
                     section = 'epics_finished'
                     seen_epics_section = True
                     logger.debug(f"Found epics_finished section at line {line_num}")
@@ -429,7 +435,8 @@ def build_markdown(backlog: Backlog) -> str:
     # the template), preserve their position by splicing our generated epic
     # content into the header in-place. This avoids moving the Epics sections
     # after an EOF marker or other footer content.
-    hdr = backlog.header or []
+    # Normalize header/footer raw lines to remove existing trailing newlines
+    hdr = [ln.rstrip('\n') for ln in (backlog.header or [])]
     # find template markers if present
     idx1 = next((i for i, line in enumerate(hdr) if line.strip().startswith("## 1. Epics - open")), None)
     idx2 = next((i for i, line in enumerate(hdr) if line.strip().startswith("## 2. Epics - finished")), None)
@@ -447,13 +454,16 @@ def build_markdown(backlog: Backlog) -> str:
             emit_header_head = hdr[:split_idx]
             emit_header_tail = hdr[split_idx:]
         else:
-            # emit header up to the Epics - open marker
-            emit_header_head = hdr[:idx1]
+            # emit header up to and including the Epics - open marker so the
+            # written output preserves the marker position from the template
+            emit_header_head = hdr[: idx1 + 1]
             # we'll treat the header tail as the content after the finished marker
             emit_footer_after_idx = (idx2 if idx2 is not None else idx1)
             emit_header_tail = hdr[emit_footer_after_idx + 1 :]
         lines.extend(emit_header_head)
         # ensure blank separator
+        # If we included the marker line, ensure there is a single blank
+        # separator before we append the generated epic entries.
         if lines and lines[-1].strip() != "":
             lines.append("")
     else:
@@ -469,11 +479,22 @@ def build_markdown(backlog: Backlog) -> str:
             lines.extend(hdr)
             emit_header_tail = []
 
-    # Emit the Epics - open section (canonicalized)
-    if not lines or lines[-1].strip() != "":
+    # Remember how many lines correspond to the original header we emitted.
+    header_cut = len(lines)
+
+    # Emit the Epics - open section (canonicalized). If the header already
+    # contained the marker line we preserved above, don't emit it again
+    # (preserves original location/formatting); otherwise emit the marker.
+    header_includes_open = idx1 is not None
+    if not header_includes_open:
+        if not lines or lines[-1].strip() != "":
+            lines.append("")
+        lines.append("## 1. Epics - open")
         lines.append("")
-    lines.append("## 1. Epics - open")
-    lines.append("")
+    else:
+        # ensure a single blank separator exists after the marker
+        if lines and lines[-1].strip() != "":
+            lines.append("")
     for e in backlog.epics_open:
         # Use configured symbol for open epic where available
         sym = None
@@ -528,10 +549,11 @@ def build_markdown(backlog: Backlog) -> str:
                 rl.pop()
             prev_blank = False
             for raw in rl:
-                is_blank = raw.strip() == ""
+                raw2 = raw.rstrip('\n')
+                is_blank = raw2.strip() == ""
                 if is_blank and prev_blank:
                     continue
-                lines.append(raw)
+                lines.append(raw2)
                 prev_blank = is_blank
         # Always emit the tasks section as the last modeled element for the epic
         lines.append("  - tasks:")
@@ -630,10 +652,11 @@ def build_markdown(backlog: Backlog) -> str:
                 rl.pop()
             prev_blank = False
             for raw in rl:
-                is_blank = raw.strip() == ""
+                raw2 = raw.rstrip('\n')
+                is_blank = raw2.strip() == ""
                 if is_blank and prev_blank:
                     continue
-                lines.append(raw)
+                lines.append(raw2)
                 prev_blank = is_blank
         # emit tasks for finished epic
         lines.append("  - tasks:")
@@ -675,16 +698,19 @@ def build_markdown(backlog: Backlog) -> str:
     # Now append any header tail (the original content that followed the
     # Epics markers in the template, e.g., Ideas/EOF or other footer lines)
     if emit_header_tail:
-        lines.extend(emit_header_tail)
+        lines.extend([ln.rstrip('\n') for ln in emit_header_tail])
     else:
         # If no header tail was present, append the explicit backlog.footer
-        lines.extend(backlog.footer)
+        lines.extend([ln.rstrip('\n') for ln in (backlog.footer or [])])
 
     # Collapse runs of blank lines to at most one to avoid excessive vertical
     # whitespace caused by assembling header/raw_lines/tasks/footer pieces.
     compact: List[str] = []
     blank_count = 0
-    for ln in lines:
+    # Preserve header (lines[:header_cut]) exactly; only compact the
+    # generated body + tail portion to avoid altering template spacing.
+    compact.extend(lines[:header_cut])
+    for ln in lines[header_cut:]:
         if ln.strip() == "":
             blank_count += 1
             if blank_count <= 1:
