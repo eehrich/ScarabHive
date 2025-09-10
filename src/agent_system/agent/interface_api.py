@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import os
 from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,6 +18,7 @@ from ..config.loader import load_config
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
+from ..mcp.status import status_bus, StatusEvent
 
 
 app = FastAPI(title="Agent System (MCP)")
@@ -91,6 +93,64 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             event_stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/status/stream")
+    async def status_stream(
+        request: Request,
+        server: Optional[str] = Query(default=None, description="Filter by server name"),
+        request_id: Optional[str] = Query(default=None, description="Filter by request id"),
+        heartbeat: int = Query(default=15, ge=5, le=120, description="Heartbeat interval seconds"),
+    ):
+        """Server-Sent Events endpoint for unified status events (Task 0187).
+
+        Streams events from the in-process StatusBus. Supports optional filtering
+        by server and/or request_id. Emits periodic heartbeat comments so that
+        intermediaries keep the connection alive. Clients can simply listen for
+        'message' events and parse the JSON payload.
+        """
+        logger = logging.getLogger(__name__)
+        logger.info(
+            "SSE /status/stream connected (server=%s request_id=%s)", server, request_id
+        )
+
+        queue = await status_bus.subscribe(server=server, request_id=request_id)
+
+        async def event_gen():
+            try:
+                # Initial comment for fast clients
+                yield ":ok\n\n"
+                last_hb = asyncio.get_event_loop().time()
+                while True:
+                    # Heartbeat handling
+                    now = asyncio.get_event_loop().time()
+                    if now - last_hb >= heartbeat:
+                        yield f":hb {int(now)}\n\n"
+                        last_hb = now
+
+                    try:
+                        ev: StatusEvent = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        payload = ev.to_dict()
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    except asyncio.TimeoutError:
+                        # loop to maybe send heartbeat
+                        pass
+
+                    # Client disconnect check
+                    if await request.is_disconnected():
+                        logger.info("Client disconnected from /status/stream")
+                        break
+            finally:
+                status_bus.unsubscribe(queue)
+                logger.debug("/status/stream subscriber cleaned up")
+
+        return StreamingResponse(
+            event_gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @app.get("/", response_class=HTMLResponse)
