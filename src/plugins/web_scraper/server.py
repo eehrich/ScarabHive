@@ -6,6 +6,13 @@ import urllib.parse
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
+from agent_system.mcp.status import (
+    publish_status,
+    PHASE_START,
+    PHASE_PROGRESS,
+    PHASE_END,
+    PHASE_ERROR,
+)
 
 
 class WebScraperServer(MCPServer):
@@ -54,6 +61,9 @@ class WebScraperServer(MCPServer):
         url = params.get("url") or ""
         if not url or not isinstance(url, str):
             raise ValueError("Missing 'url' (string)")
+
+            # correlate status events with provided request_id when available
+        request_id = params.get("request_id") or params.get("requestId")
 
         timeout = float(params.get("timeout", 20))
         user_agent = params.get(
@@ -114,10 +124,27 @@ class WebScraperServer(MCPServer):
             return html, status_code, final_url
 
         # fetch HTML (async) and parse according to requested action
+        # notify start of fetch
+        try:
+            await publish_status(self.name, f"Fetching {url}", request_id=request_id, phase=PHASE_START)
+        except Exception:
+            # status publishing must not break functionality
+            pass
+
         html, status_code, final_url = await _fetch_html(url)
 
-        # If fetch failed, return minimal payload
+        # If fetch failed, publish error and return minimal payload
         if not html and status_code == 0:
+            try:
+                await publish_status(
+                    self.name,
+                    f"Failed to fetch {url}",
+                    request_id=request_id,
+                    level="error",
+                    phase=PHASE_ERROR,
+                )
+            except Exception:
+                pass
             return {
                 "url": url,
                 "final_url": final_url,
@@ -284,6 +311,17 @@ class WebScraperServer(MCPServer):
         # attach default links list
         if links:
             result["links"] = links
+        # publish success
+        try:
+            await publish_status(
+                self.name,
+                f"Completed fetch {url} (status={status_code})",
+                request_id=request_id,
+                phase=PHASE_END,
+                meta={"final_url": final_url, "status_code": status_code},
+            )
+        except Exception:
+            pass
         return result
 
     def _extract_tables(self, soup) -> list[dict[str, Any]]:
