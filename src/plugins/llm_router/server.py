@@ -6,6 +6,13 @@ from pathlib import Path
 
 from agent_system.llm.clients import ChatMessage, make_llm
 from agent_system.mcp.base import MCPServer
+from agent_system.mcp.status import (
+    publish_status,
+    PHASE_START,
+    PHASE_PROGRESS,
+    PHASE_END,
+    PHASE_ERROR,
+)
 
 
 class LLMRouterServer(MCPServer):
@@ -75,12 +82,25 @@ class LLMRouterServer(MCPServer):
             # Extract provider and model from parameters, with fallback to defaults
             provider = params.get("provider") or self.default_provider
             model = params.get("model") or self.default_model
+            request_id = params.get("request_id") or params.get("requestId")
 
             try:
+                # publish start
+                try:
+                    await publish_status(self.name, f"Chat request to {provider}/{model}", request_id=request_id, phase=PHASE_START)
+                except Exception:
+                    pass
+
                 # Create appropriate client
                 client = self._make_client(provider, model)
 
                 content = await client.chat(messages)
+
+                try:
+                    await publish_status(self.name, f"Chat completed ({provider}/{model})", request_id=request_id, phase=PHASE_END)
+                except Exception:
+                    pass
+
                 return {
                     "content": content,
                     "provider": provider,
