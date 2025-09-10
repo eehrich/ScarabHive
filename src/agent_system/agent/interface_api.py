@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Request, Query
+from fastapi import FastAPI, Request, Query, Header
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -73,8 +73,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         return config.model_dump()
 
     @app.post("/run")
-    async def run(task: str):
+    async def run(task: str, traceparent: Optional[str] = Header(default=None)):
         logging.getLogger(__name__).info("/run invoked, task=%s", task)
+        # naive correlation id: use first 8 chars of trace id if present
+        request_id = None
+        if traceparent and len(traceparent) >= 55:
+            try:
+                request_id = traceparent.split('-')[1][:8]
+            except Exception:
+                request_id = None
         return await agent.run(task)
 
     @app.get("/events")

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 import asyncio
+import re
 import logging
 import os
 
@@ -132,6 +133,7 @@ async def publish_status(
     level: str = "info",
     phase: str = PHASE_PROGRESS,
     meta: Optional[dict] = None,
+    traceparent: Optional[str] = None,
 ) -> None:
     """Convenience function to publish a status event.
 
@@ -150,6 +152,16 @@ async def publish_status(
         level = "info"
     if phase == PHASE_ERROR and level == "info":
         level = "error"  # escalate sensible default
+
+    # Extract W3C trace id if traceparent provided (format: '00-<trace-id>-<span-id>-<flags>')
+    if traceparent and isinstance(traceparent, str):
+        try:
+            m = re.match(r"^[\da-f]{2}-([\da-f]{32})-([\da-f]{16})-[\da-f]{2}$", traceparent.strip())
+            if m:
+                tid, sid = m.group(1), m.group(2)
+                meta = {**(meta or {}), "trace_id": tid, "span_id": sid}
+        except Exception:
+            pass
 
     event = StatusEvent(
         server=server,
