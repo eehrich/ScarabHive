@@ -70,9 +70,9 @@ class TestWebResearchAgent:
         """Test successful research action."""
         agent = WebResearchAgent("test_researcher")
         
-        # Mock the agent's run method directly (no wrapper agent needed)
-        agent.run = AsyncMock()
-        agent.run.return_value = {
+        # Mock the agent's _run_with_progress method instead of run
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.return_value = {
             "task": "research task",
             "calls": [
                 {"server": "duckduckgo_search", "result": "search results"},
@@ -85,35 +85,46 @@ class TestWebResearchAgent:
         
         assert result["status"] == "success"
         assert result["agent"] == "test_researcher"  # Agent returns "agent", not "sub_agent"
-        assert "artificial intelligence" in str(agent.run.call_args)
-        assert "3" in str(agent.run.call_args) or "max_results" in str(agent.run.call_args)
+        # Check that _run_with_progress was called with the correct parameters
+        assert agent._run_with_progress.called
+        call_args = agent._run_with_progress.call_args[0]
+        assert "artificial intelligence" in call_args[0]  # task_prompt
+        assert "Researching 'artificial intelligence'" == call_args[1]  # operation_name
         
     @pytest.mark.asyncio
     async def test_fact_check_action_success(self):
         """Test successful fact-check action."""
         agent = WebResearchAgent("fact_checker")
         
-        # Mock the agent's run method directly
-        agent.run = AsyncMock()
-        agent.run.return_value = {
-            "summary": "Fact-check completed",
-            "calls": [{"server": "duckduckgo_search", "result": "verification data"}]
+        # Mock the agent's _run_with_progress method
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.return_value = {
+            "task": "fact check task",
+            "calls": [
+                {"server": "duckduckgo_search", "result": "verification results"},
+                {"server": "web_scraper", "result": "fact checking data"}
+            ],
+            "summary": "Fact check completed"
         }
         
-        result = await agent.fact_check("The Earth is flat")
+        result = await agent.fact_check("The Earth is round")
         
         assert result["status"] == "success"
-        assert "The Earth is flat" in str(agent.run.call_args)
-        agent.run.assert_called_once()
+        assert result["agent"] == "fact_checker"
+        # Check that _run_with_progress was called
+        assert agent._run_with_progress.called
+        call_args = agent._run_with_progress.call_args[0]
+        assert "The Earth is round" in call_args[0]  # task_prompt
+        assert "Fact-checking claim" == call_args[1]  # operation_name
         
     @pytest.mark.asyncio
     async def test_compare_sources_action_success(self):
         """Test successful compare sources action."""
         agent = WebResearchAgent("source_comparer")
         
-        # Mock the agent's run method directly
-        agent.run = AsyncMock()
-        agent.run.return_value = {
+        # Mock the agent's _run_with_progress method instead of run
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.return_value = {
             "summary": "Source comparison completed",
             "calls": [{"server": "web_scraper", "result": "scraped multiple sources"}]
         }
@@ -122,40 +133,44 @@ class TestWebResearchAgent:
         result = await agent.compare_sources("climate change", urls)
         
         assert result["status"] == "success"
-        assert "climate change" in str(agent.run.call_args)
-        assert "example1.com" in str(agent.run.call_args)
-        assert "example2.com" in str(agent.run.call_args)
+        # Check that _run_with_progress was called
+        assert agent._run_with_progress.called
+        call_args = agent._run_with_progress.call_args[0]
+        assert "climate change" in call_args[0]  # task_prompt
+        assert "example1.com" in call_args[0]
+        assert "example2.com" in call_args[0]
+        assert "Comparing sources for 'climate change'" == call_args[1]  # operation_name
         
     @pytest.mark.asyncio
     async def test_call_research_action(self):
         """Test call method with research action."""
         agent = WebResearchAgent("test_agent")
-        agent.run = AsyncMock()
-        agent.run.return_value = {"summary": "research done"}
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.return_value = {"summary": "research done"}
         
         result = await agent.call("research", {"topic": "quantum computing", "max_results": 7})
         
         assert result["status"] == "success"
-        agent.run.assert_called_once()
+        agent._run_with_progress.assert_called_once()
         
     @pytest.mark.asyncio
     async def test_call_fact_check_action(self):
         """Test call method with fact_check action."""
         agent = WebResearchAgent("fact_checker")
-        agent.run = AsyncMock()
-        agent.run.return_value = {"summary": "fact checked"}
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.return_value = {"summary": "fact checked"}
         
         result = await agent.call("fact_check", {"claim": "Test claim"})
         
         assert result["status"] == "success"
-        agent.run.assert_called_once()
+        agent._run_with_progress.assert_called_once()
         
     @pytest.mark.asyncio
     async def test_call_compare_sources_action(self):
         """Test call method with compare_sources action."""
         agent = WebResearchAgent("comparer")
-        agent.run = AsyncMock()
-        agent.run.return_value = {"summary": "sources compared"}
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.return_value = {"summary": "sources compared"}
         
         params = {
             "topic": "renewable energy",
@@ -164,7 +179,7 @@ class TestWebResearchAgent:
         result = await agent.call("compare_sources", params)
         
         assert result["status"] == "success"
-        agent.run.assert_called_once()
+        agent._run_with_progress.assert_called_once()
         
     @pytest.mark.asyncio
     async def test_call_standard_action_fallback(self):
@@ -230,8 +245,8 @@ class TestWebResearchAgent:
     async def test_research_with_agent_exception(self):
         """Test research action when underlying agent raises exception."""
         agent = WebResearchAgent("error_agent")
-        agent.run = AsyncMock()
-        agent.run.side_effect = RuntimeError("Agent failed")
+        agent._run_with_progress = AsyncMock()
+        agent._run_with_progress.side_effect = RuntimeError("Agent failed")
         
         result = await agent.research("test topic")
         

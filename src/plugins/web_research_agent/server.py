@@ -150,6 +150,105 @@ class WebResearchAgent(Agent):
         self.cfg = server_cfg  # legacy compatibility expected by tests
         logger.info("Created WebResearchAgent '%s' with tools: %s", name, research_registry.list())
 
+    async def _run_with_progress(self, task_prompt: str, operation_name: str, request_id: str = None) -> Dict[str, Any]:
+        """Run agent task with progress updates published as status events."""
+        results = {"task": task_prompt, "calls": []}
+        step_count = 0
+        
+        try:
+            async for event in self.run_events(task_prompt):
+                event_type = event.get("type")
+                
+                if event_type == "start":
+                    step_count += 1
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Starting analysis...", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception:
+                        pass
+                
+                elif event_type == "tool_calls":
+                    step_count += 1
+                    tool_names = [tc.get("function", {}).get("name", "unknown") for tc in event.get("tool_calls", [])]
+                    tool_list = ", ".join(tool_names)
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Step {step_count} - Using tools: {tool_list}", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception:
+                        pass
+                    
+                    # Store tool calls in results
+                    if "calls" not in results:
+                        results["calls"] = []
+                    results["calls"].extend(event.get("tool_calls", []))
+                
+                elif event_type == "tool_result":
+                    tool_name = event.get("tool_name", "unknown")
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Processing results from {tool_name}...", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception:
+                        pass
+                
+                elif event_type == "final":
+                    results["summary"] = event.get("summary", "")
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Finalizing results...", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception:
+                        pass
+                    break
+                
+                elif event_type == "error":
+                    error_msg = event.get("message", "Unknown error")
+                    results.setdefault("errors", []).append(error_msg)
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Error - {error_msg}", 
+                            request_id=request_id, 
+                            level="error",
+                            phase=PHASE_ERROR
+                        )
+                    except Exception:
+                        pass
+                    raise Exception(error_msg)
+                
+                elif event_type == "end":
+                    break
+            
+            return results
+            
+        except Exception as e:
+            results.setdefault("errors", []).append(str(e))
+            try:
+                await publish_status(
+                    self.name, 
+                    f"{operation_name}: Failed - {str(e)}", 
+                    request_id=request_id, 
+                    level="error",
+                    phase=PHASE_ERROR
+                )
+            except Exception:
+                pass
+            raise
+
     async def research(self, topic: str, max_results: int = 5, request_id: str = None) -> Dict[str, Any]:
         research_prompt = f"""
         Perform comprehensive research on: {topic}
@@ -171,8 +270,12 @@ class WebResearchAgent(Agent):
             await publish_status(self.name, f"Research started: {topic}", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
+        
         try:
-            res = await self.call("run", {"task": research_prompt})
+            res = await self._run_with_progress(research_prompt, f"Researching '{topic}'", request_id)
+            # Add status and agent info to match expected format
+            res["status"] = "success"
+            res["agent"] = self.name
             try:
                 await publish_status(self.name, f"Research completed: {topic}", request_id=request_id, phase=PHASE_END)
             except Exception:
@@ -183,7 +286,7 @@ class WebResearchAgent(Agent):
                 await publish_status(self.name, f"Research failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
             except Exception:
                 pass
-            raise
+            return {"status": "error", "error": str(e), "agent": self.name}
 
     async def fact_check(self, claim: str, request_id: str = None) -> Dict[str, Any]:
         fact_check_prompt = f"""
@@ -205,8 +308,12 @@ class WebResearchAgent(Agent):
             await publish_status(self.name, f"Fact-check started: {claim[:50]}...", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
+        
         try:
-            res = await self.call("run", {"task": fact_check_prompt})
+            res = await self._run_with_progress(fact_check_prompt, f"Fact-checking claim", request_id)
+            # Add status and agent info to match expected format
+            res["status"] = "success"
+            res["agent"] = self.name
             try:
                 await publish_status(self.name, f"Fact-check completed", request_id=request_id, phase=PHASE_END)
             except Exception:
@@ -217,7 +324,7 @@ class WebResearchAgent(Agent):
                 await publish_status(self.name, f"Fact-check failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
             except Exception:
                 pass
-            raise
+            return {"status": "error", "error": str(e), "agent": self.name}
 
     async def compare_sources(self, topic: str, source_urls: list[str], request_id: str = None) -> Dict[str, Any]:
         sources_text = "\n".join([f"- {url}" for url in source_urls])
@@ -243,8 +350,12 @@ class WebResearchAgent(Agent):
             await publish_status(self.name, f"Compare sources started: {topic}", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
+        
         try:
-            res = await self.call("run", {"task": compare_prompt})
+            res = await self._run_with_progress(compare_prompt, f"Comparing sources for '{topic}'", request_id)
+            # Add status and agent info to match expected format
+            res["status"] = "success"
+            res["agent"] = self.name
             try:
                 await publish_status(self.name, f"Compare sources completed", request_id=request_id, phase=PHASE_END)
             except Exception:
@@ -255,7 +366,7 @@ class WebResearchAgent(Agent):
                 await publish_status(self.name, f"Compare sources failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
             except Exception:
                 pass
-            raise
+            return {"status": "error", "error": str(e), "agent": self.name}
 
     def get_schema(self) -> Dict[str, Any]:
         from agent_system.plugins.schema_loader import load_schema_from_dir
