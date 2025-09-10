@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Iterable
 import asyncio
 import re
 import logging
@@ -134,6 +134,7 @@ _metrics: dict[str, int] = {
     "delivered": 0,
     "suppressed_rate": 0,
     "suppressed_debounce": 0,
+    "redacted": 0,
 }
 
 _server_rate: dict[str, tuple[float, int]] = {}
@@ -144,6 +145,53 @@ def _config_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except Exception:
         return default
+
+def _config_patterns() -> list[re.Pattern]:
+    """Compile redaction patterns from env var AGENT_STATUS_REDACT_PATTERNS.
+
+    The variable may contain comma-separated regex snippets. Empty / invalid entries are ignored.
+    """
+    raw = os.getenv("AGENT_STATUS_REDACT_PATTERNS", "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    compiled: list[re.Pattern] = []
+    for p in parts:
+        try:
+            compiled.append(re.compile(p))
+        except Exception:
+            logger.debug("Invalid redaction pattern skipped: %s", p)
+    return compiled
+
+def _redact_message(message: str, patterns: Iterable[re.Pattern], replacement: str) -> tuple[str, int]:
+    redactions = 0
+    new_msg = message
+    for pat in patterns:
+        if pat.search(new_msg):
+            new_msg, count = pat.subn(replacement, new_msg)
+            redactions += count
+    return new_msg, redactions
+
+def _redact_meta(meta: Optional[dict], patterns: Iterable[re.Pattern], replacement: str) -> tuple[Optional[dict], int]:
+    if not meta:
+        return meta, 0
+    redactions = 0
+    cleaned: dict = {}
+    for k, v in meta.items():
+        nv = v
+        key_lower = str(k).lower()
+        # Heuristic key-based masking for sensitive fields
+        if any(tok in key_lower for tok in ("token", "secret", "password", "key")):
+            if isinstance(v, str) and v:
+                nv = replacement
+                redactions += 1
+        if isinstance(v, str):
+            new_v, c = _redact_message(v, patterns, replacement)
+            if c:
+                nv = new_v
+                redactions += c
+        cleaned[k] = nv
+    return cleaned, redactions
 
 def _should_suppress(server: str, request_id: Optional[str], message: str) -> bool:
     """Return True if this event should be suppressed by rate limit or debounce."""
@@ -182,6 +230,7 @@ def get_status_metrics() -> dict:
             "AGENT_STATUS_MAX_RPS": _config_int("AGENT_STATUS_MAX_RPS", 0),
             "AGENT_STATUS_DEBOUNCE_MS": _config_int("AGENT_STATUS_DEBOUNCE_MS", 0),
             "AGENT_STATUS_REQUIRE_AUTH": os.getenv("AGENT_STATUS_REQUIRE_AUTH", "0"),
+            "AGENT_STATUS_REDACT_PATTERNS": os.getenv("AGENT_STATUS_REDACT_PATTERNS", ""),
         },
     }
 
@@ -226,7 +275,18 @@ async def publish_status(
         except Exception:
             pass
 
-    # Suppression checks (rate limit & debounce)
+    # Redaction (security Task 0229)
+    patterns = _config_patterns()
+    if patterns:
+        replacement = os.getenv("AGENT_STATUS_REDACT_REPLACEMENT", "***")
+        new_message, c_msg = _redact_message(message, patterns, replacement)
+        if c_msg:
+            message = new_message
+        meta, c_meta = _redact_meta(meta, patterns, replacement)
+        if c_msg or c_meta:
+            _metrics["redacted"] += c_msg + c_meta
+
+    # Suppression checks (rate limit & debounce) AFTER redaction so matching doesn't leak originals
     if _should_suppress(server, request_id, message):  # metrics updated inside
         return
 
