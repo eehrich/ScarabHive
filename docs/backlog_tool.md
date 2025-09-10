@@ -14,6 +14,10 @@ Description
 Supported keys for tasks: title, status, added, closed, notes, description
 Supported keys for epics: title, status, added, closed, notes, descriptionQuick Start
 
+Notes handling
+- By default, `--set notes="..."` will append the provided lines to existing `notes` for the target epic/task.
+- To replace existing notes instead of appending, use `--replace-notes`.
+
 ### First Time Setup
 ```bash
 # Create a new backlog file
