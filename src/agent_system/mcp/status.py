@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 import asyncio
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -113,4 +114,47 @@ async def publish_status(
         timestamp=datetime.now(),
         level=level
     )
+    # Publish locally first
     await status_bus.publish(event)
+
+    # Optionally forward to a remote SSE broker via HTTP POST when configured.
+    # Use env var AGENT_STATUS_SSE_PUSH_URL to specify the broker publish endpoint
+    # (e.g. http://127.0.0.1:8765/status/publish).
+    push_url = os.environ.get("AGENT_STATUS_SSE_PUSH_URL")
+    if not push_url:
+        return
+
+    payload = {
+        "server": event.server,
+        "request_id": event.request_id,
+        "message": event.message,
+        "level": event.level,
+        "timestamp": event.timestamp.isoformat()
+    }
+
+    # Fire-and-forget POST to the broker
+    async def _post():
+        try:
+            try:
+                import aiohttp
+            except Exception:
+                logger.debug("aiohttp not available; cannot push status to SSE broker")
+                return
+
+            async with aiohttp.ClientSession() as sess:
+                async with sess.post(push_url, json=payload, timeout=5) as resp:
+                    if resp.status >= 400:
+                        logger.debug("Failed to push status to broker %s: %s", push_url, resp.status)
+        except Exception as e:
+            logger.debug("Exception while pushing status to broker: %s", e)
+
+    try:
+        asyncio.create_task(_post())
+    except RuntimeError:
+        # if there's no running loop, run in new loop in background thread
+        try:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_post())
+            loop.close()
+        except Exception:
+            logger.debug("Failed to push status to broker in fallback path")

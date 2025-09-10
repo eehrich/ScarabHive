@@ -20,7 +20,7 @@ except Exception:
 from .config.settings import load_settings
 from .mcp.plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
-from .mcp.status import status_bus, StatusEvent
+from .mcp.status import status_bus
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
@@ -538,6 +538,49 @@ def main() -> None:
     # Stream execution and show MCP call/results on the fly in a human readable way.
     async def _stream_and_run(agent: Agent, task: str) -> dict:
         final_result: Dict[str, Any] = {"task": task, "calls": []}
+        # Optionally auto-subscribe to external SSE status stream
+        sse_task = None
+        sse_url = os.environ.get("AGENT_STATUS_SSE_STREAM_URL")
+
+        async def _sse_subscriber(url: str):
+            try:
+                try:
+                    import aiohttp
+                except Exception:
+                    return
+                timeout = aiohttp.ClientTimeout(total=None)
+                async with aiohttp.ClientSession(timeout=timeout) as sess:
+                    async with sess.get(url) as resp:
+                        if resp.status != 200:
+                            return
+                        async for line in resp.content:
+                            try:
+                                text = line.decode("utf-8").strip()
+                            except Exception:
+                                continue
+                            if not text:
+                                continue
+                            if text.startswith("data:"):
+                                payload = text[len("data:"):].strip()
+                                try:
+                                    obj = json.loads(payload)
+                                except Exception:
+                                    obj = {"raw": payload}
+                                # Print SSE messages in short form
+                                if _supports_color():
+                                    print(_colorize(f"[SSE] {obj.get('server','?')}: {obj.get('message','')}", "34"))
+                                else:
+                                    print(f"[SSE] {obj.get('server','?')}: {obj.get('message','')}")
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                return
+
+        if sse_url:
+            try:
+                sse_task = asyncio.create_task(_sse_subscriber(sse_url))
+            except Exception:
+                sse_task = None
         try:
             async for ev in agent.run_events(task):
                 t = ev.get("type")
@@ -591,6 +634,12 @@ def main() -> None:
         except Exception as e:
             # Fallback: surface exception as result
             return {"task": task, "errors": [str(e)]}
+        finally:
+            if sse_task and not sse_task.done():
+                try:
+                    sse_task.cancel()
+                except Exception:
+                    pass
 
     if getattr(args, "no_stream", False):
         # Use legacy blocking run and print final JSON only
