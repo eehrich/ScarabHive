@@ -136,7 +136,8 @@
   </head>
   <body>
     <header>
-      <h1>Agent System <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #243244;color:#9ab;font-size:12px; margin-left:8px">MCP</span></h1>
+  <h1>Agent System <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #243244;color:#9ab;font-size:12px; margin-left:8px">MCP</span></h1>
+  <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
     </header>
 
     <main class="main-container">
@@ -144,15 +145,7 @@
         <div id="chat" class="chat" aria-live="polite"></div>
       </div>
       
-      <div class="sidebar">
-        <div class="sidebar-header">Status & Metrics</div>
-        <div class="status-metrics" id="statusMetrics">
-          <div class="metric-item">
-            <span class="metric-label">Loading...</span>
-            <span class="metric-value">...</span>
-          </div>
-        </div>
-      </div>
+  <!-- Sidebar removed; status panel is now toggled from header -->
     </main>
 
     <div class="inputBar" role="region" aria-label="Chat input">
@@ -169,14 +162,14 @@
       const runBtn = document.getElementById('runBtn');
       const statusMetrics = document.getElementById('statusMetrics');
 
-      // Status metrics update function
+  // Status metrics update function
       async function updateStatusMetrics() {
         try {
           const response = await fetch('/status/meta');
-          if (response.ok) {
-            const data = await response.json();
+              if (response.ok) {
+                const data = await response.json();
             
-            statusMetrics.innerHTML = `
+                const html = `
               <div class="metric-item">
                 <span class="metric-label">Subscribers</span>
                 <span class="metric-value">${data.subscribers || 0}</span>
@@ -202,6 +195,11 @@
                 <span class="metric-value">${data.config.AGENT_STATUS_DEBOUNCE_MS || 'None'}</span>
               </div>
             `;
+            // Write into sidebar metrics if present, otherwise into floating panel
+            const sidebarMeta = document.getElementById('statusMetrics');
+            const floatingMeta = document.getElementById('floatingStatusMetrics');
+            if (sidebarMeta) sidebarMeta.innerHTML = html;
+            if (floatingMeta) floatingMeta.innerHTML = html;
           }
         } catch (error) {
           statusMetrics.innerHTML = `
@@ -212,6 +210,80 @@
           `;
         }
       }
+
+      // Create floating status panel (hidden by default)
+      const statusPanel = document.createElement('div');
+      statusPanel.id = 'floatingStatusPanel';
+      statusPanel.className = 'floating-panel';
+      statusPanel.style.display = 'none';
+      statusPanel.innerHTML = `
+        <div class="floating-panel-header" id="floatingStatusHeader">
+          <span>Status & Metrics</span>
+          <div style="margin-left:8px;flex:1"></div>
+          <button id="floatingCloseBtn" title="Close" aria-label="Close">✕</button>
+        </div>
+        <div class="floating-panel-body" id="floatingStatusBody">
+          <div class="status-metrics" id="floatingStatusMetrics">
+            <div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(statusPanel);
+
+      const statusToggleBtn = document.getElementById('statusToggleBtn');
+      const floatingCloseBtn = document.getElementById('floatingCloseBtn');
+      const floatingStatusMetrics = document.getElementById('floatingStatusMetrics');
+
+      statusToggleBtn.addEventListener('click', () => {
+        const shown = statusPanel.style.display !== 'none';
+        statusPanel.style.display = shown ? 'none' : 'block';
+        statusToggleBtn.setAttribute('aria-expanded', String(!shown));
+        if (!shown) {
+          // populate metrics immediately (updateStatusMetrics will populate either sidebar or floating panel)
+          updateStatusMetrics().catch(() => {});
+        }
+      });
+
+      floatingCloseBtn.addEventListener('click', () => {
+        statusPanel.style.display = 'none';
+        statusToggleBtn.setAttribute('aria-expanded', 'false');
+      });
+
+      // Make panel draggable
+      (function makeDraggable(headerId, panel) {
+        const header = document.getElementById(headerId);
+        let isDragging = false;
+        let startX = 0, startY = 0, origX = 0, origY = 0;
+        header.addEventListener('pointerdown', (ev) => {
+          // If the pointer event originated on the close button (or other controls),
+          // do not start a drag so the control's click can be processed normally.
+          try {
+            if (ev.target && ev.target.closest && ev.target.closest('#floatingCloseBtn')) {
+              return;
+            }
+          } catch (e) {
+            // ignore
+          }
+          isDragging = true;
+          startX = ev.clientX;
+          startY = ev.clientY;
+          const rect = panel.getBoundingClientRect();
+          origX = rect.left;
+          origY = rect.top;
+          header.setPointerCapture(ev.pointerId);
+        });
+        window.addEventListener('pointermove', (ev) => {
+          if (!isDragging) return;
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+          panel.style.left = (origX + dx) + 'px';
+          panel.style.top = (origY + dy) + 'px';
+          panel.style.right = 'auto';
+        });
+        window.addEventListener('pointerup', (ev) => {
+          isDragging = false;
+        });
+      })('floatingStatusHeader', statusPanel);
 
       // Update metrics every 2 seconds
       setInterval(updateStatusMetrics, 2000);

@@ -26,11 +26,52 @@ header {
   position: sticky;
   top: 0;
   background: linear-gradient(180deg, #0b0f14, #0b0f14cc 70%, transparent);
-  padding: 16px 24px;
+  padding: 12px 18px;
   border-bottom: 1px solid #1f2937;
   backdrop-filter: blur(6px);
   z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
+
+#statusToggleBtn {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #243244;
+  background: #0b1220;
+  color: #9ab;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Floating status panel */
+.floating-panel {
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  width: 320px;
+  background: linear-gradient(180deg, #0b1220, #07111a);
+  border: 1px solid #243244;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  z-index: 1000;
+  overflow: hidden;
+}
+.floating-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, #07111a, #0b1220);
+  border-bottom: 1px solid #16202b;
+  cursor: grab;
+}
+.floating-panel-header:active { cursor: grabbing; }
+.floating-panel-body { padding: 10px; max-height: 360px; overflow: auto; }
+
+/* Header button spacing */
+#statusToggleBtn { margin-left: 12px; }
 
 h1 {
   margin: 0;
