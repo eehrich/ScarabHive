@@ -101,6 +101,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         server: Optional[str] = Query(default=None, description="Filter by server name"),
         request_id: Optional[str] = Query(default=None, description="Filter by request id"),
         heartbeat: int = Query(default=15, ge=5, le=120, description="Heartbeat interval seconds"),
+        close_after: Optional[int] = Query(
+            default=None,
+            ge=0,
+            description="(Testing/diagnostics) Close stream after emitting this many events",
+        ),
     ):
         """Server-Sent Events endpoint for unified status events (Task 0187).
 
@@ -117,32 +122,52 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         queue = await status_bus.subscribe(server=server, request_id=request_id)
 
         async def event_gen():
+            sent_events = 0
             try:
-                # Initial comment for fast clients
-                yield ":ok\n\n"
-                last_hb = asyncio.get_event_loop().time()
+                yield ":ok\n\n"  # initial comment
+                if close_after is not None and close_after <= 0:
+                    # Immediate close requested (testing)
+                    return
+                loop = asyncio.get_event_loop()
+                last_hb = loop.time()
                 while True:
-                    # Heartbeat handling
-                    now = asyncio.get_event_loop().time()
+                    now = loop.time()
                     if now - last_hb >= heartbeat:
                         yield f":hb {int(now)}\n\n"
                         last_hb = now
 
                     try:
                         ev: StatusEvent = await asyncio.wait_for(queue.get(), timeout=1.0)
-                        payload = ev.to_dict()
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     except asyncio.TimeoutError:
-                        # loop to maybe send heartbeat
-                        pass
+                        ev = None
+                    except asyncio.CancelledError:
+                        break
 
-                    # Client disconnect check
+                    if ev is not None:
+                        try:
+                            payload = ev.to_dict()
+                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                            sent_events += 1
+                            if close_after is not None and sent_events >= close_after:
+                                logger.debug(
+                                    "/status/stream close_after=%s reached (events=%s)",
+                                    close_after,
+                                    sent_events,
+                                )
+                                break
+                        except Exception:
+                            logger.exception("Failed to serialize status event")
+
                     if await request.is_disconnected():
                         logger.info("Client disconnected from /status/stream")
                         break
             finally:
-                status_bus.unsubscribe(queue)
-                logger.debug("/status/stream subscriber cleaned up")
+                try:
+                    status_bus.unsubscribe(queue)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+                if logger.handlers:  # avoid errors during interpreter shutdown
+                    logger.debug("/status/stream subscriber cleaned up")
 
         return StreamingResponse(
             event_gen(),

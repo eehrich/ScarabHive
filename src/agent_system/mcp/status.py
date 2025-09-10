@@ -112,7 +112,13 @@ class StatusBus:
             idx = self._subscribers.index(queue)
             self._subscribers.pop(idx)
             self._filters.pop(idx)
-            logger.debug(f"Subscriber removed. Total subscribers: {len(self._subscribers)}")
+            try:
+                if logger.handlers:
+                    logger.debug(
+                        "Subscriber removed. Total subscribers: %s", len(self._subscribers)
+                    )
+            except Exception:  # pragma: no cover
+                pass
 
     def get_subscriber_count(self) -> int:
         """Get the number of active subscribers."""
