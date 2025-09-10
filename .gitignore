@@ -9,5 +9,5 @@ build/
 .DS_Store
 logs/
 *.log
-
+.tmp
 tmp_backlog.md
