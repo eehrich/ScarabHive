@@ -150,7 +150,7 @@ class WebResearchAgent(Agent):
         self.cfg = server_cfg  # legacy compatibility expected by tests
         logger.info("Created WebResearchAgent '%s' with tools: %s", name, research_registry.list())
 
-    async def research(self, topic: str, max_results: int = 5) -> Dict[str, Any]:
+    async def research(self, topic: str, max_results: int = 5, request_id: str = None) -> Dict[str, Any]:
         research_prompt = f"""
         Perform comprehensive research on: {topic}
 
@@ -167,9 +167,7 @@ class WebResearchAgent(Agent):
         - Source URLs for verification
         """
         # publish research start
-        request_id = None
         try:
-            request_id = research_prompt and None
             await publish_status(self.name, f"Research started: {topic}", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
@@ -187,7 +185,7 @@ class WebResearchAgent(Agent):
                 pass
             raise
 
-    async def fact_check(self, claim: str) -> Dict[str, Any]:
+    async def fact_check(self, claim: str, request_id: str = None) -> Dict[str, Any]:
         fact_check_prompt = f"""
         Fact-check this claim: "{claim}"
 
@@ -203,9 +201,8 @@ class WebResearchAgent(Agent):
         - Contradicting evidence if any
         - Context and nuances
         """
-        request_id = None
         try:
-            await publish_status(self.name, f"Fact-check started", request_id=request_id, phase=PHASE_START)
+            await publish_status(self.name, f"Fact-check started: {claim[:50]}...", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
         try:
@@ -222,7 +219,7 @@ class WebResearchAgent(Agent):
                 pass
             raise
 
-    async def compare_sources(self, topic: str, source_urls: list[str]) -> Dict[str, Any]:
+    async def compare_sources(self, topic: str, source_urls: list[str], request_id: str = None) -> Dict[str, Any]:
         sources_text = "\n".join([f"- {url}" for url in source_urls])
         compare_prompt = f"""
         Compare how different sources cover this topic: {topic}
@@ -242,9 +239,8 @@ class WebResearchAgent(Agent):
         - Bias or perspective analysis
         - Most comprehensive/reliable source assessment
         """
-        request_id = None
         try:
-            await publish_status(self.name, f"Compare sources started", request_id=request_id, phase=PHASE_START)
+            await publish_status(self.name, f"Compare sources started: {topic}", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
         try:
@@ -269,23 +265,26 @@ class WebResearchAgent(Agent):
         return schema
 
     async def call(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
+        # Extract request_id for status correlation
+        request_id = params.get("request_id") or params.get("requestId")
+        
         if action == "research":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
             max_results = params.get("max_results", 5)
-            return await self.research(topic, max_results)
+            return await self.research(topic, max_results, request_id)
         if action == "fact_check":
             claim = params.get("claim")
             if not claim:
                 return {"status": "error", "error": "Missing required parameter 'claim' for fact_check action"}
-            return await self.fact_check(claim)
+            return await self.fact_check(claim, request_id)
         if action == "compare_sources":
             source_urls = params.get("source_urls")
             topic = params.get("topic")
             if not topic or not source_urls:
                 return {"status": "error", "error": "Missing required parameters 'topic' and 'source_urls' for compare_sources action"}
-            return await self.compare_sources(topic, source_urls)
+            return await self.compare_sources(topic, source_urls, request_id)
         return await super().call(action, params)
 
     def get_default_action(self) -> str:
