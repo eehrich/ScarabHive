@@ -14,12 +14,29 @@
       input { background:#172330; border:1px solid #263545; color:#c8d2dd; padding:4px 8px; border-radius:4px; font-size:14px; }
       input:focus { outline:1px solid #355d85; }
       #timeline { padding:12px 16px 80px; }
-      .event { position:relative; padding:8px 12px 8px 14px; margin:4px 0 4px 8px; border-left:3px solid #2e3e4f; background:#13202c; border-radius:4px; animation:fadeIn .3s ease; }
+      .event {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        position: relative;
+        padding: 8px 12px;
+        margin: 6px 0;
+        border-left: 4px solid #2e3e4f;
+        background: #13202c;
+        border-radius: 6px;
+        animation: fadeIn .3s ease;
+        box-sizing: border-box;
+        width: calc(100% - 8px);
+        overflow: hidden;
+        word-break: break-word;
+      }
       .event.start { border-color:#00bcd4; }
       .event.progress { border-color:#1e88e5; }
       .event.end { border-color:#2e7d32; }
       .event.error { border-color:#c62828; }
-      .meta { font-size:11px; opacity:.75; margin-top:4px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .event .phase { flex: 0 0 auto; margin-top: 2px; }
+      .event .content { flex: 1 1 auto; min-width: 0; }
+  .meta { font-size:11px; opacity:.75; margin-top:6px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
       .event:hover { background:#182a38; cursor:pointer; }
       .phase { font-size:11px; padding:2px 6px; border-radius:10px; margin-right:6px; text-transform:uppercase; letter-spacing:.5px; }
       .phase.start { background:#00bcd41a; color:#00bcd4; }
@@ -28,7 +45,7 @@
       .phase.error { background:#c628281a; color:#ef5350; }
       .server { font-weight:600; }
       .req { opacity:.65; font-size:12px; }
-      .msg { display:inline; }
+  .msg { display:block; white-space:pre-wrap; }
       .empty { opacity:.5; font-style:italic; padding:12px 4px; }
       @keyframes fadeIn { from { opacity:0; transform:translateY(-2px);} to { opacity:1; transform:translateY(0);} }
       .footer { position:fixed; bottom:0; left:0; right:0; background:#121c27; border-top:1px solid #1f2b38; padding:6px 12px; font-size:11px; display:flex; justify-content:space-between; }
@@ -95,16 +112,38 @@
         total++; counts.textContent = total + ' event' + (total!==1?'s':'');
         const div = document.createElement('div');
         div.className = 'event ' + esc(ev.phase || 'progress');
-        const phase = esc(ev.phase || '?');
-        const msg = esc(ev.message || '');
-        const srv = esc(ev.server || '?');
-        const rid = esc(ev.request_id || '');
-        div.innerHTML = `<span class="phase ${phase}">${phase}</span><span class="server">${srv}</span> <span class="req">${rid}</span><br><span class="msg">${msg}</span><div class="meta">${fmtTime(ev.timestamp)} · level=${esc(ev.level)}${ev.meta?' · meta':''}</div>`;
+
+        const phaseSpan = document.createElement('span');
+        phaseSpan.className = 'phase ' + esc(ev.phase || 'progress');
+        phaseSpan.textContent = esc(ev.phase || '?');
+
+        const content = document.createElement('div');
+        content.className = 'content';
+
+        const header = document.createElement('div');
+        header.innerHTML = `<span class="server">${esc(ev.server || '?')}</span> <span class="req">${esc(ev.request_id || '')}</span>`;
+
+        const msgSpan = document.createElement('div');
+        msgSpan.className = 'msg';
+        msgSpan.textContent = ev.message || '';
+
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'meta';
+        metaDiv.textContent = `${fmtTime(ev.timestamp)} · level=${esc(ev.level)}${ev.meta ? ' · meta' : ''}`;
+
+        content.appendChild(header);
+        content.appendChild(msgSpan);
+        content.appendChild(metaDiv);
+
+        div.appendChild(phaseSpan);
+        div.appendChild(content);
+
         div.addEventListener('click',()=>{
-          detailTitle.textContent = `${srv} ${phase}`;
+          detailTitle.textContent = `${esc(ev.server||'?')} ${esc(ev.phase||'?')}`;
           detailJson.textContent = JSON.stringify(ev, null, 2);
           dlg.showModal();
         });
+
         tl.appendChild(div);
         if (autoScrollChk.checked){ requestAnimationFrame(()=>window.scrollTo({top:document.body.scrollHeight})); }
       }
