@@ -213,8 +213,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/status", response_class=HTMLResponse)
     async def status_page(request: Request):
-        # Updated to new Starlette signature
-        return templates.TemplateResponse(request, "status.html")
+        # Redirect to main page since status is now integrated
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/", status_code=302)
 
     @app.get("/status/meta")
     async def status_meta(request: Request):  # pragma: no cover - simple diagnostics

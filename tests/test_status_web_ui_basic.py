@@ -7,29 +7,26 @@ from agent_system.mcp.status import publish_status, PHASE_START, PHASE_END
 pytestmark = pytest.mark.anyio
 
 
-async def test_status_page_template_served():
+async def test_status_page_redirects_to_main():
+    """Test that the status page redirects to the main page since status is integrated."""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.get('/status')
+        r = await client.get('/status', follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers.get('location') == '/'
+
+
+async def test_main_page_has_status_integration():
+    """Test that the main page contains status event integration."""
+    app = build_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get('/')
         assert r.status_code == 200
-        assert '<title>Status Stream</title>' in r.text
-        # minimal script markers
-        assert 'EventSource' in r.text
-
-
-async def test_status_page_receives_events():
-    app = build_app()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        # Open raw stream first (bypass HTML) to simulate browser SSE consumption
-        async def _pub():
-            await asyncio.sleep(0.05)
-            await publish_status('webui','Boot', phase=PHASE_START)
-            await publish_status('webui','Done', phase=PHASE_END)
-        pub_task = asyncio.create_task(_pub())
-        resp = await client.get('/status/stream', params={'close_after':2})
-        await pub_task
-        lines = [l for l in resp.text.splitlines() if l.startswith('data: ')]
-        assert len(lines) == 2
-        payloads = [json.loads(l[6:]) for l in lines]
-        phases = {p['phase'] for p in payloads}
-        assert {'start','end'} <= phases
+        assert '<title>Agent System (MCP)</title>' in r.text
+        # Check for status integration elements
+        assert 'status-event' in r.text
+        assert 'addStatusEvent' in r.text
+        assert '/status/stream' in r.text
+        # Ensure MCP calls section is removed
+        assert 'MCP Calls' not in r.text
+        assert 'mcpBox' not in r.text

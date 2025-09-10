@@ -6,6 +6,60 @@
   <title>Agent System (MCP)</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <style>
+    .status-event {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 4px 8px;
+      margin: 3px 0;
+      border-left: 3px solid #2e3e4f;
+      background: #0a1420;
+      border-radius: 4px;
+      font-size: 13px;
+      animation: fadeIn .2s ease;
+    }
+    .status-event.start { border-color: #00bcd4; }
+    .status-event.progress { border-color: #1e88e5; }
+    .status-event.end { border-color: #2e7d32; }
+    .status-event.error { border-color: #c62828; }
+    .status-phase {
+      flex: 0 0 auto;
+      font-size: 10px;
+      padding: 1px 4px;
+      border-radius: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-top: 1px;
+    }
+    .status-phase.start { background: #00bcd41a; color: #00bcd4; }
+    .status-phase.progress { background: #1e88e51a; color: #42a5f5; }
+    .status-phase.end { background: #2e7d321a; color: #81c784; }
+    .status-phase.error { background: #c628281a; color: #ef5350; }
+    .status-content {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .status-server {
+      font-weight: 600;
+      color: #9ab;
+    }
+    .status-message {
+      display: block;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 2px;
+    }
+    .status-meta {
+      font-size: 10px;
+      opacity: 0.6;
+      margin-top: 2px;
+    }
+    @keyframes fadeIn { 
+      from { opacity: 0; transform: translateY(-2px); } 
+      to { opacity: 1; transform: translateY(0); } 
+    }
+  </style>
   </head>
   <body>
     <header>
@@ -31,6 +85,47 @@
 
       function escapeHtml(s) {
         return s.replace(/[&<>]/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;'}[c]));
+      }
+
+      function formatTime(ts) {
+        try {
+          return new Date(ts).toLocaleTimeString();
+        } catch (e) {
+          return ts;
+        }
+      }
+
+      function addStatusEvent(container, ev) {
+        const div = document.createElement('div');
+        div.className = 'status-event ' + (ev.phase || 'progress');
+
+        const phaseSpan = document.createElement('span');
+        phaseSpan.className = 'status-phase ' + (ev.phase || 'progress');
+        phaseSpan.textContent = ev.phase || '?';
+
+        const content = document.createElement('div');
+        content.className = 'status-content';
+
+        const header = document.createElement('div');
+        header.innerHTML = `<span class="status-server">${escapeHtml(ev.server || '?')}</span>`;
+
+        const msgSpan = document.createElement('div');
+        msgSpan.className = 'status-message';
+        msgSpan.textContent = ev.message || '';
+
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'status-meta';
+        metaDiv.textContent = `${formatTime(ev.timestamp)} · ${escapeHtml(ev.level || 'info')}`;
+
+        content.appendChild(header);
+        content.appendChild(msgSpan);
+        content.appendChild(metaDiv);
+
+        div.appendChild(phaseSpan);
+        div.appendChild(content);
+
+        container.appendChild(div);
+        return div;
       }
 
       function markdownToHtml(md) {
@@ -146,7 +241,7 @@
         box.className = 'msg assistant';
         box.innerHTML = `
           <details id="thinkingBox"><summary>Thinking…</summary><pre id="thinking"></pre></details>
-          <details id="mcpBox"><summary>MCP Calls</summary><pre id="mcp"></pre></details>
+          <details id="statusBox"><summary>Status Events</summary><div id="statusContainer"></div></details>
           <div id="assistantText" class="response-content"></div>
         `;
         row.appendChild(box);
@@ -157,9 +252,9 @@
           box,
           t: box.querySelector('#assistantText'),
           think: box.querySelector('#thinking'),
-          mcp: box.querySelector('#mcp'),
+          status: box.querySelector('#statusContainer'),
           thinkBox: box.querySelector('#thinkingBox'),
-          mcpBox: box.querySelector('#mcpBox')
+          statusBox: box.querySelector('#statusBox')
         };
       }
 
@@ -177,6 +272,22 @@
 
         let sseOk = false;
         const es = new EventSource(`/events?task=${encodeURIComponent(task)}`);
+        
+        // Also connect to status stream for this session
+        let statusEs = null;
+        try {
+          statusEs = new EventSource('/status/stream');
+          statusEs.onmessage = (ev) => {
+            try {
+              const statusData = JSON.parse(ev.data);
+              addStatusEvent(blk.status, statusData);
+            } catch (err) {
+              // ignore parse errors
+            }
+          };
+        } catch (err) {
+          console.warn('Status stream not available:', err);
+        }
 
         es.onopen = () => { console.info('SSE connected'); sseOk = true; };
 
@@ -203,16 +314,6 @@
                   blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
                 }
                 break;
-              case 'mcp_call':
-                blk.mcp.textContent += `🔧 ${data.server}.${data.action}\n`;
-                if (data.params && Object.keys(data.params).length > 0) {
-                  blk.mcp.textContent += `   📝 Parameters: ${JSON.stringify(data.params, null, 2)}\n`;
-                }
-                blk.mcp.textContent += '\n';
-                break;
-              case 'mcp_result':
-                blk.mcp.textContent += `✅ Result:\n${JSON.stringify(data.result, null, 2)}\n\n`;
-                break;
               case 'final':
                 const content = data.summary || data.content || '';
                 blk.t.innerHTML = `
@@ -223,10 +324,11 @@
                   <div class="response-text">${markdownToHtml(content)}</div>
                 `;
                 blk.thinkBox.open = false;
-                blk.mcpBox.open = false;
+                blk.statusBox.open = false;
                 break;
               case 'end':
                 es.close();
+                if (statusEs) statusEs.close();
                 runBtn.disabled = false;
                 break;
               case 'error':
@@ -269,10 +371,15 @@
             }
             runBtn.disabled = false;
             es.close();
+            if (statusEs) statusEs.close();
           }
         }, 1500);
 
-        es.onerror = () => { es.close(); runBtn.disabled = false; };
+        es.onerror = () => { 
+          es.close(); 
+          if (statusEs) statusEs.close();
+          runBtn.disabled = false; 
+        };
       }
     </script>
   </body>
