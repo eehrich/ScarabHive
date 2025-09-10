@@ -404,6 +404,32 @@ pre {
   color: #f85149;
 }
 
+/* Conversation Flow - Combined Status and Response */
+.conversation-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.status-container {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.status-container:empty {
+  display: none;
+}
+
+.status-container:empty::before {
+  content: "No status events yet...";
+  color: #8b949e;
+  font-style: italic;
+  font-size: 12px;
+}
+
 /* Status container improvements */
 #statusContainer {
   background: #0d1117;
@@ -420,4 +446,21 @@ pre {
   color: #8b949e;
   font-style: italic;
   font-size: 12px;
+}
+
+/* Response header icon styling */
+.response-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.response-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+.response-header.error .response-icon svg path,
+.response-header.error .response-icon svg rect {
+  stroke: none;
 }
