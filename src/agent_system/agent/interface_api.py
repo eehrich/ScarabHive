@@ -182,6 +182,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def index(request: Request):
         return templates.TemplateResponse("index.html", {"request": request})
 
+    @app.get("/status", response_class=HTMLResponse)
+    async def status_page(request: Request):
+        return templates.TemplateResponse("status.html", {"request": request})
+
     @app.get("/favicon.ico")
     async def favicon():
         favicon_path = Path(__file__).parents[3] / "static" / "favicon.ico"
