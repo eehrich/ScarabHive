@@ -19,11 +19,7 @@ body {
   color: #e6edf3;
 }
 
-main {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 16px;
-}
+/* Main container handled by .main-container in templates */
 
 /* Header */
 header {

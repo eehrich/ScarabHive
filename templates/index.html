@@ -7,6 +7,65 @@
   <link rel="stylesheet" href="/static/styles.css" />
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
   <style>
+    /* Layout with sidebar */
+    .main-container {
+      display: flex;
+      gap: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+    
+    .main-content {
+      flex: 1;
+      min-width: 0;
+    }
+    
+    .sidebar {
+      flex: 0 0 300px;
+      background: #0a1420;
+      border: 1px solid #243244;
+      border-radius: 8px;
+      padding: 16px;
+      height: fit-content;
+      position: sticky;
+      top: 80px;
+    }
+    
+    .sidebar-header {
+      font-weight: 600;
+      color: #cbd5e1;
+      margin-bottom: 12px;
+      font-size: 14px;
+      border-bottom: 1px solid #243244;
+      padding-bottom: 8px;
+    }
+    
+    .status-metrics {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .metric-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      background: #0b1220;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    
+    .metric-label {
+      color: #9ab;
+    }
+    
+    .metric-value {
+      color: #cbd5e1;
+      font-weight: 500;
+    }
+    
     .status-event {
       display: flex;
       gap: 8px;
@@ -55,6 +114,20 @@
       opacity: 0.6;
       margin-top: 2px;
     }
+    
+    /* Mobile responsiveness */
+    @media (max-width: 768px) {
+      .main-container {
+        flex-direction: column;
+      }
+      
+      .sidebar {
+        flex: none;
+        position: static;
+        order: -1;
+      }
+    }
+    
     @keyframes fadeIn { 
       from { opacity: 0; transform: translateY(-2px); } 
       to { opacity: 1; transform: translateY(0); } 
@@ -66,8 +139,20 @@
       <h1>Agent System <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #243244;color:#9ab;font-size:12px; margin-left:8px">MCP</span></h1>
     </header>
 
-    <main>
-      <div id="chat" class="chat" aria-live="polite"></div>
+    <main class="main-container">
+      <div class="main-content">
+        <div id="chat" class="chat" aria-live="polite"></div>
+      </div>
+      
+      <div class="sidebar">
+        <div class="sidebar-header">Status & Metrics</div>
+        <div class="status-metrics" id="statusMetrics">
+          <div class="metric-item">
+            <span class="metric-label">Loading...</span>
+            <span class="metric-value">...</span>
+          </div>
+        </div>
+      </div>
     </main>
 
     <div class="inputBar" role="region" aria-label="Chat input">
@@ -82,6 +167,56 @@
       const chat = document.getElementById('chat');
       const form = document.getElementById('f');
       const runBtn = document.getElementById('runBtn');
+      const statusMetrics = document.getElementById('statusMetrics');
+
+      // Status metrics update function
+      async function updateStatusMetrics() {
+        try {
+          const response = await fetch('/status/meta');
+          if (response.ok) {
+            const data = await response.json();
+            
+            statusMetrics.innerHTML = `
+              <div class="metric-item">
+                <span class="metric-label">Subscribers</span>
+                <span class="metric-value">${data.subscribers || 0}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Events Published</span>
+                <span class="metric-value">${data.publish_attempted || 0}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Events Delivered</span>
+                <span class="metric-value">${data.delivered || 0}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Events Suppressed</span>
+                <span class="metric-value">${(data.suppressed_rate || 0) + (data.suppressed_debounce || 0)}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Max RPS</span>
+                <span class="metric-value">${data.config.AGENT_STATUS_MAX_RPS || 'Unlimited'}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Debounce MS</span>
+                <span class="metric-value">${data.config.AGENT_STATUS_DEBOUNCE_MS || 'None'}</span>
+              </div>
+            `;
+          }
+        } catch (error) {
+          statusMetrics.innerHTML = `
+            <div class="metric-item">
+              <span class="metric-label">Status</span>
+              <span class="metric-value">Error loading</span>
+            </div>
+          `;
+        }
+      }
+
+      // Update metrics every 2 seconds
+      setInterval(updateStatusMetrics, 2000);
+      // Initial load
+      updateStatusMetrics();
 
       function escapeHtml(s) {
         return s.replace(/[&<>]/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;'}[c]));
