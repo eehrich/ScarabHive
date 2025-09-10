@@ -444,6 +444,7 @@ def main() -> None:
         if getattr(args, "follow", False):
             # Stream status events in real-time
             print("Following status events... (Ctrl+C to stop)")
+            # Provide minimal alignment for columns (server, request_id, phase) for readability.
             try:
                 while True:
                     event = asyncio.run(queue.get())
@@ -457,30 +458,41 @@ def main() -> None:
                             "phase": getattr(event, "phase", None),
                             "meta": getattr(event, "meta", None),
                         }, ensure_ascii=False))
-                    else:
-                        # Short format
-                        msg = f"[{event.timestamp.strftime('%H:%M:%S')}] {event.server}"
-                        if event.request_id:
-                            msg += f" ({event.request_id})"
-                        phase = getattr(event, "phase", None)
-                        if phase:
-                            msg += f" [{phase}]"
-                        txt = event.message
-                        # simple URL highlight (http/https) for readability
-                        try:
-                            import re
-                            def _hl(m):
-                                url = m.group(0)
-                                return _colorize(url, '34') if _supports_color() else url
-                            txt = re.sub(r"https?://[\w\-._~:/?#@!$&'()*+,;=%]+", _hl, txt)
-                        except Exception:
-                            pass
-                        msg += f": {txt}"
-                        if event.level == "error" and _supports_color():
-                            msg = _colorize(msg, "31")
-                        elif event.level == "warning" and _supports_color():
-                            msg = _colorize(msg, "33")
-                        print(msg)
+                        continue
+
+                    # Short / aligned format
+                    phase = getattr(event, "phase", None) or "?"
+                    phase_disp = phase
+                    if _supports_color():
+                        phase_color_map = {
+                            "start": "36",      # cyan
+                            "progress": "34",   # blue
+                            "end": "32",        # green
+                            "error": "31",      # red
+                        }
+                        c = phase_color_map.get(phase)
+                        if c:
+                            phase_disp = _colorize(phase, c)
+                    server_col = event.server
+                    rid_col = event.request_id or "-"
+                    timestamp_col = event.timestamp.strftime('%H:%M:%S')
+                    txt = event.message
+                    # URL highlight
+                    try:
+                        import re
+                        def _hl(m):
+                            url = m.group(0)
+                            return _colorize(url, '34') if _supports_color() else url
+                        txt = re.sub(r"https?://[\w\-._~:/?#@!$&'()*+,;=%]+", _hl, txt)
+                    except Exception:
+                        pass
+                    line = f"{timestamp_col} | {phase_disp:<8} | {server_col:<15} | {rid_col:<8} | {txt}"
+                    # Level coloring overrides overall line if error/warning
+                    if event.level == "error" and _supports_color():
+                        line = _colorize(line, "31")
+                    elif event.level == "warning" and _supports_color():
+                        line = _colorize(line, "33")
+                    print(line)
             except KeyboardInterrupt:
                 print("\nStopped following status events.")
         else:
@@ -499,12 +511,13 @@ def main() -> None:
                         "meta": getattr(event, "meta", None),
                     }, ensure_ascii=False))
                 else:
-                    msg = f"[{event.timestamp.strftime('%H:%M:%S')}] {event.server}"
-                    if event.request_id:
-                        msg += f" ({event.request_id})"
-                    phase = getattr(event, "phase", None)
-                    if phase:
-                        msg += f" [{phase}]"
+                    phase = getattr(event, "phase", None) or "?"
+                    phase_disp = phase
+                    if _supports_color():
+                        phase_color_map = {"start": "36", "progress": "34", "end": "32", "error": "31"}
+                        c = phase_color_map.get(phase)
+                        if c:
+                            phase_disp = _colorize(phase, c)
                     txt = event.message
                     try:
                         import re
@@ -514,7 +527,12 @@ def main() -> None:
                         txt = re.sub(r"https?://[\w\-._~:/?#@!$&'()*+,;=%]+", _hl2, txt)
                     except Exception:
                         pass
-                    msg += f": {txt}"
+                    rid_col = event.request_id or "-"
+                    msg = f"{event.timestamp.strftime('%H:%M:%S')} | {phase_disp:<8} | {event.server:<15} | {rid_col:<8} | {txt}"
+                    if event.level == "error" and _supports_color():
+                        msg = _colorize(msg, "31")
+                    elif event.level == "warning" and _supports_color():
+                        msg = _colorize(msg, "33")
                     print(msg)
             except KeyboardInterrupt:
                 print("No status events received.")
