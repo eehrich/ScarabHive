@@ -18,7 +18,7 @@ from ..config.loader import load_config
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
-from ..mcp.status import status_bus, StatusEvent
+from ..mcp.status import status_bus, StatusEvent, get_status_metrics
 
 
 app = FastAPI(title="Agent System (MCP)")
@@ -122,9 +122,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         'message' events and parse the JSON payload.
         """
         logger = logging.getLogger(__name__)
-        logger.info(
-            "SSE /status/stream connected (server=%s request_id=%s)", server, request_id
-        )
+        # Optional simple auth if AGENT_STATUS_REQUIRE_AUTH=1 and header X-Status-Token must match AGENT_STATUS_TOKEN
+        if os.getenv("AGENT_STATUS_REQUIRE_AUTH") == "1":
+            expected = os.getenv("AGENT_STATUS_TOKEN", "")
+            provided = request.headers.get("X-Status-Token", "")
+            if not expected or provided != expected:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=401, detail="Unauthorized status stream")
+
+        logger.info("SSE /status/stream connected (server=%s request_id=%s)", server, request_id)
 
         queue = await status_bus.subscribe(server=server, request_id=request_id)
 
@@ -192,6 +198,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/status", response_class=HTMLResponse)
     async def status_page(request: Request):
         return templates.TemplateResponse("status.html", {"request": request})
+
+    @app.get("/status/meta")
+    async def status_meta(request: Request):  # pragma: no cover - simple diagnostics
+        if os.getenv("AGENT_STATUS_REQUIRE_AUTH") == "1":
+            expected = os.getenv("AGENT_STATUS_TOKEN", "")
+            provided = request.headers.get("X-Status-Token", "")
+            if not expected or provided != expected:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=401, detail="Unauthorized")
+        return get_status_metrics()
 
     @app.get("/favicon.ico")
     async def favicon():

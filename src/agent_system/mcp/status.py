@@ -7,6 +7,7 @@ import asyncio
 import re
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ class StatusBus:
                 logger.warning(f"Failed to publish event to subscriber {i}: {e}")
 
         logger.debug(f"Published status event to {published_count} subscribers")
+        _metrics["delivered"] += 1 if published_count > 0 else 0
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         """Remove a subscriber.
@@ -122,7 +124,68 @@ class StatusBus:
         return len(self._subscribers)
 
 
-# Global status bus instance
+############################################################
+# Rate limiting / debounce / metrics (Tasks 0227 & 0228)
+############################################################
+
+# Simple metrics registry (not exhaustive, but enough for /status/meta)
+_metrics: dict[str, int] = {
+    "publish_attempted": 0,
+    "delivered": 0,
+    "suppressed_rate": 0,
+    "suppressed_debounce": 0,
+}
+
+_server_rate: dict[str, tuple[float, int]] = {}
+_last_event_signature: dict[tuple[str, str | None, str], float] = {}
+
+def _config_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+def _should_suppress(server: str, request_id: Optional[str], message: str) -> bool:
+    """Return True if this event should be suppressed by rate limit or debounce."""
+    _metrics["publish_attempted"] += 1
+
+    max_rps = _config_int("AGENT_STATUS_MAX_RPS", 0)
+    if max_rps > 0:
+        win_start, count = _server_rate.get(server, (time.time(), 0))
+        now = time.time()
+        if now - win_start >= 1.0:
+            win_start, count = now, 0
+        if count >= max_rps:
+            _metrics["suppressed_rate"] += 1
+            _server_rate[server] = (win_start, count)  # keep window
+            return True
+        _server_rate[server] = (win_start, count + 1)
+
+    debounce_ms = _config_int("AGENT_STATUS_DEBOUNCE_MS", 0)
+    if debounce_ms > 0:
+        sig = (server, request_id, message)
+        last_ts = _last_event_signature.get(sig)
+        now = time.time()
+        if last_ts is not None and (now - last_ts) * 1000 < debounce_ms:
+            _metrics["suppressed_debounce"] += 1
+            return True
+        _last_event_signature[sig] = now
+
+    return False
+
+def get_status_metrics() -> dict:
+    """Return a snapshot of status metrics and current config values."""
+    return {
+        **_metrics,
+        "subscribers": status_bus.get_subscriber_count(),
+        "config": {
+            "AGENT_STATUS_MAX_RPS": _config_int("AGENT_STATUS_MAX_RPS", 0),
+            "AGENT_STATUS_DEBOUNCE_MS": _config_int("AGENT_STATUS_DEBOUNCE_MS", 0),
+            "AGENT_STATUS_REQUIRE_AUTH": os.getenv("AGENT_STATUS_REQUIRE_AUTH", "0"),
+        },
+    }
+
+# Global status bus instance (declared after helper definitions)
 status_bus = StatusBus()
 
 
@@ -162,6 +225,10 @@ async def publish_status(
                 meta = {**(meta or {}), "trace_id": tid, "span_id": sid}
         except Exception:
             pass
+
+    # Suppression checks (rate limit & debounce)
+    if _should_suppress(server, request_id, message):  # metrics updated inside
+        return
 
     event = StatusEvent(
         server=server,
