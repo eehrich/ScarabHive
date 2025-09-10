@@ -453,14 +453,29 @@ def main() -> None:
                             "request_id": event.request_id,
                             "message": event.message,
                             "level": event.level,
-                            "timestamp": event.timestamp.isoformat()
+                            "timestamp": event.timestamp.isoformat(),
+                            "phase": getattr(event, "phase", None),
+                            "meta": getattr(event, "meta", None),
                         }, ensure_ascii=False))
                     else:
                         # Short format
                         msg = f"[{event.timestamp.strftime('%H:%M:%S')}] {event.server}"
                         if event.request_id:
                             msg += f" ({event.request_id})"
-                        msg += f": {event.message}"
+                        phase = getattr(event, "phase", None)
+                        if phase:
+                            msg += f" [{phase}]"
+                        txt = event.message
+                        # simple URL highlight (http/https) for readability
+                        try:
+                            import re
+                            def _hl(m):
+                                url = m.group(0)
+                                return _colorize(url, '34') if _supports_color() else url
+                            txt = re.sub(r"https?://[\w\-._~:/?#@!$&'()*+,;=%]+", _hl, txt)
+                        except Exception:
+                            pass
+                        msg += f": {txt}"
                         if event.level == "error" and _supports_color():
                             msg = _colorize(msg, "31")
                         elif event.level == "warning" and _supports_color():
@@ -479,13 +494,27 @@ def main() -> None:
                         "request_id": event.request_id,
                         "message": event.message,
                         "level": event.level,
-                        "timestamp": event.timestamp.isoformat()
+                        "timestamp": event.timestamp.isoformat(),
+                        "phase": getattr(event, "phase", None),
+                        "meta": getattr(event, "meta", None),
                     }, ensure_ascii=False))
                 else:
                     msg = f"[{event.timestamp.strftime('%H:%M:%S')}] {event.server}"
                     if event.request_id:
                         msg += f" ({event.request_id})"
-                    msg += f": {event.message}"
+                    phase = getattr(event, "phase", None)
+                    if phase:
+                        msg += f" [{phase}]"
+                    txt = event.message
+                    try:
+                        import re
+                        def _hl2(m):
+                            url = m.group(0)
+                            return _colorize(url, '34') if _supports_color() else url
+                        txt = re.sub(r"https?://[\w\-._~:/?#@!$&'()*+,;=%]+", _hl2, txt)
+                    except Exception:
+                        pass
+                    msg += f": {txt}"
                     print(msg)
             except KeyboardInterrupt:
                 print("No status events received.")

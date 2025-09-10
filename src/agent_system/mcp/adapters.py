@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 import asyncio
 
-from .status import StatusEvent, status_bus
+from .status import StatusEvent, status_bus, PHASE_PROGRESS
 
 
 class MCPAdapter(ABC):
@@ -96,7 +96,12 @@ class BaseMCPAdapter(MCPAdapter):
         return self._timeout
 
     async def publish_status(self, event: StatusEvent) -> None:
-        """Publish status event via the global status bus."""
+        """Publish status event via the global status bus.
+
+        Ensures `phase` defaults for older callers constructing StatusEvent without phase.
+        """
+        if not getattr(event, "phase", None):  # backward safety
+            event.phase = PHASE_PROGRESS  # type: ignore[attr-defined]
         await status_bus.publish(event)
 
     async def subscribe_status(

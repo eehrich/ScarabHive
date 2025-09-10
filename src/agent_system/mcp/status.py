@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 import asyncio
@@ -10,14 +10,44 @@ import os
 logger = logging.getLogger(__name__)
 
 
+PHASE_START = "start"
+PHASE_PROGRESS = "progress"
+PHASE_END = "end"
+PHASE_ERROR = "error"
+VALID_PHASES = {PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR}
+
+
 @dataclass
 class StatusEvent:
-    """Represents a status update event from an MCP server."""
-    server: str
-    request_id: Optional[str]
-    message: str
-    timestamp: datetime
-    level: str = "info"  # info, warning, error
+        """Represents a status update event from an MCP server.
+
+        Unified schema (Task 0186):
+            - server: plugin / server name (str)
+            - request_id: optional correlation id (str|None)
+            - phase: one of start|progress|end|error (str)
+            - message: human-readable short status (str)
+            - level: info|warning|error (str) (orthogonal to phase)
+            - timestamp: ISO8601 moment of emission (datetime)
+            - meta: optional structured details (dict|None)
+        """
+        server: str
+        request_id: Optional[str]
+        message: str
+        timestamp: datetime
+        phase: str = PHASE_PROGRESS
+        level: str = "info"  # info, warning, error
+        meta: Optional[dict] = field(default=None)
+
+        def to_dict(self) -> dict:
+                return {
+                        "server": self.server,
+                        "request_id": self.request_id,
+                        "message": self.message,
+                        "timestamp": self.timestamp.isoformat(),
+                        "phase": self.phase,
+                        "level": self.level,
+                        "meta": self.meta,
+                }
 
 
 class StatusBus:
@@ -44,7 +74,7 @@ class StatusBus:
         Returns:
             AsyncQueue that will receive matching StatusEvents
         """
-        queue = asyncio.Queue()
+        queue: asyncio.Queue[StatusEvent] = asyncio.Queue()
         self._subscribers.append(queue)
         self._filters.append({"server": server, "request_id": request_id})
         logger.debug(f"New subscriber added. Total subscribers: {len(self._subscribers)}")
@@ -97,7 +127,9 @@ async def publish_status(
     server: str,
     message: str,
     request_id: Optional[str] = None,
-    level: str = "info"
+    level: str = "info",
+    phase: str = PHASE_PROGRESS,
+    meta: Optional[dict] = None,
 ) -> None:
     """Convenience function to publish a status event.
 
@@ -107,12 +139,24 @@ async def publish_status(
         request_id: Optional request identifier
         level: Log level (info, warning, error)
     """
+    # Normalize / validate phase & level graciously (do not raise to avoid breaking user flows)
+    if phase not in VALID_PHASES:
+        logger.debug("Invalid phase '%s' provided; defaulting to 'progress'", phase)
+        phase = PHASE_PROGRESS
+    if level not in ("info", "warning", "error"):
+        logger.debug("Invalid level '%s' provided; defaulting to 'info'", level)
+        level = "info"
+    if phase == PHASE_ERROR and level == "info":
+        level = "error"  # escalate sensible default
+
     event = StatusEvent(
         server=server,
         request_id=request_id,
         message=message,
         timestamp=datetime.now(),
-        level=level
+        phase=phase,
+        level=level,
+        meta=meta,
     )
     # Publish locally first
     await status_bus.publish(event)
@@ -129,7 +173,9 @@ async def publish_status(
         "request_id": event.request_id,
         "message": event.message,
         "level": event.level,
-        "timestamp": event.timestamp.isoformat()
+        "timestamp": event.timestamp.isoformat(),
+        "phase": event.phase,
+        "meta": event.meta,
     }
 
     # Fire-and-forget POST to the broker
