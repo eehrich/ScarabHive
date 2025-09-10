@@ -178,18 +178,20 @@ summary {
   margin-top: 12px;
 }
 
+/* Make the response header and response text appear as a single unified box */
 .response-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 0; /* remove double spacing with the text box */
   padding: 8px 12px;
-  background: #1a2332;
+  background: #1a2332; /* the preferred background for the label and container */
   border: 1px solid #334155;
-  border-radius: 8px;
+  border-radius: 8px 8px 0 0; /* round only top corners here */
   font-weight: 500;
 }
 
+/* Error variant for the header (top half) */
 .response-header.error {
   background: #2d1b1b;
   border-color: #dc2626;
@@ -207,14 +209,23 @@ summary {
   color: #cbd5e1;
 }
 
+/* Response text becomes the bottom half of the same box: match bg, remove top border */
 .response-text {
   line-height: 1.6;
   color: #e6edf3;
   font-size: 15px;
   padding: 12px;
-  background: #0f1419;
-  border-radius: 8px;
-  border: 1px solid #21262d;
+  background: #1a2332; /* same as header so it looks like one box */
+  border-radius: 0 0 8px 8px; /* round only bottom corners */
+  border: 1px solid #334155;
+  border-top: none; /* visually merge with header */
+}
+
+/* When header is an error, make the adjacent response-text match the error styling */
+.response-header.error + .response-text {
+  background: #2d1b1b;
+  border-color: #dc2626;
+  color: #fca5a5;
 }
 
 /* Typography */
