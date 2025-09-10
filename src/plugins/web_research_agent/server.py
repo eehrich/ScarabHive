@@ -12,6 +12,13 @@ from agent_system.config.models import AgentConfig, MCPConfig, LLMConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.servers.bootstrap import bootstrap_servers
+from agent_system.mcp.status import (
+    publish_status,
+    PHASE_START,
+    PHASE_PROGRESS,
+    PHASE_END,
+    PHASE_ERROR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +166,26 @@ class WebResearchAgent(Agent):
         - Different perspectives or viewpoints
         - Source URLs for verification
         """
-        return await self.call("run", {"task": research_prompt})
+        # publish research start
+        request_id = None
+        try:
+            request_id = research_prompt and None
+            await publish_status(self.name, f"Research started: {topic}", request_id=request_id, phase=PHASE_START)
+        except Exception:
+            pass
+        try:
+            res = await self.call("run", {"task": research_prompt})
+            try:
+                await publish_status(self.name, f"Research completed: {topic}", request_id=request_id, phase=PHASE_END)
+            except Exception:
+                pass
+            return res
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Research failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+            except Exception:
+                pass
+            raise
 
     async def fact_check(self, claim: str) -> Dict[str, Any]:
         fact_check_prompt = f"""
@@ -177,7 +203,24 @@ class WebResearchAgent(Agent):
         - Contradicting evidence if any
         - Context and nuances
         """
-        return await self.call("run", {"task": fact_check_prompt})
+        request_id = None
+        try:
+            await publish_status(self.name, f"Fact-check started", request_id=request_id, phase=PHASE_START)
+        except Exception:
+            pass
+        try:
+            res = await self.call("run", {"task": fact_check_prompt})
+            try:
+                await publish_status(self.name, f"Fact-check completed", request_id=request_id, phase=PHASE_END)
+            except Exception:
+                pass
+            return res
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Fact-check failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+            except Exception:
+                pass
+            raise
 
     async def compare_sources(self, topic: str, source_urls: list[str]) -> Dict[str, Any]:
         sources_text = "\n".join([f"- {url}" for url in source_urls])
@@ -199,7 +242,24 @@ class WebResearchAgent(Agent):
         - Bias or perspective analysis
         - Most comprehensive/reliable source assessment
         """
-        return await self.call("run", {"task": compare_prompt})
+        request_id = None
+        try:
+            await publish_status(self.name, f"Compare sources started", request_id=request_id, phase=PHASE_START)
+        except Exception:
+            pass
+        try:
+            res = await self.call("run", {"task": compare_prompt})
+            try:
+                await publish_status(self.name, f"Compare sources completed", request_id=request_id, phase=PHASE_END)
+            except Exception:
+                pass
+            return res
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Compare sources failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+            except Exception:
+                pass
+            raise
 
     def get_schema(self) -> Dict[str, Any]:
         from agent_system.plugins.schema_loader import load_schema_from_dir
