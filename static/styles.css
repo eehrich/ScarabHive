@@ -19,22 +19,59 @@ body {
   color: #e6edf3;
 }
 
-main {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 16px;
-}
+/* Main container handled by .main-container in templates */
 
 /* Header */
 header {
   position: sticky;
   top: 0;
   background: linear-gradient(180deg, #0b0f14, #0b0f14cc 70%, transparent);
-  padding: 16px 24px;
+  padding: 12px 18px;
   border-bottom: 1px solid #1f2937;
   backdrop-filter: blur(6px);
   z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
+
+#statusToggleBtn {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #243244;
+  background: #0b1220;
+  color: #9ab;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Floating status panel */
+.floating-panel {
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  width: 320px;
+  background: linear-gradient(180deg, #0b1220, #07111a);
+  border: 1px solid #243244;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  z-index: 1000;
+  overflow: hidden;
+}
+.floating-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, #07111a, #0b1220);
+  border-bottom: 1px solid #16202b;
+  cursor: grab;
+}
+.floating-panel-header:active { cursor: grabbing; }
+.floating-panel-body { padding: 10px; max-height: 360px; overflow: auto; }
+
+/* Header button spacing */
+#statusToggleBtn { margin-left: 12px; }
 
 h1 {
   margin: 0;
@@ -141,18 +178,20 @@ summary {
   margin-top: 12px;
 }
 
+/* Make the response header and response text appear as a single unified box */
 .response-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 0; /* remove double spacing with the text box */
   padding: 8px 12px;
-  background: #1a2332;
+  background: #1a2332; /* the preferred background for the label and container */
   border: 1px solid #334155;
-  border-radius: 8px;
+  border-radius: 8px 8px 0 0; /* round only top corners here */
   font-weight: 500;
 }
 
+/* Error variant for the header (top half) */
 .response-header.error {
   background: #2d1b1b;
   border-color: #dc2626;
@@ -170,14 +209,23 @@ summary {
   color: #cbd5e1;
 }
 
+/* Response text becomes the bottom half of the same box: match bg, remove top border */
 .response-text {
   line-height: 1.6;
   color: #e6edf3;
   font-size: 15px;
   padding: 12px;
-  background: #0f1419;
-  border-radius: 8px;
-  border: 1px solid #21262d;
+  background: #1a2332; /* same as header so it looks like one box */
+  border-radius: 0 0 8px 8px; /* round only bottom corners */
+  border: 1px solid #334155;
+  border-top: none; /* visually merge with header */
+}
+
+/* When header is an error, make the adjacent response-text match the error styling */
+.response-header.error + .response-text {
+  background: #2d1b1b;
+  border-color: #dc2626;
+  color: #fca5a5;
 }
 
 /* Typography */
@@ -309,4 +357,204 @@ pre {
 
 .response-text p:last-child {
   margin-bottom: 0;
+}
+
+/* Consolidated Progress View (VS Code-style) */
+.operation-progress {
+  margin: 4px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.progress-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: #e6edf3;
+}
+
+.progress-icon {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Animated spinner */
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #21262d;
+  border-top: 2px solid #58a6ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Success checkmark */
+.checkmark {
+  color: #56d364;
+  font-weight: bold;
+  font-size: 14px;
+  animation: checkmarkPop 0.3s ease-out;
+}
+
+@keyframes checkmarkPop {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* Error cross */
+.error-mark {
+  color: #f85149;
+  font-weight: bold;
+  font-size: 14px;
+  animation: errorShake 0.4s ease-out;
+}
+
+@keyframes errorShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+.progress-server {
+  color: #58a6ff;
+  font-weight: 500;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.progress-message {
+  color: #e6edf3;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-time {
+  color: #8b949e;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.operation-progress.completed .progress-message {
+  color: #56d364;
+}
+
+.operation-progress.error .progress-message {
+  color: #f85149;
+}
+
+/* Conversation Flow - Combined Status and Response */
+.conversation-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.status-container {
+  /* Outer wrapper should be visually neutral so the inner header/body form the single box */
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.status-container:empty {
+  display: none;
+}
+
+.status-container:empty::before {
+  content: "No status events yet...";
+  color: #8b949e;
+  font-style: italic;
+  font-size: 12px;
+}
+
+/* Status container improvements */
+#statusContainer {
+  /* neutral wrapper: inner .status-header and .status-body draw the visible box */
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  max-height: none;
+  overflow: visible;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+#statusContainer:empty::before {
+  content: "No status events yet...";
+  color: #8b949e;
+  font-style: italic;
+  font-size: 12px;
+}
+
+/* Status header/body should match the response box style so they look unified */
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0px;
+  padding: 8px 12px;
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-radius: 8px 8px 0 0;
+  font-weight: 500;
+}
+.status-body {
+  padding: 12px; /* match .response-text padding */
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-top: none; /* visually merge with header */
+  border-radius: 0 0 8px 8px;
+  color: #e6edf3;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Remove top margin on the first status item so spacing matches response-text's first-child rule */
+.status-body .operation-progress:first-child {
+  margin-top: 0;
+}
+
+/* Also normalize any block element's top margin inside status-body */
+.status-body > *:first-child {
+  margin-top: 0;
+}
+
+.status-header .response-icon svg,
+.status-header .response-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+/* Response header icon styling */
+.response-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0px;
+}
+.response-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+.response-header.error .response-icon svg path,
+.response-header.error .response-icon svg rect {
+  stroke: none;
 }

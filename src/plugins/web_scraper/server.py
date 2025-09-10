@@ -6,13 +6,45 @@ import urllib.parse
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
+from agent_system.mcp.status import (
+    publish_status,
+    PHASE_START,
+    PHASE_PROGRESS,
+    PHASE_END,
+    PHASE_ERROR,
+)
 
 
 class WebScraperServer(MCPServer):
     def _clean_text(self, text: str) -> str:
-        """Clean up extracted text by removing excessive whitespace and normalizing newlines."""
+        """Clean up extracted text by removing excessive whitespace, normalizing newlines, and filtering invalid Unicode."""
         if not text:
             return ""
+
+        # First, ensure we have valid UTF-8 by re-encoding with error handling
+        try:
+            # Handle potential encoding issues by cleaning bytes first
+            text_bytes = text.encode('utf-8', errors='ignore')
+            text = text_bytes.decode('utf-8', errors='ignore')
+        except Exception:
+            # Fallback: just remove non-printable characters
+            text = ''.join(char for char in text if char.isprintable() or char.isspace())
+
+        # Remove control characters except for common whitespace
+        import re
+        # Keep only printable ASCII, basic Latin, and common Unicode ranges
+        # Remove control chars (0x00-0x1F) except tab(0x09), LF(0x0A), CR(0x0D)
+        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]', '', text)
+        
+        # Remove zero-width characters and other problematic Unicode
+        text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)  # zero-width spaces
+        text = re.sub(r'[\u202A-\u202E]', '', text)        # directional formatting
+        
+        # Remove any remaining non-printable characters outside basic ranges
+        # Keep: Basic Latin (0000-007F), Latin-1 Supplement (0080-00FF), 
+        #       Latin Extended-A (0100-017F), Latin Extended-B (0180-024F),
+        #       Common punctuation and symbols
+        text = re.sub(r'[^\u0020-\u007E\u00A0-\u024F\u2000-\u206F\u20A0-\u20CF\u2100-\u214F\s]', '', text)
 
         # Replace multiple consecutive newlines with maximum 2 newlines
         text = re.sub(r'\n{3,}', '\n\n', text)
@@ -39,6 +71,30 @@ class WebScraperServer(MCPServer):
 
         return text.strip()
 
+    def _sanitize_html(self, html: str) -> str:
+        """Sanitize HTML content to remove problematic characters before parsing."""
+        if not html:
+            return ""
+        
+        try:
+            # Ensure proper UTF-8 encoding
+            if isinstance(html, bytes):
+                html = html.decode('utf-8', errors='ignore')
+            
+            # Re-encode to clean up any encoding issues
+            html_bytes = html.encode('utf-8', errors='ignore')
+            html = html_bytes.decode('utf-8', errors='ignore')
+            
+            # Remove null bytes and other problematic control characters
+            import re
+            html = re.sub(r'\x00', '', html)  # null bytes
+            html = re.sub(r'[\x01-\x08\x0B\x0C\x0E-\x1F]', '', html)  # control chars except \t, \n, \r
+            
+            return html
+        except Exception:
+            # Fallback: return empty string if sanitization fails
+            return ""
+
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         # support two actions: 'fetch' (existing) and 'links' (new)
         action = params.get("action") or params.get("task") or "fetch"
@@ -54,6 +110,9 @@ class WebScraperServer(MCPServer):
         url = params.get("url") or ""
         if not url or not isinstance(url, str):
             raise ValueError("Missing 'url' (string)")
+
+            # correlate status events with provided request_id when available
+        request_id = params.get("request_id") or params.get("requestId")
 
         timeout = float(params.get("timeout", 20))
         user_agent = params.get(
@@ -114,10 +173,30 @@ class WebScraperServer(MCPServer):
             return html, status_code, final_url
 
         # fetch HTML (async) and parse according to requested action
+        # notify start of fetch
+        try:
+            await publish_status(self.name, f"Fetching {url}", request_id=request_id, phase=PHASE_START)
+        except Exception:
+            # status publishing must not break functionality
+            pass
+
         html, status_code, final_url = await _fetch_html(url)
 
-        # If fetch failed, return minimal payload
+        # Sanitize HTML before processing to remove problematic characters
+        html = self._sanitize_html(html)
+
+        # If fetch failed, publish error and return minimal payload
         if not html and status_code == 0:
+            try:
+                await publish_status(
+                    self.name,
+                    f"Failed to fetch {url}",
+                    request_id=request_id,
+                    level="error",
+                    phase=PHASE_ERROR,
+                )
+            except Exception:
+                pass
             return {
                 "url": url,
                 "final_url": final_url,
@@ -170,6 +249,9 @@ class WebScraperServer(MCPServer):
 
         if max_chars and max_chars > 0:
             text = text[:max_chars]
+
+        # Final text sanitization to ensure OpenAI compatibility
+        text = self._clean_text(text)
 
         # By default include extracted links in the fetch result. This
         # mirrors the 'links' action but is returned automatically so
@@ -284,6 +366,17 @@ class WebScraperServer(MCPServer):
         # attach default links list
         if links:
             result["links"] = links
+        # publish success
+        try:
+            await publish_status(
+                self.name,
+                f"Completed fetch {url} (status={status_code})",
+                request_id=request_id,
+                phase=PHASE_END,
+                meta={"final_url": final_url, "status_code": status_code},
+            )
+        except Exception:
+            pass
         return result
 
     def _extract_tables(self, soup) -> list[dict[str, Any]]:

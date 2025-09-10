@@ -7,11 +7,12 @@ import pytz
 import calendar
 
 from agent_system.mcp.base import MCPServer
+from agent_system.mcp.status import publish_status, PHASE_START, PHASE_END, PHASE_ERROR
 
 
 class DateTimeServer(MCPServer):
     """DateTime MCP Server that provides comprehensive date and time information.
-    
+
     Supports:
     - Current date and time in various formats and timezones
     - Date calculations (add/subtract days, weeks, months, years)
@@ -21,46 +22,58 @@ class DateTimeServer(MCPServer):
     - Unix timestamp conversions
     - Business day calculations
     """
-    
+
     def __init__(self, name: str = "datetime", config: Optional[dict[str, Any]] = None, ssl_verify: bool = True):
         super().__init__(name, cast(dict[str, Any] | None, config), ssl_verify)
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Execute datetime operations."""
-        
+
+        # Publish status for operation start
+        await publish_status(self.name, f"Processing {tool} operation", phase=PHASE_START)
+
         try:
             if tool == "current":
-                return await self._get_current_datetime(params)
+                result = await self._get_current_datetime(params)
             elif tool == "format":
-                return await self._format_datetime(params)
+                result = await self._format_datetime(params)
             elif tool == "parse":
-                return await self._parse_datetime(params)
+                result = await self._parse_datetime(params)
             elif tool == "add":
-                return await self._add_time(params)
+                result = await self._add_time(params)
             elif tool == "subtract":
-                return await self._subtract_time(params)
+                result = await self._subtract_time(params)
             elif tool == "convert_timezone":
-                return await self._convert_timezone(params)
+                result = await self._convert_timezone(params)
             elif tool == "timestamp":
-                return await self._unix_timestamp(params)
+                result = await self._unix_timestamp(params)
             elif tool == "calendar_info":
-                return await self._calendar_info(params)
+                result = await self._calendar_info(params)
             elif tool == "business_days":
-                return await self._business_days(params)
+                result = await self._business_days(params)
             elif tool == "day_of_week":
-                return await self._day_of_week(params)
+                result = await self._day_of_week(params)
             elif tool == "days_until":
-                return await self._days_until(params)
+                result = await self._days_until(params)
             else:
-                return {"status": "error", "error": f"Unknown action: {tool}"}
+                result = {"status": "error", "error": f"Unknown action: {tool}"}
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            result = {"status": "error", "error": str(e)}
+
+        # Publish status for operation completion
+        status_msg = f"Completed {tool} operation"
+        if result.get("status") == "error":
+            await publish_status(self.name, status_msg, level="error", phase=PHASE_ERROR)
+        else:
+            await publish_status(self.name, status_msg, phase=PHASE_END)
+
+        return result
 
     async def _get_current_datetime(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get current date and time information."""
         timezone_str = params.get("timezone", "UTC")
         format_str = params.get("format", "iso")
-        
+
         try:
             if timezone_str.upper() == "UTC":
                 tz = timezone.utc
@@ -71,12 +84,12 @@ class DateTimeServer(MCPServer):
                     tz = pytz.timezone(timezone_str)
                 except pytz.UnknownTimeZoneError:
                     return {"status": "error", "error": f"Invalid timezone: {timezone_str}"}
-            
+
             if tz:
                 now = datetime.now(tz)
             else:
                 now = datetime.now()
-            
+
             result = {
                 "status": "success",
                 "current_time": now.isoformat(),
@@ -93,7 +106,7 @@ class DateTimeServer(MCPServer):
                 "month_name": now.strftime("%B"),
                 "unix_timestamp": int(now.timestamp())
             }
-            
+
             # Add formatted versions
             if format_str == "iso":
                 result["formatted"] = now.isoformat()
@@ -108,9 +121,9 @@ class DateTimeServer(MCPServer):
                 result["formatted"] = now.strftime(custom_format)
             else:
                 result["formatted"] = now.strftime(format_str)
-            
+
             return result
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "timezone_requested": timezone_str}
 
@@ -119,10 +132,10 @@ class DateTimeServer(MCPServer):
         datetime_str = params.get("datetime", "")
         format_str = params.get("format", "%Y-%m-%d %H:%M:%S")
         input_format = params.get("input_format", "auto")
-        
+
         if not datetime_str:
             return {"status": "error", "error": "Missing required parameter: datetime"}
-        
+
         try:
             # Parse input datetime
             if input_format == "auto":
@@ -147,7 +160,7 @@ class DateTimeServer(MCPServer):
                     raise ValueError(f"Could not parse datetime: {datetime_str}")
             else:
                 dt = datetime.strptime(datetime_str, input_format)
-            
+
             return {
                 "status": "success",
                 "original": datetime_str,
@@ -163,17 +176,17 @@ class DateTimeServer(MCPServer):
                 "weekday_name": dt.strftime("%A"),
                 "month_name": dt.strftime("%B")
             }
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": datetime_str}
 
     async def _parse_datetime(self, params: dict[str, Any]) -> dict[str, Any]:
         """Parse datetime from string with detailed information."""
         datetime_str = params.get("datetime_string", params.get("datetime", ""))
-        
+
         if not datetime_str:
             return {"status": "error", "error": "Missing required parameter: datetime_string or datetime"}
-        
+
         try:
             # Try parsing with various formats
             formats = [
@@ -190,7 +203,7 @@ class DateTimeServer(MCPServer):
                 "%d %B %Y",
                 "%A, %B %d, %Y"
             ]
-            
+
             dt = None
             used_format = None
             for fmt in formats:
@@ -200,10 +213,10 @@ class DateTimeServer(MCPServer):
                     break
                 except ValueError:
                     continue
-            
+
             if dt is None:
                 return {"status": "error", "error": f"Could not parse datetime: {datetime_str}"}
-            
+
             return {
                 "status": "success",
                 "original": datetime_str,
@@ -226,7 +239,7 @@ class DateTimeServer(MCPServer):
                     "week_of_year": dt.isocalendar()[1]
                 }
             }
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": datetime_str}
 
@@ -240,13 +253,13 @@ class DateTimeServer(MCPServer):
         hours = params.get("hours", 0)
         minutes = params.get("minutes", 0)
         seconds = params.get("seconds", 0)
-        
+
         try:
             if not base_datetime:
                 dt = datetime.now()
             else:
                 dt = datetime.fromisoformat(base_datetime.replace('Z', '+00:00'))
-            
+
             # Add simple time deltas
             delta = timedelta(
                 weeks=weeks,
@@ -255,25 +268,25 @@ class DateTimeServer(MCPServer):
                 minutes=minutes,
                 seconds=seconds
             )
-            
+
             result_dt = dt + delta
-            
+
             # Handle years and months (more complex)
             if years or months:
                 total_months = result_dt.month + months + (years * 12)
                 result_year = result_dt.year + (total_months - 1) // 12
                 result_month = ((total_months - 1) % 12) + 1
-                
+
                 # Handle day overflow (e.g., Feb 31 -> Feb 28)
                 max_day = calendar.monthrange(result_year, result_month)[1]
                 result_day = min(result_dt.day, max_day)
-                
+
                 result_dt = result_dt.replace(
                     year=result_year,
                     month=result_month,
                     day=result_day
                 )
-            
+
             return {
                 "status": "success",
                 "original": base_datetime or "current time",
@@ -290,7 +303,7 @@ class DateTimeServer(MCPServer):
                 },
                 "human_readable": result_dt.strftime("%A, %B %d, %Y at %I:%M:%S %p")
             }
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": base_datetime}
 
@@ -301,12 +314,12 @@ class DateTimeServer(MCPServer):
         for key in ["years", "months", "weeks", "days", "hours", "minutes", "seconds"]:
             if key in new_params:
                 new_params[key] = -new_params[key]
-        
+
         result = await self._add_time(new_params)
         if "added" in result:
             result["subtracted"] = {k: -v for k, v in result["added"].items()}
             del result["added"]
-        
+
         return result
 
     async def _convert_timezone(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -314,13 +327,13 @@ class DateTimeServer(MCPServer):
         datetime_str = params.get("datetime", "")
         from_tz = params.get("from_timezone", "UTC")
         to_tz = params.get("to_timezone", "UTC")
-        
+
         try:
             if not datetime_str:
                 dt = datetime.now(timezone.utc)
             else:
                 dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-            
+
             # Ensure datetime is timezone-aware
             if dt.tzinfo is None:
                 if from_tz.upper() == "UTC":
@@ -330,7 +343,7 @@ class DateTimeServer(MCPServer):
                 else:
                     source_tz = pytz.timezone(from_tz)
                     dt = source_tz.localize(dt)
-            
+
             # Convert to target timezone
             if to_tz.upper() == "UTC":
                 target_tz = timezone.utc
@@ -338,9 +351,9 @@ class DateTimeServer(MCPServer):
                 target_tz = datetime.now().astimezone().tzinfo
             else:
                 target_tz = pytz.timezone(to_tz)
-            
+
             converted_dt = dt.astimezone(target_tz)
-            
+
             return {
                 "status": "success",
                 "original": datetime_str or "current time",
@@ -351,7 +364,7 @@ class DateTimeServer(MCPServer):
                 "time_difference_hours": (converted_dt.utcoffset().total_seconds() - dt.utcoffset().total_seconds()) / 3600,
                 "human_readable": converted_dt.strftime("%A, %B %d, %Y at %I:%M:%S %p %Z")
             }
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": datetime_str, "from_tz": from_tz, "to_tz": to_tz}
 
@@ -359,7 +372,7 @@ class DateTimeServer(MCPServer):
         """Convert between datetime and Unix timestamp."""
         datetime_str = params.get("datetime", "")
         timestamp = params.get("timestamp", None)
-        
+
         try:
             if timestamp is not None:
                 # Convert from Unix timestamp to datetime
@@ -387,7 +400,7 @@ class DateTimeServer(MCPServer):
                     dt = datetime.now(timezone.utc)
                 else:
                     dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-                
+
                 return {
                     "status": "success",
                     "datetime": datetime_str or "current time",
@@ -395,7 +408,7 @@ class DateTimeServer(MCPServer):
                     "timestamp_milliseconds": int(dt.timestamp() * 1000),
                     "iso_format": dt.isoformat()
                 }
-                
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": {"datetime": datetime_str, "timestamp": timestamp}}
 
@@ -404,7 +417,7 @@ class DateTimeServer(MCPServer):
         datetime_str = params.get("datetime", "")
         year = params.get("year", None)
         month = params.get("month", None)
-        
+
         try:
             if year and month:
                 # Create a datetime for the first day of the specified month/year
@@ -413,9 +426,9 @@ class DateTimeServer(MCPServer):
                 dt = datetime.now()
             else:
                 dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-            
+
             year, week, weekday = dt.isocalendar()
-            
+
             return {
                 "status": "success",
                 "date": dt.strftime("%Y-%m-%d"),
@@ -436,7 +449,7 @@ class DateTimeServer(MCPServer):
                 "first_weekday_of_month": calendar.monthrange(dt.year, dt.month)[0],
                 "calendar_month": calendar.month(dt.year, dt.month)
             }
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": datetime_str}
 
@@ -445,29 +458,29 @@ class DateTimeServer(MCPServer):
         start_date = params.get("start_date", "")
         end_date = params.get("end_date", "")
         add_days = params.get("add_business_days", None)
-        
+
         try:
             if not start_date:
                 start_dt = datetime.now().date()
             else:
                 start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
-            
+
             if add_days is not None:
                 # Add business days to start_date
                 current_date = start_dt
                 days_added = 0
                 days_to_add = int(add_days)
-                
+
                 while days_added < abs(days_to_add):
                     if days_to_add > 0:
                         current_date += timedelta(days=1)
                     else:
                         current_date -= timedelta(days=1)
-                    
+
                     # Skip weekends (Saturday=5, Sunday=6)
                     if current_date.weekday() < 5:
                         days_added += 1
-                
+
                 return {
                     "status": "success",
                     "start_date": start_date or "current date",
@@ -477,25 +490,25 @@ class DateTimeServer(MCPServer):
                     "weekday_name": current_date.strftime("%A"),
                     "is_business_day": current_date.weekday() < 5
                 }
-            
+
             elif end_date:
                 # Calculate business days between dates
                 end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00')).date()
-                
+
                 if start_dt > end_dt:
                     start_dt, end_dt = end_dt, start_dt
                     swapped = True
                 else:
                     swapped = False
-                
+
                 business_days = 0
                 current_date = start_dt
-                
+
                 while current_date < end_dt:
                     if current_date.weekday() < 5:  # Monday=0, Friday=4
                         business_days += 1
                     current_date += timedelta(days=1)
-                
+
                 return {
                     "status": "success",
                     "start_date": start_date,
@@ -504,23 +517,23 @@ class DateTimeServer(MCPServer):
                     "total_days": (end_dt - start_dt).days,
                     "dates_swapped": swapped
                 }
-            
+
             else:
                 return {"status": "error", "error": "Either end_date or add_business_days parameter required"}
-                
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": {"start_date": start_date, "end_date": end_date, "add_days": add_days}}
 
     async def _day_of_week(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get the day of week for a given date."""
         datetime_str = params.get("datetime", "")
-        
+
         try:
             if not datetime_str:
                 dt = datetime.now()
             else:
                 dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-            
+
             return {
                 "status": "success",
                 "datetime": datetime_str or "current time",
@@ -528,7 +541,7 @@ class DateTimeServer(MCPServer):
                 "weekday_number": dt.weekday(),  # 0=Monday, 6=Sunday
                 "is_weekend": dt.weekday() >= 5
             }
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": datetime_str}
 
@@ -536,21 +549,21 @@ class DateTimeServer(MCPServer):
         """Calculate days until a target date."""
         target_date = params.get("target_date", "")
         start_date = params.get("start_date", "")
-        
+
         try:
             if not target_date:
                 return {"status": "error", "error": "Missing required parameter: target_date"}
-            
+
             if not start_date:
                 start_dt = datetime.now().date()
             else:
                 start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
-            
+
             target_dt = datetime.fromisoformat(target_date.replace('Z', '+00:00')).date()
-            
+
             delta = target_dt - start_dt
             days = delta.days
-            
+
             return {
                 "status": "success",
                 "start_date": start_date or "current date",
@@ -560,7 +573,7 @@ class DateTimeServer(MCPServer):
                 "is_past": days < 0,
                 "is_today": days == 0
             }
-            
+
         except Exception as e:
             return {"status": "error", "error": str(e), "input": {"target_date": target_date, "start_date": start_date}}
 

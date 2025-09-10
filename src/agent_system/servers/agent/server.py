@@ -13,6 +13,7 @@ from ...config.models import AgentConfig
 from ...mcp.base import MCPRegistry, MCPServer
 from ...llm.clients import ChatMessage
 from ...utils.prompt_renderer import render_prompts
+from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from .planner import Planner
 from .executor import Executor
 
@@ -189,11 +190,12 @@ class Agent(MCPServer):
                             logger.warning("Unknown tool requested: %s", tool_name)
                             # Add error message for this specific tool call
                             tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            error_content = json.dumps({"error": f"Tool '{tool_name}' is not available."})
                             messages.append(ChatMessage(
                                 role="tool", 
                                 tool_call_id=tool_call_id,
-                                name=tool_name or "unknown",
-                                content=json.dumps({"error": f"Tool '{tool_name}' is not available."})
+                                name=sanitize_for_llm(tool_name or "unknown"),
+                                content=sanitize_json_content(error_content)
                             ))
                             continue
                         
@@ -229,6 +231,8 @@ class Agent(MCPServer):
                             # Add tool result to conversation
                             tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                             tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
+                            # Sanitize tool result content before adding to messages
+                            tool_msg_content = sanitize_json_content(tool_msg_content)
                             messages.append(ChatMessage(
                                 role="tool", 
                                 tool_call_id=tool_call_id, 
@@ -241,11 +245,12 @@ class Agent(MCPServer):
                             results.setdefault("errors", []).append(str(e))
                             # Add error result for this specific tool call
                             tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            error_content = json.dumps({"error": sanitize_for_llm(str(e))})
                             messages.append(ChatMessage(
                                 role="tool", 
                                 tool_call_id=tool_call_id,
-                                name=tool_name,
-                                content=json.dumps({"error": str(e)})
+                                name=sanitize_for_llm(tool_name),
+                                content=sanitize_json_content(error_content)
                             ))
 
                 # Check for final content
@@ -328,7 +333,7 @@ class Agent(MCPServer):
             messages = [ChatMessage(role="system", content=system_msg)]
             if tools_msg:
                 messages.append(ChatMessage(role="system", content=tools_msg))
-            messages.append(ChatMessage(role="user", content=task))
+            messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
 
             # Build tool schemas
             tools_schema: List[Dict] = []
@@ -441,6 +446,8 @@ class Agent(MCPServer):
                             # Add tool result to conversation
                             tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                             tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
+                            # Sanitize tool result content before adding to messages
+                            tool_msg_content = sanitize_json_content(tool_msg_content)
                             messages.append(ChatMessage(
                                 role="tool", 
                                 tool_call_id=tool_call_id, 
@@ -454,15 +461,16 @@ class Agent(MCPServer):
                             yield {"type": "error", "message": f"Tool {tool_name} failed: {e}"}
                             # Add error result for this specific tool call
                             tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            error_content = json.dumps({"error": sanitize_for_llm(str(e))})
                             messages.append(ChatMessage(
                                 role="tool", 
                                 tool_call_id=tool_call_id,
-                                name=tool_name,
-                                content=json.dumps({"error": str(e)})
+                                name=sanitize_for_llm(tool_name),
+                                content=sanitize_json_content(error_content)
                             ))
                             messages.append(ChatMessage(
                                 role="assistant", 
-                                content=f"Error calling tool {tool_name}: {e}"
+                                content=sanitize_for_llm(f"Error calling tool {tool_name}: {e}")
                             ))
 
                 # Check for final content

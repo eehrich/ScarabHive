@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import List, Dict
 from ...llm.clients import ChatMessage, LLMClient
+from ...utils.text_sanitizer import sanitize_for_llm
 
 
 class Planner:
@@ -20,7 +21,7 @@ class Planner:
         msgs = [ChatMessage(role="system", content=self.system_prompt)]
         if self.tools_prompt:
             msgs.append(ChatMessage(role="system", content=self.tools_prompt))
-        msgs.append(ChatMessage(role="user", content=task))
+        msgs.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
         return msgs
 
     async def chat(self, messages: List[ChatMessage], tools_schema: List[Dict]):

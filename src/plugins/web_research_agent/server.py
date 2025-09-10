@@ -12,6 +12,13 @@ from agent_system.config.models import AgentConfig, MCPConfig, LLMConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.servers.bootstrap import bootstrap_servers
+from agent_system.mcp.status import (
+    publish_status,
+    PHASE_START,
+    PHASE_PROGRESS,
+    PHASE_END,
+    PHASE_ERROR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +150,111 @@ class WebResearchAgent(Agent):
         self.cfg = server_cfg  # legacy compatibility expected by tests
         logger.info("Created WebResearchAgent '%s' with tools: %s", name, research_registry.list())
 
-    async def research(self, topic: str, max_results: int = 5) -> Dict[str, Any]:
+    async def _run_with_progress(self, task_prompt: str, operation_name: str, request_id: str = None) -> Dict[str, Any]:
+        """Run agent task with progress updates published as status events."""
+        results = {"task": task_prompt, "calls": []}
+        step_count = 0
+        
+        try:
+            async for event in self.run_events(task_prompt):
+                event_type = event.get("type")
+                
+                if event_type == "start":
+                    step_count += 1
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Starting analysis...", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to publish start status: {e}")
+                
+                elif event_type == "mcp_call":
+                    step_count += 1
+                    tool_name = event.get("server", "unknown")
+                    action = event.get("action", "unknown")
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Step {step_count} - Using {tool_name} ({action})", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to publish mcp_call status: {e}")
+                    
+                    # Store tool calls in results - convert to expected format
+                    if "calls" not in results:
+                        results["calls"] = []
+                    results["calls"].append({
+                        "function": {"name": tool_name}, 
+                        "server": tool_name,
+                        "action": action,
+                        "params": event.get("params", {})
+                    })
+                
+                elif event_type == "mcp_result":
+                    tool_name = event.get("server", "unknown")
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Processing results from {tool_name}...", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to publish mcp_result status: {e}")
+                
+                elif event_type == "final":
+                    results["summary"] = event.get("summary", "")
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Finalizing results...", 
+                            request_id=request_id, 
+                            phase=PHASE_PROGRESS
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to publish final status: {e}")
+                    break
+                
+                elif event_type == "error":
+                    error_msg = event.get("message", "Unknown error")
+                    results.setdefault("errors", []).append(error_msg)
+                    try:
+                        await publish_status(
+                            self.name, 
+                            f"{operation_name}: Error - {error_msg}", 
+                            request_id=request_id, 
+                            level="error",
+                            phase=PHASE_ERROR
+                        )
+                    except Exception:
+                        pass
+                    raise Exception(error_msg)
+                
+                elif event_type == "end":
+                    break
+            
+            return results
+            
+        except Exception as e:
+            results.setdefault("errors", []).append(str(e))
+            try:
+                await publish_status(
+                    self.name, 
+                    f"{operation_name}: Failed - {str(e)}", 
+                    request_id=request_id, 
+                    level="error",
+                    phase=PHASE_ERROR
+                )
+            except Exception:
+                pass
+            raise
+
+    async def research(self, topic: str, max_results: int = 5, request_id: str = None) -> Dict[str, Any]:
         research_prompt = f"""
         Perform comprehensive research on: {topic}
 
@@ -159,9 +270,32 @@ class WebResearchAgent(Agent):
         - Different perspectives or viewpoints
         - Source URLs for verification
         """
-        return await self.call("run", {"task": research_prompt})
+        # publish research start
+        try:
+            await publish_status(self.name, f"Research started: {topic}", request_id=request_id, phase=PHASE_START)
+            logger.info(f"Published research start status for request_id={request_id}")
+        except Exception as e:
+            logger.error(f"Failed to publish research start status: {e}")
+        
+        try:
+            res = await self._run_with_progress(research_prompt, f"Researching '{topic}'", request_id)
+            # Add status and agent info to match expected format
+            res["status"] = "success"
+            res["agent"] = self.name
+            try:
+                await publish_status(self.name, f"Research completed: {topic}", request_id=request_id, phase=PHASE_END)
+                logger.info(f"Published research end status for request_id={request_id}")
+            except Exception as e:
+                logger.error(f"Failed to publish research end status: {e}")
+            return res
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Research failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+            except Exception:
+                pass
+            return {"status": "error", "error": str(e), "agent": self.name}
 
-    async def fact_check(self, claim: str) -> Dict[str, Any]:
+    async def fact_check(self, claim: str, request_id: str = None) -> Dict[str, Any]:
         fact_check_prompt = f"""
         Fact-check this claim: "{claim}"
 
@@ -177,9 +311,29 @@ class WebResearchAgent(Agent):
         - Contradicting evidence if any
         - Context and nuances
         """
-        return await self.call("run", {"task": fact_check_prompt})
+        try:
+            await publish_status(self.name, f"Fact-check started: {claim[:50]}...", request_id=request_id, phase=PHASE_START)
+        except Exception:
+            pass
+        
+        try:
+            res = await self._run_with_progress(fact_check_prompt, f"Fact-checking claim", request_id)
+            # Add status and agent info to match expected format
+            res["status"] = "success"
+            res["agent"] = self.name
+            try:
+                await publish_status(self.name, f"Fact-check completed", request_id=request_id, phase=PHASE_END)
+            except Exception:
+                pass
+            return res
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Fact-check failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+            except Exception:
+                pass
+            return {"status": "error", "error": str(e), "agent": self.name}
 
-    async def compare_sources(self, topic: str, source_urls: list[str]) -> Dict[str, Any]:
+    async def compare_sources(self, topic: str, source_urls: list[str], request_id: str = None) -> Dict[str, Any]:
         sources_text = "\n".join([f"- {url}" for url in source_urls])
         compare_prompt = f"""
         Compare how different sources cover this topic: {topic}
@@ -199,7 +353,27 @@ class WebResearchAgent(Agent):
         - Bias or perspective analysis
         - Most comprehensive/reliable source assessment
         """
-        return await self.call("run", {"task": compare_prompt})
+        try:
+            await publish_status(self.name, f"Compare sources started: {topic}", request_id=request_id, phase=PHASE_START)
+        except Exception:
+            pass
+        
+        try:
+            res = await self._run_with_progress(compare_prompt, f"Comparing sources for '{topic}'", request_id)
+            # Add status and agent info to match expected format
+            res["status"] = "success"
+            res["agent"] = self.name
+            try:
+                await publish_status(self.name, f"Compare sources completed", request_id=request_id, phase=PHASE_END)
+            except Exception:
+                pass
+            return res
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Compare sources failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+            except Exception:
+                pass
+            return {"status": "error", "error": str(e), "agent": self.name}
 
     def get_schema(self) -> Dict[str, Any]:
         from agent_system.plugins.schema_loader import load_schema_from_dir
@@ -209,23 +383,34 @@ class WebResearchAgent(Agent):
         return schema
 
     async def call(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
+        # Extract request_id for status correlation
+        request_id = params.get("request_id") or params.get("requestId")
+        
         if action == "research":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
             max_results = params.get("max_results", 5)
-            return await self.research(topic, max_results)
-        if action == "fact_check":
+            return await self.research(topic, max_results, request_id)
+        elif action == "fact_check":
             claim = params.get("claim")
             if not claim:
                 return {"status": "error", "error": "Missing required parameter 'claim' for fact_check action"}
-            return await self.fact_check(claim)
-        if action == "compare_sources":
+            return await self.fact_check(claim, request_id)
+        elif action == "compare_sources":
             source_urls = params.get("source_urls")
             topic = params.get("topic")
             if not topic or not source_urls:
                 return {"status": "error", "error": "Missing required parameters 'topic' and 'source_urls' for compare_sources action"}
-            return await self.compare_sources(topic, source_urls)
+            return await self.compare_sources(topic, source_urls, request_id)
+        elif action in ("run", "execute", "ask"):
+            # Handle general task requests by routing to research with progress tracking
+            task = params.get("task") or params.get("query") or params.get("prompt")
+            if not task:
+                return {"status": "error", "error": f"Missing required parameter 'task' for {action} action"}
+            # Route general tasks to research method with progress tracking
+            return await self.research(task, params.get("max_results", 5), request_id)
+        
         return await super().call(action, params)
 
     def get_default_action(self) -> str:

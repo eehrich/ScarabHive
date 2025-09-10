@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query, Header
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,9 +19,31 @@ from ..config.loader import load_config
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
+from ..mcp.status import status_bus, StatusEvent, get_status_metrics
 
 
-app = FastAPI(title="Agent System (MCP)")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan context manager for startup and shutdown events."""
+    logger = logging.getLogger(__name__)
+    logger.info("FastAPI application starting up")
+    
+    # Startup logic here if needed
+    yield
+    
+    # Shutdown logic
+    logger.info("FastAPI application shutting down gracefully")
+    try:
+        # Clean up any resources here
+        # The status_bus and other components will clean themselves up
+        pass
+    except Exception as e:
+        logger.error("Error during shutdown cleanup: %s", e)
+    finally:
+        logger.info("FastAPI application shutdown complete")
+
+
+app = FastAPI(title="Agent System (MCP)", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates"))
 
 # Mount static directory for CSS/JS if it exists
@@ -71,7 +95,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         return config.model_dump()
 
     @app.post("/run")
-    async def run(task: str):
+    async def run(task: str, traceparent: Optional[str] = Header(default=None)):
         logging.getLogger(__name__).info("/run invoked, task=%s", task)
         return await agent.run(task)
 
@@ -93,9 +117,115 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/status/stream")
+    async def status_stream(
+        request: Request,
+        server: Optional[str] = Query(default=None, description="Filter by server name"),
+        request_id: Optional[str] = Query(default=None, description="Filter by request id"),
+        heartbeat: int = Query(default=15, ge=5, le=120, description="Heartbeat interval seconds"),
+        close_after: Optional[int] = Query(
+            default=None,
+            ge=0,
+            description="(Testing/diagnostics) Close stream after emitting this many events",
+        ),
+    ):
+        """Server-Sent Events endpoint for unified status events (Task 0187).
+
+        Streams events from the in-process StatusBus. Supports optional filtering
+        by server and/or request_id. Emits periodic heartbeat comments so that
+        intermediaries keep the connection alive. Clients can simply listen for
+        'message' events and parse the JSON payload.
+        """
+        logger = logging.getLogger(__name__)
+        # Optional simple auth if AGENT_STATUS_REQUIRE_AUTH=1 and header X-Status-Token must match AGENT_STATUS_TOKEN
+        if os.getenv("AGENT_STATUS_REQUIRE_AUTH") == "1":
+            expected = os.getenv("AGENT_STATUS_TOKEN", "")
+            provided = request.headers.get("X-Status-Token", "")
+            if not expected or provided != expected:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=401, detail="Unauthorized status stream")
+
+        logger.info("SSE /status/stream connected (server=%s request_id=%s)", server, request_id)
+
+        queue = await status_bus.subscribe(server=server, request_id=request_id)
+
+        async def event_gen():
+            sent_events = 0
+            try:
+                yield ":ok\n\n"  # initial comment
+                if close_after is not None and close_after <= 0:
+                    # Immediate close requested (testing)
+                    return
+                loop = asyncio.get_event_loop()
+                last_hb = loop.time()
+                while True:
+                    now = loop.time()
+                    if now - last_hb >= heartbeat:
+                        yield f":hb {int(now)}\n\n"
+                        last_hb = now
+
+                    try:
+                        ev: StatusEvent = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        ev = None
+                    except asyncio.CancelledError:
+                        break
+
+                    if ev is not None:
+                        try:
+                            payload = ev.to_dict()
+                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                            sent_events += 1
+                            if close_after is not None and sent_events >= close_after:
+                                logger.debug(
+                                    "/status/stream close_after=%s reached (events=%s)",
+                                    close_after,
+                                    sent_events,
+                                )
+                                break
+                        except Exception:
+                            logger.exception("Failed to serialize status event")
+
+                    if await request.is_disconnected():
+                        logger.info("Client disconnected from /status/stream")
+                        break
+            finally:
+                try:
+                    status_bus.unsubscribe(queue)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+                if logger.handlers:  # avoid errors during interpreter shutdown
+                    logger.debug("/status/stream subscriber cleaned up")
+
+        return StreamingResponse(
+            event_gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        return templates.TemplateResponse("index.html", {"request": request})
+        # Updated to new Starlette signature: TemplateResponse(request, name)
+        return templates.TemplateResponse(request, "index.html")
+
+    @app.get("/status", response_class=HTMLResponse)
+    async def status_page(request: Request):
+        # Redirect to main page since status is now integrated
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/", status_code=302)
+
+    @app.get("/status/meta")
+    async def status_meta(request: Request):  # pragma: no cover - simple diagnostics
+        if os.getenv("AGENT_STATUS_REQUIRE_AUTH") == "1":
+            expected = os.getenv("AGENT_STATUS_TOKEN", "")
+            provided = request.headers.get("X-Status-Token", "")
+            if not expected or provided != expected:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=401, detail="Unauthorized")
+        return get_status_metrics()
 
     @app.get("/favicon.ico")
     async def favicon():
@@ -130,7 +260,10 @@ def run() -> None:
     # Configure log level
     uvicorn_log_level = config.logging.level.lower() if config.logging.enabled else "info"
     
-    # Run the server
+    # Run the server - uvicorn handles SIGINT/SIGTERM gracefully by default
+    logger = logging.getLogger(__name__)
+    logger.info("Starting FastAPI server on %s:%s", host, port)
+    
     uvicorn.run(
         app_obj, 
         host=host, 

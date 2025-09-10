@@ -193,70 +193,140 @@ class TestWeatherServer:
         """Test weather server source selection logic."""
         server = WeatherServer("weather", {}, True)
 
-        # Test default source - should work with real API
-        result = await server.call("forecast", {"location": "Berlin"})
-        assert result["status"] == "success"
-        assert result["source"] == "met.no"
-        assert "current" in result
-        assert "forecast" in result
+        # Mock successful response for met.no
+        mock_response = {
+            "location": "Berlin",
+            "source": "met.no",
+            "units": "metric",
+            "current": {
+                "temperature": 20,
+                "humidity": 50,
+                "wind_speed": 5
+            },
+            "forecast": [
+                {
+                    "date": "2025-09-08",
+                    "max_temp": 22,
+                    "min_temp": 12,
+                    "avg_temp": 17
+                }
+            ]
+        }
 
-        # Test explicit source - should work with real API
-        result = await server.call("forecast", {"location": "Berlin", "source": "met.no"})
-        assert result["status"] == "success"
-        assert result["source"] == "met.no"
+        with patch('plugins.weather.sources.fetch_met_no', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_response
+
+            result = await server.call("forecast", {"location": "Berlin"})
+            assert result["status"] == "success"
+            assert result["source"] == "met.no"
+            assert "current" in result
+            assert "forecast" in result
+
+            # Test explicit source - should also use mocked response
+            result = await server.call("forecast", {"location": "Berlin", "source": "met.no"})
+            assert result["status"] == "success"
+            assert result["source"] == "met.no"
 
     @pytest.mark.asyncio
     async def test_weather_server_days_parameter(self):
         """Test weather server days parameter handling."""
         server = WeatherServer("weather", {}, True)
 
-        # Test default days
-        result = await server.call("forecast", {"location": "Berlin"})
-        assert result["status"] == "success"
-        assert len(result["forecast"]) >= 1
+        # Mock response for default days
+        mock_response = {
+            "location": "Berlin",
+            "source": "met.no",
+            "units": "metric",
+            "current": {"temperature": 20},
+            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
+        }
 
-        # Test custom days
-        result = await server.call("forecast", {"location": "Berlin", "days": 2})
-        assert result["status"] == "success"
-        assert len(result["forecast"]) >= 1  # Should have at least one day
+        with patch('plugins.weather.sources.fetch_met_no', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_response
+
+            # Test default days
+            result = await server.call("forecast", {"location": "Berlin"})
+            assert result["status"] == "success"
+            assert len(result["forecast"]) >= 1
+
+            # Test custom days
+            result = await server.call("forecast", {"location": "Berlin", "days": 2})
+            assert result["status"] == "success"
+            assert len(result["forecast"]) >= 1  # Should have at least one day
 
     @pytest.mark.asyncio
     async def test_weather_server_units_parameter(self):
         """Test weather server units parameter handling."""
         server = WeatherServer("weather", {}, True)
 
-        # Test metric units (default) - met.no always returns metric
-        result = await server.call("forecast", {"location": "Berlin", "units": "metric"})
-        assert result["status"] == "success"
-        assert result["units"] == "metric"
+        # Mock response for metric units (met.no always returns metric)
+        mock_response = {
+            "location": "Berlin",
+            "source": "met.no",
+            "units": "metric",
+            "current": {"temperature": 20},
+            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
+        }
 
-        # Test imperial units - met.no doesn't support imperial, so it still returns metric
-        result = await server.call("forecast", {"location": "Berlin", "units": "imperial"})
-        assert result["status"] == "success"
-        # met.no API only provides metric units, so units will be "metric" regardless of request
-        assert result["units"] == "metric"
+        with patch('plugins.weather.sources.fetch_met_no', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_response
+
+            # Test metric units (default) - met.no always returns metric
+            result = await server.call("forecast", {"location": "Berlin", "units": "metric"})
+            assert result["status"] == "success"
+            assert result["units"] == "metric"
+
+            # Test imperial units - met.no doesn't support imperial, so it still returns metric
+            result = await server.call("forecast", {"location": "Berlin", "units": "imperial"})
+            assert result["status"] == "success"
+            # met.no API only provides metric units, so units will be "metric" regardless of request
+            assert result["units"] == "metric"
 
     @pytest.mark.asyncio
     async def test_weather_server_marine_parameter(self):
         """Test weather server marine parameter handling."""
         server = WeatherServer("weather", {}, True)
 
-        # Test marine data request - should switch to marine source
-        result = await server.call("forecast", {"location": "Berlin", "include_marine": True})
-        assert result["status"] == "success"
-        # Should switch to marine.weather.gov when marine data is requested
-        assert result["source"] in ["marine.weather.gov", "met.no"]
+        # Mock response for marine data
+        mock_response = {
+            "location": "Berlin",
+            "source": "marine.weather.gov",
+            "units": "metric",
+            "current": {"temperature": 20},
+            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
+        }
+
+        with patch('plugins.weather.sources.fetch_marine_weather_gov', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_response
+
+            # Test marine data request - should switch to marine source
+            result = await server.call("forecast", {"location": "Berlin", "include_marine": True})
+            assert result["status"] == "success"
+            # Should switch to marine.weather.gov when marine data is requested
+            assert result["source"] in ["marine.weather.gov", "met.no"]
 
     @pytest.mark.asyncio
     async def test_weather_server_source_switching_logic(self):
         """Test weather server automatic source switching logic."""
         server = WeatherServer("weather", {}, True)
 
-        # Test wttr.in with > 3 days should switch to met.no
-        result = await server.call("forecast", {"location": "Berlin", "source": "wttr.in", "days": 5})
-        assert result["status"] == "success"
-        # Should switch to met.no for > 3 days with wttr.in
-        assert result["source"] in ["met.no", "wttr.in"]
+        # Mock response for met.no (fallback for wttr.in with > 3 days)
+        mock_response = {
+            "location": "Berlin",
+            "source": "met.no",
+            "units": "metric",
+            "current": {"temperature": 20},
+            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
+        }
+
+        with patch('plugins.weather.sources.fetch_met_no', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_response
+
+            # Test wttr.in with > 3 days should switch to met.no
+            result = await server.call("forecast", {"location": "Berlin", "source": "wttr.in", "days": 5})
+            assert result["status"] == "success"
+            # Should switch to met.no for > 3 days with wttr.in
+            assert result["source"] in ["met.no", "wttr.in"]
 
     @pytest.mark.asyncio
     async def test_weather_server_error_handling(self):
@@ -280,15 +350,27 @@ class TestWeatherServer:
     @pytest.mark.asyncio
     async def test_weather_server_ssl_verify_parameter(self):
         """Test weather server SSL verification parameter."""
-        # Test with SSL verification enabled
-        server_ssl = WeatherServer("weather", {}, True)
-        result = await server_ssl.call("forecast", {"location": "Berlin"})
-        assert result["status"] == "success"
+        # Mock response
+        mock_response = {
+            "location": "Berlin",
+            "source": "met.no",
+            "units": "metric",
+            "current": {"temperature": 20},
+            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
+        }
 
-        # Test with SSL verification disabled
-        server_no_ssl = WeatherServer("weather", {}, False)
-        result = await server_no_ssl.call("forecast", {"location": "Berlin"})
-        assert result["status"] == "success"
+        with patch('plugins.weather.sources.fetch_met_no', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_response
+
+            # Test with SSL verification enabled
+            server_ssl = WeatherServer("weather", {}, True)
+            result = await server_ssl.call("forecast", {"location": "Berlin"})
+            assert result["status"] == "success"
+
+            # Test with SSL verification disabled
+            server_no_ssl = WeatherServer("weather", {}, False)
+            result = await server_no_ssl.call("forecast", {"location": "Berlin"})
+            assert result["status"] == "success"
 
 
 class TestWeatherServerIntegration:
@@ -340,19 +422,39 @@ class TestWeatherServerIntegration:
         """Test weather server with different sources."""
         server = WeatherServer("weather", {}, True)
 
+        # Mock responses for different sources
+        mock_met_no_response = {
+            "location": "Berlin",
+            "source": "met.no",
+            "units": "metric",
+            "current": {"temperature": 20},
+            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
+        }
+
+        mock_wttr_response = {
+            "location": "Berlin",
+            "source": "wttr.in",
+            "units": "metric",
+            "current": {"temperature": 20},
+            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
+        }
+
         sources_to_test = [
-            ("met.no", "met.no"),
-            ("wttr.in", "wttr.in"),
+            ("met.no", "met.no", mock_met_no_response, 'fetch_met_no'),
+            ("wttr.in", "wttr.in", mock_wttr_response, 'fetch_wttr'),
         ]
 
-        for source_name, expected_source in sources_to_test:
-            result = await server.call("forecast", {
-                "location": "Berlin",
-                "source": source_name
-            })
+        for source_name, expected_source, mock_response, mock_function in sources_to_test:
+            with patch(f'plugins.weather.sources.{mock_function}', new_callable=AsyncMock) as mock_fetch:
+                mock_fetch.return_value = mock_response
 
-            assert result["status"] == "success"
-            assert result["source"] == expected_source
+                result = await server.call("forecast", {
+                    "location": "Berlin",
+                    "source": source_name
+                })
+
+                assert result["status"] == "success"
+                assert result["source"] == expected_source
 
 
 class TestWeatherPluginFactory:

@@ -6,14 +6,146 @@
   <title>Agent System (MCP)</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <style>
+    /* Layout with sidebar */
+    .main-container {
+      display: flex;
+      gap: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+    
+    .main-content {
+      flex: 1;
+      min-width: 0;
+    }
+    
+    .sidebar {
+      flex: 0 0 300px;
+      background: #0a1420;
+      border: 1px solid #243244;
+      border-radius: 8px;
+      padding: 16px;
+      height: fit-content;
+      position: sticky;
+      top: 80px;
+    }
+    
+    .sidebar-header {
+      font-weight: 600;
+      color: #cbd5e1;
+      margin-bottom: 12px;
+      font-size: 14px;
+      border-bottom: 1px solid #243244;
+      padding-bottom: 8px;
+    }
+    
+    .status-metrics {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .metric-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      background: #0b1220;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    
+    .metric-label {
+      color: #9ab;
+    }
+    
+    .metric-value {
+      color: #cbd5e1;
+      font-weight: 500;
+    }
+    
+    .status-event {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 4px 8px;
+      margin: 3px 0;
+      border-left: 3px solid #2e3e4f;
+      background: #0a1420;
+      border-radius: 4px;
+      font-size: 13px;
+      animation: fadeIn .2s ease;
+    }
+    .status-event.start { border-color: #00bcd4; }
+    .status-event.progress { border-color: #1e88e5; }
+    .status-event.end { border-color: #2e7d32; }
+    .status-event.error { border-color: #c62828; }
+    .status-phase {
+      flex: 0 0 auto;
+      font-size: 10px;
+      padding: 1px 4px;
+      border-radius: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-top: 1px;
+    }
+    .status-phase.start { background: #00bcd41a; color: #00bcd4; }
+    .status-phase.progress { background: #1e88e51a; color: #42a5f5; }
+    .status-phase.end { background: #2e7d321a; color: #81c784; }
+    .status-phase.error { background: #c628281a; color: #ef5350; }
+    .status-content {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .status-server {
+      font-weight: 600;
+      color: #9ab;
+    }
+    .status-message {
+      display: block;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 2px;
+    }
+    .status-meta {
+      font-size: 10px;
+      opacity: 0.6;
+      margin-top: 2px;
+    }
+    
+    /* Mobile responsiveness */
+    @media (max-width: 768px) {
+      .main-container {
+        flex-direction: column;
+      }
+      
+      .sidebar {
+        flex: none;
+        position: static;
+        order: -1;
+      }
+    }
+    
+    @keyframes fadeIn { 
+      from { opacity: 0; transform: translateY(-2px); } 
+      to { opacity: 1; transform: translateY(0); } 
+    }
+  </style>
   </head>
   <body>
     <header>
-      <h1>Agent System <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #243244;color:#9ab;font-size:12px; margin-left:8px">MCP</span></h1>
+  <h1>Agent System <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #243244;color:#9ab;font-size:12px; margin-left:8px">MCP</span></h1>
+  <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
     </header>
 
-    <main>
-      <div id="chat" class="chat" aria-live="polite"></div>
+    <main class="main-container">
+      <div class="main-content">
+        <div id="chat" class="chat" aria-live="polite"></div>
+      </div>
+      
+  <!-- Sidebar removed; status panel is now toggled from header -->
     </main>
 
     <div class="inputBar" role="region" aria-label="Chat input">
@@ -28,9 +160,208 @@
       const chat = document.getElementById('chat');
       const form = document.getElementById('f');
       const runBtn = document.getElementById('runBtn');
+      const statusMetrics = document.getElementById('statusMetrics');
+
+  // Status metrics update function
+      async function updateStatusMetrics() {
+        try {
+          const response = await fetch('/status/meta');
+              if (response.ok) {
+                const data = await response.json();
+            
+                const html = `
+              <div class="metric-item">
+                <span class="metric-label">Subscribers</span>
+                <span class="metric-value">${data.subscribers || 0}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Events Published</span>
+                <span class="metric-value">${data.publish_attempted || 0}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Events Delivered</span>
+                <span class="metric-value">${data.delivered || 0}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Events Suppressed</span>
+                <span class="metric-value">${(data.suppressed_rate || 0) + (data.suppressed_debounce || 0)}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Max RPS</span>
+                <span class="metric-value">${data.config.AGENT_STATUS_MAX_RPS || 'Unlimited'}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Debounce MS</span>
+                <span class="metric-value">${data.config.AGENT_STATUS_DEBOUNCE_MS || 'None'}</span>
+              </div>
+            `;
+            // Write into sidebar metrics if present, otherwise into floating panel
+            const sidebarMeta = document.getElementById('statusMetrics');
+            const floatingMeta = document.getElementById('floatingStatusMetrics');
+            if (sidebarMeta) sidebarMeta.innerHTML = html;
+            if (floatingMeta) floatingMeta.innerHTML = html;
+          }
+        } catch (error) {
+          statusMetrics.innerHTML = `
+            <div class="metric-item">
+              <span class="metric-label">Status</span>
+              <span class="metric-value">Error loading</span>
+            </div>
+          `;
+        }
+      }
+
+      // Create floating status panel (hidden by default)
+      const statusPanel = document.createElement('div');
+      statusPanel.id = 'floatingStatusPanel';
+      statusPanel.className = 'floating-panel';
+      statusPanel.style.display = 'none';
+      statusPanel.innerHTML = `
+        <div class="floating-panel-header" id="floatingStatusHeader">
+          <span>Status & Metrics</span>
+          <div style="margin-left:8px;flex:1"></div>
+          <button id="floatingCloseBtn" title="Close" aria-label="Close">✕</button>
+        </div>
+        <div class="floating-panel-body" id="floatingStatusBody">
+          <div class="status-metrics" id="floatingStatusMetrics">
+            <div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(statusPanel);
+
+      const statusToggleBtn = document.getElementById('statusToggleBtn');
+      const floatingCloseBtn = document.getElementById('floatingCloseBtn');
+      const floatingStatusMetrics = document.getElementById('floatingStatusMetrics');
+
+      statusToggleBtn.addEventListener('click', () => {
+        const shown = statusPanel.style.display !== 'none';
+        statusPanel.style.display = shown ? 'none' : 'block';
+        statusToggleBtn.setAttribute('aria-expanded', String(!shown));
+        if (!shown) {
+          // populate metrics immediately (updateStatusMetrics will populate either sidebar or floating panel)
+          updateStatusMetrics().catch(() => {});
+        }
+      });
+
+      floatingCloseBtn.addEventListener('click', () => {
+        statusPanel.style.display = 'none';
+        statusToggleBtn.setAttribute('aria-expanded', 'false');
+      });
+
+      // Make panel draggable
+      (function makeDraggable(headerId, panel) {
+        const header = document.getElementById(headerId);
+        let isDragging = false;
+        let startX = 0, startY = 0, origX = 0, origY = 0;
+        header.addEventListener('pointerdown', (ev) => {
+          // If the pointer event originated on the close button (or other controls),
+          // do not start a drag so the control's click can be processed normally.
+          try {
+            if (ev.target && ev.target.closest && ev.target.closest('#floatingCloseBtn')) {
+              return;
+            }
+          } catch (e) {
+            // ignore
+          }
+          isDragging = true;
+          startX = ev.clientX;
+          startY = ev.clientY;
+          const rect = panel.getBoundingClientRect();
+          origX = rect.left;
+          origY = rect.top;
+          header.setPointerCapture(ev.pointerId);
+        });
+        window.addEventListener('pointermove', (ev) => {
+          if (!isDragging) return;
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+          panel.style.left = (origX + dx) + 'px';
+          panel.style.top = (origY + dy) + 'px';
+          panel.style.right = 'auto';
+        });
+        window.addEventListener('pointerup', (ev) => {
+          isDragging = false;
+        });
+      })('floatingStatusHeader', statusPanel);
+
+      // Update metrics every 2 seconds
+      setInterval(updateStatusMetrics, 2000);
+      // Initial load
+      updateStatusMetrics();
 
       function escapeHtml(s) {
         return s.replace(/[&<>]/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;'}[c]));
+      }
+
+      function formatTime(ts) {
+        try {
+          return new Date(ts).toLocaleTimeString();
+        } catch (e) {
+          return ts;
+        }
+      }
+
+      // Track active operations for consolidated status
+      const activeOperations = new Map();
+
+      function addStatusEvent(container, ev) {
+        const operationKey = `${ev.server}_${ev.request_id || 'default'}`;
+        
+        if (ev.phase === 'start') {
+          // Create new operation progress indicator
+          const operationDiv = document.createElement('div');
+          operationDiv.className = 'operation-progress';
+          operationDiv.setAttribute('data-operation', operationKey);
+          
+          operationDiv.innerHTML = `
+            <div class="progress-line">
+              <span class="progress-icon">
+                <div class="spinner"></div>
+              </span>
+              <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
+              <span class="progress-message">${escapeHtml(ev.message || 'Starting...')}</span>
+              <span class="progress-time">${formatTime(ev.timestamp)}</span>
+            </div>
+          `;
+          
+          container.appendChild(operationDiv);
+          activeOperations.set(operationKey, operationDiv);
+          
+        } else if (ev.phase === 'progress') {
+          // Update existing operation
+          const operationDiv = activeOperations.get(operationKey);
+          if (operationDiv) {
+            const messageSpan = operationDiv.querySelector('.progress-message');
+            if (messageSpan) {
+              messageSpan.textContent = ev.message || 'In progress...';
+            }
+          }
+          
+        } else if (ev.phase === 'end') {
+          // Complete operation with success
+          const operationDiv = activeOperations.get(operationKey);
+          if (operationDiv) {
+            const iconSpan = operationDiv.querySelector('.progress-icon');
+            const messageSpan = operationDiv.querySelector('.progress-message');
+            if (iconSpan) iconSpan.innerHTML = '<div class="checkmark">✓</div>';
+            if (messageSpan) messageSpan.textContent = ev.message || 'Completed';
+            operationDiv.classList.add('completed');
+          }
+          activeOperations.delete(operationKey);
+          
+        } else if (ev.phase === 'error') {
+          // Complete operation with error
+          const operationDiv = activeOperations.get(operationKey);
+          if (operationDiv) {
+            const iconSpan = operationDiv.querySelector('.progress-icon');
+            const messageSpan = operationDiv.querySelector('.progress-message');
+            if (iconSpan) iconSpan.innerHTML = '<div class="error-mark">✕</div>';
+            if (messageSpan) messageSpan.textContent = ev.message || 'Error occurred';
+            operationDiv.classList.add('error');
+          }
+          activeOperations.delete(operationKey);
+        }
       }
 
       function markdownToHtml(md) {
@@ -146,8 +477,22 @@
         box.className = 'msg assistant';
         box.innerHTML = `
           <details id="thinkingBox"><summary>Thinking…</summary><pre id="thinking"></pre></details>
-          <details id="mcpBox"><summary>MCP Calls</summary><pre id="mcp"></pre></details>
-          <div id="assistantText" class="response-content"></div>
+          <div id="conversationFlow" class="conversation-flow">
+            <div id="statusContainer" class="status-container">
+              <div class="status-header">
+                <span class="response-icon">
+                  <!-- Inline SVG: status icon (list/check) -->
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="2" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
+                    <path d="M7 9l2 2 4-4" stroke="#56d364" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span class="response-label">Status</span>
+              </div>
+              <div id="statusBody" class="status-body"></div>
+            </div>
+            <div id="assistantText" class="response-content"></div>
+          </div>
         `;
         row.appendChild(box);
         chat.appendChild(row);
@@ -157,9 +502,10 @@
           box,
           t: box.querySelector('#assistantText'),
           think: box.querySelector('#thinking'),
-          mcp: box.querySelector('#mcp'),
+          // statusBody is where status events should be appended
+          status: box.querySelector('#statusBody'),
           thinkBox: box.querySelector('#thinkingBox'),
-          mcpBox: box.querySelector('#mcpBox')
+          conversationFlow: box.querySelector('#conversationFlow')
         };
       }
 
@@ -177,6 +523,22 @@
 
         let sseOk = false;
         const es = new EventSource(`/events?task=${encodeURIComponent(task)}`);
+        
+        // Also connect to status stream for this session
+        let statusEs = null;
+        try {
+          statusEs = new EventSource('/status/stream');
+          statusEs.onmessage = (ev) => {
+            try {
+              const statusData = JSON.parse(ev.data);
+              addStatusEvent(blk.status, statusData);
+            } catch (err) {
+              // ignore parse errors
+            }
+          };
+        } catch (err) {
+          console.warn('Status stream not available:', err);
+        }
 
         es.onopen = () => { console.info('SSE connected'); sseOk = true; };
 
@@ -203,36 +565,43 @@
                   blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
                 }
                 break;
-              case 'mcp_call':
-                blk.mcp.textContent += `🔧 ${data.server}.${data.action}\n`;
-                if (data.params && Object.keys(data.params).length > 0) {
-                  blk.mcp.textContent += `   📝 Parameters: ${JSON.stringify(data.params, null, 2)}\n`;
-                }
-                blk.mcp.textContent += '\n';
-                break;
-              case 'mcp_result':
-                blk.mcp.textContent += `✅ Result:\n${JSON.stringify(data.result, null, 2)}\n\n`;
-                break;
               case 'final':
                 const content = data.summary || data.content || '';
                 blk.t.innerHTML = `
                   <div class="response-header">
-                    <span class="response-icon">🤖</span>
+                    <span class="response-icon">
+                      <!-- Inline SVG: modern robot/chat bubble -->
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <rect x="2" y="3" width="20" height="14" rx="3" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
+                        <circle cx="8.5" cy="9" r="1.1" fill="#cbd5e1" />
+                        <circle cx="15.5" cy="9" r="1.1" fill="#cbd5e1" />
+                        <path d="M7 13c1 0 2 0.8 3 0.8s2-0.8 3-0.8" stroke="#9fb8d9" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
+                        <rect x="6" y="15.5" width="6" height="3" rx="0.8" fill="#071028" />
+                      </svg>
+                    </span>
                     <span class="response-label">Response</span>
                   </div>
                   <div class="response-text">${markdownToHtml(content)}</div>
                 `;
                 blk.thinkBox.open = false;
-                blk.mcpBox.open = false;
+                // Note: statusBox no longer exists, status is integrated into conversation flow
                 break;
               case 'end':
                 es.close();
+                if (statusEs) statusEs.close();
                 runBtn.disabled = false;
                 break;
               case 'error':
                 blk.t.innerHTML = `
                   <div class="response-header error">
-                    <span class="response-icon">⚠️</span>
+                    <span class="response-icon">
+                      <!-- Inline SVG: alert icon for errors -->
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <path d="M12 2L2 20h20L12 2z" fill="#2b0505" stroke="#f85149" stroke-width="0.8" />
+                        <rect x="11" y="8" width="2" height="6" fill="#f85149" />
+                        <rect x="11" y="16" width="2" height="2" fill="#f85149" />
+                      </svg>
+                    </span>
                     <span class="response-label">Error</span>
                   </div>
                   <div class="response-text">${escapeHtml(data.message)}</div>
@@ -252,8 +621,17 @@
               const j = await r.json();
               const content = j.summary || JSON.stringify(j, null, 2);
               blk.t.innerHTML = `
-                <div class="response-header">
-                  <span class="response-icon">🤖</span>
+                  <div class="response-header">
+                  <span class="response-icon">
+                    <!-- Inline SVG: modern robot/chat bubble (same as above) -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                      <rect x="2" y="3" width="20" height="14" rx="3" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
+                      <circle cx="8.5" cy="9" r="1.1" fill="#cbd5e1" />
+                      <circle cx="15.5" cy="9" r="1.1" fill="#cbd5e1" />
+                      <path d="M7 13c1 0 2 0.8 3 0.8s2-0.8 3-0.8" stroke="#9fb8d9" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
+                      <rect x="6" y="15.5" width="6" height="3" rx="0.8" fill="#071028" />
+                    </svg>
+                  </span>
                   <span class="response-label">Response</span>
                 </div>
                 <div class="response-text">${markdownToHtml(content)}</div>
@@ -261,7 +639,14 @@
             } catch (e) {
               blk.t.innerHTML = `
                 <div class="response-header error">
-                  <span class="response-icon">⚠️</span>
+                  <span class="response-icon">
+                    <!-- Inline SVG: alert icon for errors (same as above) -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                      <path d="M12 2L2 20h20L12 2z" fill="#2b0505" stroke="#f85149" stroke-width="0.8" />
+                      <rect x="11" y="8" width="2" height="6" fill="#f85149" />
+                      <rect x="11" y="16" width="2" height="2" fill="#f85149" />
+                    </svg>
+                  </span>
                   <span class="response-label">Error</span>
                 </div>
                 <div class="response-text">Request failed: ${escapeHtml(String(e))}</div>
@@ -269,10 +654,15 @@
             }
             runBtn.disabled = false;
             es.close();
+            if (statusEs) statusEs.close();
           }
         }, 1500);
 
-        es.onerror = () => { es.close(); runBtn.disabled = false; };
+        es.onerror = () => { 
+          es.close(); 
+          if (statusEs) statusEs.close();
+          runBtn.disabled = false; 
+        };
       }
     </script>
   </body>

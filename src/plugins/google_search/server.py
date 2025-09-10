@@ -4,6 +4,13 @@ from typing import Any
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
+from agent_system.mcp.status import (
+    publish_status,
+    PHASE_START,
+    PHASE_PROGRESS,
+    PHASE_END,
+    PHASE_ERROR,
+)
 
 
 class GoogleSearchServer(MCPServer):
@@ -15,6 +22,7 @@ class GoogleSearchServer(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool == "search":
             query = params.get("query", "")
+            request_id = params.get("request_id") or params.get("requestId")
             max_results = int(params.get("max_results", 5))
             cfg = self.config or {}
             api_key = cfg.get("api_key")
@@ -28,9 +36,22 @@ class GoogleSearchServer(MCPServer):
             except Exception as e:
                 raise RuntimeError("requests package required for google_search") from e
 
+            # publish start
+            try:
+                await publish_status(self.name, f"Google search: {query}", request_id=request_id, phase=PHASE_START)
+            except Exception:
+                pass
+
             params_req = {"key": api_key, "cx": cx, "q": query, "num": min(max_results, 10)}
             resp = requests.get("https://www.googleapis.com/customsearch/v1", params=params_req, timeout=15, verify=self.ssl_verify)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except Exception as e:
+                try:
+                    await publish_status(self.name, f"Google search failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+                except Exception:
+                    pass
+                raise
             data = resp.json()
             items = data.get("items", [])
             results = []
@@ -40,6 +61,10 @@ class GoogleSearchServer(MCPServer):
                     "href": it.get("link"),
                     "body": it.get("snippet"),
                 })
+            try:
+                await publish_status(self.name, f"Google search completed: {query} ({len(results)} results)", request_id=request_id, phase=PHASE_END, meta={"results": len(results)})
+            except Exception:
+                pass
             return {"engine": "google", "query": query, "results": results}
         raise ValueError(f"Unknown tool: {tool}")
 
