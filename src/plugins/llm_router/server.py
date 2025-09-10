@@ -23,17 +23,17 @@ class LLMRouterServer(MCPServer):
 
     def _determine_default_provider(self) -> str:
         """Determine the best default provider based on available configuration."""
-        # Check if OpenAI is properly configured
+        # Check if OpenAI is configured via config or env - this takes precedence
         openai_key = self.config.get("openai_api_key") or os.getenv("OPENAI_API_KEY")
         if openai_key:
             return "openai"
 
-        # Check if Ollama is available (try to connect or check if it's configured)
-        ollama_url = self.config.get("ollama_url") or "http://127.0.0.1:11434"
-        if self._is_ollama_available(ollama_url):
-            return "ollama"
+        # Then respect an explicit default_provider
+        explicit_provider = self.config.get("default_provider")
+        if explicit_provider:
+            return explicit_provider
 
-        # Fallback to OpenAI even if not configured (will fail gracefully with helpful error)
+        # Fallback to default 'openai' when nothing else is configured
         return "openai"
 
     def _is_ollama_available(self, url: str) -> bool:

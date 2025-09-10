@@ -20,6 +20,7 @@ except Exception:
 from .config.settings import load_settings
 from .mcp.plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
+from .mcp.status import status_bus, StatusEvent
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
@@ -86,7 +87,7 @@ def main() -> None:
         pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
-    known = ("plugins", "run", "-h", "--help")
+    known = ("plugins", "run", "status", "-h", "--help")
     if rest:
         if not rest[0].startswith("-") and rest[0] not in known:
             rest.insert(0, "run")
@@ -136,6 +137,14 @@ def main() -> None:
     plugins_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for plugin listing")
     plugins_parser.add_argument("--show-metadata", dest="show_metadata", action="store_true", help="Also display plugin._plugin_metadata in listing (JSON output only)")
     plugins_parser.add_argument("--raw", dest="raw", action="store_true", help="Show raw factory information for 'info' action")
+
+    # status subcommand
+    status_parser = subparsers.add_parser("status", help="Stream MCP server status events")
+    status_parser.add_argument("--follow", dest="follow", action="store_true", help="Follow status events in real-time")
+    status_parser.add_argument("--server", dest="server", help="Filter events to specific server")
+    status_parser.add_argument("--request-id", dest="request_id", help="Filter events to specific request ID")
+    status_parser.add_argument("--format", dest="out_format", choices=["short", "json"], default="short", help="Output format")
+    status_parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output")
 
     args = parser.parse_args(argv[1:])
 
@@ -417,6 +426,71 @@ def main() -> None:
 
         print(json.dumps(listing, indent=2, ensure_ascii=False))
         return
+
+    # Handle status subcommand
+    if args.subcommand == "status":
+        # For status streaming, we need to bootstrap servers to get status events
+        registry = MCPRegistry()
+        vprint("[cli] bootstrapping servers for status streaming...")
+        bootstrap_servers(config, registry)
+        vprint(f"[cli] servers registered: {', '.join(registry.list())}")
+
+        # Subscribe to status events
+        queue = asyncio.run(status_bus.subscribe(
+            server=getattr(args, "server", None),
+            request_id=getattr(args, "request_id", None)
+        ))
+
+        if getattr(args, "follow", False):
+            # Stream status events in real-time
+            print("Following status events... (Ctrl+C to stop)")
+            try:
+                while True:
+                    event = asyncio.run(queue.get())
+                    if args.out_format == "json":
+                        print(json.dumps({
+                            "server": event.server,
+                            "request_id": event.request_id,
+                            "message": event.message,
+                            "level": event.level,
+                            "timestamp": event.timestamp.isoformat()
+                        }, ensure_ascii=False))
+                    else:
+                        # Short format
+                        msg = f"[{event.timestamp.strftime('%H:%M:%S')}] {event.server}"
+                        if event.request_id:
+                            msg += f" ({event.request_id})"
+                        msg += f": {event.message}"
+                        if event.level == "error" and _supports_color():
+                            msg = _colorize(msg, "31")
+                        elif event.level == "warning" and _supports_color():
+                            msg = _colorize(msg, "33")
+                        print(msg)
+            except KeyboardInterrupt:
+                print("\nStopped following status events.")
+        else:
+            # Just show current status or wait for one event
+            print("Waiting for status events... (Ctrl+C to stop)")
+            try:
+                event = asyncio.run(queue.get())
+                if args.out_format == "json":
+                    print(json.dumps({
+                        "server": event.server,
+                        "request_id": event.request_id,
+                        "message": event.message,
+                        "level": event.level,
+                        "timestamp": event.timestamp.isoformat()
+                    }, ensure_ascii=False))
+                else:
+                    msg = f"[{event.timestamp.strftime('%H:%M:%S')}] {event.server}"
+                    if event.request_id:
+                        msg += f" ({event.request_id})"
+                    msg += f": {event.message}"
+                    print(msg)
+            except KeyboardInterrupt:
+                print("No status events received.")
+        return
+
     # Setup logging from config; file handler is created here. Console level is adjusted below.
     # Use a role-specific logfile so concurrent processes (cli vs api) don't
     # clobber the same file. If the configured file is `logs/agent.log` this

@@ -4,17 +4,24 @@ from typing import Any
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
-from .sources import fetch_wttr, fetch_weather_gov, fetch_marine_weather_gov, fetch_met_no
+from agent_system.mcp.status import publish_status
+from . import sources
 
 
 class WeatherServer(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
+        # Publish status for operation start
+        location = params.get("location", "unknown")
+        await publish_status(self.name, f"Fetching weather for {location}")
+
         supported_actions = ["forecast", "search", "query", "get", "check", "lookup"]
         if tool not in supported_actions:
+            await publish_status(self.name, f"Unknown tool: {tool}", level="error")
             return {"status": "error", "error": f"Unknown tool: {tool}. Supported tools: {', '.join(supported_actions)}"}
 
         location = params.get("location", "")
         if not location:
+            await publish_status(self.name, "Missing location parameter", level="error")
             return {"status": "error", "error": "Missing required parameter: location"}
 
         source = params.get("source", "met.no").lower()
@@ -29,24 +36,28 @@ class WeatherServer(MCPServer):
 
         try:
             if source == "wttr.in":
-                result = await fetch_wttr(location, days, units, self.ssl_verify)
+                result = await sources.fetch_wttr(location, days, units, self.ssl_verify)
             elif source == "weather.gov":
-                result = await fetch_weather_gov(location, days, units, self.ssl_verify)
+                result = await sources.fetch_weather_gov(location, days, units, self.ssl_verify)
             elif source == "met.no":
-                result = await fetch_met_no(location, days, units, self.ssl_verify)
+                result = await sources.fetch_met_no(location, days, units, self.ssl_verify)
             elif source == "marine.weather.gov":
-                result = await fetch_marine_weather_gov(location, days, units, self.ssl_verify, include_marine)
+                result = await sources.fetch_marine_weather_gov(location, days, units, self.ssl_verify, include_marine)
             else:
+                await publish_status(self.name, f"Unsupported weather source: {source}", level="error")
                 return {"status": "error", "error": f"Unsupported weather source: {source}"}
 
             if "error" not in result:
                 result["status"] = "success"
+                await publish_status(self.name, f"Successfully fetched weather for {location}")
             else:
                 result["status"] = "error"
+                await publish_status(self.name, f"Error fetching weather: {result.get('error')}", level="error")
 
             return result
 
         except Exception as e:
+            await publish_status(self.name, f"Exception during weather fetch: {str(e)}", level="error")
             return {
                 "status": "error",
                 "error": str(e),
