@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -21,7 +22,28 @@ from ..utils.logging import setup_logging
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics
 
 
-app = FastAPI(title="Agent System (MCP)")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan context manager for startup and shutdown events."""
+    logger = logging.getLogger(__name__)
+    logger.info("FastAPI application starting up")
+    
+    # Startup logic here if needed
+    yield
+    
+    # Shutdown logic
+    logger.info("FastAPI application shutting down gracefully")
+    try:
+        # Clean up any resources here
+        # The status_bus and other components will clean themselves up
+        pass
+    except Exception as e:
+        logger.error("Error during shutdown cleanup: %s", e)
+    finally:
+        logger.info("FastAPI application shutdown complete")
+
+
+app = FastAPI(title="Agent System (MCP)", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates"))
 
 # Mount static directory for CSS/JS if it exists
@@ -237,7 +259,10 @@ def run() -> None:
     # Configure log level
     uvicorn_log_level = config.logging.level.lower() if config.logging.enabled else "info"
     
-    # Run the server
+    # Run the server - uvicorn handles SIGINT/SIGTERM gracefully by default
+    logger = logging.getLogger(__name__)
+    logger.info("Starting FastAPI server on %s:%s", host, port)
+    
     uvicorn.run(
         app_obj, 
         host=host, 
