@@ -306,3 +306,118 @@ pre {
 .response-text p:last-child {
   margin-bottom: 0;
 }
+
+/* Consolidated Progress View (VS Code-style) */
+.operation-progress {
+  margin: 4px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.progress-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: #e6edf3;
+}
+
+.progress-icon {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Animated spinner */
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #21262d;
+  border-top: 2px solid #58a6ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Success checkmark */
+.checkmark {
+  color: #56d364;
+  font-weight: bold;
+  font-size: 14px;
+  animation: checkmarkPop 0.3s ease-out;
+}
+
+@keyframes checkmarkPop {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* Error cross */
+.error-mark {
+  color: #f85149;
+  font-weight: bold;
+  font-size: 14px;
+  animation: errorShake 0.4s ease-out;
+}
+
+@keyframes errorShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+.progress-server {
+  color: #58a6ff;
+  font-weight: 500;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.progress-message {
+  color: #e6edf3;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-time {
+  color: #8b949e;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.operation-progress.completed .progress-message {
+  color: #56d364;
+}
+
+.operation-progress.error .progress-message {
+  color: #f85149;
+}
+
+/* Status container improvements */
+#statusContainer {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+#statusContainer:empty::before {
+  content: "No status events yet...";
+  color: #8b949e;
+  font-style: italic;
+  font-size: 12px;
+}

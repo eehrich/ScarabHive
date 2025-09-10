@@ -230,37 +230,66 @@
         }
       }
 
+      // Track active operations for consolidated status
+      const activeOperations = new Map();
+
       function addStatusEvent(container, ev) {
-        const div = document.createElement('div');
-        div.className = 'status-event ' + (ev.phase || 'progress');
-
-        const phaseSpan = document.createElement('span');
-        phaseSpan.className = 'status-phase ' + (ev.phase || 'progress');
-        phaseSpan.textContent = ev.phase || '?';
-
-        const content = document.createElement('div');
-        content.className = 'status-content';
-
-        const header = document.createElement('div');
-        header.innerHTML = `<span class="status-server">${escapeHtml(ev.server || '?')}</span>`;
-
-        const msgSpan = document.createElement('div');
-        msgSpan.className = 'status-message';
-        msgSpan.textContent = ev.message || '';
-
-        const metaDiv = document.createElement('div');
-        metaDiv.className = 'status-meta';
-        metaDiv.textContent = `${formatTime(ev.timestamp)} · ${escapeHtml(ev.level || 'info')}`;
-
-        content.appendChild(header);
-        content.appendChild(msgSpan);
-        content.appendChild(metaDiv);
-
-        div.appendChild(phaseSpan);
-        div.appendChild(content);
-
-        container.appendChild(div);
-        return div;
+        const operationKey = `${ev.server}_${ev.request_id || 'default'}`;
+        
+        if (ev.phase === 'start') {
+          // Create new operation progress indicator
+          const operationDiv = document.createElement('div');
+          operationDiv.className = 'operation-progress';
+          operationDiv.setAttribute('data-operation', operationKey);
+          
+          operationDiv.innerHTML = `
+            <div class="progress-line">
+              <span class="progress-icon">
+                <div class="spinner"></div>
+              </span>
+              <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
+              <span class="progress-message">${escapeHtml(ev.message || 'Starting...')}</span>
+              <span class="progress-time">${formatTime(ev.timestamp)}</span>
+            </div>
+          `;
+          
+          container.appendChild(operationDiv);
+          activeOperations.set(operationKey, operationDiv);
+          
+        } else if (ev.phase === 'progress') {
+          // Update existing operation
+          const operationDiv = activeOperations.get(operationKey);
+          if (operationDiv) {
+            const messageSpan = operationDiv.querySelector('.progress-message');
+            if (messageSpan) {
+              messageSpan.textContent = ev.message || 'In progress...';
+            }
+          }
+          
+        } else if (ev.phase === 'end') {
+          // Complete operation with success
+          const operationDiv = activeOperations.get(operationKey);
+          if (operationDiv) {
+            const iconSpan = operationDiv.querySelector('.progress-icon');
+            const messageSpan = operationDiv.querySelector('.progress-message');
+            if (iconSpan) iconSpan.innerHTML = '<div class="checkmark">✓</div>';
+            if (messageSpan) messageSpan.textContent = ev.message || 'Completed';
+            operationDiv.classList.add('completed');
+          }
+          activeOperations.delete(operationKey);
+          
+        } else if (ev.phase === 'error') {
+          // Complete operation with error
+          const operationDiv = activeOperations.get(operationKey);
+          if (operationDiv) {
+            const iconSpan = operationDiv.querySelector('.progress-icon');
+            const messageSpan = operationDiv.querySelector('.progress-message');
+            if (iconSpan) iconSpan.innerHTML = '<div class="error-mark">✕</div>';
+            if (messageSpan) messageSpan.textContent = ev.message || 'Error occurred';
+            operationDiv.classList.add('error');
+          }
+          activeOperations.delete(operationKey);
+        }
       }
 
       function markdownToHtml(md) {
@@ -376,7 +405,7 @@
         box.className = 'msg assistant';
         box.innerHTML = `
           <details id="thinkingBox"><summary>Thinking…</summary><pre id="thinking"></pre></details>
-          <details id="statusBox"><summary>Status Events</summary><div id="statusContainer"></div></details>
+          <details id="statusBox" open><summary>Status Events</summary><div id="statusContainer"></div></details>
           <div id="assistantText" class="response-content"></div>
         `;
         row.appendChild(box);
