@@ -10,9 +10,7 @@ from agent_system.utils.text_sanitizer import sanitize_for_llm
 from agent_system.mcp.status import (
     publish_status,
     PHASE_START,
-    PHASE_PROGRESS,
     PHASE_END,
-    PHASE_ERROR,
 )
 
 

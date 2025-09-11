@@ -7,7 +7,6 @@ from agent_system.mcp.base import MCPServer
 from agent_system.mcp.status import (
     publish_status,
     PHASE_START,
-    PHASE_PROGRESS,
     PHASE_END,
     PHASE_ERROR,
 )

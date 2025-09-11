@@ -8,9 +8,7 @@ from agent_system.mcp.base import MCPServer  # absolute import to work when exec
 from agent_system.mcp.status import (
     publish_status,
     PHASE_START,
-    PHASE_PROGRESS,
     PHASE_END,
-    PHASE_ERROR,
 )
 
 logger = logging.getLogger(__name__)

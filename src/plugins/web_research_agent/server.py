@@ -317,12 +317,12 @@ class WebResearchAgent(Agent):
             pass
         
         try:
-            res = await self._run_with_progress(fact_check_prompt, f"Fact-checking claim", request_id)
+            res = await self._run_with_progress(fact_check_prompt, "Fact-checking claim", request_id)
             # Add status and agent info to match expected format
             res["status"] = "success"
             res["agent"] = self.name
             try:
-                await publish_status(self.name, f"Fact-check completed", request_id=request_id, phase=PHASE_END)
+                await publish_status(self.name, "Fact-check completed", request_id=request_id, phase=PHASE_END)
             except Exception:
                 pass
             return res
@@ -364,7 +364,7 @@ class WebResearchAgent(Agent):
             res["status"] = "success"
             res["agent"] = self.name
             try:
-                await publish_status(self.name, f"Compare sources completed", request_id=request_id, phase=PHASE_END)
+                await publish_status(self.name, "Compare sources completed", request_id=request_id, phase=PHASE_END)
             except Exception:
                 pass
             return res

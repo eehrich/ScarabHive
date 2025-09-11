@@ -6,14 +6,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import uvicorn
 from fastapi import FastAPI, Request, Query, Header
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.responses import Response
+# Response is not needed here; FastAPI/Starlette response classes are imported where required
 
 from ..servers.agent.server import Agent
 from ..config.loader import load_config
@@ -23,25 +23,7 @@ from ..utils.logging import setup_logging
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics
 
 
-class CacheControlStaticFiles(StaticFiles):
-    """Custom StaticFiles that can disable caching based on configuration."""
-
-    def __init__(self, *, directory: str = None, packages: list = None, html: bool = False,
-                 check_dir: bool = True, disable_cache: bool = False):
-        super().__init__(directory=directory, packages=packages, html=html, check_dir=check_dir)
-        self.disable_cache = disable_cache
-
-    def file_response(self, full_path: str, stat_result: object = None,
-                     method: str = None, request_headers: object = None) -> Response:
-        """Override file_response to add cache control headers."""
-        response = super().file_response(full_path, stat_result, method, request_headers)
-
-        if self.disable_cache:
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-
-        return response
+# Note: we set cache-control for static files via a small middleware in build_app()
 
 
 @asynccontextmanager
@@ -79,11 +61,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Configure static files with cache control based on configuration
     if static_path.exists():
-        static_files = CacheControlStaticFiles(
-            directory=str(static_path),
-            disable_cache=config.network.disable_cache
-        )
-        app.mount("/static", static_files, name="static")
+            static_files = StaticFiles(directory=str(static_path))
+            app.mount("/static", static_files, name="static")
+
+            # middleware to add no-cache headers for static files when configured
+            if config.network.disable_cache:
+                @app.middleware("http")
+                async def _no_cache_static_middleware(request: Request, call_next: Callable):
+                    # only intercept static paths
+                    if request.url.path.startswith("/static"):
+                        response = await call_next(request)
+                        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                        response.headers["Pragma"] = "no-cache"
+                        response.headers["Expires"] = "0"
+                        return response
+
+                    return await call_next(request)
 
     # Initialize logging. Use a role-specific logfile so the API server does
     # not write into the same file as the CLI (e.g., create `logs/agent-api.log`).
