@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request, Query, Header
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
 
 from ..servers.agent.server import Agent
 from ..config.loader import load_config
@@ -22,15 +23,36 @@ from ..utils.logging import setup_logging
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics
 
 
+class CacheControlStaticFiles(StaticFiles):
+    """Custom StaticFiles that can disable caching based on configuration."""
+
+    def __init__(self, *, directory: str = None, packages: list = None, html: bool = False,
+                 check_dir: bool = True, disable_cache: bool = False):
+        super().__init__(directory=directory, packages=packages, html=html, check_dir=check_dir)
+        self.disable_cache = disable_cache
+
+    def file_response(self, full_path: str, stat_result: object = None,
+                     method: str = None, request_headers: object = None) -> Response:
+        """Override file_response to add cache control headers."""
+        response = super().file_response(full_path, stat_result, method, request_headers)
+
+        if self.disable_cache:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+
+        return response
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown events."""
     logger = logging.getLogger(__name__)
     logger.info("FastAPI application starting up")
-    
+
     # Startup logic here if needed
     yield
-    
+
     # Shutdown logic
     logger.info("FastAPI application shutting down gracefully")
     try:
@@ -46,16 +68,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Agent System (MCP)", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates"))
 
-# Mount static directory for CSS/JS if it exists
+# Mount static directory for CSS/JS if it exists - will be configured with cache control in build_app()
 static_path = Path(__file__).parents[3] / "static"
-if static_path.exists():
-    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
+
+    # Configure static files with cache control based on configuration
+    if static_path.exists():
+        static_files = CacheControlStaticFiles(
+            directory=str(static_path),
+            disable_cache=config.network.disable_cache
+        )
+        app.mount("/static", static_files, name="static")
 
     # Initialize logging. Use a role-specific logfile so the API server does
     # not write into the same file as the CLI (e.g., create `logs/agent-api.log`).
@@ -209,7 +237,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         # Updated to new Starlette signature: TemplateResponse(request, name)
-        return templates.TemplateResponse(request, "index.html")
+        response = templates.TemplateResponse(request, "index.html")
+
+        # Add cache control headers if caching is disabled
+        if config.network.disable_cache:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+
+        return response
 
     @app.get("/status", response_class=HTMLResponse)
     async def status_page(request: Request):
@@ -244,30 +280,30 @@ def run() -> None:
     # Set UTF-8 environment for Windows compatibility
     os.environ.setdefault('PYTHONUTF8', '1')
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
-    
+
     # Load configuration
     cfg_path = str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
-    
+
     # Build the application
     app_obj = build_app(cfg_path)
-    
+
     # Get server configuration
     host = os.getenv("HOST") or config.network.host or "127.0.0.1"
     port_env = os.getenv("PORT")
     port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
-    
+
     # Configure log level
     uvicorn_log_level = config.logging.level.lower() if config.logging.enabled else "info"
-    
+
     # Run the server - uvicorn handles SIGINT/SIGTERM gracefully by default
     logger = logging.getLogger(__name__)
     logger.info("Starting FastAPI server on %s:%s", host, port)
-    
+
     uvicorn.run(
-        app_obj, 
-        host=host, 
-        port=port, 
+        app_obj,
+        host=host,
+        port=port,
         log_level=uvicorn_log_level,
         access_log=config.logging.enabled,
         use_colors=False,

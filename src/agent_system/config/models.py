@@ -33,6 +33,8 @@ class NetworkConfig(BaseModel):
     # Host and port for the FastAPI/Uvicorn server
     host: str = "127.0.0.1"
     port: int = 8000
+    # Disable browser caching for web assets (useful for development)
+    disable_cache: bool = False
 
 
 # In this scaffold we keep 'servers' as dict[str, dict] directly on AgentConfig.
