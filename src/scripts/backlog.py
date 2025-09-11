@@ -463,7 +463,9 @@ def cmd_edit(args: argparse.Namespace) -> int:
                     normalized: list[str] = []
                     for ln in vv.splitlines():
                         line = ln
-                        if line.lstrip().startswith('- '):
+                        # Only remove the first '- ' if it's a list marker, not '--' or other patterns
+                        stripped = line.lstrip()
+                        if stripped.startswith('- ') and not stripped.startswith('--'):
                             idx = line.find('- ')
                             line = line[:idx] + line[idx+2:]
                         normalized.append(line.rstrip())
@@ -477,14 +479,16 @@ def cmd_edit(args: argparse.Namespace) -> int:
                             task.notes = normalized
                 elif k == 'description':
                     vv = v.replace('\\n', '\n')
-                    normalized = []
+                    normalized_task_desc = []
                     for ln in vv.splitlines():
                         line = ln
-                        if line.lstrip().startswith('- '):
+                        # Only remove the first '- ' if it's a list marker, not '--' or other patterns
+                        stripped = line.lstrip()
+                        if stripped.startswith('- ') and not stripped.startswith('--'):
                             idx = line.find('- ')
                             line = line[:idx] + line[idx+2:]
-                        normalized.append(line.rstrip())
-                    task.description = normalized
+                        normalized_task_desc.append(line.rstrip())
+                    task.description = normalized_task_desc
             updated_tasks.append(task.id)
             continue
 
@@ -507,31 +511,35 @@ def cmd_edit(args: argparse.Namespace) -> int:
             elif k == 'notes':
                 # Normalize incoming notes and append or replace based on flag
                 vv = v.replace('\\n', '\n')
-                normalized: list[str] = []
+                normalized_epic: list[str] = []
                 for ln in vv.splitlines():
                     line = ln
-                    if line.lstrip().startswith('- '):
+                    # Only remove the first '- ' if it's a list marker, not '--' or other patterns
+                    stripped = line.lstrip()
+                    if stripped.startswith('- ') and not stripped.startswith('--'):
                         idx = line.find('- ')
                         line = line[:idx] + line[idx+2:]
-                    normalized.append(line.rstrip())
+                    normalized_epic.append(line.rstrip())
                 if getattr(args, 'replace_notes', False):
-                    epic.notes = normalized
+                    epic.notes = normalized_epic
                 else:
                     if getattr(epic, 'notes', None):
-                        epic.notes.extend(normalized)
+                        epic.notes.extend(normalized_epic)
                     else:
-                        epic.notes = normalized
+                        epic.notes = normalized_epic
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'notes')
             elif k == 'description':
                 vv = v.replace('\\n', '\n')
-                normalized = []
+                normalized_desc = []
                 for ln in vv.splitlines():
                     line = ln
-                    if line.lstrip().startswith('- '):
+                    # Only remove the first '- ' if it's a list marker, not '--' or other patterns
+                    stripped = line.lstrip()
+                    if stripped.startswith('- ') and not stripped.startswith('--'):
                         idx = line.find('- ')
                         line = line[:idx] + line[idx+2:]
-                    normalized.append(line.rstrip())
-                epic.description = normalized
+                    normalized_desc.append(line.rstrip())
+                epic.description = normalized_desc
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'description')
         updated_epics.append(epic.id)
 

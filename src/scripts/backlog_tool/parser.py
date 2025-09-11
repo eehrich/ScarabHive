@@ -239,7 +239,8 @@ def parse(backlog_lines: List[str]) -> Backlog:
 
                         if indent > col_indent:
                             text = ln.strip()
-                            if name == "notes" and text.startswith("- "):
+                            # Only remove the first '- ' if it's a list marker, not '--' or other patterns
+                            if name == "notes" and text.startswith("- ") and not text.startswith("--"):
                                 content = text[2:].strip()
                             else:
                                 content = text
@@ -270,8 +271,10 @@ def parse(backlog_lines: List[str]) -> Backlog:
                     footer.append(ln)
                     continue
 
-                if current_epic is not None:
-                    current_task = None
+                if current_task is not None:
+                    # Preserve lines in task raw_lines if we're inside a task context
+                    current_task.raw_lines.append(ln)
+                elif current_epic is not None:
                     if not ln.strip().lower().startswith("- tasks:"):
                         current_epic.raw_lines.append(ln)
                 else:

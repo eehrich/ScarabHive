@@ -40,7 +40,9 @@ def _normalize_notes(s: str | None) -> str | None:
     lines = []
     for ln in s2.splitlines():
         line = ln
-        if line.lstrip().startswith('- '):
+        # Only remove the first '- ' if it's a list marker, not '--' or other patterns
+        stripped = line.lstrip()
+        if stripped.startswith('- ') and not stripped.startswith('--'):
             # remove the first hyphen and following space
             idx = line.find('- ')
             line = line[:idx] + line[idx+2:]

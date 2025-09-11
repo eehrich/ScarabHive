@@ -203,6 +203,13 @@ def build_markdown(backlog: Backlog) -> str:
                         lines.append("")
                     else:
                         lines.append(f"        - {n}")
+            
+            # Preserve any raw_lines after structured fields for tasks
+            if t.raw_lines:
+                modeled_task = {'status', 'added', 'closed', 'description', 'notes'}
+                rl = _strip_modeled_blocks_global(list(t.raw_lines), modeled_task)
+                for line in rl:
+                    lines.append(f"      {line}")
         # separate epics with a blank line
         lines.append("")
 
@@ -301,6 +308,13 @@ def build_markdown(backlog: Backlog) -> str:
                         lines.append("")
                     else:
                         lines.append(f"        - {n}")
+            
+            # Preserve any raw_lines after structured fields for tasks
+            if t.raw_lines:
+                modeled_task = {'status', 'added', 'closed', 'description', 'notes'}
+                rl = _strip_modeled_blocks_global(list(t.raw_lines), modeled_task)
+                for line in rl:
+                    lines.append(f"      {line}")
         # separate epics with a blank line
         lines.append("")
 
