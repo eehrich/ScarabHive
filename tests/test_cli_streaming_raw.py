@@ -55,8 +55,8 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
     # monkeypatch registry and Agent so cli.main constructs our dummy
     monkeypatch.setattr(cli, "Agent", lambda *a, **k: DummyAgent(events))
 
-    # Run with --no-stream --raw via argv
-    monkeypatch.setattr("sys.argv", ["agent-cli", "--no-stream", "--raw", "run", "do it"])
+    # Run with --raw via argv (which uses non-streaming mode)
+    monkeypatch.setattr("sys.argv", ["agent-cli", "--raw", "run", "do it"])
     # Call main
     cli.main()
 
@@ -75,7 +75,7 @@ def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
         {"type": "end"},
     ]
     monkeypatch.setattr(cli, "Agent", lambda *a, **k: DummyAgent(events))
-    monkeypatch.setattr("sys.argv", ["agent-cli", "run", "do it"])
+    monkeypatch.setattr("sys.argv", ["agent-cli", "--show-mcp", "run", "do it"])
     cli.main()
     out = capsys.readouterr().out
     # Should contain human readable header and summary

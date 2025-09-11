@@ -66,8 +66,9 @@ def main() -> None:
     # color can be set to auto/always/never; --no-color is alias for never
     prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always")
     prelim.add_argument("--no-color", dest="no_color", action="store_true")
-    prelim.add_argument("--no-stream", dest="no_stream", action="store_true")
-    prelim.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
+    prelim.add_argument("--show-mcp", dest="show_mcp", action="store_true")
+    prelim.add_argument("--no-status", dest="no_status", action="store_true")
+    prelim.add_argument("--raw", dest="raw", action="store_true")
     orig_args = sys.argv[1:]
     ns, rest = prelim.parse_known_args(orig_args)
 
@@ -108,8 +109,10 @@ def main() -> None:
     # Forward streaming/raw flags parsed in the preliminary stage so the
     # final parser receives the same intent (these flags may have been
     # placed anywhere on the command line by the user).
-    if getattr(ns, "no_stream", False):
-        final_args.append("--no-stream")
+    if getattr(ns, "show_mcp", False):
+        final_args.append("--show-mcp")
+    if getattr(ns, "no_status", False):
+        final_args.append("--no-status")
     if getattr(ns, "raw", False):
         final_args.append("--raw")
     # append the remaining tokens (subcommand + subargs)
@@ -120,7 +123,8 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
     parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always", help="Colorize output (auto|always|never)")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
-    parser.add_argument("--no-stream", dest="no_stream", action="store_true", help="Disable live MCP call/result streaming; print only final JSON result")
+    parser.add_argument("--show-mcp", dest="show_mcp", action="store_true", help="Show MCP call/result details (for debugging)")
+    parser.add_argument("--no-status", dest="no_status", action="store_true", help="Hide status messages during execution")
     parser.add_argument("--raw", dest="raw", action="store_true", help="Output raw JSON result instead of pretty printing")
     subparsers = parser.add_subparsers(dest="subcommand")
 
@@ -137,14 +141,6 @@ def main() -> None:
     plugins_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for plugin listing")
     plugins_parser.add_argument("--show-metadata", dest="show_metadata", action="store_true", help="Also display plugin._plugin_metadata in listing (JSON output only)")
     plugins_parser.add_argument("--raw", dest="raw", action="store_true", help="Show raw factory information for 'info' action")
-
-    # status subcommand
-    status_parser = subparsers.add_parser("status", help="Stream MCP server status events")
-    status_parser.add_argument("--follow", dest="follow", action="store_true", help="Follow status events in real-time")
-    status_parser.add_argument("--server", dest="server", help="Filter events to specific server")
-    status_parser.add_argument("--request-id", dest="request_id", help="Filter events to specific request ID")
-    status_parser.add_argument("--format", dest="out_format", choices=["short", "json"], default="short", help="Output format")
-    status_parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output")
 
     args = parser.parse_args(argv[1:])
 
@@ -427,117 +423,6 @@ def main() -> None:
         print(json.dumps(listing, indent=2, ensure_ascii=False))
         return
 
-    # Handle status subcommand
-    if args.subcommand == "status":
-        # For status streaming, we need to bootstrap servers to get status events
-        registry = MCPRegistry()
-        vprint("[cli] bootstrapping servers for status streaming...")
-        bootstrap_servers(config, registry)
-        vprint(f"[cli] servers registered: {', '.join(registry.list())}")
-
-        # Subscribe to status events
-        queue = asyncio.run(status_bus.subscribe(
-            server=getattr(args, "server", None),
-            request_id=getattr(args, "request_id", None)
-        ))
-
-        if getattr(args, "follow", False):
-            # Stream status events in real-time
-            print("Following status events... (Ctrl+C to stop)")
-            # Provide minimal alignment for columns (server, request_id, phase) for readability.
-            try:
-                while True:
-                    event = asyncio.run(queue.get())
-                    if args.out_format == "json":
-                        print(json.dumps({
-                            "server": event.server,
-                            "request_id": event.request_id,
-                            "message": event.message,
-                            "level": event.level,
-                            "timestamp": event.timestamp.isoformat(),
-                            "phase": getattr(event, "phase", None),
-                            "meta": getattr(event, "meta", None),
-                        }, ensure_ascii=False))
-                        continue
-
-                    # Short / aligned format
-                    phase = getattr(event, "phase", None) or "?"
-                    phase_disp = phase
-                    if _supports_color():
-                        phase_color_map = {
-                            "start": "36",      # cyan
-                            "progress": "34",   # blue
-                            "end": "32",        # green
-                            "error": "31",      # red
-                        }
-                        c = phase_color_map.get(phase)
-                        if c:
-                            phase_disp = _colorize(phase, c)
-                    server_col = event.server
-                    rid_col = event.request_id or "-"
-                    timestamp_col = event.timestamp.strftime('%H:%M:%S')
-                    txt = event.message
-                    # URL highlight
-                    try:
-                        import re
-                        def _hl(m):
-                            url = m.group(0)
-                            return _colorize(url, '34') if _supports_color() else url
-                        txt = re.sub(r"https?://[\w\-._~:/?#@!$&'()*+,;=%]+", _hl, txt)
-                    except Exception:
-                        pass
-                    line = f"{timestamp_col} | {phase_disp:<8} | {server_col:<15} | {rid_col:<8} | {txt}"
-                    # Level coloring overrides overall line if error/warning
-                    if event.level == "error" and _supports_color():
-                        line = _colorize(line, "31")
-                    elif event.level == "warning" and _supports_color():
-                        line = _colorize(line, "33")
-                    print(line)
-            except KeyboardInterrupt:
-                print("\nStopped following status events.")
-        else:
-            # Just show current status or wait for one event
-            print("Waiting for status events... (Ctrl+C to stop)")
-            try:
-                event = asyncio.run(queue.get())
-                if args.out_format == "json":
-                    print(json.dumps({
-                        "server": event.server,
-                        "request_id": event.request_id,
-                        "message": event.message,
-                        "level": event.level,
-                        "timestamp": event.timestamp.isoformat(),
-                        "phase": getattr(event, "phase", None),
-                        "meta": getattr(event, "meta", None),
-                    }, ensure_ascii=False))
-                else:
-                    phase = getattr(event, "phase", None) or "?"
-                    phase_disp = phase
-                    if _supports_color():
-                        phase_color_map = {"start": "36", "progress": "34", "end": "32", "error": "31"}
-                        c = phase_color_map.get(phase)
-                        if c:
-                            phase_disp = _colorize(phase, c)
-                    txt = event.message
-                    try:
-                        import re
-                        def _hl2(m):
-                            url = m.group(0)
-                            return _colorize(url, '34') if _supports_color() else url
-                        txt = re.sub(r"https?://[\w\-._~:/?#@!$&'()*+,;=%]+", _hl2, txt)
-                    except Exception:
-                        pass
-                    rid_col = event.request_id or "-"
-                    msg = f"{event.timestamp.strftime('%H:%M:%S')} | {phase_disp:<8} | {event.server:<15} | {rid_col:<8} | {txt}"
-                    if event.level == "error" and _supports_color():
-                        msg = _colorize(msg, "31")
-                    elif event.level == "warning" and _supports_color():
-                        msg = _colorize(msg, "33")
-                    print(msg)
-            except KeyboardInterrupt:
-                print("No status events received.")
-        return
-
     # Setup logging from config; file handler is created here. Console level is adjusted below.
     # Use a role-specific logfile so concurrent processes (cli vs api) don't
     # clobber the same file. If the configured file is `logs/agent.log` this
@@ -583,11 +468,53 @@ def main() -> None:
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
     # Stream execution and show MCP call/results on the fly in a human readable way.
-    async def _stream_and_run(agent: Agent, task: str) -> dict:
+    # Modern execution with status events and optional MCP call display
+    async def _stream_and_run_with_status(agent: Agent, task: str, show_mcp: bool = False, show_status: bool = True) -> dict:
         final_result: Dict[str, Any] = {"task": task, "calls": []}
+        
+        # Subscribe to status events if enabled
+        status_queue = None
+        if show_status:
+            status_queue = await status_bus.subscribe()
+        
         # Optionally auto-subscribe to external SSE status stream
         sse_task = None
         sse_url = os.environ.get("AGENT_STATUS_SSE_STREAM_URL")
+
+        async def _status_subscriber():
+            """Subscribe to local status events and display them"""
+            if not status_queue:
+                return
+            try:
+                while True:
+                    event = await status_queue.get()
+                    # Display status event in a clean format
+                    phase = getattr(event, "phase", "progress")
+                    phase_disp = phase
+                    if _supports_color():
+                        phase_color_map = {
+                            "start": "36",      # cyan
+                            "progress": "34",   # blue
+                            "end": "32",        # green
+                            "error": "31",      # red
+                        }
+                        c = phase_color_map.get(phase, "34")
+                        phase_disp = _colorize(phase, c)
+                    
+                    server_col = event.server
+                    txt = event.message
+                    status_line = f"[{phase_disp}] {server_col}: {txt}"
+                    
+                    # Level coloring overrides overall line if error/warning
+                    if event.level == "error" and _supports_color():
+                        status_line = _colorize(status_line, "31")
+                    elif event.level == "warning" and _supports_color():
+                        status_line = _colorize(status_line, "33")
+                    print(status_line)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                return
 
         async def _sse_subscriber(url: str):
             try:
@@ -623,6 +550,11 @@ def main() -> None:
             except Exception:
                 return
 
+        # Start status subscriber task if enabled
+        status_task = None
+        if show_status and status_queue:
+            status_task = asyncio.create_task(_status_subscriber())
+        
         if sse_url:
             try:
                 sse_task = asyncio.create_task(_sse_subscriber(sse_url))
@@ -631,7 +563,7 @@ def main() -> None:
         try:
             async for ev in agent.run_events(task):
                 t = ev.get("type")
-                if t == "mcp_call":
+                if t == "mcp_call" and show_mcp:
                     srv = ev.get("server")
                     action = ev.get("action")
                     params = ev.get("params") or {}
@@ -647,14 +579,15 @@ def main() -> None:
                     res = ev.get("result")
                     # Append to final_result calls for JSON output
                     final_result.setdefault("calls", []).append({"server": srv, "action": action, "result": res})
-                    header = f"MCP RESULT <- server={srv} action={action}"
-                    if _supports_color():
-                        header = _colorize(header, "32")
-                    print(header)
-                    try:
-                        print(json.dumps(res, indent=2, ensure_ascii=False))
-                    except Exception:
-                        print(str(res))
+                    if show_mcp:
+                        header = f"MCP RESULT <- server={srv} action={action}"
+                        if _supports_color():
+                            header = _colorize(header, "32")
+                        print(header)
+                        try:
+                            print(json.dumps(res, indent=2, ensure_ascii=False))
+                        except Exception:
+                            print(str(res))
                 elif t == "thinking":
                     # Optionally show LLM progress when verbose
                     if args.verbose:
@@ -682,25 +615,35 @@ def main() -> None:
             # Fallback: surface exception as result
             return {"task": task, "errors": [str(e)]}
         finally:
+            # Cleanup background tasks
+            if status_task and not status_task.done():
+                try:
+                    status_task.cancel()
+                except Exception:
+                    pass
             if sse_task and not sse_task.done():
                 try:
                     sse_task.cancel()
                 except Exception:
                     pass
 
-    if getattr(args, "no_stream", False):
-        # Use legacy blocking run and print final JSON only
+    # Execute with new status-aware streaming
+    show_mcp = getattr(args, "show_mcp", False)
+    show_status = not getattr(args, "no_status", False)
+    
+    if getattr(args, "raw", False):
+        # Raw mode: use blocking run and print JSON only
         result = asyncio.run(agent.run(args.task))
     else:
-        result = asyncio.run(_stream_and_run(agent, args.task))
+        result = asyncio.run(_stream_and_run_with_status(agent, args.task, show_mcp=show_mcp, show_status=show_status))
     vprint("[cli] done")
     logger.info("Task completed")
 
     # Human-readable final output
-    def _pretty_print_result(res: dict) -> None:
-        # Calls (print first so summary appears at the end)
+    def _pretty_print_result(res: dict, show_mcp: bool = False) -> None:
+        # Calls (print first so summary appears at the end, only when show_mcp is True)
         calls = res.get("calls", []) or []
-        if calls:
+        if calls and show_mcp:
             print("")
             print("Tool calls:")
             for c in calls:
@@ -752,7 +695,7 @@ def main() -> None:
     if getattr(args, "raw", False):
         print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
     else:
-        _pretty_print_result(result)
+        _pretty_print_result(result, show_mcp=show_mcp)
         try:
             sys.stdout.flush()
         except Exception:

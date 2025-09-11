@@ -1,4 +1,7 @@
-import json, asyncio, httpx, pytest, sys
+import json
+import asyncio
+import httpx
+import pytest
 from datetime import datetime
 from agent_system.mcp.status import StatusBus, StatusEvent, publish_status, PHASE_START, PHASE_END, PHASE_PROGRESS, PHASE_ERROR
 from agent_system.agent.interface_api import build_app
@@ -52,28 +55,10 @@ async def test_api_stream_heartbeat_only_then_event():
         assert any(l.startswith(':hb') or l==':ok' for l in body)
 
 async def test_cli_status_json_mode():
-    import subprocess, textwrap
-    py = sys.executable
-    code = textwrap.dedent(
-        """
-        import sys, asyncio
-        from agent_system.mcp import status as status_mod
-        import agent_system.cli as cli
-        orig = status_mod.status_bus.subscribe
-        async def fake_sub(*a, **k):
-            q = await orig(*a, **k)
-            # Inject event immediately so subsequent queue.get returns.
-            await status_mod.status_bus.publish(status_mod.StatusEvent(
-                server='cli_det', request_id=None, message='det msg', timestamp=__import__('datetime').datetime.now(), phase='progress'
-            ))
-            return q
-        status_mod.status_bus.subscribe = fake_sub  # type: ignore
-        sys.argv=['cli','status','--server','cli_det','--format','json']
-        cli.main()
-        """
-    )
-    out = subprocess.check_output([py, '-c', code], text=True)
-    assert 'cli_det' in out and 'det msg' in out
+    # NOTE: This test was for the old 'status' subcommand which has been removed.
+    # The status subcommand was replaced with status events shown during normal 'run' operations.
+    # Test is now obsolete and skipped.
+    pytest.skip("CLI status subcommand has been removed - status events now shown during run operations")
 
 async def test_error_phase_level_escalation(monkeypatch):
     captured = {}
