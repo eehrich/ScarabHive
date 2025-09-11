@@ -45,7 +45,12 @@ class SecureSandbox(PySandbox):
                 else:
                     return round(args[0], args[1])
             elif func_name == "sum":
-                return sum(args)
+                if len(args) == 1:
+                    return sum(args[0])
+                elif len(args) == 2:
+                    return sum(args[0], args[1])
+                else:
+                    return sum(args[0])
             elif func_name == "int":
                 return int(args[0])
             elif func_name == "float":
