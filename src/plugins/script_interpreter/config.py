@@ -1,0 +1,56 @@
+"""Configuration for Script Interpreter Plugin"""
+
+from dataclasses import dataclass
+from typing import Dict, Any, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ScriptInterpreterConfig:
+    """Configuration for the script interpreter."""
+    
+    # Execution limits
+    max_execution_time: float = 5.0  # seconds
+    max_memory_mb: int = 50  # MB (where possible to enforce)
+    max_output_length: int = 10000  # characters
+    
+    # Security settings
+    allowed_functions: List[str] | None = None
+    allowed_modules: List[str] | None = None
+    enable_variables: bool = True
+    enable_loops: bool = False  # Start with False, enable in later tasks
+    enable_functions: bool = False  # Start with False, enable in later tasks
+    
+    def __post_init__(self):
+        """Set default allowed functions if not specified."""
+        if self.allowed_functions is None:
+            self.allowed_functions = [
+                # Basic math functions
+                "abs", "min", "max", "round", "sum",
+                "int", "float", "str", "bool",
+                "len", "range",
+                # Math operations are handled by operators, not functions
+            ]
+        
+        if self.allowed_modules is None:
+            self.allowed_modules = []  # No modules allowed by default
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> "ScriptInterpreterConfig":
+        """Create config from dictionary."""
+        return cls(**config_dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert config to dictionary."""
+        return {
+            "max_execution_time": self.max_execution_time,
+            "max_memory_mb": self.max_memory_mb,
+            "max_output_length": self.max_output_length,
+            "allowed_functions": self.allowed_functions,
+            "allowed_modules": self.allowed_modules,
+            "enable_variables": self.enable_variables,
+            "enable_loops": self.enable_loops,
+            "enable_functions": self.enable_functions,
+        }
