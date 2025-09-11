@@ -29,6 +29,7 @@ dependencies = [
     "pytest>=8.4",
     "pytest-asyncio>=1.1.0",
     "tabulate>=0.9",
+    "sandboxed-python>=0.1",
 ]
 
 [project.urls]
