@@ -224,18 +224,8 @@ def parse(backlog_lines: List[str]) -> Backlog:
                         name, col_indent, target = current_collect
 
                         if ln.strip() == "":
-                            if target == "task" and current_task is not None:
-                                if name == "notes":
-                                    current_task.notes.append("")
-                                else:
-                                    current_task.description.append("")
-                                continue
-                            if target == "epic" and current_epic is not None:
-                                if name == "notes":
-                                    current_epic.notes.append("")
-                                else:
-                                    current_epic.description.append("")
-                                continue
+                            # Skip empty lines in multiline collection - don't add empty strings
+                            continue
 
                         if indent > col_indent:
                             text = ln.strip()

@@ -141,10 +141,8 @@ def build_markdown(backlog: Backlog) -> str:
         if e.notes:
             lines.append("  - notes:")
             for n in e.notes:
-                # render an explicit blank line between note list items
-                if n == "":
-                    lines.append("")
-                else:
+                # Only add non-empty notes to avoid extra blank lines
+                if n.strip():
                     lines.append(f"    - {n}")
         # Preserve any raw_lines after structured fields
         if e.raw_lines:
@@ -199,9 +197,8 @@ def build_markdown(backlog: Backlog) -> str:
             if t.notes:
                 lines.append("      - notes:")
                 for n in t.notes:
-                    if n == "":
-                        lines.append("")
-                    else:
+                    # Only add non-empty notes to avoid extra blank lines
+                    if n.strip():
                         lines.append(f"        - {n}")
             
             # Preserve any raw_lines after structured fields for tasks
@@ -251,9 +248,8 @@ def build_markdown(backlog: Backlog) -> str:
         if e.notes:
             lines.append("  - notes:")
             for n in e.notes:
-                if n == "":
-                    lines.append("")
-                else:
+                # Only add non-empty notes to avoid extra blank lines
+                if n.strip():
                     lines.append(f"    - {n}")
 
         # preserve epic-level raw lines (strip modeled blocks like notes/description/added/closed)
@@ -304,9 +300,8 @@ def build_markdown(backlog: Backlog) -> str:
             if t.notes:
                 lines.append("      - notes:")
                 for n in t.notes:
-                    if n == "":
-                        lines.append("")
-                    else:
+                    # Only add non-empty notes to avoid extra blank lines
+                    if n.strip():
                         lines.append(f"        - {n}")
             
             # Preserve any raw_lines after structured fields for tasks
