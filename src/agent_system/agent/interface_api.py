@@ -53,9 +53,14 @@ templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates
 # Mount static directory for CSS/JS if it exists - will be configured with cache control in build_app()
 static_path = Path(__file__).parents[3] / "static"
 
+# Global flag to track if middleware has been added
+_middleware_added = False
+
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
+    global _middleware_added
+
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
 
@@ -65,7 +70,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             app.mount("/static", static_files, name="static")
 
             # middleware to add no-cache headers for static files when configured
-            if config.network.disable_cache:
+            # Only add middleware once to avoid FastAPI runtime errors
+            if config.network.disable_cache and not _middleware_added:
                 @app.middleware("http")
                 async def _no_cache_static_middleware(request: Request, call_next: Callable):
                     # only intercept static paths
@@ -77,6 +83,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         return response
 
                     return await call_next(request)
+
+                _middleware_added = True
 
     # Initialize logging. Use a role-specific logfile so the API server does
     # not write into the same file as the CLI (e.g., create `logs/agent-api.log`).

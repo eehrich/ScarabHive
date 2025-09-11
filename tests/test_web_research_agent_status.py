@@ -157,10 +157,10 @@ class TestWebResearchAgentStatusEvents:
         # Mock run_events to yield test events
         async def mock_run_events(task):
             yield {"type": "start", "task": task}
-            yield {"type": "tool_calls", "tool_calls": [{"function": {"name": "duckduckgo_search"}}]}
-            yield {"type": "tool_result", "tool_name": "duckduckgo_search", "result": "search results"}
-            yield {"type": "tool_calls", "tool_calls": [{"function": {"name": "web_scraper"}}]}
-            yield {"type": "tool_result", "tool_name": "web_scraper", "result": "scraped content"}
+            yield {"type": "mcp_call", "server": "duckduckgo_search", "action": "search", "params": {"query": "test"}}
+            yield {"type": "mcp_result", "server": "duckduckgo_search", "action": "search", "result": "search results"}
+            yield {"type": "mcp_call", "server": "web_scraper", "action": "scrape", "params": {"url": "https://example.com"}}
+            yield {"type": "mcp_result", "server": "web_scraper", "action": "scrape", "result": "scraped content"}
             yield {"type": "final", "summary": "Research completed"}
             yield {"type": "end"}
         
@@ -186,8 +186,10 @@ class TestWebResearchAgentStatusEvents:
         # Check specific progress messages
         progress_messages = [e["message"] for e in progress_events]
         assert any("Starting analysis" in msg for msg in progress_messages)
-        assert any("Using tools: duckduckgo_search" in msg for msg in progress_messages)
+        assert any("Using duckduckgo_search" in msg for msg in progress_messages)
         assert any("Processing results from duckduckgo_search" in msg for msg in progress_messages)
+        assert any("Using web_scraper" in msg for msg in progress_messages)
+        assert any("Processing results from web_scraper" in msg for msg in progress_messages)
         assert any("Finalizing results" in msg for msg in progress_messages)
         
         # All progress events should have the correct request_id

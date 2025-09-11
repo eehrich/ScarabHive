@@ -8,16 +8,15 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_main_page_has_sidebar():
-    """Test that the main page contains the status sidebar."""
+    """Test that the main page contains the status toggle functionality."""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get('/')
         assert r.status_code == 200
-        # Check for sidebar elements
-        assert 'sidebar' in r.text
-        assert 'Status & Metrics' in r.text
-        assert 'statusMetrics' in r.text
-        assert 'updateStatusMetrics' in r.text
+        # Check for status toggle elements (sidebar replaced with toggle button)
+        assert 'statusToggleBtn' in r.text
+        assert 'Status' in r.text
+        assert 'Show status & metrics' in r.text
 
 
 async def test_status_meta_endpoint_provides_metrics():
@@ -44,43 +43,47 @@ async def test_status_meta_endpoint_provides_metrics():
 
 
 async def test_sidebar_responsive_layout():
-    """Test that the sidebar layout is responsive."""
+    """Test that the layout is responsive."""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get('/')
         assert r.status_code == 200
-        # Check for mobile responsiveness
-        assert '@media (max-width: 768px)' in r.text
-        assert 'flex-direction: column' in r.text
+        # Check for responsive viewport meta tag
+        assert 'viewport' in r.text
+        assert 'width=device-width' in r.text
+        # Check for main container structure (sidebar removed)
+        assert 'main-container' in r.text
+        assert 'main-content' in r.text
 
 
 async def test_sidebar_metrics_javascript():
-    """Test that the sidebar includes JavaScript for metrics updates."""
+    """Test that the page includes JavaScript for status toggle functionality."""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get('/')
         assert r.status_code == 200
-        # Check for metrics update functionality
-        assert 'updateStatusMetrics' in r.text
-        assert 'setInterval' in r.text
-        assert '/status/meta' in r.text
-        # Check for metric display elements
-        assert 'metric-item' in r.text
-        assert 'metric-label' in r.text
-        assert 'metric-value' in r.text
+        # Check for status toggle button functionality
+        assert 'statusToggleBtn' in r.text
+        assert 'aria-expanded="false"' in r.text
+        assert 'Show status & metrics' in r.text
+        # Check for JavaScript inclusion
+        assert '/static/js/index.js' in r.text
 
 
 async def test_main_layout_structure():
-    """Test that the main layout has proper structure with sidebar."""
+    """Test that the main layout has proper structure without sidebar."""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get('/')
         assert r.status_code == 200
-        # Check for main container structure
+        # Check for main container structure (sidebar removed)
         assert 'main-container' in r.text
         assert 'main-content' in r.text
-        assert 'sidebar' in r.text
-        # Check for proper flexbox layout
-        assert 'display: flex' in r.text
-        assert 'flex: 1' in r.text  # main-content
-        assert 'flex: 0 0 300px' in r.text  # sidebar
+        assert 'chat' in r.text
+        # Check for header with status toggle
+        assert 'statusToggleBtn' in r.text
+        assert 'Status' in r.text
+        # Check for input bar
+        assert 'inputBar' in r.text
+        assert 'task' in r.text
+        assert 'runBtn' in r.text

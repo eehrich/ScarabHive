@@ -17,16 +17,16 @@ async def test_status_page_redirects_to_main():
 
 
 async def test_main_page_has_status_integration():
-    """Test that the main page contains status event integration."""
+    """Test that the main page contains status toggle integration."""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get('/')
         assert r.status_code == 200
         assert '<title>Agent System (MCP)</title>' in r.text
-        # Check for status integration elements
-        assert 'status-event' in r.text
-        assert 'addStatusEvent' in r.text
-        assert '/status/stream' in r.text
+        # Check for status toggle elements (replaced inline status events)
+        assert 'statusToggleBtn' in r.text
+        assert 'Show status & metrics' in r.text
+        assert 'aria-expanded="false"' in r.text
         # Ensure MCP calls section is removed
         assert 'MCP Calls' not in r.text
         assert 'mcpBox' not in r.text
