@@ -136,7 +136,12 @@
   </head>
   <body>
     <header>
-  <h1>Agent System <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #243244;color:#9ab;font-size:12px; margin-left:8px">MCP</span></h1>
+  <h1>
+    Agent System
+    <span class="mcp-badge">MCP
+      <span id="mcpConnected" class="mcp-connected" title="Connection status" aria-hidden="true"></span>
+    </span>
+  </h1>
   <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
     </header>
 
@@ -663,6 +668,46 @@
           if (statusEs) statusEs.close();
           runBtn.disabled = false; 
         };
+
+      // Connection indicator for MCP badge: keep a persistent SSE to /status/stream
+      (function manageMcpIndicator() {
+        const indicator = document.getElementById('mcpConnected');
+        if (!indicator) return;
+
+        function setConnected(v) {
+          if (v) {
+            indicator.classList.add('connected');
+            indicator.setAttribute('title', 'Connected');
+            indicator.setAttribute('aria-hidden', 'false');
+          } else {
+            indicator.classList.remove('connected');
+            indicator.setAttribute('title', 'Disconnected');
+            indicator.setAttribute('aria-hidden', 'true');
+          }
+        }
+
+        let sse = null;
+        function connect() {
+          try {
+            sse = new EventSource('/status/stream');
+            sse.onopen = () => setConnected(true);
+            sse.onmessage = () => { /* noop - we only care about connectivity */ };
+            sse.onerror = () => {
+              setConnected(false);
+              try { sse.close(); } catch (e) {}
+              sse = null;
+              // retry after a short backoff
+              setTimeout(connect, 3000);
+            };
+          } catch (e) {
+            setConnected(false);
+            setTimeout(connect, 3000);
+          }
+        }
+
+        // start
+        connect();
+      })();
       }
     </script>
   </body>

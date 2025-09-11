@@ -79,6 +79,35 @@ h1 {
   color: #cbd5e1;
 }
 
+/* MCP badge + connection indicator */
+.mcp-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #0b1220;
+  border: 1px solid #243244;
+  color: #9ab;
+  font-size: 12px;
+  margin-left: 8px;
+  position: relative;
+}
+
+.mcp-connected {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #6b7280; /* disconnected */
+  margin-left: 8px;
+  vertical-align: middle;
+  box-shadow: 0 0 6px rgba(0,0,0,0.6) inset;
+}
+
+.mcp-connected.connected {
+  background: #34d399; /* green when connected */
+  box-shadow: 0 0 6px rgba(52,211,153,0.3);
+}
+
 /* Chat area */
 .chat {
   display: flex;
