@@ -27,15 +27,15 @@ class TestSchemaCompliance:
 
     @pytest.fixture
     def schema_data(self):
-        """Load schema.yaml file."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        """Load mcp_schema.yaml file (MCP format)."""
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
         with open(schema_path, 'r') as f:
             return yaml.safe_load(f)
 
     def test_schema_file_exists(self):
-        """Test that schema.yaml exists."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
-        assert schema_path.exists(), "schema.yaml file must exist"
+        """Test that mcp_schema.yaml exists."""
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
+        assert schema_path.exists(), "mcp_schema.yaml file must exist"
 
     def test_schema_basic_structure(self, schema_data):
         """Test schema has required top-level fields."""
@@ -131,6 +131,67 @@ class TestSchemaCompliance:
         for example in eval_examples:
             assert "code" in example
             assert "description" in example
+
+
+class TestMCPServerIntegration:
+    """Test MCPServer integration and compatibility."""
+
+    def test_server_inherits_from_mcpserver(self):
+        """Test that ScriptInterpreterServer inherits from MCPServer."""
+        from agent_system.mcp.base import MCPServer
+        server = ScriptInterpreterServer()
+        assert isinstance(server, MCPServer)
+
+    @pytest.mark.asyncio
+    async def test_mcpserver_call_method(self):
+        """Test MCPServer call method."""
+        server = ScriptInterpreterServer()
+        
+        # Test validate tool (non-async)
+        result = await server.call("validate", {"code": "x = 2 + 3"})
+        assert "result" in result
+        assert "✅" in result["result"]
+        
+        # Test reset tool
+        result = await server.call("reset", {})
+        assert "result" in result
+        assert "🔄" in result["result"]
+
+    @pytest.mark.asyncio
+    async def test_mcpserver_call_eval(self):
+        """Test MCPServer call method with eval tool."""
+        server = ScriptInterpreterServer()
+        
+        # Test eval tool - simple expression
+        result = await server.call("eval", {"code": "2 + 3"})
+        assert "result" in result
+        assert "5" in result["result"]
+
+    def test_mcpserver_get_schema_method(self):
+        """Test MCPServer get_schema method returns OpenAI function format."""
+        server = ScriptInterpreterServer()
+        schema = server.get_schema()
+        
+        assert "type" in schema
+        assert schema["type"] == "function"
+        assert "function" in schema
+        assert "name" in schema["function"]
+        assert "description" in schema["function"]
+        assert "parameters" in schema["function"]
+
+    def test_mcpserver_get_default_action(self):
+        """Test MCPServer get_default_action method."""
+        server = ScriptInterpreterServer()
+        action = server.get_default_action()
+        assert action == "eval"
+
+    @pytest.mark.asyncio
+    async def test_mcpserver_handles_unknown_tool(self):
+        """Test MCPServer handles unknown tools gracefully."""
+        server = ScriptInterpreterServer()
+        result = await server.call("unknown_tool", {})
+        assert "error" in result
+        assert "Unknown tool" in result["error"]
 
 
 class TestMCPProtocolCompliance:
@@ -241,17 +302,17 @@ class TestMCPProtocolCompliance:
             assert "Error" not in content
 
     def test_schema_yaml_is_valid(self):
-        """Test that schema.yaml is valid YAML."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        """Test that mcp_schema.yaml is valid YAML."""
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
         try:
             with open(schema_path, 'r') as f:
                 yaml.safe_load(f)
         except yaml.YAMLError as e:
-            pytest.fail(f"schema.yaml is not valid YAML: {e}")
+            pytest.fail(f"mcp_schema.yaml is not valid YAML: {e}")
 
     def test_json_schema_validity(self):
         """Test that tool schemas are valid JSON Schema."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
         with open(schema_path, 'r') as f:
             schema_data = yaml.safe_load(f)
             

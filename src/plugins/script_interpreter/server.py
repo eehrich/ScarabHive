@@ -3,25 +3,134 @@
 import asyncio
 import logging
 from typing import Any, Dict
+from pathlib import Path
 import sys
 import json
 
-# Add the src directory to the path so we can import our modules
+# Add the src directory to the path so we can import our modules  
 sys.path.insert(0, "/".join(__file__.split("/")[:-4]))
 
+from agent_system.mcp.base import MCPServer
 from .executor import ScriptExecutor
 from .config import ScriptInterpreterConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ScriptInterpreterServer:
+class ScriptInterpreterServer(MCPServer):
     """MCP Server for executing scripts in a secure sandbox."""
     
-    def __init__(self, config: ScriptInterpreterConfig | None = None):
-        self.config = config or ScriptInterpreterConfig()
-        self.executor = ScriptExecutor(self.config)
+    def __init__(self, name: str = "script_interpreter", config: dict | None = None, ssl_verify: bool = True):
+        super().__init__(name, config, ssl_verify)
+        # Convert dict config to ScriptInterpreterConfig if needed
+        if isinstance(config, dict):
+            script_config = ScriptInterpreterConfig(**config)
+        else:
+            script_config = config or ScriptInterpreterConfig()
+        self.script_config = script_config
+        self.executor = ScriptExecutor(script_config)
         
+    async def call(self, tool: str, params: dict[str, Any]) -> Any:
+        """Handle MCP tool calls."""
+        if tool == "eval":
+            code = params.get("code", "")
+            if not code:
+                return {"error": "Missing required parameter 'code'"}
+            
+            reset_sandbox = params.get("reset_sandbox", False)
+            try:
+                result = self.executor.execute(code, reset_sandbox=reset_sandbox)
+                if not result.get("success", False) or result.get("error"):
+                    return {"error": result["error"] or "Execution failed", "suggestion": result.get("suggestion", "")}
+                else:
+                    output_parts = []
+                    if result.get("output"):
+                        output_parts.append(f"Output: {result['output']}")
+                    if result.get("variables"):
+                        var_str = ", ".join(f"{k}={v}" for k, v in result["variables"].items())
+                        output_parts.append(f"Variables: {var_str}")
+                    if result.get("execution_time") is not None:
+                        output_parts.append(f"Execution time: {result['execution_time']:.3f}s")
+                    
+                    return {"result": "\n".join(output_parts)}
+            except Exception as e:
+                return {"error": f"Execution failed: {str(e)}"}
+                
+        elif tool == "validate":
+            code = params.get("code", "")
+            if not code:
+                return {"error": "Missing required parameter 'code'"}
+                
+            try:
+                validation_result = self.executor.validate_syntax(code)
+                if validation_result["valid"]:
+                    return {"result": "✅ Syntax is valid"}
+                else:
+                    return {"error": f"❌ {validation_result['error']}"}
+            except Exception as e:
+                return {"error": f"❌ Syntax error: {str(e)}", "suggestion": "Check Python syntax - parentheses, indentation, operators"}
+                
+        elif tool == "reset":
+            try:
+                self.executor.reset_sandbox()
+                return {"result": "🔄 Sandbox reset - all variables and state cleared"}
+            except Exception as e:
+                return {"error": f"Reset failed: {str(e)}"}
+        else:
+            return {"error": f"Unknown tool: {tool}"}
+
+    def get_schema(self) -> dict[str, Any]:
+        """Return the OpenAI function schema for the script interpreter."""
+        # Load MCP schema and convert to OpenAI function format
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        
+        # Try to load MCP schema first
+        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": "script_interpreter"})
+        
+        if schema_data and "tools" in schema_data:
+            # Convert MCP multi-tool schema to OpenAI function format
+            # For now, default to the primary "eval" tool
+            eval_tool = next((tool for tool in schema_data["tools"] if tool["name"] == "eval"), None)
+            if eval_tool:
+                return {
+                    "type": "function",
+                    "function": {
+                        "name": "script_interpreter",
+                        "description": eval_tool["description"],
+                        "parameters": eval_tool["inputSchema"]
+                    }
+                }
+        
+        # Fallback to hardcoded schema
+        return {
+            "type": "function", 
+            "function": {
+                "name": "script_interpreter",
+                "description": "Execute Python code in a secure sandbox. Supports mathematical expressions, basic operations, and simple programming constructs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["eval", "validate", "reset"],
+                            "default": "eval"
+                        },
+                        "code": {
+                            "type": "string", 
+                            "description": "Python code to execute. Examples: '(2+3)*4', 'x = 42; y = x * 2', 'abs(-15)'"
+                        }
+                    },
+                    "required": ["code"],
+                    "additionalProperties": True
+                }
+            }
+        }
+
+    def get_default_action(self) -> str:
+        """Return the default action for the script interpreter."""
+        return "eval"
+
+    # Legacy MCP JSON-RPC interface (optional, for direct MCP clients)
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle incoming MCP requests."""
         method = request.get("method")

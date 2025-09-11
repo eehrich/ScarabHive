@@ -1,0 +1,155 @@
+# MCP Schema for Script Interpreter Plugin
+# Model Context Protocol tool definitions for secure Python script execution
+
+name: script-interpreter
+version: "1.0.0"
+description: "MCP server for executing Python scripts in a secure sandboxed environment"
+
+server:
+  name: "Script Interpreter"
+  version: "1.0.0"
+  description: "Secure Python script execution with sandboxing, timeouts, and restricted function access"
+
+tools:
+  - name: eval
+    description: "Execute Python code in a secure sandbox. Supports mathematical expressions, basic operations, and simple programming constructs."
+    inputSchema:
+      type: object
+      properties:
+        code:
+          type: string
+          description: "Python code to execute. Examples: '(2+3)*4', 'x = 42; y = x * 2', 'abs(-15)'"
+          minLength: 1
+          maxLength: 10000
+      required:
+        - code
+    outputSchema:
+      type: object
+      properties:
+        result:
+          type: string
+          description: "Execution result with output, variables, and timing information"
+        variables:
+          type: object
+          description: "Current sandbox variables after execution"
+          additionalProperties: true
+        execution_time:
+          type: number
+          description: "Execution time in seconds"
+        error:
+          type: string
+          description: "Error message if execution failed"
+        suggestion:
+          type: string  
+          description: "Helpful suggestion for fixing syntax or runtime errors"
+      anyOf:
+        - required: ["result"]
+        - required: ["error"]
+
+  - name: validate
+    description: "Validate Python syntax without executing the code."
+    inputSchema:
+      type: object
+      properties:
+        code:
+          type: string
+          description: "Python code to validate"
+          minLength: 1
+          maxLength: 10000
+      required:
+        - code
+    outputSchema:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          description: "Whether the syntax is valid"
+        message:
+          type: string
+          description: "Validation result message"
+        error:
+          type: string
+          description: "Syntax error details if validation failed"
+        suggestion:
+          type: string
+          description: "Helpful suggestion for fixing syntax errors"
+      anyOf:
+        - required: ["valid", "message"]
+        - required: ["error"]
+
+  - name: reset
+    description: "Reset the sandbox environment, clearing all variables and state."
+    inputSchema:
+      type: object
+      properties: {}
+      required: []
+    outputSchema:
+      type: object
+      properties:
+        message:
+          type: string
+          description: "Confirmation message that sandbox was reset"
+        status:
+          type: string
+          description: "Reset operation status"
+          enum: ["success", "error"]
+      required:
+        - message
+        - status
+
+# Security and configuration information
+security:
+  sandbox: true
+  timeout: 5.0
+  memory_limit: "64MB"
+  allowed_functions:
+    - abs
+    - min
+    - max
+    - len
+    - sum
+    - round
+    - pow
+    - divmod
+    - all
+    - any
+    - bin
+    - hex
+    - oct
+    - chr
+    - ord
+  restricted_imports: true
+  network_access: false
+
+capabilities:
+  - mathematical_expressions
+  - variable_assignment
+  - basic_control_flow
+  - function_calls_whitelisted
+  - error_handling
+  - syntax_validation
+  - sandbox_reset
+
+examples:
+  eval:
+    - code: "(2 + 3) * 4"
+      description: "Simple mathematical expression"
+    - code: "x = 42\ny = x * 2\nabs(y - 100)"
+      description: "Variable assignment and calculation"
+    - code: "sum([1, 2, 3, 4, 5])"
+      description: "Built-in function usage"
+  
+  validate:
+    - code: "x = 2 + 3"
+      description: "Valid syntax check"
+    - code: "x = 2 +"
+      description: "Invalid syntax check"
+  
+  reset:
+    - description: "Clear all sandbox variables and state"
+
+error_handling:
+  syntax_errors: "Returns detailed error messages with line numbers and suggestions"
+  runtime_errors: "Catches exceptions and provides helpful debugging information"
+  security_violations: "Prevents unauthorized function calls and imports"
+  timeouts: "Enforces execution time limits to prevent infinite loops"
