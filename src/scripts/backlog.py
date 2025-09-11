@@ -310,8 +310,13 @@ def cmd_edit(args: argparse.Namespace) -> int:
 
     Usage: backlog edit <id> [<id> ...] --set key=value [--set key=value ...] [--write]
 
-    Keys supported for tasks: title, status, added, closed, notes, description
-    Keys supported for epics: title, status, added, closed, notes, description
+        Keys supported for tasks: title, status, added, closed, notes, description
+        Keys supported for epics: title, status, added, closed, notes, description
+
+        Notes behavior:
+        - By default, providing `--set notes="..."` will append the provided
+            note lines to any existing `notes` for the target epic/task.
+        - Use `--replace-notes` to replace the existing notes instead of appending.
     """
     from scripts.backlog_tool import parser as bl
 
@@ -453,15 +458,23 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 elif k == 'closed':
                     task.closed = v
                 elif k == 'notes':
+                    # Normalize incoming notes text into list of lines
                     vv = v.replace('\\n', '\n')
-                    normalized = []
+                    normalized: list[str] = []
                     for ln in vv.splitlines():
                         line = ln
                         if line.lstrip().startswith('- '):
                             idx = line.find('- ')
                             line = line[:idx] + line[idx+2:]
                         normalized.append(line.rstrip())
-                    task.notes = normalized
+                    # Replace vs append controlled by --replace-notes flag
+                    if getattr(args, 'replace_notes', False):
+                        task.notes = normalized
+                    else:
+                        if getattr(task, 'notes', None):
+                            task.notes.extend(normalized)
+                        else:
+                            task.notes = normalized
                 elif k == 'description':
                     vv = v.replace('\\n', '\n')
                     normalized = []
@@ -492,15 +505,22 @@ def cmd_edit(args: argparse.Namespace) -> int:
                 epic.closed = v
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'closed')
             elif k == 'notes':
+                # Normalize incoming notes and append or replace based on flag
                 vv = v.replace('\\n', '\n')
-                normalized = []
+                normalized: list[str] = []
                 for ln in vv.splitlines():
                     line = ln
                     if line.lstrip().startswith('- '):
                         idx = line.find('- ')
                         line = line[:idx] + line[idx+2:]
                     normalized.append(line.rstrip())
-                epic.notes = normalized
+                if getattr(args, 'replace_notes', False):
+                    epic.notes = normalized
+                else:
+                    if getattr(epic, 'notes', None):
+                        epic.notes.extend(normalized)
+                    else:
+                        epic.notes = normalized
                 epic.raw_lines = _strip_raw_block(epic.raw_lines, 'notes')
             elif k == 'description':
                 vv = v.replace('\\n', '\n')
@@ -703,6 +723,15 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
                     
                     if epic_count > 0 or task_count > 0:
                         break  # Successfully replaced one occurrence, move to next change
+
+            # Normalize excessive blank-line runs to avoid formatting drift
+            # caused by textual id-only replacements that operate on raw file
+            # content. Collapse 3+ consecutive newlines to two, which keeps
+            # a reasonable amount of separation but prevents runaway blank
+            # runs introduced by earlier edits. Use the parser/writer
+            # canonicalization for full reserialize paths instead.
+            import re as _re
+            _text = _re.sub(r"\n{3,}", "\n\n", _text)
 
             bl.safe_write(path, _text)
             print(f"Applied id-only fixes; backup: {bak}")
@@ -1537,6 +1566,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     u.add_argument("--set", dest="set", action="append", help="Set a field: --set key=value (can be used multiple times)")
     u.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     u.add_argument("--interactive", action="store_true", help="Interactively prompt for fields to edit")
+    u.add_argument("--replace-notes", action="store_true", help="Replace notes instead of appending (default: append)")
     u.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     u.set_defaults(func=cmd_edit)
 
