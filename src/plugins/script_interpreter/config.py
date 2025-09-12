@@ -20,8 +20,8 @@ class ScriptInterpreterConfig:
     allowed_functions: List[str] | None = None
     allowed_modules: List[str] | None = None
     enable_variables: bool = True
-    enable_loops: bool = False  # Start with False, enable in later tasks
-    enable_functions: bool = False  # Start with False, enable in later tasks
+    enable_loops: bool = True  # Enable loops for Task 9063
+    enable_functions: bool = True  # Enable function definitions for Task 9063
     
     def __post_init__(self):
         """Set default allowed functions if not specified."""
