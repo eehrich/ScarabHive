@@ -8,7 +8,7 @@ try:
     import yaml
 except Exception:
     # PyYAML may not be installed in every test or runtime environment.
-    yaml = None
+    yaml = None  # type: ignore[assignment]
 
 
 # Module-level cached config
@@ -57,6 +57,7 @@ def load() -> Dict[str, Any]:
         _config = defaults
         return _config
 
+    # Check if PyYAML import failed - this is reachable despite mypy's static analysis
     if yaml is None:
         # PyYAML not available in this environment; skip loading file
         _config = defaults

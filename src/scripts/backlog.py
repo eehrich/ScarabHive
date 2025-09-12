@@ -1537,6 +1537,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     a.add_argument("--title", help="Task title (required unless --from-file is used)")
     a.add_argument("--epic", help="Epic id to add the task under (required with --write unless --from-file specifies epics)")
     a.add_argument("--notes", help="Optional notes text (use \\n for line breaks)")
+    a.add_argument("--description", help="Optional description text (use \\n for line breaks)")
     a.add_argument("--id", dest="forced_id", help="Force a specific Task id (numeric or string). Will error if id exists")
     a.add_argument("--from-file", help="CSV/JSON file with tasks to add (columns: title,epic,notes,id)")
     a.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
@@ -1548,6 +1549,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
                        description="Add a new epic to the backlog. Use --write to persist changes. The epic will be added with 'open' status and today's date. Use --from-file for bulk operations.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     ae.add_argument("--title", help="Epic title (required unless --from-file is used)")
+    ae.add_argument("--description", help="Optional description text (use \\n for line breaks)")
     ae.add_argument("--id", dest="forced_id", help="Force a specific Epic id (numeric or string). Will error if id exists")
     ae.add_argument("--from-file", help="CSV/JSON file with epics to add (columns: title,id)")
     ae.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")

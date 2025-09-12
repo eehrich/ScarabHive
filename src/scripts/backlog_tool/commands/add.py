@@ -174,6 +174,13 @@ def cmd_add_task(args: argparse.Namespace) -> int:
     entry.append(f"- \u2610 Task XXXX: {args.title}")
     entry.append("  - status: open")
     entry.append(f"  - added: {now}")
+    if getattr(args, "description", None):
+        # Allow CLI users to pass literal '\\n' sequences which should
+        # be interpreted as real newlines. Normalize here for preview.
+        description_raw = args.description.replace('\\n', '\n')
+        entry.append("  - Description:")
+        for line in description_raw.splitlines():
+            entry.append(f"    - {line}")
     if getattr(args, "notes", None):
         # Allow CLI users to pass literal '\\n' sequences which should
         # be interpreted as real newlines. Normalize here for preview.
@@ -210,7 +217,8 @@ def cmd_add_task(args: argparse.Namespace) -> int:
                 return 2
             forced = _pad_id_input(getattr(args, 'forced_id', None))
             notes_arg = _normalize_notes(getattr(args, "notes", None))
-            t = bl.add_task_to_epic(backlog, epic_id, args.title, notes_arg, forced_id=forced)
+            description_arg = _normalize_notes(getattr(args, "description", None))
+            t = bl.add_task_to_epic(backlog, epic_id, args.title, notes_arg, description_arg, forced_id=forced)
         except KeyError:
             print(f"ERROR: Epic '{epic_id}' not found. Use 'backlog list' to see available epics.", file=sys.stderr)
             return 2
@@ -367,8 +375,9 @@ def cmd_add_epic(args: argparse.Namespace) -> int:
             # Use the parser API to add the epic to the freshly copied template.
             backlog_obj = bl.parse(lines_orig)
             forced = _pad_id_input(getattr(args, 'forced_id', None))
+            description_arg = _normalize_notes(getattr(args, "description", None))
             try:
-                e = bl.add_epic_to_backlog(backlog_obj, args.title, forced_id=forced)
+                e = bl.add_epic_to_backlog(backlog_obj, args.title, description=description_arg, forced_id=forced)
             except ValueError as ve:
                 print(f"ERROR: {ve}", file=sys.stderr)
                 return 2
@@ -379,8 +388,9 @@ def cmd_add_epic(args: argparse.Namespace) -> int:
             lines = bl.read_file(path)
             backlog = bl.parse(lines)
             forced = _pad_id_input(getattr(args, 'forced_id', None))
+            description_arg = _normalize_notes(getattr(args, "description", None))
             try:
-                e = bl.add_epic_to_backlog(backlog, args.title, forced_id=forced)
+                e = bl.add_epic_to_backlog(backlog, args.title, description=description_arg, forced_id=forced)
             except ValueError as ve:
                 print(f"ERROR: {ve}", file=sys.stderr)
                 return 2

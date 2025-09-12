@@ -14,6 +14,24 @@ def _ansi(text: str, code: Optional[str]) -> str:
     return f"\x1b[{code}m{text}\x1b[0m"
 
 
+def _sanitize(text: str, max_len: int = 120) -> str:
+    """Normalize whitespace and truncate long titles for single-line output.
+
+    This keeps `backlog list` compact and prevents long or multiline titles
+    from merging with subsequent items in the summary view.
+    """
+    # Defensive check for None values, though type annotation suggests this won't happen
+    if text is None:
+        return ""
+    # Replace newlines and carriage returns with spaces
+    s = text.replace("\r", " ").replace("\n", " ")
+    # Collapse repeated whitespace
+    s = " ".join(s.split())
+    if len(s) > max_len:
+        return s[: max_len - 1].rstrip() + "…"
+    return s
+
+
 def _get_epics_and_tasks(backlog: Backlog, state: str, only: str) -> Tuple[List[Epic], List[Task]]:
     """Get filtered epics and tasks based on state and type filters."""
     epics_open = backlog.epics_open if state in ('open', 'all') else []
@@ -37,22 +55,6 @@ def _format_epic_line(epic: Epic, color: bool) -> str:
 
     Match `show.py` styling: ID -> light cyan (36;1), title -> yellow (33).
     """
-    def _sanitize(text: str, max_len: int = 120) -> str:
-        """Normalize whitespace and truncate long titles for single-line output.
-
-        This keeps `backlog list` compact and prevents long or multiline titles
-        from merging with subsequent items in the summary view.
-        """
-        if text is None:
-            return ""
-        # Replace newlines and carriage returns with spaces
-        s = text.replace("\r", " ").replace("\n", " ")
-        # Collapse repeated whitespace
-        s = " ".join(s.split())
-        if len(s) > max_len:
-            return s[: max_len - 1].rstrip() + "…"
-        return s
-
     if color:
         # In `show.py` the epic header is printed in green bold for the whole
         # line. Mirror that here for exact parity with the canonical output,
@@ -68,20 +70,11 @@ def _format_task_line(task: Task, epic: Epic, color: bool) -> str:
 
     Match `show.py` styling: ID -> light cyan (36;1), title -> yellow (33).
     """
-    def _sanitize(text: str, max_len: int = 100) -> str:
-        if text is None:
-            return ""
-        s = text.replace("\r", " ").replace("\n", " ")
-        s = " ".join(s.split())
-        if len(s) > max_len:
-            return s[: max_len - 1].rstrip() + "…"
-        return s
-
     if color:
         tid = _ansi(_sanitize(task.id, max_len=20), "36;1")
         ttitle = _ansi(_sanitize(task.title, max_len=100), "33")
         return f"Task {tid}: {ttitle}"
-    return f"Task {task.id}: {task.title}"
+    return f"Task {_sanitize(task.id, max_len=20)}: {_sanitize(task.title, max_len=100)}"
 
 
 def _format_epic_inline(epic: Epic, color: bool) -> str:
@@ -89,15 +82,6 @@ def _format_epic_inline(epic: Epic, color: bool) -> str:
 
     This is used for the compact `--only epics` view to match task styling.
     """
-    def _sanitize(text: str, max_len: int = 100) -> str:
-        if text is None:
-            return ""
-        s = text.replace("\r", " ").replace("\n", " ")
-        s = " ".join(s.split())
-        if len(s) > max_len:
-            return s[: max_len - 1].rstrip() + "…"
-        return s
-
     if color:
         eid = _ansi(_sanitize(epic.id, max_len=20), "36;1")
         title = _ansi(_sanitize(epic.title, max_len=100), "33")

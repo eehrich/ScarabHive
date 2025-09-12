@@ -30,6 +30,8 @@ def validate_backlog(backlog: Backlog) -> list[str]:
     Returns:
         List of error messages (empty if valid)
     """
+    # Defensive isinstance check for runtime safety, though mypy considers it unreachable
+    # due to type annotation. This is intentional defensive programming.
     if not isinstance(backlog, Backlog):
         return ["Invalid backlog object provided"]
 

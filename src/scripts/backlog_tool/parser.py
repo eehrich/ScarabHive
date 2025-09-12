@@ -16,6 +16,7 @@ from typing import List, cast, Dict, Any, Optional, Tuple
 from .models import Backlog, Epic, Task
 from .file_ops import read_file
 from . import values
+from .validation import validate_backlog as validate_backlog
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def parse(backlog_lines: List[str]) -> Backlog:
         logger.warning("Empty backlog_lines provided, returning empty backlog")
         return Backlog(header=[], epics_open=[], epics_finished=[], footer=[])
 
-    # Validate that all lines are strings
+    # Defensive validation - ensure all lines are strings before processing
     for i, line in enumerate(backlog_lines):
         if not isinstance(line, str):
             logger.error(f"Line {i} is not a string: {type(line)}")
@@ -303,15 +304,13 @@ __all__ = [
     'build_markdown',
     # Operations
     'add_task_to_epic', 'add_epic_to_backlog', 'find_task', 'move_task', 'update_task_status',
-    # Validation
-    'validate_backlog',
     # Fixes
     'reassign_duplicate_task_ids', 'reassign_epic_task_collisions', 'normalize_backlog_format',
     'auto_fix_date_formats', 'auto_fix_id_formats', 'auto_complete_epics',
 ]
 
 
-def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional[str] = None, forced_id: Optional[str] = None) -> Task:
+def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional[str] = None, description: Optional[str] = None, forced_id: Optional[str] = None) -> Task:
     # Build a global set of ids (epic + task) to avoid collisions across epics and tasks
     existing_ids = {e.id for e in backlog.epics_open + backlog.epics_finished}
     existing_ids.update(t.id for ep in backlog.epics_open + backlog.epics_finished for t in ep.tasks)
@@ -348,12 +347,14 @@ def add_task_to_epic(backlog: Backlog, epic_id: str, title: str, notes: Optional
             t = Task(id=new_id, title=title, status="open", added=date.today().isoformat())
             if notes:
                 t.notes = notes.splitlines()
+            if description:
+                t.description = description.splitlines()
             e.tasks.append(t)
             return t
     raise KeyError(f"epic {epic_id} not found")
 
 
-def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open', forced_id: Optional[str] = None) -> Epic:
+def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open', description: Optional[str] = None, forced_id: Optional[str] = None) -> Epic:
     """Create a new epic with a unique zero-padded 4-digit id and append to epics_open.
 
     The id generator finds the next unused numeric id (0000..9999) not present
@@ -382,6 +383,8 @@ def add_epic_to_backlog(backlog: Backlog, title: str, status: str = 'open', forc
             raise RuntimeError("no available epic ids")
 
     e = Epic(id=new_id, title=title, status=status)
+    if description:
+        e.description = description.splitlines()
     e.tasks = []
     e.raw_lines = []
     backlog.epics_open.append(e)
@@ -930,125 +933,6 @@ def update_task_status(backlog: Backlog, task_id: str, new_status: str) -> Task:
         # opening a task clears closed date
         task.closed = None
     return task
-
-
-def validate_backlog(backlog: Backlog) -> list[str]:
-    """Run comprehensive validation rules and return list of error strings.
-
-    Validation rules:
-    - Epic ids must be unique across open and finished lists.
-    - Task ids must be unique across all epics.
-    - Date fields (added, closed) must be ISO dates YYYY-MM-DD when present.
-    - Status values must be among allowed set.
-    - Epics with all tasks finished should be marked as finished.
-    - ID format validation (4-digit numeric preferred).
-    - Required fields presence.
-
-    Args:
-        backlog: Backlog object to validate
-
-    Returns:
-        List of error messages (empty if valid)
-    """
-    if not isinstance(backlog, Backlog):
-        return ["Invalid backlog object provided"]
-
-    errors: list[str] = []
-    logger.debug("Starting backlog validation")
-
-    try:
-        # Check epic ids uniqueness
-        epic_ids = [e.id for e in backlog.epics_open + backlog.epics_finished]
-        dup_epics = {i for i in epic_ids if epic_ids.count(i) > 1}
-        for de in sorted(dup_epics):
-            errors.append(f"duplicate epic id: {de}")
-
-        # Check task ids uniqueness
-        task_ids: list[str] = []
-        for e in backlog.epics_open + backlog.epics_finished:
-            for t in e.tasks:
-                task_ids.append(t.id)
-        dup_tasks = {i for i in task_ids if task_ids.count(i) > 1}
-        for dt in sorted(dup_tasks):
-            errors.append(f"duplicate task id: {dt}")
-
-        # Date format validation
-        import datetime
-        def is_iso_date(s: Optional[str]) -> bool:
-            if not s:
-                return True
-            try:
-                datetime.date.fromisoformat(s)
-                return True
-            except Exception:
-                return False
-
-        # Validate epic fields
-        for e in backlog.epics_open + backlog.epics_finished:
-            if not e.id or not e.id.strip():
-                errors.append(f"epic missing id: {e.title}")
-            if not e.title or not e.title.strip():
-                errors.append(f"epic {e.id} missing title")
-
-            if not is_iso_date(e.added):
-                errors.append(f"bad date (added) for epic {e.id}: {e.added}")
-            if not is_iso_date(e.closed):
-                errors.append(f"bad date (closed) for epic {e.id}: {e.closed}")
-
-            # Validate task fields
-            for t in e.tasks:
-                if not t.id or not t.id.strip():
-                    errors.append(f"task in epic {e.id} missing id: {t.title}")
-                if not t.title or not t.title.strip():
-                    errors.append(f"task {t.id} in epic {e.id} missing title")
-
-                if not is_iso_date(t.added):
-                    errors.append(f"bad date (added) for task {t.id}: {t.added}")
-                if not is_iso_date(t.closed):
-                    errors.append(f"bad date (closed) for task {t.id}: {t.closed}")
-
-        # Status values validation
-        allowed = set(values.get('allowed_statuses', ["open", "done", "closed", "complete", "finished", "resolved", "in progress", "todo"]))
-        for e in backlog.epics_open + backlog.epics_finished:
-            if e.status and e.status.strip().lower() not in allowed:
-                errors.append(f"unknown epic status for {e.id}: {e.status}")
-            for t in e.tasks:
-                if t.status and t.status.strip().lower() not in allowed:
-                    errors.append(f"unknown task status for {t.id}: {t.status}")
-
-        # Check if epics should be finished
-        finish_list = set(values.get('finish_statuses', ["done", "closed", "complete", "finished"]))
-        for e in backlog.epics_open + backlog.epics_finished:
-            if not getattr(e, 'tasks', None):
-                continue
-
-            all_finished = True
-            for t in e.tasks:
-                st = (t.status or '').strip().lower()
-                if st not in finish_list:
-                    all_finished = False
-                    break
-
-            if all_finished:
-                est = (e.status or '').strip().lower()
-                if est not in finish_list:
-                    errors.append(f"epic {e.id} not finished but all tasks are finished")
-
-        # ID format validation (prefer 4-digit numeric)
-        for e in backlog.epics_open + backlog.epics_finished:
-            if e.id and e.id.isdigit() and len(e.id) != 4:
-                errors.append(f"epic id {e.id} should be 4 digits")
-            for t in e.tasks:
-                if t.id and t.id.isdigit() and len(t.id) != 4:
-                    errors.append(f"task id {t.id} should be 4 digits")
-
-        logger.info(f"Validation completed: {len(errors)} errors found")
-
-    except Exception as e:
-        errors.append(f"Validation failed with exception: {e}")
-        logger.error(f"Validation exception: {e}")
-
-    return errors
 
 
 def reassign_duplicate_task_ids(backlog: Backlog) -> list[Tuple[str, str]]:

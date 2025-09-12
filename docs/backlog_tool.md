@@ -29,6 +29,9 @@ backlog validate
 # Add your first epic
 backlog add-epic --title "Project Setup" --write
 
+# Add your first epic with a description (multiline supported using \n)
+backlog add-epic --title "Project Setup" --description "High-level goals for the project\nScope and milestones" --write
+
 # Add your first task
 backlog add-task --title "Set up development environment" --epic 0001 --write
 ```
@@ -57,6 +60,12 @@ backlog add-task --title "Implement user authentication" --epic 0001 --write
 
 # Add task with notes and custom ID
 backlog add-task --title "Fix login bug" --epic 0001 --id 0123 --notes "Issue reported by user\nNeed to test edge cases" --write
+
+# Add task with a multiline description (use literal \n for line breaks)
+backlog add-task --title "Design auth API" --epic 0001 --description "Describe endpoints and flows\nInclude error cases and examples" --write
+
+# Dry-run preview showing description (no --write)
+backlog add-task --title "Design auth API" --epic 0001 --description "Describe endpoints and flows\nInclude error cases and examples"
 ```
 
 #### Updating Tasks
@@ -276,7 +285,7 @@ Both approaches are useful in CI or automation where activating the venv isn't d
 For power users, the CLI supports single-letter shortcuts for common commands:
 
 - `a` → `add-task` - Add a new task
-- `e` → `edit` - Edit existing epics/tasks  
+- `e` → `edit` - Edit existing epics/tasks
 - `l` → `list` - List epics and tasks
 - `s` → `show` - Show details of specific items
 
@@ -341,7 +350,7 @@ title,epic,notes,id
     "id": "1001"
   },
   {
-    "title": "Fix login bug", 
+    "title": "Fix login bug",
     "epic": "0002",
     "notes": "High priority",
     "id": "1002"
@@ -399,7 +408,7 @@ title,id,notes
   },
   {
     "title": "API Integration",
-    "id": "1002", 
+    "id": "1002",
     "notes": "Third-party service integration"
   }
 ]
@@ -451,7 +460,7 @@ task,to_epic
     "to_epic": "0002"
   },
   {
-    "task": "0003", 
+    "task": "0003",
     "to_epic": "0004"
   }
 ]
@@ -635,7 +644,7 @@ Create a JSON file for bulk epic creation:
   },
   {
     "title": "API Integration",
-    "id": "2002", 
+    "id": "2002",
     "notes": "Third-party service integration"
   }
 ]
