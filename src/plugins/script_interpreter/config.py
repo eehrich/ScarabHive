@@ -1,6 +1,7 @@
 """Configuration for Script Interpreter Plugin"""
 
 from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from typing import Dict, Any, List, Optional
 import logging
 
@@ -10,19 +11,19 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ScriptInterpreterConfig:
     """Configuration for the script interpreter."""
-    
+
     # Execution limits
     max_execution_time: float = 5.0  # seconds
     max_memory_mb: int = 50  # MB (where possible to enforce)
     max_output_length: int = 10000  # characters
-    
+
     # Security settings
     allowed_functions: List[str] | None = None
     allowed_modules: List[str] | None = None
     enable_variables: bool = True
     enable_loops: bool = True  # Enable loops for Task 9063
     enable_functions: bool = True  # Enable function definitions for Task 9063
-    
+
     def __post_init__(self):
         """Set default allowed functions if not specified."""
         if self.allowed_functions is None:
@@ -33,14 +34,19 @@ class ScriptInterpreterConfig:
                 "len", "range",
                 # Math operations are handled by operators, not functions
             ]
-        
+
         if self.allowed_modules is None:
             self.allowed_modules = []  # No modules allowed by default
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "ScriptInterpreterConfig":
         """Create config from dictionary."""
-        return cls(**config_dict)
+        # Filter unknown keys to maintain forwards-compatibility with larger project configs
+        if not isinstance(config_dict, dict):
+            return cls()
+        allowed = {f.name for f in dataclass_fields(cls)}
+        filtered = {k: v for k, v in config_dict.items() if k in allowed}
+        return cls(**filtered)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""

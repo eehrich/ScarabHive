@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import json
 
-# Add the src directory to the path so we can import our modules  
+# Add the src directory to the path so we can import our modules
 sys.path.insert(0, "/".join(__file__.split("/")[:-4]))
 
 from agent_system.mcp.base import MCPServer
@@ -19,24 +19,24 @@ logger = logging.getLogger(__name__)
 
 class ScriptInterpreterServer(MCPServer):
     """MCP Server for executing scripts in a secure sandbox."""
-    
+
     def __init__(self, name: str = "script_interpreter", config: dict | None = None, ssl_verify: bool = True):
         super().__init__(name, config, ssl_verify)
         # Convert dict config to ScriptInterpreterConfig if needed
         if isinstance(config, dict):
-            script_config = ScriptInterpreterConfig(**config)
+            script_config = ScriptInterpreterConfig.from_dict(config)
         else:
             script_config = config or ScriptInterpreterConfig()
         self.script_config = script_config
         self.executor = ScriptExecutor(script_config)
-        
+
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Handle MCP tool calls."""
         if tool == "eval":
             code = params.get("code", "")
             if not code:
                 return {"error": "Missing required parameter 'code'"}
-            
+
             reset_sandbox = params.get("reset_sandbox", False)
             try:
                 result = self.executor.execute(code, reset_sandbox=reset_sandbox)
@@ -51,16 +51,16 @@ class ScriptInterpreterServer(MCPServer):
                         output_parts.append(f"Variables: {var_str}")
                     if result.get("execution_time") is not None:
                         output_parts.append(f"Execution time: {result['execution_time']:.3f}s")
-                    
+
                     return {"result": "\n".join(output_parts)}
             except Exception as e:
                 return {"error": f"Execution failed: {str(e)}"}
-                
+
         elif tool == "validate":
             code = params.get("code", "")
             if not code:
                 return {"error": "Missing required parameter 'code'"}
-                
+
             try:
                 validation_result = self.executor.validate_syntax(code)
                 if validation_result["valid"]:
@@ -69,7 +69,7 @@ class ScriptInterpreterServer(MCPServer):
                     return {"error": f"❌ {validation_result['error']}"}
             except Exception as e:
                 return {"error": f"❌ Syntax error: {str(e)}", "suggestion": "Check Python syntax - parentheses, indentation, operators"}
-                
+
         elif tool == "reset":
             try:
                 self.executor.reset_sandbox()
@@ -83,10 +83,10 @@ class ScriptInterpreterServer(MCPServer):
         """Return the OpenAI function schema for the script interpreter."""
         # Load MCP schema and convert to OpenAI function format
         from agent_system.plugins.schema_loader import load_schema_from_dir
-        
+
         # Try to load MCP schema first
         schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": "script_interpreter"})
-        
+
         if schema_data and "tools" in schema_data:
             # Convert MCP multi-tool schema to OpenAI function format
             # For now, default to the primary "eval" tool
@@ -100,10 +100,10 @@ class ScriptInterpreterServer(MCPServer):
                         "parameters": eval_tool["inputSchema"]
                     }
                 }
-        
+
         # Fallback to hardcoded schema
         return {
-            "type": "function", 
+            "type": "function",
             "function": {
                 "name": "script_interpreter",
                 "description": "Execute Python code in a secure sandbox. Supports mathematical expressions, basic operations, and simple programming constructs.",
@@ -116,7 +116,7 @@ class ScriptInterpreterServer(MCPServer):
                             "default": "eval"
                         },
                         "code": {
-                            "type": "string", 
+                            "type": "string",
                             "description": "Python code to execute. Examples: '(2+3)*4', 'x = 42; y = x * 2', 'abs(-15)'"
                         }
                     },
@@ -135,7 +135,7 @@ class ScriptInterpreterServer(MCPServer):
         """Handle incoming MCP requests."""
         method = request.get("method")
         params = request.get("params", {})
-        
+
         if method == "tools/list":
             return await self._list_tools()
         elif method == "tools/call":
@@ -147,7 +147,7 @@ class ScriptInterpreterServer(MCPServer):
                     "message": f"Method not found: {method}"
                 }
             }
-    
+
     async def _list_tools(self) -> Dict[str, Any]:
         """List available tools."""
         return {
@@ -191,12 +191,12 @@ class ScriptInterpreterServer(MCPServer):
                 }
             ]
         }
-    
+
     async def _call_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool call."""
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
-        
+
         try:
             if tool_name == "eval":
                 return await self._eval_code(arguments)
@@ -219,7 +219,7 @@ class ScriptInterpreterServer(MCPServer):
                     "message": f"Internal error: {str(e)}"
                 }
             }
-    
+
     async def _eval_code(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute Python code."""
         code = arguments.get("code")
@@ -230,22 +230,22 @@ class ScriptInterpreterServer(MCPServer):
                     "message": "Missing required argument: code"
                 }
             }
-        
+
         # Execute code in a separate thread to avoid blocking
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, self.executor.execute, code)
-        
+
         if result["success"]:
             output_parts = []
             if result["output"]:
                 output_parts.append(f"Output: {result['output']}")
-            
+
             if result["variables"]:
                 var_summary = ", ".join([f"{k}={v}" for k, v in result["variables"].items()])
                 output_parts.append(f"Variables: {var_summary}")
-            
+
             output_parts.append(f"Execution time: {result['execution_time']:.3f}s")
-            
+
             return {
                 "content": [
                     {
@@ -259,16 +259,16 @@ class ScriptInterpreterServer(MCPServer):
             error_text = f"Error ({error_info['category']}): {error_info['message']}"
             if "suggestion" in error_info:
                 error_text += f"\\nSuggestion: {error_info['suggestion']}"
-            
+
             return {
                 "content": [
                     {
-                        "type": "text", 
+                        "type": "text",
                         "text": error_text
                     }
                 ]
             }
-    
+
     async def _validate_code(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Validate Python syntax."""
         code = arguments.get("code")
@@ -279,9 +279,9 @@ class ScriptInterpreterServer(MCPServer):
                     "message": "Missing required argument: code"
                 }
             }
-        
+
         result = self.executor.validate_syntax(code)
-        
+
         if result["valid"]:
             return {
                 "content": [
@@ -296,7 +296,7 @@ class ScriptInterpreterServer(MCPServer):
             error_text = f"❌ Syntax error: {error_info['message']}"
             if "suggestion" in error_info:
                 error_text += f"\\nSuggestion: {error_info['suggestion']}"
-            
+
             return {
                 "content": [
                     {
@@ -305,7 +305,7 @@ class ScriptInterpreterServer(MCPServer):
                     }
                 ]
             }
-    
+
     async def _reset_sandbox(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Reset the sandbox environment."""
         self.executor.reset_sandbox()
@@ -323,23 +323,23 @@ async def main():
     """Main entry point for the MCP server."""
     # Basic MCP server setup
     server = ScriptInterpreterServer()
-    
+
     # Read JSON-RPC requests from stdin
     while True:
         try:
             line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
             if not line:
                 break
-                
+
             request = json.loads(line.strip())
             response = await server.handle_request(request)
-            
+
             # Add request ID if present
             if "id" in request:
                 response["id"] = request["id"]
-            
+
             print(json.dumps(response, ensure_ascii=False))
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON request: {e}")
             error_response = {
@@ -351,7 +351,7 @@ async def main():
             if "id" in request:
                 error_response["id"] = request["id"]
             print(json.dumps(error_response))
-            
+
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             error_response = {
