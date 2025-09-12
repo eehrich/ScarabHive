@@ -3,8 +3,9 @@
 import logging
 import threading
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from sandboxed_python import execute_fpy, FPyException
+import ast
 
 from .config import ScriptInterpreterConfig
 from .security import create_safe_sandbox
@@ -12,7 +13,8 @@ from .errors import (
     ExecutionTimeoutError,
     SyntaxError,
     RuntimeError,
-    format_error_for_llm
+    SecurityViolationError,
+    format_error_for_llm,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,29 +22,29 @@ logger = logging.getLogger(__name__)
 
 class TimeoutHandler:
     """Handle execution timeouts using threading."""
-    
+
     def __init__(self, timeout_seconds: float):
         self.timeout_seconds = timeout_seconds
         self.timer = None
         self.timed_out = False
-    
+
     def _timeout_callback(self):
         """Called when timeout occurs."""
         self.timed_out = True
         logger.warning(f"Script execution timed out after {self.timeout_seconds} seconds")
-    
+
     def start(self):
         """Start the timeout timer."""
         if self.timeout_seconds > 0:
             self.timer = threading.Timer(self.timeout_seconds, self._timeout_callback)
             self.timer.start()
-    
+
     def stop(self):
         """Stop the timeout timer."""
         if self.timer:
             self.timer.cancel()
             self.timer = None
-    
+
     def check_timeout(self):
         """Check if timeout occurred."""
         if self.timed_out:
@@ -51,18 +53,18 @@ class TimeoutHandler:
 
 class ScriptExecutor:
     """Secure script executor using sandboxed-python."""
-    
-    def __init__(self, config: ScriptInterpreterConfig | None = None):
+
+    def __init__(self, config: Optional[ScriptInterpreterConfig] = None):
         self.config = config or ScriptInterpreterConfig()
         self.sandbox = create_safe_sandbox(self.config)
-        
+
     def execute(self, code: str, reset_sandbox: bool = False) -> Dict[str, Any]:
         """Execute Python code in a secure sandbox.
-        
+
         Args:
             code: Python code to execute
             reset_sandbox: Whether to reset sandbox state before execution
-            
+
         Returns:
             Dict containing result, output, and metadata
         """
@@ -72,27 +74,50 @@ class ScriptExecutor:
         else:
             # Just clear output buffer but keep variables
             self.sandbox.clear_output()
-        
+
         # Set up timeout handler
         timeout_handler = TimeoutHandler(self.config.max_execution_time)
-        
+
         try:
+            # Quick AST-based pre-checks to catch obvious infinite loops or large ranges
+            try:
+                tree = ast.parse(code)
+                for node in ast.walk(tree):
+                    # Detect 'while True' loops as an immediate rejection
+                    if isinstance(node, ast.While):
+                        if isinstance(node.test, ast.Constant) and node.test.value is True:
+                            raise SecurityViolationError("Infinite 'while True' loops are not allowed")
+                    # Detect large range() calls in literals/expressions (best-effort)
+                    if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'range':
+                        # Only handle simple numeric literal ranges here
+                        if node.args:
+                            arg = node.args[0]
+                            if isinstance(arg, ast.Constant) and isinstance(arg.value, int):
+                                if arg.value > self.config.max_loop_iterations:
+                                    raise SecurityViolationError(f"range() too large: {arg.value} > {self.config.max_loop_iterations}")
+            except RuntimeError:
+                raise
+            except SecurityViolationError:
+                raise
+            except Exception:
+                # If AST parsing fails, fall back to execution and let sandbox handle errors
+                pass
             timeout_handler.start()
             start_time = time.time()
-            
+
             # Execute the code
             logger.debug(f"Executing code: {code[:100]}...")
             execute_fpy(code, sandbox=self.sandbox)
-            
+
             timeout_handler.check_timeout()
             execution_time = time.time() - start_time
-            
+
             # Get results
             output = self.sandbox.get_output()
             variables = dict(self.sandbox.variables)
-            
+
             logger.debug(f"Execution completed in {execution_time:.3f}s")
-            
+
             return {
                 "success": True,
                 "output": output,
@@ -100,7 +125,7 @@ class ScriptExecutor:
                 "execution_time": execution_time,
                 "error": None
             }
-            
+
         except FPyException as e:
             # Handle sandboxed-python syntax/runtime errors
             error_info = format_error_for_llm(SyntaxError(str(e)), code)
@@ -112,7 +137,17 @@ class ScriptExecutor:
                 "execution_time": 0,
                 "error": error_info
             }
-            
+        except SecurityViolationError as e:
+            error_info = format_error_for_llm(e, code)
+            logger.warning(f"Security violation in code: {e}")
+            return {
+                "success": False,
+                "output": "",
+                "variables": {},
+                "execution_time": 0,
+                "error": error_info,
+            }
+
         except ExecutionTimeoutError as e:
             error_info = format_error_for_llm(e, code)
             logger.warning(f"Execution timeout: {e}")
@@ -123,7 +158,7 @@ class ScriptExecutor:
                 "execution_time": self.config.max_execution_time,
                 "error": error_info
             }
-            
+
         except Exception as e:
             # Handle other errors
             error_info = format_error_for_llm(RuntimeError(str(e), e), code)
@@ -135,16 +170,16 @@ class ScriptExecutor:
                 "execution_time": 0,
                 "error": error_info
             }
-            
+
         finally:
             timeout_handler.stop()
-    
+
     def validate_syntax(self, code: str) -> Dict[str, Any]:
         """Validate Python syntax without executing.
-        
+
         Args:
             code: Python code to validate
-            
+
         Returns:
             Dict with validation results
         """
@@ -166,14 +201,14 @@ class ScriptExecutor:
                 "valid": False,
                 "error": format_error_for_llm(RuntimeError(str(e)), code)
             }
-    
+
     def get_sandbox_state(self) -> Dict[str, Any]:
         """Get current sandbox state (variables, etc.)."""
         return {
             "variables": dict(self.sandbox.variables),
             "config": self.config.to_dict()
         }
-    
+
     def reset_sandbox(self) -> None:
         """Reset sandbox to clean state."""
         self.sandbox.reset()

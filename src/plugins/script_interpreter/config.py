@@ -16,10 +16,11 @@ class ScriptInterpreterConfig:
     max_execution_time: float = 5.0  # seconds
     max_memory_mb: int = 50  # MB (where possible to enforce)
     max_output_length: int = 10000  # characters
+    max_loop_iterations: int = 100000  # safety cap for loops/range()
 
     # Security settings
-    allowed_functions: List[str] | None = None
-    allowed_modules: List[str] | None = None
+    allowed_functions: Optional[List[str]] = None
+    allowed_modules: Optional[List[str]] = None
     enable_variables: bool = True
     enable_loops: bool = True  # Enable loops for Task 9063
     enable_functions: bool = True  # Enable function definitions for Task 9063

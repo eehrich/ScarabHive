@@ -2,15 +2,16 @@
 
 import configparser
 from pathlib import Path
+from typing import Dict, Union
 
 
-def load_config() -> dict[str, str | int | bool]:
+def load_config() -> Dict[str, Union[str, int, bool]]:
     """Load configuration from .backlogrc file if it exists.
 
     Returns a dictionary of configuration values that can be used as defaults
     for command line arguments.
     """
-    config: dict[str, str | int | bool] = {}
+    config: Dict[str, Union[str, int, bool]] = {}
 
     # Look for .backlogrc in current directory first, then home directory
     config_paths = [

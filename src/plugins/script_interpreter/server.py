@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from pathlib import Path
 import sys
 import json
@@ -11,6 +11,13 @@ import json
 sys.path.insert(0, "/".join(__file__.split("/")[:-4]))
 
 from agent_system.mcp.base import MCPServer
+from agent_system.mcp.status import (
+    publish_status,
+    PHASE_START,
+    PHASE_PROGRESS,
+    PHASE_END,
+    PHASE_ERROR,
+)
 from .executor import ScriptExecutor
 from .config import ScriptInterpreterConfig
 
@@ -20,7 +27,7 @@ logger = logging.getLogger(__name__)
 class ScriptInterpreterServer(MCPServer):
     """MCP Server for executing scripts in a secure sandbox."""
 
-    def __init__(self, name: str = "script_interpreter", config: dict | None = None, ssl_verify: bool = True):
+    def __init__(self, name: str = "script_interpreter", config: Optional[dict] = None, ssl_verify: bool = True):
         super().__init__(name, config, ssl_verify)
         # Convert dict config to ScriptInterpreterConfig if needed
         if isinstance(config, dict):
@@ -36,13 +43,41 @@ class ScriptInterpreterServer(MCPServer):
             code = params.get("code", "")
             if not code:
                 return {"error": "Missing required parameter 'code'"}
-
+            request_id = params.get("request_id")
             reset_sandbox = params.get("reset_sandbox", False)
+
+            # Publish start status
+            await publish_status(self.name, "Execution started", request_id=request_id, phase=PHASE_START)
             try:
+                # Publish progress
+                await publish_status(self.name, "Executing code", request_id=request_id, phase=PHASE_PROGRESS)
+
                 result = self.executor.execute(code, reset_sandbox=reset_sandbox)
+
                 if not result.get("success", False) or result.get("error"):
+                    # Publish error status
+                    await publish_status(
+                        self.name,
+                        f"Execution failed: {result.get('error')}",
+                        request_id=request_id,
+                        level="error",
+                        phase=PHASE_ERROR,
+                    )
                     return {"error": result["error"] or "Execution failed", "suggestion": result.get("suggestion", "")}
                 else:
+                    # Publish end status with execution metadata
+                    meta = {
+                        "execution_time": result.get("execution_time"),
+                        "variables": len(result.get("variables", {})),
+                    }
+                    await publish_status(
+                        self.name,
+                        "Execution completed",
+                        request_id=request_id,
+                        phase=PHASE_END,
+                        meta=meta,
+                    )
+
                     output_parts = []
                     if result.get("output"):
                         output_parts.append(f"Output: {result['output']}")
@@ -54,6 +89,7 @@ class ScriptInterpreterServer(MCPServer):
 
                     return {"result": "\n".join(output_parts)}
             except Exception as e:
+                await publish_status(self.name, f"Execution failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
                 return {"error": f"Execution failed: {str(e)}"}
 
         elif tool == "validate":
@@ -230,12 +266,21 @@ class ScriptInterpreterServer(MCPServer):
                     "message": "Missing required argument: code"
                 }
             }
+        request_id = arguments.get("request_id")
+
+        # Publish start status
+        await publish_status(self.name, "Execution started", request_id=request_id, phase=PHASE_START)
 
         # Execute code in a separate thread to avoid blocking
         loop = asyncio.get_event_loop()
+        await publish_status(self.name, "Executing code", request_id=request_id, phase=PHASE_PROGRESS)
         result = await loop.run_in_executor(None, self.executor.execute, code)
 
         if result["success"]:
+            # Publish end status with execution metadata
+            meta = {"execution_time": result.get("execution_time"), "variables": len(result.get("variables", {}))}
+            await publish_status(self.name, "Execution completed", request_id=request_id, phase=PHASE_END, meta=meta)
+
             output_parts = []
             if result["output"]:
                 output_parts.append(f"Output: {result['output']}")
@@ -256,6 +301,7 @@ class ScriptInterpreterServer(MCPServer):
             }
         else:
             error_info = result["error"]
+            await publish_status(self.name, f"Execution failed: {error_info}", request_id=request_id, level="error", phase=PHASE_ERROR, meta={"error": error_info})
             error_text = f"Error ({error_info['category']}): {error_info['message']}"
             if "suggestion" in error_info:
                 error_text += f"\\nSuggestion: {error_info['suggestion']}"
