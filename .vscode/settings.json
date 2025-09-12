@@ -6,5 +6,15 @@
   ],
   "python.testing.unittestEnabled": false,
   "python.testing.nosetestsEnabled": false,
-  "terminal.integrated.defaultProfile.windows": "Git Bash"
+  "terminal.integrated.defaultProfile.windows": "Git Bash",
+
+    "github.copilot.chat.agent.thinkingTool": true,
+    "chat.tools.terminal.autoApprove": {
+        "source": true,
+        "python": true,
+        "backlog": true,
+        "pytest": true,
+        "agent-cli": true,
+        "agent-api": true
+    }
 }
