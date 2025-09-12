@@ -1,18 +1,19 @@
 """Show-related commands for the backlog CLI."""
 import argparse
 import sys
+from typing import Optional
 
 from .. import parser as bl
 
 
-def _ansi(text: str, code: str | None) -> str:
+def _ansi(text: str, code: Optional[str]) -> str:
     """Apply ANSI color codes to text."""
     if not code:
         return text
     return f"\x1b[{code}m{text}\x1b[0m"
 
 
-def _pad_id_input(ident: str | None) -> str | None:
+def _pad_id_input(ident: Optional[str]) -> Optional[str]:
     """Pad numeric id inputs to four digits when plausible.
 
     Examples: '13' -> '0013', '0001' -> '0001', non-numeric strings are

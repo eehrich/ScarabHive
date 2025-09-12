@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 try:
     import yaml
@@ -12,7 +12,7 @@ except Exception:
 
 
 # Module-level cached config
-_config: Dict[str, Any] | None = None
+_config: Optional[Dict[str, Any]] = None
 
 
 def _default_config() -> dict:

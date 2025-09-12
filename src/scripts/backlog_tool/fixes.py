@@ -5,7 +5,7 @@ and normalizing backlog data.
 """
 import re
 from datetime import datetime
-from typing import Any, Dict, Tuple, cast
+from typing import Any, Dict, Tuple, cast, Optional
 
 from .models import Backlog
 from . import values
@@ -134,7 +134,7 @@ def auto_fix_date_formats(backlog: Backlog) -> list[str]:
     """
     changes: list[str] = []
 
-    def parse_and_convert_date(date_str: str) -> str | None:
+    def parse_and_convert_date(date_str: str) -> Optional[str]:
         """Try to parse various date formats and return ISO format."""
         date_str = date_str.strip()
 
@@ -225,7 +225,7 @@ def auto_fix_id_formats(backlog: Backlog) -> list[str]:
         for t in e.tasks:
             existing_ids.add(t.id)
 
-    def normalize_id(id_str: str) -> str | None:
+    def normalize_id(id_str: str) -> Optional[str]:
         """Convert numeric ID to 4-digit format if needed."""
         if not id_str or not id_str.isdigit():
             return None

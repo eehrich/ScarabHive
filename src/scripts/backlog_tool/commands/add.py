@@ -6,11 +6,12 @@ import os
 import shutil
 import sys
 from datetime import date
+from typing import Optional
 
 from ..utils import ProgressBar
 
 
-def _pad_id_input(ident: str | None) -> str | None:
+def _pad_id_input(ident: Optional[str]) -> Optional[str]:
     """Pad numeric id inputs to four digits when plausible.
 
     Examples: '13' -> '0013', '0001' -> '0001', non-numeric strings are
@@ -32,7 +33,7 @@ def _pad_id_input(ident: str | None) -> str | None:
     return s
 
 
-def _normalize_notes(s: str | None) -> str | None:
+def _normalize_notes(s: Optional[str]) -> Optional[str]:
     """Normalize notes by handling literal \\n sequences and stripping list markers."""
     if s is None:
         return None

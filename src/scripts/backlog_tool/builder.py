@@ -4,7 +4,7 @@ This module contains functions for converting Backlog objects back to
 markdown format.
 """
 import re
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, cast, Optional
 
 from .models import Backlog
 from . import values
@@ -22,7 +22,7 @@ def build_markdown(backlog: Backlog) -> str:
     lines: List[str] = []
 
     # Helper to remove raw_blocks corresponding to modeled fields
-    def _strip_modeled_blocks_global(raw_lines: list[str], modeled_keys: set[str] | None = None) -> list[str]:
+    def _strip_modeled_blocks_global(raw_lines: list[str], modeled_keys: Optional[set[str]] = None) -> list[str]:
         """Remove raw_lines blocks that correspond to modeled fields.
 
         Only removes blocks for keys that are present in `modeled_keys`.
@@ -200,7 +200,7 @@ def build_markdown(backlog: Backlog) -> str:
                     # Only add non-empty notes to avoid extra blank lines
                     if n.strip():
                         lines.append(f"        - {n}")
-            
+
             # Preserve any raw_lines after structured fields for tasks
             if t.raw_lines:
                 modeled_task = {'status', 'added', 'closed', 'description', 'notes'}
@@ -303,7 +303,7 @@ def build_markdown(backlog: Backlog) -> str:
                     # Only add non-empty notes to avoid extra blank lines
                     if n.strip():
                         lines.append(f"        - {n}")
-            
+
             # Preserve any raw_lines after structured fields for tasks
             if t.raw_lines:
                 modeled_task = {'status', 'added', 'closed', 'description', 'notes'}

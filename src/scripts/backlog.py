@@ -15,6 +15,7 @@ from datetime import date
 import os
 import shutil
 from pathlib import Path
+from typing import Optional, List
 
 from .backlog_tool.utils import ProgressBar, handle_command_shortcuts, load_config
 from .backlog_tool.commands import add
@@ -25,7 +26,7 @@ from .backlog_tool.commands import backup as backup_cmd
 __version__ = "0.1.0"
 
 
-def _pad_id_input(ident: str | None) -> str | None:
+def _pad_id_input(ident: Optional[str]) -> Optional[str]:
     """Pad numeric id inputs to four digits when plausible.
 
     Examples: '13' -> '0013', '0001' -> '0001', non-numeric strings are
@@ -47,7 +48,7 @@ def _pad_id_input(ident: str | None) -> str | None:
     return s
 
 
-def _normalize_status(s: str) -> str | None:
+def _normalize_status(s: str) -> Optional[str]:
     if not s:
         return None
     s0 = s.strip().lower()
@@ -170,12 +171,12 @@ def _cmd_move_task_bulk(args: argparse.Namespace) -> int:
     """Handle bulk task moves from file."""
     import csv
     import json
-    
+
     file_path = args.from_file
     if not os.path.exists(file_path):
         print(f"ERROR: File not found: {file_path}", file=sys.stderr)
         return 2
-    
+
     # Determine file type and parse
     if file_path.endswith('.json'):
         try:
@@ -195,11 +196,11 @@ def _cmd_move_task_bulk(args: argparse.Namespace) -> int:
     else:
         print("ERROR: File must be .csv or .json", file=sys.stderr)
         return 2
-    
+
     if not data:
         print("ERROR: File contains no data", file=sys.stderr)
         return 2
-    
+
     # Validate data structure
     required_fields = ['task', 'to_epic']
     for item in data:
@@ -207,20 +208,20 @@ def _cmd_move_task_bulk(args: argparse.Namespace) -> int:
         if missing:
             print(f"ERROR: Missing required fields in data: {missing}", file=sys.stderr)
             return 2
-    
+
     from scripts.backlog_tool import parser as bl
     path = args.file or "backlog.md"
     lines = bl.read_file(path)
     backlog = bl.parse(lines)
-    
+
     moved_tasks = []
     errors = []
-    
+
     # Show progress for bulk operations with many items
     show_progress = len(data) > 5
     if show_progress:
         progress = ProgressBar(len(data), "Moving tasks")
-    
+
     for i, item in enumerate(data):
         try:
             task_id = _pad_id_input(item['task'])
@@ -230,33 +231,33 @@ def _cmd_move_task_bulk(args: argparse.Namespace) -> int:
                 continue
             moved = bl.move_task(backlog, task_id, to_epic)
             moved_tasks.append((task_id, to_epic, moved.id))
-            
+
         except KeyError:
             errors.append(f"Row {i+1}: Task '{item.get('task', 'unknown')}' or epic '{item.get('to_epic', 'unknown')}' not found")
         except Exception as e:
             errors.append(f"Row {i+1}: Unexpected error: {e}")
-        
+
         if show_progress:
             progress.update()
-    
+
     # Report results
     if moved_tasks:
         print(f"Successfully moved {len(moved_tasks)} tasks:")
         for old_id, to_epic, new_id in moved_tasks:
             print(f"  - Task {old_id} -> epic {to_epic} (new id: {new_id})")
-    
+
     if errors:
         print(f"\nErrors encountered ({len(errors)}):", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
-    
+
     if getattr(args, "write", False) and moved_tasks:
         bak = bl.make_backup(path)
         bl.safe_write(path, bl.build_markdown(backlog))
         print(f"\nWrote changes to {path}; backup: {bak}")
     elif not getattr(args, "write", False):
         print(f"\nDry-run: would move {len(moved_tasks)} tasks")
-    
+
     # Return error code if any moves failed
     return 1 if errors else 0
 
@@ -265,12 +266,12 @@ def cmd_move_task(args: argparse.Namespace) -> int:
     # Check if we're doing bulk move from file
     if getattr(args, 'from_file', None):
         return _cmd_move_task_bulk(args)
-    
+
     # Validate required arguments for single move
     if not getattr(args, 'task', None) or not getattr(args, 'to_epic', None):
         print("ERROR: --task and --to-epic are required when not using --from-file", file=sys.stderr)
         return 2
-    
+
     from scripts.backlog_tool import parser as bl
 
     path = args.file or "backlog.md"
@@ -549,7 +550,7 @@ def cmd_edit(args: argparse.Namespace) -> int:
 
     single_mode = len(idents) == 1
     # Record type for single legacy message formatting
-    single_kind: str | None = None
+    single_kind: Optional[str] = None
     if single_mode:
         # Peek classification without mutating
         try:
@@ -674,13 +675,13 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
     date_changes = bl.auto_fix_date_formats(backlog)
     id_format_changes = bl.auto_fix_id_formats(backlog)
     epic_completion_changes = bl.auto_complete_epics(backlog)
-    
+
     all_changes = id_changes + collision_changes + norm_changes + date_changes + id_format_changes + epic_completion_changes
-    
+
     if not all_changes:
         print("No formatting or id issues found")
         return 0
-        
+
     print("Planned changes:")
     for old, new in id_changes:
         print(f"reassign: {old} -> {new}")
@@ -712,23 +713,23 @@ def cmd_fix_format(args: argparse.Namespace) -> int:
                 # Match both normalized (0001) and original (1, 01, 001) ID formats
                 # The old_id from the model is normalized, but text may have original format
                 old_patterns = [old]  # Start with normalized format
-                
+
                 # Also try shorter versions of the ID if it's numeric
                 if old.isdigit():
                     num = int(old)
                     if num < 1000:  # Only for 4-digit or less
                         old_patterns.extend([f"{num:01d}", f"{num:02d}", f"{num:03d}"])
-                
+
                 for old_id_pattern in old_patterns:
                     # Match the actual format: optional status symbols + "Epic/Task" + ID + ":"
                     # Use count=1 to replace only one occurrence at a time
                     epic_pattern = rf'((?:☐|✅|❌|⏳|\[ ?\])?\s*Epic\s+){_re.escape(old_id_pattern)}(?=\s*:)'
                     task_pattern = rf'((?:☐|✅|❌|⏳|\[ ?\])?\s*Task\s+){_re.escape(old_id_pattern)}(?=\s*:)'
-                    
+
                     # Replace one occurrence at a time to avoid replacing all duplicates
                     _text, epic_count = _re.subn(epic_pattern, _replace_with_new(old_id_pattern, new), _text, count=1)
                     _text, task_count = _re.subn(task_pattern, _replace_with_new(old_id_pattern, new), _text, count=1)
-                    
+
                     if epic_count > 0 or task_count > 0:
                         break  # Successfully replaced one occurrence, move to next change
 
@@ -968,9 +969,9 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 def cmd_completion(args: argparse.Namespace) -> int:
     """Generate shell completion scripts for bash, zsh, or fish."""
-    
+
     shell = args.shell
-    
+
     if shell == "bash":
         script = _generate_bash_completion()
     elif shell == "zsh":
@@ -980,7 +981,7 @@ def cmd_completion(args: argparse.Namespace) -> int:
     else:
         print(f"ERROR: Unsupported shell: {shell}", file=sys.stderr)
         return 1
-    
+
     if args.install:
         return _install_completion_script(script, shell, args.path)
     else:
@@ -996,22 +997,22 @@ def _generate_bash_completion() -> str:
 
 _backlog_complete() {
     local cur prev words cword
-    
+
     # Manual completion initialization (compatible with bash without bash-completion)
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     words=("${COMP_WORDS[@]}")
     cword=$COMP_CWORD
-    
+
     # Available commands
     local commands="validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show completion"
-    
+
     # Commands that take IDs
     local id_commands="edit show"
-    
+
     # Commands that take file arguments
     local file_commands="validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show"
-    
+
     case $prev in
         --file|--backup|--path)
             # Simple file completion using compgen
@@ -1032,13 +1033,13 @@ _backlog_complete() {
             return
             ;;
     esac
-    
+
     # Complete commands
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         return
     fi
-    
+
     # Complete IDs for commands that take them
     local cmd=${words[1]}
     if [[ " $id_commands " == *" $cmd "* ]]; then
@@ -1056,7 +1057,7 @@ _backlog_complete() {
             return
         fi
     fi
-    
+
     # Complete positional arguments for subcommands
     case $cmd in
         completion)
@@ -1066,7 +1067,7 @@ _backlog_complete() {
             fi
             ;;
     esac
-    
+
     # Complete options for current command
     case $cmd in
         validate)
@@ -1129,7 +1130,7 @@ def _generate_zsh_completion() -> str:
 
 _backlog() {
     local -a commands id_commands file_commands
-    
+
     commands=(
         "validate:Validate backlog file for errors"
         "add-task:Add a new task to an epic"
@@ -1146,14 +1147,14 @@ _backlog() {
         "show:Show detailed information"
         "completion:Generate shell completion scripts"
     )
-    
+
     id_commands=(edit show)
     file_commands=(validate add-task add-epic move-task edit backup undo check-ids fix-format update init list show)
-    
+
     _arguments -C \\
         "1: :{_describe 'command' commands}" \\
         "*::arg:->args"
-    
+
     case $line[1] in
         validate)
             _arguments \\
@@ -1367,11 +1368,11 @@ complete -c backlog -n "__fish_seen_subcommand_from completion" -l path -d "Cust
 complete -c backlog -n "__fish_seen_subcommand_from completion" -l help -d "Show help message"'''
 
 
-def _install_completion_script(script: str, shell: str, custom_path: str | None) -> int:
+def _install_completion_script(script: str, shell: str, custom_path: Optional[str]) -> int:
     """Install completion script to appropriate location."""
     import pathlib
     import platform
-    
+
     if custom_path:
         install_path = pathlib.Path(custom_path)
     else:
@@ -1380,16 +1381,16 @@ def _install_completion_script(script: str, shell: str, custom_path: str | None)
             # Check if we're on Windows (Git Bash/MSYS2)
             is_windows = platform.system() == "Windows"
             bashrc_path = home / ".bashrc"
-            
+
             if is_windows:
                 # For Git Bash on Windows, install directly and update .bashrc
                 install_path = home / ".backlog-completion.bash"
-                
+
                 # Create or update .bashrc to source the completion
                 bashrc_content = ""
                 if bashrc_path.exists():
                     bashrc_content = bashrc_path.read_text(encoding='utf-8')
-                
+
                 # Remove any existing Windows-style source lines
                 lines = bashrc_content.split('\n')
                 filtered_lines: list[str] = []
@@ -1405,9 +1406,9 @@ def _install_completion_script(script: str, shell: str, custom_path: str | None)
                             filtered_lines.pop()
                         continue
                     filtered_lines.append(line)
-                
+
                 bashrc_content = '\n'.join(filtered_lines)
-                
+
                 # Check if completion is already sourced with Unix path
                 source_line = "source ~/.backlog-completion.bash"
                 if source_line not in bashrc_content:
@@ -1441,21 +1442,21 @@ def _install_completion_script(script: str, shell: str, custom_path: str | None)
         else:
             print(f"ERROR: Unsupported shell: {shell}", file=sys.stderr)
             return 1
-    
+
     try:
         if install_path is None:
             print("ERROR: Could not determine installation path", file=sys.stderr)
             return 1
         install_path.write_text(script, encoding='utf-8')
-        
+
         # Convert path to Unix-style for display in bash environments
         if shell == "bash" and platform.system() == "Windows":
             display_path = install_path.as_posix().replace('C:', '/c')
         else:
             display_path = str(install_path)
-            
+
         print(f"✅ Completion script installed to: {display_path}")
-        
+
         if shell == "bash":
             if platform.system() == "Windows":
                 print("💡 Completion will be loaded automatically in new Git Bash sessions")
@@ -1470,7 +1471,7 @@ def _install_completion_script(script: str, shell: str, custom_path: str | None)
         elif shell == "fish":
             print("💡 Restart your fish shell or run:")
             print(f"   source {display_path}")
-            
+
         return 0
     except Exception as e:
         print(f"ERROR: Failed to install completion script: {e}", file=sys.stderr)
@@ -1521,7 +1522,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
 
     sub = p.add_subparsers(dest="cmd", metavar="COMMAND", help="Available commands:")
 
-    v = sub.add_parser("validate", 
+    v = sub.add_parser("validate",
                       help="Validate backlog file for errors and inconsistencies",
                       description="Validate the backlog file for common issues like duplicate IDs, invalid dates, and malformed entries.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1529,7 +1530,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     v.add_argument("--file", help="Backlog file to operate on (default: backlog.md)", default=argparse.SUPPRESS)
     v.set_defaults(func=cmd_validate)
 
-    a = sub.add_parser("add-task", 
+    a = sub.add_parser("add-task",
                        help="Add a new task to an epic",
                        description="Add a new task to an existing epic. Use --write to persist changes. The task will be added with 'open' status and today's date. Use --from-file for bulk operations.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1542,7 +1543,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     a.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     a.set_defaults(func=add.cmd_add_task)
 
-    ae = sub.add_parser("add-epic", 
+    ae = sub.add_parser("add-epic",
                        help="Create a new epic",
                        description="Add a new epic to the backlog. Use --write to persist changes. The epic will be added with 'open' status and today's date. Use --from-file for bulk operations.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1553,7 +1554,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     ae.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     ae.set_defaults(func=add.cmd_add_epic)
 
-    m = sub.add_parser("move-task", 
+    m = sub.add_parser("move-task",
                       help="Move a task between epics",
                       description="Move an existing task from one epic to another. Use --write to persist changes. Use --from-file for bulk operations.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1566,7 +1567,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
 
     # Replace legacy update-status with a more general `edit` command that
     # can set arbitrary fields on epics or tasks.
-    u = sub.add_parser("edit", 
+    u = sub.add_parser("edit",
                       help="Edit epic or task fields",
                       description="Update fields on one or more epics/tasks. Supports bulk updates with --set key=value. Use multiple --set for multiple fields.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1578,7 +1579,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     u.add_argument("--write", action="store_true", help="Persist changes to file (creates backup)")
     u.set_defaults(func=cmd_edit)
 
-    b = sub.add_parser("backup", 
+    b = sub.add_parser("backup",
                       help="Create or manage backups",
                       description="Create timestamped backups of the backlog file or manage existing backups. Use --prune with --keep or --older-than to clean up old backups.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1590,7 +1591,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     b.add_argument("--yes", action="store_true", help="Confirm destructive prune without prompt")
     b.set_defaults(func=backup_cmd.cmd_backup)
 
-    r = sub.add_parser("undo", 
+    r = sub.add_parser("undo",
                       help="Restore from backup",
                       description="Restore the backlog file from a previous backup. Use --list to see available backups, --choose for interactive selection, or --backup for specific file.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1600,14 +1601,14 @@ FILES: Default is backlog.md; use --file to specify alternative.
     r.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     r.set_defaults(func=cmd_undo)
 
-    c = sub.add_parser("check-ids", 
+    c = sub.add_parser("check-ids",
                       help="Check for duplicate IDs",
                       description="Scan the backlog for duplicate task IDs and epic/task ID collisions.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     c.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     c.set_defaults(func=cmd_check_ids)
 
-    f = sub.add_parser("fix-format", 
+    f = sub.add_parser("fix-format",
                       help="Auto-fix formatting issues",
                       description="Normalize status tokens, fix date formats, and reassign duplicate IDs. Use --ids-only for safe ID-only fixes.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1618,21 +1619,21 @@ FILES: Default is backlog.md; use --file to specify alternative.
     f.set_defaults(func=cmd_fix_format)
 
     # legacy compatibility: expose the `update` command used by older scripts/tests
-    up = sub.add_parser("update", 
+    up = sub.add_parser("update",
                        help="Move finished epics",
                        description="Legacy command: validate and move finished epics from open to finished section.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     up.add_argument("--file", help="Backlog file to operate on (default: backlog.md)")
     up.set_defaults(func=cmd_update)
 
-    ini = sub.add_parser("init", 
+    ini = sub.add_parser("init",
                         help="Create new backlog file",
                         description="Create a new backlog.md file from the bundled template if it doesn't exist.")
     # Standardized option ordering: positional → required → optional → file → safety → output
     ini.add_argument("--file", help="Backlog file to create (default: backlog.md)")
     ini.set_defaults(func=lambda args: cmd_init(args))
 
-    ls = sub.add_parser("list", 
+    ls = sub.add_parser("list",
                        help="List epics and tasks",
                        description="List all epic and task IDs with their titles. Use filters to show specific subsets. Combine --state and --only for precise filtering.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1650,7 +1651,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     ls.set_defaults(color=True)
     ls.set_defaults(func=list_cmd.cmd_list)
 
-    sh = sub.add_parser("show", 
+    sh = sub.add_parser("show",
                        help="Show detailed information",
                        description="Show detailed information for one or more epic/task IDs. Accepts multiple IDs and supports both epic and task identifiers.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1667,7 +1668,7 @@ FILES: Default is backlog.md; use --file to specify alternative.
     sh.set_defaults(color=True)
     sh.set_defaults(func=show_cmd.cmd_show)
 
-    comp = sub.add_parser("completion", 
+    comp = sub.add_parser("completion",
                          help="Generate shell completion scripts",
                          description="Generate shell completion scripts for bash, zsh, or fish. Install the generated script to enable tab completion for backlog commands.")
     # Standardized option ordering: positional → required → optional → file → safety → output
@@ -1679,17 +1680,17 @@ FILES: Default is backlog.md; use --file to specify alternative.
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     argv = list(argv or sys.argv[1:])
-    
+
     # Load configuration from .backlogrc
     config = load_config()
-    
+
     # Handle command shortcuts before parsing
     argv = handle_command_shortcuts(argv)
-    
+
     parser = build_parser()
-    
+
     if not argv:
         parser.print_help()
         return 0
@@ -1698,12 +1699,12 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     args = parser.parse_args(argv)
-    
+
     # Apply configuration defaults for arguments that weren't provided
     # We can detect this by checking if the argument value matches the action's default
     # Skip certain arguments that are commonly overridden or have complex detection
     skip_config_keys = {'color'}  # Skip color since --color/--no-color detection is unreliable
-    
+
     for key, value in config.items():
         if key in skip_config_keys:
             continue
@@ -1715,10 +1716,10 @@ def main(argv: list[str] | None = None) -> int:
                 if hasattr(a, 'dest') and a.dest == key:
                     action = a
                     break
-            
+
             if action and getattr(args, key) == action.default:
                 setattr(args, key, value)
-    
+
     func = getattr(args, "func", None)
     if func is None:
         parser.print_help()

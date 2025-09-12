@@ -7,7 +7,7 @@ import logging
 import os
 import shutil
 import time
-from typing import List
+from typing import List, Optional
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -185,7 +185,7 @@ def restore_backup(path: str, backup_path: str) -> None:
     os.replace(tmp, path)
 
 
-def prune_backups(path: str, keep: int | None = None, older_than_days: int | None = None) -> list[str]:
+def prune_backups(path: str, keep: Optional[int] = None, older_than_days: Optional[int] = None) -> List[str]:
     """Prune backups for `path` by keeping the newest `keep` files and/or removing files older than `older_than_days`.
 
     Args:

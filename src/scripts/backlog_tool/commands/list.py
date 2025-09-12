@@ -1,13 +1,13 @@
 """List-related commands for the backlog CLI."""
 import argparse
 import sys
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from .. import parser as bl
 from ..parser import Backlog, Epic, Task
 
 
-def _ansi(text: str, code: str | None) -> str:
+def _ansi(text: str, code: Optional[str]) -> str:
     """Apply ANSI color codes to text."""
     if not code:
         return text
