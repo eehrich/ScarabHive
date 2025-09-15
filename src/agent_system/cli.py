@@ -32,6 +32,69 @@ color_mode: str = "auto"
 logger = logging.getLogger(__name__)
 
 
+def _atomic_write_text(path: Path, data: str) -> None:
+    """Atomically write text to `path` by writing to a temp file in the
+    same directory and renaming it into place. Ensures durable write where
+    possible by flushing and syncing file content and directory."""
+    dirpath = path.parent
+    fd, tmp = tempfile.mkstemp(dir=dirpath)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except Exception:
+                # Some platforms or filesystems may not support fsync; ignore
+                pass
+        try:
+            os.replace(tmp, str(path))
+        except Exception:
+            # On some systems os.replace requires str paths
+            os.replace(tmp, path)
+        # Attempt to sync directory metadata
+        try:
+            # os.O_DIRECTORY is not available on all platforms (notably
+            # Windows). Only attempt to open and fsync the directory when
+            # the flag exists; otherwise skip directory fsync.
+            if hasattr(os, "O_DIRECTORY"):
+                dirfd = os.open(dirpath, os.O_DIRECTORY)
+                try:
+                    os.fsync(dirfd)
+                finally:
+                    os.close(dirfd)
+        except Exception:
+            pass
+    finally:
+        # Clean up tmp if still exists
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except Exception:
+            pass
+
+
+async def _maybe_await_get_client(mcp_integration: MCPIntegration, name: str):
+    """Call client_manager.get_client(name) and await if it returns a coroutine.
+
+    Some implementations expose `get_client` as a coroutine (tests may use
+    AsyncMock), while others provide a synchronous method. This helper
+    abstracts that difference so callers can `await _maybe_await_get_client(..)`.
+    """
+    try:
+        res = mcp_integration.client_manager.get_client(name)
+    except Exception:
+        # If attribute access raises, propagate None
+        return None
+    import inspect
+    if inspect.isawaitable(res):
+        try:
+            return await res
+        except Exception:
+            return None
+    return res
+
+
 async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
     """List configured external MCP servers."""
     servers = []
@@ -39,7 +102,7 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
     # List servers from configuration
     for name, server_config in mcp_integration.mcp_config.servers.items():
         # Check if there's a connected client
-        client = mcp_integration.client_manager.get_client(name)
+        client = await _maybe_await_get_client(mcp_integration, name)
         is_connected = client is not None
 
         server_info = {
@@ -140,7 +203,7 @@ async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str 
             return
 
         server_config = mcp_integration.mcp_config.servers[server_name]
-        client = mcp_integration.client_manager.get_client(server_name)
+        client = await _maybe_await_get_client(mcp_integration, server_name)
         is_connected = client is not None
 
         status_info = {
@@ -153,7 +216,6 @@ async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str 
 
         if client and is_connected:
             # Get additional status info if available
-            result = None
             try:
                 tools = await client.list_tools()
                 status_info["tools_count"] = len(tools) if tools else 0
@@ -182,7 +244,7 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
 
     try:
         # Check if already connected, if not connect
-        client = mcp_integration.client_manager.get_client(server_name)
+        client = await _maybe_await_get_client(mcp_integration, server_name)
         if not client:
             client_config = {
                 "transport": server_config.transport_type,
@@ -197,7 +259,7 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
                 client_config["initialization_options"] = server_config.initialization_options
 
             await mcp_integration.client_manager.add_client(server_name, client_config)
-            client = mcp_integration.client_manager.get_client(server_name)
+            client = await _maybe_await_get_client(mcp_integration, server_name)
             client_created_for_test = True
 
         if not client:
@@ -231,6 +293,203 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
                 await mcp_integration.client_manager.remove_client(server_name)
             except Exception as cleanup_error:
                 logger.debug(f"Error cleaning up test client {server_name}: {cleanup_error}")
+
+
+async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
+    """Manage tools for a specific MCP server (list, allow, block)."""
+    if server_name not in mcp_integration.mcp_config.servers:
+        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
+        return
+
+    # Tool action is in the 'key' argument
+    tool_action = getattr(args, 'key', None)
+    if not tool_action:
+        print(json.dumps({"error": "Tool action required: list, allow, or block"}, ensure_ascii=False))
+        return
+    
+    if tool_action == "list":
+        await _list_server_tools(mcp_integration, server_name)
+    elif tool_action == "allow":
+        tool_name = getattr(args, 'value', None)
+        if not tool_name:
+            print(json.dumps({"error": "Tool name required for allow action"}, ensure_ascii=False))
+            return
+        await _allow_server_tool(mcp_integration, server_name, tool_name)
+    elif tool_action == "block":
+        tool_name = getattr(args, 'value', None)
+        if not tool_name:
+            print(json.dumps({"error": "Tool name required for block action"}, ensure_ascii=False))
+            return
+        await _block_server_tool(mcp_integration, server_name, tool_name)
+    else:
+        print(json.dumps({"error": f"Unknown tool action: {tool_action}. Use list, allow, or block"}, ensure_ascii=False))
+
+
+async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str) -> None:
+    """List all available tools for a server and show filtering configuration."""
+    server_config = mcp_integration.mcp_config.servers[server_name]
+    
+    # Get current tool filtering config
+    allowed_tools = getattr(server_config, 'allowed_tools', None)
+    blocked_tools = getattr(server_config, 'blocked_tools', None)
+    
+    # Try to connect and list tools
+    try:
+        client = await _maybe_await_get_client(mcp_integration, server_name)
+        client_created = False
+        
+        if not client and server_config.enabled:
+            # Create temporary client to list tools
+            client_config = {
+                "transport": server_config.transport_type,
+                "url": server_config.url,
+                "client_name": f"AgentSystem-{server_name}",
+                "timeout": server_config.timeout,
+                "ssl_verify": server_config.ssl_verify
+            }
+            
+            if server_config.initialization_options:
+                client_config["initialization_options"] = server_config.initialization_options
+                
+            await mcp_integration.client_manager.add_client(server_name, client_config)
+            client = await _maybe_await_get_client(mcp_integration, server_name)
+            client_created = True
+        
+        available_tools = []
+        if client:
+            try:
+                tools = await client.list_tools()
+                available_tools = [tool.name for tool in tools] if tools else []
+            except Exception as e:
+                print(json.dumps({"error": f"Failed to list tools: {str(e)}"}, ensure_ascii=False))
+                return
+        
+        result = {
+            "server": server_name,
+            "available_tools": available_tools,
+            "filtering": {
+                "allowed_tools": allowed_tools,
+                "blocked_tools": blocked_tools
+            }
+        }
+        
+        if allowed_tools:
+            result["effective_tools"] = [t for t in available_tools if t in allowed_tools]
+        elif blocked_tools:
+            result["effective_tools"] = [t for t in available_tools if t not in blocked_tools]
+        else:
+            result["effective_tools"] = available_tools
+            
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        
+        # Clean up temporary client
+        if client_created:
+            try:
+                await mcp_integration.client_manager.remove_client(server_name)
+            except Exception as cleanup_error:
+                logger.debug(f"Error cleaning up tool list client {server_name}: {cleanup_error}")
+                
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to list tools for {server_name}: {str(e)}"}, ensure_ascii=False))
+
+
+async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
+    """Add a tool to the allowed_tools list for a server."""
+    cfg_path = Path("config/mcp.yaml")
+    if not cfg_path.exists():
+        print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
+        return
+
+    try:
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
+        return
+
+    mcp_block = raw.get("mcp", raw)
+    servers = mcp_block.get("external_servers", {})
+    if server_name not in servers:
+        print(json.dumps({"error": f"Server {server_name} not found in config"}, ensure_ascii=False))
+        return
+
+    server_cfg = servers[server_name] or {}
+    allowed = list(server_cfg.get("allowed_tools") or [])
+    blocked = list(server_cfg.get("blocked_tools") or [])
+
+    if tool_name in allowed:
+        print(json.dumps({"message": "Tool already allowed", "server": server_name, "tool": tool_name}, ensure_ascii=False))
+        return
+
+    # Ensure tool is not in blocked list
+    if tool_name in blocked:
+        blocked.remove(tool_name)
+        server_cfg["blocked_tools"] = blocked
+
+    allowed.append(tool_name)
+    server_cfg["allowed_tools"] = allowed
+    servers[server_name] = server_cfg
+    mcp_block["external_servers"] = servers
+    # Put back into top-level structure if original used mcp key
+    if "mcp" in raw:
+        raw["mcp"] = mcp_block
+    else:
+        raw = mcp_block
+
+    try:
+        data = yaml.safe_dump(raw, sort_keys=False)
+        _atomic_write_text(cfg_path, data)
+        print(json.dumps({"message": "allowed_tools updated", "server": server_name, "tool": tool_name}, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to write config: {str(e)}"}, ensure_ascii=False))
+
+
+async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
+    """Add a tool to the blocked_tools list for a server."""
+    cfg_path = Path("config/mcp.yaml")
+    if not cfg_path.exists():
+        print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
+        return
+
+    try:
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
+        return
+
+    mcp_block = raw.get("mcp", raw)
+    servers = mcp_block.get("external_servers", {})
+    if server_name not in servers:
+        print(json.dumps({"error": f"Server {server_name} not found in config"}, ensure_ascii=False))
+        return
+
+    server_cfg = servers[server_name] or {}
+    allowed = list(server_cfg.get("allowed_tools") or [])
+    blocked = list(server_cfg.get("blocked_tools") or [])
+
+    if tool_name in blocked:
+        print(json.dumps({"message": "Tool already blocked", "server": server_name, "tool": tool_name}, ensure_ascii=False))
+        return
+
+    # Ensure tool is not in allowed list
+    if tool_name in allowed:
+        allowed.remove(tool_name)
+        server_cfg["allowed_tools"] = allowed
+
+    blocked.append(tool_name)
+    server_cfg["blocked_tools"] = blocked
+    servers[server_name] = server_cfg
+    mcp_block["external_servers"] = servers
+    if "mcp" in raw:
+        raw["mcp"] = mcp_block
+    else:
+        raw = mcp_block
+
+    try:
+        data = yaml.safe_dump(raw, sort_keys=False)
+        _atomic_write_text(cfg_path, data)
+        print(json.dumps({"message": "blocked_tools updated", "server": server_name, "tool": tool_name}, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to write config: {str(e)}"}, ensure_ascii=False))
 
 
 def _supports_color() -> bool:
@@ -346,16 +605,79 @@ def main() -> None:
     plugins_parser.add_argument("--show-metadata", dest="show_metadata", action="store_true", help="Also display plugin._plugin_metadata in listing (JSON output only)")
     plugins_parser.add_argument("--raw", dest="raw", action="store_true", help="Show raw factory information for 'info' action")
 
-    # mcp subcommand for external server management
+    # mcp subcommand for external server management (use subparsers so each
+    # action can provide its own help output). We keep argument names that
+    # the existing handler expects (`server`, `key`, `value`) for
+    # backwards-compatibility with the rest of the code.
     mcp_parser = subparsers.add_parser("mcp", help="Manage external MCP servers")
-    mcp_parser.add_argument("action", choices=["list", "connect", "disconnect", "status", "test", "enable", "disable", "feature"], nargs="?", default="list", help="Action to perform on external MCP servers")
-    mcp_parser.add_argument("server", nargs="?", help="Server name for connect/disconnect/test actions")
-    # For feature subcommands: key is subaction (list/set) or feature name; value is on/off
-    mcp_parser.add_argument("key", nargs="?", help="Feature subcommand or feature name (for feature set)")
-    mcp_parser.add_argument("value", nargs="?", help="Feature value (on|off) for feature set)")
+    # Global options for mcp
     mcp_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for server listing")
     mcp_parser.add_argument("--timeout", dest="timeout", type=int, default=30, help="Timeout in seconds for connection operations")
     mcp_parser.add_argument("--no-probe", dest="no_probe", action="store_true", help="When listing features, don't probe the live server for reported capabilities; only show configured values")
+
+    # Per-action subparsers
+    # Provide a description so `mcp --help` shows a helpful line expected by tests.
+    mcp_subparsers = mcp_parser.add_subparsers(dest="action", description="Action to perform on external MCP servers")
+
+    # Helper to add mcp-level options to individual action subparsers so
+    # users may place them after the action (e.g. `mcp list --format json`).
+    def _add_mcp_common_opts(p):
+        try:
+            p.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for server listing")
+        except Exception:
+            pass
+        try:
+            p.add_argument("--timeout", dest="timeout", type=int, default=30, help="Timeout in seconds for connection operations")
+        except Exception:
+            pass
+        try:
+            p.add_argument("--no-probe", dest="no_probe", action="store_true", help="When listing features, don't probe the live server for reported capabilities; only show configured values")
+        except Exception:
+            pass
+
+    # list
+    list_p = mcp_subparsers.add_parser("list", help="List configured external MCP servers")
+    _add_mcp_common_opts(list_p)
+
+    # connect / disconnect
+    connect_p = mcp_subparsers.add_parser("connect", help="Connect to an external MCP server")
+    _add_mcp_common_opts(connect_p)
+    connect_p.add_argument("server", nargs="?", help="Server name to connect")
+    disconnect_p = mcp_subparsers.add_parser("disconnect", help="Disconnect from an external MCP server")
+    _add_mcp_common_opts(disconnect_p)
+    disconnect_p.add_argument("server", nargs="?", help="Server name to disconnect")
+
+    # status
+    status_p = mcp_subparsers.add_parser("status", help="Show status for a server or all servers")
+    _add_mcp_common_opts(status_p)
+    status_p.add_argument("server", nargs="?", help="Optional server name to show status for")
+
+    # test
+    test_p = mcp_subparsers.add_parser("test", help="Test connectivity and basic functionality of an external MCP server")
+    _add_mcp_common_opts(test_p)
+    test_p.add_argument("server", nargs="?", help="Server name for test action")
+
+    # enable / disable (persisted to config)
+    enable_p = mcp_subparsers.add_parser("enable", help="Enable a configured external MCP server")
+    _add_mcp_common_opts(enable_p)
+    enable_p.add_argument("server", nargs="?", help="Server name to enable")
+    disable_p = mcp_subparsers.add_parser("disable", help="Disable a configured external MCP server")
+    _add_mcp_common_opts(disable_p)
+    disable_p.add_argument("server", nargs="?", help="Server name to disable")
+
+    # feature (keeps key/value semantics)
+    feature_p = mcp_subparsers.add_parser("feature", help="Manage MCP feature flags")
+    _add_mcp_common_opts(feature_p)
+    feature_p.add_argument("server", nargs="?", help="Server name for feature actions")
+    feature_p.add_argument("key", nargs="?", help="Feature subcommand or feature name (for feature set)")
+    feature_p.add_argument("value", nargs="?", help="Feature value (on|off) for feature set)")
+
+    # tool subcommand: provide natural help for tool usage
+    tool_p = mcp_subparsers.add_parser("tool", help="Manage individual tools on an MCP server")
+    _add_mcp_common_opts(tool_p)
+    tool_p.add_argument("server", nargs="?", help="Server name for tool actions")
+    tool_p.add_argument("key", nargs="?", choices=["list", "allow", "block"], help="Tool action: list, allow, or block")
+    tool_p.add_argument("value", nargs="?", help="Tool name for allow/block actions")
     # enable/disable always persist; no interactive prompt or dry-run
 
     args = parser.parse_args(argv[1:])
@@ -763,7 +1085,7 @@ def main() -> None:
                         if getattr(args, "no_probe", False):
                             client = None
                         else:
-                            client = mcp_integration.client_manager.get_client(server_name)
+                            client = await _maybe_await_get_client(mcp_integration, server_name)
                         capabilities = None
                         if client:
                             try:
@@ -847,6 +1169,13 @@ def main() -> None:
                         result = None
                         return
                     result = await _mcp_test_server(mcp_integration, server_name, args)
+                    return
+                elif action == "tool":
+                    if not server_name:
+                        print(json.dumps({"error": "server name required for tool action"}, ensure_ascii=False))
+                        result = None
+                        return
+                    result = await _mcp_tool_management(mcp_integration, server_name, args)
                     return
             finally:
                 # Ensure we always attempt to shutdown the integration so any
