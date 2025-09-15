@@ -92,7 +92,7 @@ class MCPIntegration:
             try:
                 # Create client config for the server
                 client_config = {
-                    "transport": "http",
+                    "transport": server_config.transport_type,
                     "url": server_config.url,
                     "client_name": f"AgentSystem-{server_name}",
                     "timeout": server_config.timeout,

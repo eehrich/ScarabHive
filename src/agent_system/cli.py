@@ -29,6 +29,8 @@ from .servers.agent.server import Agent
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
 
+logger = logging.getLogger(__name__)
+
 
 async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
     """List configured external MCP servers."""
@@ -106,9 +108,14 @@ async def _mcp_connect_server(mcp_integration: MCPIntegration, server_name: str,
     try:
         # Create client config
         client_config = {
-            "transport": "http",
+            "transport": server_config.transport_type,
             "url": server_config.url
         }
+
+        # Add initialization options if present
+        if server_config.initialization_options:
+            client_config["initialization_options"] = server_config.initialization_options
+
         await mcp_integration.client_manager.add_client(server_name, client_config)
         print(json.dumps({"result": "connected", "server": server_name}, ensure_ascii=False))
     except Exception as e:
@@ -170,12 +177,14 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
         print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
         return
 
+    client_created_for_test = False
+
     try:
         # Check if already connected, if not connect
         client = mcp_integration.client_manager.get_client(server_name)
         if not client:
             client_config = {
-                "transport": "http",
+                "transport": server_config.transport_type,
                 "url": server_config.url,
                 "client_name": f"AgentSystem-{server_name}",
                 "timeout": server_config.timeout,
@@ -188,6 +197,7 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
 
             await mcp_integration.client_manager.add_client(server_name, client_config)
             client = mcp_integration.client_manager.get_client(server_name)
+            client_created_for_test = True
 
         if not client:
             print(json.dumps({"error": f"Failed to create client for {server_name}"}, ensure_ascii=False))
@@ -213,6 +223,13 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
 
     except Exception as e:
         print(json.dumps({"error": f"Test failed for {server_name}: {str(e)}"}, ensure_ascii=False))
+    finally:
+        # Clean up temporary client created for testing
+        if client_created_for_test:
+            try:
+                await mcp_integration.client_manager.remove_client(server_name)
+            except Exception as cleanup_error:
+                logger.debug(f"Error cleaning up test client {server_name}: {cleanup_error}")
 
 
 def _supports_color() -> bool:

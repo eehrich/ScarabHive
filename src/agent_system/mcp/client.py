@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from .core import MCPClient, MCPTool, MCPMessage, MCPTransport
 from .transport import HTTPTransport
+from .smithery_transport import SmitheryHTTPTransport
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,28 @@ class MCPClientFactory:
         return client
 
     @staticmethod
+    async def create_smithery_client(
+        base_url: str,
+        client_name: str = "AgentSystem",
+        timeout: float = 30.0,
+        ssl_verify: bool = True,
+        initialization_options: Optional[Dict[str, Any]] = None
+    ) -> StandardMCPClient:
+        """Create a Smithery-based MCP client"""
+        transport = SmitheryHTTPTransport(
+            base_url=base_url,
+            config=initialization_options or {},
+            timeout=timeout,
+            ssl_verify=ssl_verify
+        )
+
+        client = StandardMCPClient(transport, client_name, initialization_options)
+        await client.connect()
+        await client.initialize()
+
+        return client
+
+    @staticmethod
     async def create_client_from_config(config: Dict[str, Any]) -> StandardMCPClient:
         """Create an MCP client from configuration"""
         transport_type = config.get("transport", "http")
@@ -306,6 +329,19 @@ class MCPClientFactory:
                 raise ValueError("Missing 'url' or 'base_url' in client configuration")
 
             return await MCPClientFactory.create_http_client(
+                base_url=base_url,
+                client_name=config.get("client_name", "AgentSystem"),
+                timeout=config.get("timeout", 30.0),
+                ssl_verify=config.get("ssl_verify", True),
+                initialization_options=config.get("initialization_options")
+            )
+        elif transport_type == "smithery":
+            # Support both 'url' and 'base_url' for compatibility
+            base_url = config.get("base_url") or config.get("url")
+            if not base_url:
+                raise ValueError("Missing 'url' or 'base_url' in client configuration")
+
+            return await MCPClientFactory.create_smithery_client(
                 base_url=base_url,
                 client_name=config.get("client_name", "AgentSystem"),
                 timeout=config.get("timeout", 30.0),

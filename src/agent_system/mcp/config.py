@@ -36,6 +36,7 @@ class MCPServerConfig:
     timeout: float = 30.0
     max_retries: int = 3
     retry_delay: float = 1.0
+    transport_type: str = "http"  # http, smithery
 
     # Initialization options for MCP server
     initialization_options: Dict[str, Any] = field(default_factory=dict)
@@ -162,6 +163,7 @@ class MCPConfigManager:
         config.timeout = data.get("timeout", 30.0)
         config.max_retries = data.get("max_retries", 3)
         config.retry_delay = data.get("retry_delay", 1.0)
+        config.transport_type = data.get("transport_type", "http")
 
         # Initialization options
         config.initialization_options = data.get("initialization_options", {})
