@@ -1,8 +1,10 @@
 """
-Smithery HTTP Transport for MCP
+HTTP Streaming (SSE) Transport for MCP
 
-Implements Smithery-specific HTTP transport for MCP communication.
-Smithery uses Server-Sent Events (SSE) and requires config as base64 query parameter.
+Implements an HTTP transport that supports Server-Sent Events (SSE)
+and configuration encoded in the query string. This transport is a
+streaming-capable HTTP transport suitable for MCP servers that use
+SSE/text-event-stream responses and session headers.
 """
 
 from __future__ import annotations
@@ -18,8 +20,8 @@ from .core import MCPTransport, MCPMessage, MCPError
 logger = logging.getLogger(__name__)
 
 
-class SmitheryHTTPTransport(MCPTransport):
-    """Smithery-specific HTTP transport implementation for MCP"""
+class HTTPStreamingTransport(MCPTransport):
+    """HTTP streaming (SSE) transport implementation for MCP"""
 
     def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None, timeout: float = 30.0, ssl_verify: bool = True):
         self.base_url = base_url.rstrip('/')
@@ -34,7 +36,7 @@ class SmitheryHTTPTransport(MCPTransport):
         if self.session is None:
             connector = aiohttp.TCPConnector(verify_ssl=self.ssl_verify)
             timeout = aiohttp.ClientTimeout(total=self.timeout)
-            # Smithery requires specific headers
+            # Streaming HTTP servers often require headers that accept SSE
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream"
@@ -53,10 +55,10 @@ class SmitheryHTTPTransport(MCPTransport):
         self.session_id = None
 
     def _build_url(self) -> str:
-        """Build URL with config parameter for Smithery"""
+        """Build URL with optional config parameter for streaming transport"""
         url = f"{self.base_url}/mcp"
         if self.config:
-            # Encode config as base64 for Smithery
+            # Encode config as base64 for the transport
             config_json = json.dumps(self.config)
             config_b64 = base64.b64encode(config_json.encode()).decode()
             url += f"?config={config_b64}"
@@ -136,7 +138,7 @@ class SmitheryHTTPTransport(MCPTransport):
         raise NotImplementedError("HTTP transport uses request-response pattern")
 
     async def send_request(self, message: MCPMessage) -> MCPMessage:
-        """Send request and return response for Smithery HTTP"""
+        """Send request and return response for streaming HTTP"""
         if not self.session:
             await self.connect()
 
@@ -159,6 +161,11 @@ class SmitheryHTTPTransport(MCPTransport):
             if self.session_id and message.method != "initialize":
                 headers['Mcp-Session-Id'] = self.session_id
 
+            # Debug: log initialize payload and destination when debugging 422 errors
+            if message.method == "initialize":
+                logger.debug(f"Sending initialize to {url} with headers={headers} payload={json.dumps(payload)} config={self.config}")
+                # Also print to stdout so CLI captures it regardless of logger config
+                print(json.dumps({"debug_initialize": {"url": url, "headers": headers, "payload": payload, "config": self.config}}, default=str), flush=True)
             async with self.session.post(url, json=payload, headers=headers or None) as response:
                 if response.status != 200:
                     error_text = await response.text()
@@ -173,7 +180,7 @@ class SmitheryHTTPTransport(MCPTransport):
                         )
                     )
 
-                # Smithery returns SSE format for some responses
+                # Streaming servers may return SSE format for some responses
                 content_type = response.headers.get('content-type', '')
                 if 'text/event-stream' in content_type:
                     # Parse SSE response
@@ -229,7 +236,7 @@ class SmitheryHTTPTransport(MCPTransport):
                     # If no session in headers, mark as connection-based
                     if not self.session_id:
                         self.session_id = "connection-based"
-                        logger.info("Using connection-based session for Smithery")                # Parse JSON-RPC response
+                        logger.info("Using connection-based session for streaming")                # Parse JSON-RPC response
                 error = None
                 if "error" in response_data:
                     error_data = response_data["error"]

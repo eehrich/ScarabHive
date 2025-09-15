@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from .core import MCPClient, MCPTool, MCPMessage, MCPTransport
 from .transport import HTTPTransport
-from .smithery_transport import SmitheryHTTPTransport
+from .streaming_transport import HTTPStreamingTransport
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +53,8 @@ class StandardMCPClient(MCPClient):
             }
         }
 
-        # Add initialization options if provided
-        if self.initialization_options:
-            params["initializationOptions"] = self.initialization_options
+        # Include initialization options (may be empty) - some servers expect the key
+        params["initializationOptions"] = self.initialization_options or {}
 
         # Send initialize request
         request = MCPMessage(
@@ -73,13 +72,6 @@ class StandardMCPClient(MCPClient):
 
         if response.error:
             raise Exception(f"Initialize failed: {response.error.message}")
-
-        result = response.result
-        self.server_info = result.get("serverInfo", {})
-        self.server_capabilities = result.get("capabilities", {})
-
-        logger.info(f"Connected to MCP server: {self.server_info.get('name', 'Unknown')}")
-        return result
 
         result = response.result
         self.server_info = result.get("serverInfo", {})
@@ -296,15 +288,15 @@ class MCPClientFactory:
         return client
 
     @staticmethod
-    async def create_smithery_client(
+    async def create_streaming_client(
         base_url: str,
         client_name: str = "AgentSystem",
         timeout: float = 30.0,
         ssl_verify: bool = True,
         initialization_options: Optional[Dict[str, Any]] = None
     ) -> StandardMCPClient:
-        """Create a Smithery-based MCP client"""
-        transport = SmitheryHTTPTransport(
+        """Create a streaming MCP client"""
+        transport = HTTPStreamingTransport(
             base_url=base_url,
             config=initialization_options or {},
             timeout=timeout,
@@ -335,13 +327,13 @@ class MCPClientFactory:
                 ssl_verify=config.get("ssl_verify", True),
                 initialization_options=config.get("initialization_options")
             )
-        elif transport_type == "smithery":
+        elif transport_type == "streaming":
             # Support both 'url' and 'base_url' for compatibility
             base_url = config.get("base_url") or config.get("url")
             if not base_url:
                 raise ValueError("Missing 'url' or 'base_url' in client configuration")
 
-            return await MCPClientFactory.create_smithery_client(
+            return await MCPClientFactory.create_streaming_client(
                 base_url=base_url,
                 client_name=config.get("client_name", "AgentSystem"),
                 timeout=config.get("timeout", 30.0),

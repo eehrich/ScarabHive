@@ -163,7 +163,8 @@ class MCPConfigManager:
         config.timeout = data.get("timeout", 30.0)
         config.max_retries = data.get("max_retries", 3)
         config.retry_delay = data.get("retry_delay", 1.0)
-        config.transport_type = data.get("transport_type", "http")
+        # Support new key `transport` while preserving backward-compatible `transport_type`
+        config.transport_type = data.get("transport") or data.get("transport_type", "http")
 
         # Initialization options
         config.initialization_options = data.get("initialization_options", {})
