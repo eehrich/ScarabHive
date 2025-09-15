@@ -21,12 +21,190 @@ from .config.settings import load_settings
 from .mcp.plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
+from .mcp.integration import MCPIntegration
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
 
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
+
+
+async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
+    """List configured external MCP servers."""
+    servers = []
+    
+    # List servers from configuration
+    for name, server_config in mcp_integration.mcp_config.servers.items():
+        # Check if there's a connected client
+        client = mcp_integration.client_manager.get_client(name)
+        is_connected = client is not None
+        
+        server_info = {
+            "name": name,
+            "address": server_config.url,
+            "connected": is_connected,
+            "enabled": server_config.enabled,
+            "description": server_config.description or ""
+        }
+        servers.append(server_info)
+    
+    if args.out_format == "json":
+        print(json.dumps(servers, indent=2, ensure_ascii=False))
+    else:
+        # Table format
+        if not servers:
+            print("No external MCP servers configured.")
+            return
+            
+        rows = []
+        for server in servers:
+            status = "Connected" if server["connected"] else "Disconnected"
+            if not server["enabled"]:
+                status = "Disabled"
+            
+            if _supports_color():
+                if server["connected"]:
+                    status = _colorize(status, "32")  # green
+                elif server["enabled"]:
+                    status = _colorize(status, "31")  # red
+                else:
+                    status = _colorize(status, "90")  # gray
+            
+            rows.append((server["name"], server["address"], status, server["description"]))
+        
+        headers = ["NAME", "ADDRESS", "STATUS", "DESCRIPTION"]
+        if tabulate:
+            print(tabulate(rows, headers=headers, tablefmt="github"))
+        else:
+            # Simple fallback
+            if rows:
+                name_w = max(len(str(r[0])) for r in rows)
+                addr_w = max(len(str(r[1])) for r in rows)
+                status_w = max(len(str(r[2])) for r in rows) 
+                desc_w = max(len(str(r[3])) for r in rows)
+            else:
+                name_w = addr_w = status_w = desc_w = 10
+            hdr = f"{'NAME'.ljust(name_w)}  {'ADDRESS'.ljust(addr_w)}  {'STATUS'.ljust(status_w)}  {'DESCRIPTION'.ljust(desc_w)}"
+            print(hdr)
+            print("-" * len(hdr))
+            for n, a, s, d in rows:
+                print(f"{str(n).ljust(name_w)}  {str(a).ljust(addr_w)}  {str(s).ljust(status_w)}  {str(d).ljust(desc_w)}")
+
+
+async def _mcp_connect_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
+    """Connect to an external MCP server."""
+    if server_name not in mcp_integration.mcp_config.servers:
+        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
+        return
+    
+    server_config = mcp_integration.mcp_config.servers[server_name]
+    if not server_config.enabled:
+        print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
+        return
+    
+    try:
+        # Create client config
+        client_config = {
+            "transport": "http",
+            "url": server_config.url
+        }
+        await mcp_integration.client_manager.add_client(server_name, client_config)
+        print(json.dumps({"result": "connected", "server": server_name}, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to connect to {server_name}: {str(e)}"}, ensure_ascii=False))
+
+
+async def _mcp_disconnect_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
+    """Disconnect from an external MCP server."""
+    try:
+        await mcp_integration.client_manager.remove_client(server_name)
+        print(json.dumps({"result": "disconnected", "server": server_name}, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to disconnect from {server_name}: {str(e)}"}, ensure_ascii=False))
+
+
+async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str | None, args: Any) -> None:
+    """Show status of external MCP servers."""
+    if server_name:
+        # Status for specific server
+        if server_name not in mcp_integration.mcp_config.servers:
+            print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
+            return
+        
+        server_config = mcp_integration.mcp_config.servers[server_name]
+        client = mcp_integration.client_manager.get_client(server_name)
+        is_connected = client is not None
+        
+        status_info = {
+            "name": server_name,
+            "connected": is_connected,
+            "enabled": server_config.enabled,
+            "address": server_config.url,
+            "description": server_config.description or ""
+        }
+        
+        if client and is_connected:
+            # Get additional status info if available
+            try:
+                tools = await client.list_tools()
+                status_info["tools_count"] = len(tools) if tools else 0
+                status_info["tools"] = [tool.name for tool in tools] if tools else []
+            except Exception as e:
+                status_info["tools_error"] = str(e)
+        
+        print(json.dumps(status_info, indent=2, ensure_ascii=False))
+    else:
+        # Status for all servers
+        await _mcp_list_servers(mcp_integration, args)
+
+
+async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
+    """Test connectivity and basic functionality of an external MCP server."""
+    if server_name not in mcp_integration.mcp_config.servers:
+        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
+        return
+    
+    server_config = mcp_integration.mcp_config.servers[server_name]
+    if not server_config.enabled:
+        print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
+        return
+    
+    try:
+        # Check if already connected, if not connect
+        client = mcp_integration.client_manager.get_client(server_name)
+        if not client:
+            client_config = {
+                "transport": "http",
+                "url": server_config.url
+            }
+            await mcp_integration.client_manager.add_client(server_name, client_config)
+            client = mcp_integration.client_manager.get_client(server_name)
+        
+        if not client:
+            print(json.dumps({"error": f"Failed to create client for {server_name}"}, ensure_ascii=False))
+            return
+        
+        # Test basic functionality - list tools
+        try:
+            tools = await client.list_tools()
+            test_result = {
+                "server": server_name,
+                "connection": "success",
+                "tools_count": len(tools) if tools else 0,
+                "tools": [tool.name for tool in tools] if tools else []
+            }
+        except Exception as e:
+            test_result = {
+                "server": server_name,
+                "connection": "success",
+                "tools_test": f"failed: {str(e)}"
+            }
+        
+        print(json.dumps(test_result, indent=2, ensure_ascii=False))
+        
+    except Exception as e:
+        print(json.dumps({"error": f"Test failed for {server_name}: {str(e)}"}, ensure_ascii=False))
 
 
 def _supports_color() -> bool:
@@ -88,7 +266,7 @@ def main() -> None:
         pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
-    known = ("plugins", "run", "status", "-h", "--help")
+    known = ("plugins", "mcp", "run", "status", "-h", "--help")
     if rest:
         if not rest[0].startswith("-") and rest[0] not in known:
             rest.insert(0, "run")
@@ -141,6 +319,13 @@ def main() -> None:
     plugins_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for plugin listing")
     plugins_parser.add_argument("--show-metadata", dest="show_metadata", action="store_true", help="Also display plugin._plugin_metadata in listing (JSON output only)")
     plugins_parser.add_argument("--raw", dest="raw", action="store_true", help="Show raw factory information for 'info' action")
+
+    # mcp subcommand for external server management
+    mcp_parser = subparsers.add_parser("mcp", help="Manage external MCP servers")
+    mcp_parser.add_argument("action", choices=["list", "connect", "disconnect", "status", "test"], nargs="?", default="list", help="Action to perform on external MCP servers")
+    mcp_parser.add_argument("server", nargs="?", help="Server name for connect/disconnect/test actions")
+    mcp_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for server listing")
+    mcp_parser.add_argument("--timeout", dest="timeout", type=int, default=30, help="Timeout in seconds for connection operations")
 
     args = parser.parse_args(argv[1:])
 
@@ -421,6 +606,44 @@ def main() -> None:
             return
 
         print(json.dumps(listing, indent=2, ensure_ascii=False))
+        return
+
+    # Handle MCP external server management subcommand
+    if args.subcommand == "mcp":
+        # Load MCP configuration and create integration
+        config_path = getattr(config.mcp, 'config_file', None) or "config/mcp.yaml"
+        
+        async def handle_mcp_command():
+            mcp_integration = MCPIntegration(config={"mcp": config.mcp.model_dump() if hasattr(config.mcp, 'model_dump') else config.mcp.__dict__})
+            
+            action = getattr(args, "action", "list")
+            server_name = getattr(args, "server", None)
+            
+            if action == "list":
+                return await _mcp_list_servers(mcp_integration, args)
+            elif action == "connect":
+                if not server_name:
+                    print(json.dumps({"error": "server name required for connect action"}, ensure_ascii=False))
+                    return
+                return await _mcp_connect_server(mcp_integration, server_name, args)
+            elif action == "disconnect":
+                if not server_name:
+                    print(json.dumps({"error": "server name required for disconnect action"}, ensure_ascii=False))
+                    return
+                return await _mcp_disconnect_server(mcp_integration, server_name, args)
+            elif action == "status":
+                return await _mcp_status_servers(mcp_integration, server_name, args)
+            elif action == "test":
+                if not server_name:
+                    print(json.dumps({"error": "server name required for test action"}, ensure_ascii=False))
+                    return
+                return await _mcp_test_server(mcp_integration, server_name, args)
+        
+        # Run the async MCP handler
+        try:
+            asyncio.run(handle_mcp_command())
+        except Exception as e:
+            print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return
 
     # Setup logging from config; file handler is created here. Console level is adjusted below.
