@@ -5,6 +5,8 @@ Implements an HTTP transport that supports Server-Sent Events (SSE)
 and configuration encoded in the query string. This transport is a
 streaming-capable HTTP transport suitable for MCP servers that use
 SSE/text-event-stream responses and session headers.
+
+Includes support for status event streaming via notifications.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import asyncio
 from typing import Any, Dict, Optional
 import aiohttp
 
@@ -99,6 +102,41 @@ class HTTPStreamingTransport(MCPTransport):
                     logger.warning(f"Initialized notification returned status {response.status}")
         except Exception as e:
             logger.error(f"Failed to send initialized notification: {e}")
+
+    async def send_notification(self, notification: MCPMessage) -> None:
+        """Send a JSON-RPC notification (no response expected)."""
+        if not self.session:
+            await self.connect()
+
+        # Convert notification to JSON-RPC 2.0 format
+        payload: Dict[str, Any] = {
+            "jsonrpc": notification.jsonrpc,
+            "method": notification.method
+        }
+        
+        if notification.params:
+            payload["params"] = notification.params
+
+        try:
+            if not self.session:
+                raise RuntimeError("Session not initialized")
+
+            url = self._build_url()
+            headers = {}
+
+            # Add session ID for authenticated sessions
+            if self.session_id and self.session_id != "connection-based":
+                headers['Mcp-Session-Id'] = self.session_id
+
+            async with self.session.post(url, json=payload, headers=headers or None) as response:
+                if response.status == 202:  # Notifications typically return 202 Accepted
+                    logger.debug(f"Successfully sent notification: {notification.method}")
+                else:
+                    logger.warning(f"Notification returned unexpected status {response.status}")
+
+        except Exception as e:
+            logger.error(f"Failed to send notification {notification.method}: {e}")
+            raise
 
     async def send_message(self, message: MCPMessage) -> None:
         """Send JSON-RPC message over HTTP POST"""

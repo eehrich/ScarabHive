@@ -21,6 +21,7 @@ from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics
+from ..mcp.integration import initialize_mcp, shutdown_mcp
 
 
 # Note: we set cache-control for static files via a small middleware in build_app()
@@ -114,6 +115,36 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
     agent = Agent("api_agent", config, registry)
+
+    # Initialize MCP integration on startup so the API can call external MCP
+    # servers and expose MCP-related endpoints. Use FastAPI startup/shutdown
+    # events to ensure proper async initialization and cleanup.
+    async def _init_mcp():
+        logger = logging.getLogger(__name__)
+        try:
+            # Use only the MCP configuration from the loaded agent.yaml config.
+            # Do NOT read separate mcp.yaml files; all configuration should be
+            # included via agent.yaml.
+            try:
+                mcp_block = config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {})
+            except Exception:
+                mcp_block = getattr(config.mcp, "__dict__", {})
+
+            await initialize_mcp({"mcp": mcp_block}, app)
+            logger.info("MCP integration initialized for API")
+        except Exception as e:
+            logger.exception("Failed to initialize MCP integration for API: %s", e)
+
+    async def _shutdown_mcp_event():
+        logger = logging.getLogger(__name__)
+        try:
+            await shutdown_mcp()
+            logger.info("MCP integration shut down for API")
+        except Exception as e:
+            logger.exception("Error shutting down MCP integration for API: %s", e)
+
+    app.add_event_handler("startup", _init_mcp)
+    app.add_event_handler("shutdown", _shutdown_mcp_event)
 
     @app.get("/health")
     def health():
