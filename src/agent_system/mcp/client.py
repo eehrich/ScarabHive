@@ -284,8 +284,13 @@ class MCPClientFactory:
         transport_type = config.get("transport", "http")
 
         if transport_type == "http":
+            # Support both 'url' and 'base_url' for compatibility
+            base_url = config.get("base_url") or config.get("url")
+            if not base_url:
+                raise ValueError("Missing 'url' or 'base_url' in client configuration")
+            
             return await MCPClientFactory.create_http_client(
-                base_url=config["base_url"],
+                base_url=base_url,
                 client_name=config.get("client_name", "AgentSystem"),
                 timeout=config.get("timeout", 30.0),
                 ssl_verify=config.get("ssl_verify", True)
