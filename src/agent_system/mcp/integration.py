@@ -16,6 +16,8 @@ from fastapi import FastAPI
 from .client import MCPClientManager
 from .plugin_adapter import plugin_mcp_registry
 from .http_server import MCPHTTPServer
+from .config import MCPConfig, MCPConfigManager
+from .security import configure_security
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,15 @@ logger = logging.getLogger(__name__)
 class MCPIntegration:
     """Main integration class for MCP functionality"""
     
-    def __init__(self, app: Optional[FastAPI] = None):
+    def __init__(self, app: Optional[FastAPI] = None, config: Optional[Dict[str, Any]] = None):
+        # Load configuration
+        self.config_manager = MCPConfigManager() 
+        self.mcp_config = self.config_manager.load_config(config)
+        
+        # Configure security if config provided
+        if config:
+            configure_security(config)
+        
         self.client_manager = MCPClientManager()
         self.plugin_registry = plugin_mcp_registry
         self.http_server = MCPHTTPServer(app)
@@ -35,6 +45,9 @@ class MCPIntegration:
             return
         
         mcp_config = config.get('mcp', {})
+        
+        # Load external servers from new configuration format
+        await self._setup_external_servers_from_config()
         
         # Discover and register plugins
         plugin_dirs = mcp_config.get('plugin_dirs', ['src/plugins'])
@@ -68,6 +81,19 @@ class MCPIntegration:
         """Shutdown MCP integration"""
         await self.client_manager.close_all()
         logger.info("MCP integration shut down")
+    
+    async def _setup_external_servers_from_config(self) -> None:
+        """Setup external servers from new configuration format"""
+        for server_name, server_config in self.mcp_config.servers.items():
+            if not server_config.enabled:
+                logger.debug(f"Skipping disabled MCP server: {server_name}")
+                continue
+            
+            try:
+                await self.client_manager.add_server(server_name, server_config.url)
+                logger.info(f"Connected to external MCP server: {server_name} at {server_config.url}")
+            except Exception as e:
+                logger.error(f"Failed to connect to MCP server {server_name}: {e}")
     
     def get_app(self) -> FastAPI:
         """Get the FastAPI app with MCP endpoints"""
