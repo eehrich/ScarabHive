@@ -133,11 +133,11 @@ class StandardMCPClient(MCPClient):
         # Extract content from MCP response format
         result = response.result
         if "content" in result:
-            content_items = result["content"]
-            if content_items and len(content_items) > 0:
-                first_content = content_items[0]
-                if first_content.get("type") == "text":
-                    return first_content.get("text", "")
+            content_items = result["content"] or []
+            # return the first text item found in order
+            for item in content_items:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    return item.get("text", "")
 
         return result
 

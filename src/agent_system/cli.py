@@ -33,13 +33,13 @@ color_mode: str = "auto"
 async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
     """List configured external MCP servers."""
     servers = []
-    
+
     # List servers from configuration
     for name, server_config in mcp_integration.mcp_config.servers.items():
         # Check if there's a connected client
         client = mcp_integration.client_manager.get_client(name)
         is_connected = client is not None
-        
+
         server_info = {
             "name": name,
             "address": server_config.url,
@@ -48,7 +48,7 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
             "description": server_config.description or ""
         }
         servers.append(server_info)
-    
+
     if args.out_format == "json":
         print(json.dumps(servers, indent=2, ensure_ascii=False))
     else:
@@ -56,13 +56,13 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
         if not servers:
             print("No external MCP servers configured.")
             return
-            
+
         rows = []
         for server in servers:
             status = "Connected" if server["connected"] else "Disconnected"
             if not server["enabled"]:
                 status = "Disabled"
-            
+
             if _supports_color():
                 if server["connected"]:
                     status = _colorize(status, "32")  # green
@@ -70,9 +70,9 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
                     status = _colorize(status, "31")  # red
                 else:
                     status = _colorize(status, "90")  # gray
-            
+
             rows.append((server["name"], server["address"], status, server["description"]))
-        
+
         headers = ["NAME", "ADDRESS", "STATUS", "DESCRIPTION"]
         if tabulate:
             print(tabulate(rows, headers=headers, tablefmt="github"))
@@ -81,7 +81,7 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
             if rows:
                 name_w = max(len(str(r[0])) for r in rows)
                 addr_w = max(len(str(r[1])) for r in rows)
-                status_w = max(len(str(r[2])) for r in rows) 
+                status_w = max(len(str(r[2])) for r in rows)
                 desc_w = max(len(str(r[3])) for r in rows)
             else:
                 name_w = addr_w = status_w = desc_w = 10
@@ -97,12 +97,12 @@ async def _mcp_connect_server(mcp_integration: MCPIntegration, server_name: str,
     if server_name not in mcp_integration.mcp_config.servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
-    
+
     server_config = mcp_integration.mcp_config.servers[server_name]
     if not server_config.enabled:
         print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
         return
-    
+
     try:
         # Create client config
         client_config = {
@@ -131,11 +131,11 @@ async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str 
         if server_name not in mcp_integration.mcp_config.servers:
             print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
             return
-        
+
         server_config = mcp_integration.mcp_config.servers[server_name]
         client = mcp_integration.client_manager.get_client(server_name)
         is_connected = client is not None
-        
+
         status_info = {
             "name": server_name,
             "connected": is_connected,
@@ -143,7 +143,7 @@ async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str 
             "address": server_config.url,
             "description": server_config.description or ""
         }
-        
+
         if client and is_connected:
             # Get additional status info if available
             try:
@@ -152,7 +152,7 @@ async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str 
                 status_info["tools"] = [tool.name for tool in tools] if tools else []
             except Exception as e:
                 status_info["tools_error"] = str(e)
-        
+
         print(json.dumps(status_info, indent=2, ensure_ascii=False))
     else:
         # Status for all servers
@@ -164,12 +164,12 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
     if server_name not in mcp_integration.mcp_config.servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
-    
+
     server_config = mcp_integration.mcp_config.servers[server_name]
     if not server_config.enabled:
         print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
         return
-    
+
     try:
         # Check if already connected, if not connect
         client = mcp_integration.client_manager.get_client(server_name)
@@ -180,11 +180,11 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
             }
             await mcp_integration.client_manager.add_client(server_name, client_config)
             client = mcp_integration.client_manager.get_client(server_name)
-        
+
         if not client:
             print(json.dumps({"error": f"Failed to create client for {server_name}"}, ensure_ascii=False))
             return
-        
+
         # Test basic functionality - list tools
         try:
             tools = await client.list_tools()
@@ -200,9 +200,9 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
                 "connection": "success",
                 "tools_test": f"failed: {str(e)}"
             }
-        
+
         print(json.dumps(test_result, indent=2, ensure_ascii=False))
-        
+
     except Exception as e:
         print(json.dumps({"error": f"Test failed for {server_name}: {str(e)}"}, ensure_ascii=False))
 
@@ -322,10 +322,15 @@ def main() -> None:
 
     # mcp subcommand for external server management
     mcp_parser = subparsers.add_parser("mcp", help="Manage external MCP servers")
-    mcp_parser.add_argument("action", choices=["list", "connect", "disconnect", "status", "test"], nargs="?", default="list", help="Action to perform on external MCP servers")
+    mcp_parser.add_argument("action", choices=["list", "connect", "disconnect", "status", "test", "enable", "disable", "feature"], nargs="?", default="list", help="Action to perform on external MCP servers")
     mcp_parser.add_argument("server", nargs="?", help="Server name for connect/disconnect/test actions")
+    # For feature subcommands: key is subaction (list/set) or feature name; value is on/off
+    mcp_parser.add_argument("key", nargs="?", help="Feature subcommand or feature name (for feature set)")
+    mcp_parser.add_argument("value", nargs="?", help="Feature value (on|off) for feature set)")
     mcp_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for server listing")
     mcp_parser.add_argument("--timeout", dest="timeout", type=int, default=30, help="Timeout in seconds for connection operations")
+    mcp_parser.add_argument("--no-probe", dest="no_probe", action="store_true", help="When listing features, don't probe the live server for reported capabilities; only show configured values")
+    # enable/disable always persist; no interactive prompt or dry-run
 
     args = parser.parse_args(argv[1:])
 
@@ -611,16 +616,177 @@ def main() -> None:
     # Handle MCP external server management subcommand
     if args.subcommand == "mcp":
         # Load MCP configuration and create integration
+        # Prefer reading the included managed `config/mcp.yaml` so external_servers
+        # entries are preserved and visible to MCPIntegration (AgentConfig.mcp
+        # may be a pydantic model that doesn't keep the raw 'external_servers' block).
         config_path = getattr(config.mcp, 'config_file', None) or "config/mcp.yaml"
-        
+
         async def handle_mcp_command():
-            mcp_integration = MCPIntegration(config={"mcp": config.mcp.model_dump() if hasattr(config.mcp, 'model_dump') else config.mcp.__dict__})
-            
+            # Read the managed MCP file directly if present, otherwise fall back
+            # to the pydantic model dump. This ensures `external_servers` is
+            # available to MCPIntegration.load_config which expects an
+            # `mcp.external_servers` mapping.
+            try:
+                if isinstance(config_path, str):
+                    mcp_file = Path(config_path)
+                else:
+                    mcp_file = Path(str(config_path))
+                if not mcp_file.is_absolute():
+                    mcp_file = Path("config") / mcp_file.name
+                if mcp_file.exists():
+                    try:
+                        raw = yaml.safe_load(mcp_file.read_text(encoding="utf-8")) or {}
+                        mcp_block = raw.get("mcp", raw)
+                    except Exception:
+                        mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
+                else:
+                    mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
+            except Exception:
+                mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
+
+            mcp_integration = MCPIntegration(config={"mcp": mcp_block})
+
             action = getattr(args, "action", "list")
             server_name = getattr(args, "server", None)
-            
             if action == "list":
                 return await _mcp_list_servers(mcp_integration, args)
+            elif action in ("enable", "disable"):
+                if not server_name:
+                    print(json.dumps({"error": "server name required for enable/disable action"}, ensure_ascii=False))
+                    return
+                # Find the managed mcp file path same way earlier: try to resolve config.mcp.config_file if present
+                cfg_path = Path(config.mcp.config_file) if getattr(config.mcp, 'config_file', None) else Path("config/mcp.yaml")
+                if not cfg_path.is_absolute():
+                    cfg_path = Path("config") / cfg_path.name
+
+                managed_data = {}
+                if cfg_path.exists():
+                    try:
+                        managed_data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                    except Exception:
+                        managed_data = {}
+
+                mcp_block = managed_data.get("mcp", {}) or {}
+                external = mcp_block.get("external_servers", {}) or {}
+                if server_name not in external:
+                    print(json.dumps({"error": f"Server {server_name} not found in managed config"}, ensure_ascii=False))
+                    return
+
+                intended = action
+
+                # perform update (always persist)
+                external[server_name] = dict(external[server_name])
+                external[server_name]["enabled"] = True if intended == "enable" else False
+                mcp_block["external_servers"] = external
+                managed_data["mcp"] = mcp_block
+
+                # atomic write to cfg_path
+                try:
+                    with tempfile.NamedTemporaryFile("w", delete=False, dir=str(cfg_path.parent), encoding="utf-8") as tf:
+                        yaml.safe_dump(managed_data, tf, allow_unicode=True, sort_keys=False)
+                        tmp_name = tf.name
+                    os.replace(tmp_name, str(cfg_path))
+                except Exception as e:
+                    print(json.dumps({"error": "failed to write managed config", "reason": str(e)}, ensure_ascii=False))
+                    try:
+                        if 'tmp_name' in locals() and os.path.exists(tmp_name):
+                            os.remove(tmp_name)
+                    except Exception:
+                        pass
+                    return
+
+                print(json.dumps({"result": "ok", "server": server_name, "enabled": external[server_name]["enabled"]}, ensure_ascii=False))
+                return
+            elif action == "feature":
+                # key is subaction 'list' or 'set'; if key is 'list', show capabilities
+                sub = getattr(args, "key", None)
+                if not server_name:
+                    print(json.dumps({"error": "server name required for feature action"}, ensure_ascii=False))
+                    return
+
+                # Read managed config file
+                cfg_path = Path(config.mcp.config_file) if getattr(config.mcp, 'config_file', None) else Path("config/mcp.yaml")
+                if not cfg_path.is_absolute():
+                    cfg_path = Path("config") / cfg_path.name
+                managed_data = {}
+                if cfg_path.exists():
+                    try:
+                        managed_data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                    except Exception:
+                        managed_data = {}
+
+                mcp_block = managed_data.get("mcp", {}) or {}
+                external = mcp_block.get("external_servers", {}) or {}
+                if server_name not in external:
+                    print(json.dumps({"error": f"Server {server_name} not found in managed config"}, ensure_ascii=False))
+                    return
+
+                # LIST features: query server capabilities via client if connected; otherwise show config features
+                if sub == "list" or sub is None:
+                    # Try client if available to get actual capabilities
+                    # honor --no-probe: skip live query if requested
+                    if getattr(args, "no_probe", False):
+                        client = None
+                    else:
+                        client = mcp_integration.client_manager.get_client(server_name)
+                    capabilities = None
+                    if client:
+                        try:
+                            # initialize may already have been called; server info stored in client
+                            cap = getattr(client, 'server_capabilities', None)
+                            if cap:
+                                capabilities = cap
+                            else:
+                                # attempt to re-init
+                                try:
+                                    await client.initialize()
+                                    capabilities = getattr(client, 'server_capabilities', None)
+                                except Exception:
+                                    capabilities = None
+                        except Exception:
+                            capabilities = None
+
+                    conf_features = external[server_name].get('features', {})
+                    out = {
+                        'server': server_name,
+                        'configured_features': conf_features,
+                        'reported_capabilities': capabilities
+                    }
+                    print(json.dumps(out, indent=2, ensure_ascii=False))
+                    return
+
+                # SET feature: args.key is feature name, args.value is on/off
+                feature_name = sub
+                feature_val = getattr(args, 'value', None)
+                if not feature_name or feature_val not in ("on", "off"):
+                    print(json.dumps({"error": "Usage: agent-cli mcp feature <server> <feature> <on|off>"}, ensure_ascii=False))
+                    return
+
+                enabled_val = True if feature_val == "on" else False
+                # Persist to managed config
+                external[server_name] = dict(external[server_name])
+                features = dict(external[server_name].get('features', {}) or {})
+                features[feature_name] = enabled_val
+                external[server_name]['features'] = features
+                mcp_block['external_servers'] = external
+                managed_data['mcp'] = mcp_block
+
+                try:
+                    with tempfile.NamedTemporaryFile("w", delete=False, dir=str(cfg_path.parent), encoding="utf-8") as tf:
+                        yaml.safe_dump(managed_data, tf, allow_unicode=True, sort_keys=False)
+                        tmp_name = tf.name
+                    os.replace(tmp_name, str(cfg_path))
+                except Exception as e:
+                    print(json.dumps({"error": "failed to write managed config", "reason": str(e)}, ensure_ascii=False))
+                    try:
+                        if 'tmp_name' in locals() and os.path.exists(tmp_name):
+                            os.remove(tmp_name)
+                    except Exception:
+                        pass
+                    return
+
+                print(json.dumps({"result": "ok", "server": server_name, "feature": feature_name, "enabled": enabled_val}, ensure_ascii=False))
+                return
             elif action == "connect":
                 if not server_name:
                     print(json.dumps({"error": "server name required for connect action"}, ensure_ascii=False))
@@ -638,7 +804,7 @@ def main() -> None:
                     print(json.dumps({"error": "server name required for test action"}, ensure_ascii=False))
                     return
                 return await _mcp_test_server(mcp_integration, server_name, args)
-        
+
         # Run the async MCP handler
         try:
             asyncio.run(handle_mcp_command())
@@ -694,12 +860,12 @@ def main() -> None:
     # Modern execution with status events and optional MCP call display
     async def _stream_and_run_with_status(agent: Agent, task: str, show_mcp: bool = False, show_status: bool = True) -> dict:
         final_result: Dict[str, Any] = {"task": task, "calls": []}
-        
+
         # Subscribe to status events if enabled
         status_queue = None
         if show_status:
             status_queue = await status_bus.subscribe()
-        
+
         # Optionally auto-subscribe to external SSE status stream
         sse_task = None
         sse_url = os.environ.get("AGENT_STATUS_SSE_STREAM_URL")
@@ -723,11 +889,11 @@ def main() -> None:
                         }
                         c = phase_color_map.get(phase, "34")
                         phase_disp = _colorize(phase, c)
-                    
+
                     server_col = event.server
                     txt = event.message
                     status_line = f"[{phase_disp}] {server_col}: {txt}"
-                    
+
                     # Level coloring overrides overall line if error/warning
                     if event.level == "error" and _supports_color():
                         status_line = _colorize(status_line, "31")
@@ -777,7 +943,7 @@ def main() -> None:
         status_task = None
         if show_status and status_queue:
             status_task = asyncio.create_task(_status_subscriber())
-        
+
         if sse_url:
             try:
                 sse_task = asyncio.create_task(_sse_subscriber(sse_url))
@@ -853,7 +1019,7 @@ def main() -> None:
     # Execute with new status-aware streaming
     show_mcp = getattr(args, "show_mcp", False)
     show_status = not getattr(args, "no_status", False)
-    
+
     if getattr(args, "raw", False):
         # Raw mode: use blocking run and print JSON only
         result = asyncio.run(agent.run(args.task))
