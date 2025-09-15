@@ -23,13 +23,13 @@ from .security import MCPSecurityManager, configure_security
 
 __all__ = [
     "MCPIntegration",
-    "StandardMCPClient", 
+    "StandardMCPClient",
     "MCPClientManager",
     "MCPHTTPServer",
     "PluginMCPAdapter",
     "plugin_mcp_registry",
     "MCPTool",
-    "MCPResource", 
+    "MCPResource",
     "MCPPrompt",
     "MCPMessage",
     "MCPError",

@@ -13,24 +13,24 @@ Create or update your `config/mcp.yaml` file:
 ```yaml
 mcp:
   enabled: true
-  
+
   # Local server settings
   expose_local_server: true
   local_server_port: 8000
   local_server_host: "localhost"
-  
+
   # Global settings
   default_timeout: 30.0
   max_concurrent_requests: 10
   enable_health_checks: true
   health_check_interval: 300.0  # 5 minutes
-  
+
   # Security
   require_auth: false
   allowed_origins: ["http://localhost:3000"]
   rate_limit_requests: 1000
   rate_limit_window: 3600  # 1 hour
-  
+
   # External MCP servers
   external_servers:
     weather_service:
@@ -152,7 +152,7 @@ mcp:
   enabled: true
   expose_local_server: true
   local_server_port: 8000
-  
+
   external_servers:
     # Weather service with API key auth
     weather_api:
@@ -171,7 +171,7 @@ mcp:
         prefix: "weather_"
         allowed: ["forecast", "current", "alerts"]
       priority: 10
-    
+
     # Database service with bearer token
     database_service:
       url: "https://db.company.com/mcp"
@@ -190,7 +190,7 @@ mcp:
         prefix: "db_"
         blocked: ["delete", "drop", "truncate"]
       priority: 20
-    
+
     # Analytics service with basic auth
     analytics:
       url: "https://analytics.company.com/mcp"

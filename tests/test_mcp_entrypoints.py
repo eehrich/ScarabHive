@@ -1,6 +1,4 @@
-import types
 from importlib import metadata
-from pathlib import Path
 
 from agent_system.mcp import plugins
 

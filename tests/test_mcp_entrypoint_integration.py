@@ -1,4 +1,3 @@
-import types
 from importlib import metadata
 from pathlib import Path
 import pytest
