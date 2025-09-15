@@ -79,7 +79,9 @@ class MCPIntegration:
 
     async def shutdown(self) -> None:
         """Shutdown MCP integration"""
+        logging.getLogger(__name__).debug("MCPIntegration.shutdown() called")
         await self.client_manager.close_all()
+        logging.getLogger(__name__).debug("MCPIntegration.shutdown() completed")
         logger.info("MCP integration shut down")
 
     async def _setup_external_servers_from_config(self) -> None:

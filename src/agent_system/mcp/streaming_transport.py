@@ -46,11 +46,19 @@ class HTTPStreamingTransport(MCPTransport):
                 timeout=timeout,
                 headers=headers
             )
+            try:
+                logger.debug("HTTPStreamingTransport.connect(): created session %s", id(self.session))
+            except Exception:
+                pass
 
     async def disconnect(self) -> None:
         """Close HTTP session"""
         if self.session:
-            await self.session.close()
+            try:
+                await self.session.close()
+                logger.debug("HTTPStreamingTransport.disconnect(): closed session")
+            except Exception:
+                pass
             self.session = None
         self.session_id = None
 
@@ -164,8 +172,6 @@ class HTTPStreamingTransport(MCPTransport):
             # Debug: log initialize payload and destination when debugging 422 errors
             if message.method == "initialize":
                 logger.debug(f"Sending initialize to {url} with headers={headers} payload={json.dumps(payload)} config={self.config}")
-                # Also print to stdout so CLI captures it regardless of logger config
-                print(json.dumps({"debug_initialize": {"url": url, "headers": headers, "payload": payload, "config": self.config}}, default=str), flush=True)
             async with self.session.post(url, json=payload, headers=headers or None) as response:
                 if response.status != 200:
                     error_text = await response.text()

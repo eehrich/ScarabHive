@@ -282,10 +282,16 @@ class MCPClientFactory:
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)
-        await client.connect()
-        await client.initialize()
-
-        return client
+        try:
+            await client.connect()
+            await client.initialize()
+            return client
+        except Exception:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            raise
 
     @staticmethod
     async def create_streaming_client(
@@ -304,10 +310,16 @@ class MCPClientFactory:
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)
-        await client.connect()
-        await client.initialize()
-
-        return client
+        try:
+            await client.connect()
+            await client.initialize()
+            return client
+        except Exception:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            raise
 
     @staticmethod
     async def create_client_from_config(config: Dict[str, Any]) -> StandardMCPClient:
@@ -353,6 +365,17 @@ class MCPClientManager:
     async def add_client(self, name: str, config: Dict[str, Any]) -> None:
         """Add an MCP client from configuration"""
         try:
+            # If a client with this name already exists, disconnect it first
+            if name in self.clients:
+                try:
+                    await self.clients[name].disconnect()
+                except Exception:
+                    logger.debug(f"Failed to disconnect existing client {name} before replacing")
+                try:
+                    del self.clients[name]
+                except Exception:
+                    pass
+
             client = await MCPClientFactory.create_client_from_config(config)
             self.clients[name] = client
             logger.info(f"Added MCP client: {name}")
