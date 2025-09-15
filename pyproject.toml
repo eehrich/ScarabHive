@@ -30,12 +30,15 @@ dependencies = [
     "pytest-asyncio>=1.1.0",
     "tabulate>=0.9",
     "sandboxed-python>=0.1",
+    "smithery>=0.1.0",
+    "mcp>=1.0.0",
 ]
 
 [project.urls]
 Homepage = "https://example.com"
 
 [project.scripts]
+backlog = "scripts.backlog:main"
 agent-cli = "agent_system.cli:main"
 agent-api = "agent_system.agent.interface_api:run"
 mcp-duckduckgo-search = "plugins.duckduckgo_search.__main__:cli_main"
@@ -48,8 +51,7 @@ mcp-datetime = "plugins.datetime.__main__:cli_main"
 mcp-web-research-agent = "plugins.web_research_agent.__main__:cli_main"
 mcp-web-scraper = "plugins.web_scraper.__main__:cli_main"
 mcp-http-server = "plugins.http_server.__main__:cli_main"
-backlog = "scripts.backlog:main"
-run-sse-broker = "agent_system.sse_broker:main"
+mcp-script-interpreter = "plugins.script_interpreter.__main__:cli_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
