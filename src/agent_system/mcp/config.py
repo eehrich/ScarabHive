@@ -37,6 +37,9 @@ class MCPServerConfig:
     max_retries: int = 3
     retry_delay: float = 1.0
 
+    # Initialization options for MCP server
+    initialization_options: Dict[str, Any] = field(default_factory=dict)
+
     # Feature configuration
     tools: bool = True
     resources: bool = True
@@ -159,6 +162,9 @@ class MCPConfigManager:
         config.timeout = data.get("timeout", 30.0)
         config.max_retries = data.get("max_retries", 3)
         config.retry_delay = data.get("retry_delay", 1.0)
+
+        # Initialization options
+        config.initialization_options = data.get("initialization_options", {})
 
         # Features
         features = data.get("features", {})

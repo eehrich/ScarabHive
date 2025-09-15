@@ -176,8 +176,16 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
         if not client:
             client_config = {
                 "transport": "http",
-                "url": server_config.url
+                "url": server_config.url,
+                "client_name": f"AgentSystem-{server_name}",
+                "timeout": server_config.timeout,
+                "ssl_verify": server_config.ssl_verify
             }
+
+            # Add initialization options if present
+            if server_config.initialization_options:
+                client_config["initialization_options"] = server_config.initialization_options
+
             await mcp_integration.client_manager.add_client(server_name, client_config)
             client = mcp_integration.client_manager.get_client(server_name)
 

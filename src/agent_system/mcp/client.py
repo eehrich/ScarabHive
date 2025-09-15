@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 class StandardMCPClient(MCPClient):
     """Standard MCP client implementation following Anthropic MCP specification"""
 
-    def __init__(self, transport: MCPTransport, name: str = "AgentSystem"):
+    def __init__(self, transport: MCPTransport, name: str = "AgentSystem", initialization_options: Optional[Dict[str, Any]] = None):
         super().__init__(transport)
         self.name = name
+        self.initialization_options = initialization_options or {}
         self.server_info: Optional[Dict[str, Any]] = None
         self.server_capabilities: Optional[Dict[str, Any]] = None
         self.available_tools: List[MCPTool] = []
@@ -39,21 +40,28 @@ class StandardMCPClient(MCPClient):
         """Initialize connection and get server capabilities"""
         logger.info(f"Initializing MCP connection for {self.name}")
 
+        # Prepare initialize params
+        params = {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {}
+            },
+            "clientInfo": {
+                "name": self.name,
+                "version": "1.0.0"
+            }
+        }
+
+        # Add initialization options if provided
+        if self.initialization_options:
+            params["initializationOptions"] = self.initialization_options
+
         # Send initialize request
         request = MCPMessage(
             jsonrpc="2.0",
             id=self._next_request_id(),
             method="initialize",
-            params={
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
-                "clientInfo": {
-                    "name": self.name,
-                    "version": "1.0.0"
-                }
-            }
+            params=params
         )
 
         if hasattr(self.transport, 'send_request'):
@@ -64,6 +72,13 @@ class StandardMCPClient(MCPClient):
 
         if response.error:
             raise Exception(f"Initialize failed: {response.error.message}")
+
+        result = response.result
+        self.server_info = result.get("serverInfo", {})
+        self.server_capabilities = result.get("capabilities", {})
+
+        logger.info(f"Connected to MCP server: {self.server_info.get('name', 'Unknown')}")
+        return result
 
         result = response.result
         self.server_info = result.get("serverInfo", {})
@@ -263,7 +278,8 @@ class MCPClientFactory:
         base_url: str,
         client_name: str = "AgentSystem",
         timeout: float = 30.0,
-        ssl_verify: bool = True
+        ssl_verify: bool = True,
+        initialization_options: Optional[Dict[str, Any]] = None
     ) -> StandardMCPClient:
         """Create an HTTP-based MCP client"""
         transport = HTTPTransport(
@@ -272,7 +288,7 @@ class MCPClientFactory:
             ssl_verify=ssl_verify
         )
 
-        client = StandardMCPClient(transport, client_name)
+        client = StandardMCPClient(transport, client_name, initialization_options)
         await client.connect()
         await client.initialize()
 
@@ -288,12 +304,13 @@ class MCPClientFactory:
             base_url = config.get("base_url") or config.get("url")
             if not base_url:
                 raise ValueError("Missing 'url' or 'base_url' in client configuration")
-            
+
             return await MCPClientFactory.create_http_client(
                 base_url=base_url,
                 client_name=config.get("client_name", "AgentSystem"),
                 timeout=config.get("timeout", 30.0),
-                ssl_verify=config.get("ssl_verify", True)
+                ssl_verify=config.get("ssl_verify", True),
+                initialization_options=config.get("initialization_options")
             )
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
