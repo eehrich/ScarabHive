@@ -34,7 +34,7 @@ def load_schema_from_dir(
     template = env.get_template("schema.yaml")
     # Render with provided template vars
     text = template.render(**(template_vars or {}))
-    logger.debug("Rendered schema for %s with template_vars=%s: %s", schema_file, template_vars, text[:200])
+    logger.debug("Rendered schema for %s with template_vars=%s", schema_file, template_vars)
 
     try:
         data = yaml.safe_load(text)

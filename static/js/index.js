@@ -51,7 +51,98 @@ async function updateStatusMetrics() {
   }
 }
 
-// Floating status panel
+// MCP servers update function
+// Simplified MCP servers update function
+async function updateMCPServers() {
+  try {
+    const response = await fetch('/mcp/status');
+    if (response.ok) {
+      const data = await response.json();
+      
+      const totalServers = data.total_servers || 0;
+      const totalTools = data.total_tools || 0;
+      const servers = data.servers || [];
+      
+      let connectedServers = 0;
+      let html = '';
+      
+      // Enhanced styling for servers
+      for (let i = 0; i < servers.length; i++) {
+        const server = servers[i];
+        if (server.connected) connectedServers++;
+        
+        const statusClass = server.connected ? 'connected' : 'disconnected';
+        const statusText = server.connected ? 'Connected' : 'Disconnected';
+        
+        const toolsList = server.tools && server.tools.length > 0 
+          ? server.tools.map(tool => `<li class="tool-item">${tool}</li>`).join('')
+          : '<li class="tool-item">No tools available</li>';
+        
+        html += `
+          <div class="mcp-server" onclick="toggleServerDetails('${server.id}')">
+            <div class="mcp-server-info">
+              <div class="server-name-type">
+                <strong>${server.name}</strong>
+                <span class="server-type">(${server.type})</span>
+              </div>
+              <span class="mcp-status ${statusClass}">${statusText}</span>
+            </div>
+            <div class="tool-count">${server.tool_count || 0} tools</div>
+            <div class="server-details" id="details-${server.id}" style="display: none;">
+              <div class="tools-list">
+                <h4>Available Tools:</h4>
+                <ul>${toolsList}</ul>
+              </div>
+              ${server.url ? `<div class="server-url"><strong>URL:</strong> ${server.url}</div>` : ''}
+              ${server.error ? `<div class="server-error"><strong>Error:</strong> ${server.error}</div>` : ''}
+            </div>
+          </div>`;
+      }
+      
+      const summaryHtml = `
+        <div class="mcp-summary">
+          <div class="metric-item">
+            <span class="metric-label">Total Servers</span>
+            <span class="metric-value">${totalServers}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Connected</span>
+            <span class="metric-value">${connectedServers}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Total Tools</span>
+            <span class="metric-value">${totalTools}</span>
+          </div>
+        </div>
+        <div class="mcp-servers-list">
+          ${html || '<div class="no-servers">No MCP servers configured</div>'}
+        </div>
+      `;
+      
+      const mcpMetrics = document.getElementById('floatingMCPMetrics');
+      if (mcpMetrics) {
+        mcpMetrics.innerHTML = summaryHtml;
+      }
+      
+      // Update button to show it's working
+      const mcpButton = document.getElementById('mcpToggleBtn');
+      const mcpConnectedBadge = document.getElementById('mcpConnected');
+      if (mcpButton) {
+        mcpButton.textContent = `MCP-Servers (${totalServers})`;
+        // Re-add the badge span (textContent removes it)
+        const badgeSpan = document.createElement('span');
+        badgeSpan.id = 'mcpConnected';
+        badgeSpan.className = connectedServers > 0 ? 'mcp-connected connected' : 'mcp-connected';
+        badgeSpan.title = `${connectedServers}/${totalServers} servers connected`;
+        badgeSpan.setAttribute('aria-hidden', 'true');
+        mcpButton.appendChild(badgeSpan);
+      }
+      
+    }
+  } catch (error) {
+    console.error('MCP Update: Error:', error);
+  }
+}// Floating status panel
 const statusPanel = document.createElement('div');
 statusPanel.id = 'floatingStatusPanel';
 statusPanel.className = 'floating-panel';
@@ -67,12 +158,38 @@ statusPanel.innerHTML = `
       <div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div>
     </div>
   </div>
+  <div class="resize-handle"></div>
 `;
 document.body.appendChild(statusPanel);
+
+// Floating MCP panel
+const mcpPanel = document.createElement('div');
+mcpPanel.id = 'floatingMCPPanel';
+mcpPanel.className = 'floating-panel';
+mcpPanel.style.display = 'none';
+mcpPanel.innerHTML = `
+  <div class="floating-panel-header" id="floatingMCPHeader">
+    <span>MCP Servers & Tools</span>
+    <div style="margin-left:8px;flex:1"></div>
+    <button id="floatingMCPCloseBtn" title="Close" aria-label="Close">✕</button>
+  </div>
+  <div class="floating-panel-body" id="floatingMCPBody">
+    <div class="mcp-metrics" id="floatingMCPMetrics">
+      <div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div>
+    </div>
+  </div>
+  <div class="resize-handle"></div>
+`;
+document.body.appendChild(mcpPanel);
 
 const statusToggleBtn = document.getElementById('statusToggleBtn');
 const floatingCloseBtn = document.getElementById('floatingCloseBtn');
 const floatingStatusMetrics = document.getElementById('floatingStatusMetrics');
+
+// MCP panel elements
+const mcpToggleBtn = document.getElementById('mcpToggleBtn');
+const floatingMCPCloseBtn = document.getElementById('floatingMCPCloseBtn');
+const floatingMCPMetrics = document.getElementById('floatingMCPMetrics');
 
 statusToggleBtn.addEventListener('click', () => {
   const shown = statusPanel.style.display !== 'none';
@@ -84,6 +201,21 @@ statusToggleBtn.addEventListener('click', () => {
 floatingCloseBtn.addEventListener('click', () => {
   statusPanel.style.display = 'none';
   statusToggleBtn.setAttribute('aria-expanded', 'false');
+});
+
+// MCP panel event listeners
+if (mcpToggleBtn) {
+  mcpToggleBtn.addEventListener('click', () => {
+    const shown = mcpPanel.style.display !== 'none';
+    mcpPanel.style.display = shown ? 'none' : 'block';
+    mcpToggleBtn.setAttribute('aria-expanded', String(!shown));
+    if (!shown) updateMCPServers().catch(() => {});
+  });
+}
+
+floatingMCPCloseBtn.addEventListener('click', () => {
+  mcpPanel.style.display = 'none';
+  if (mcpToggleBtn) mcpToggleBtn.setAttribute('aria-expanded', 'false');
 });
 
 // Make panel draggable
@@ -112,11 +244,57 @@ floatingCloseBtn.addEventListener('click', () => {
   window.addEventListener('pointerup', (ev) => { isDragging = false; });
 })('floatingStatusHeader', statusPanel);
 
-setInterval(updateStatusMetrics, 2000);
+// Make MCP panel draggable
+(function makeDraggable(headerId, panel) {
+  const header = document.getElementById(headerId);
+  let isDragging = false;
+  let startX = 0, startY = 0, origX = 0, origY = 0;
+  header.addEventListener('pointerdown', (ev) => {
+    try {
+      if (ev.target && ev.target.closest && ev.target.closest('#floatingMCPCloseBtn')) return;
+    } catch (e) {}
+    isDragging = true;
+    startX = ev.clientX; startY = ev.clientY;
+    const rect = panel.getBoundingClientRect();
+    origX = rect.left; origY = rect.top;
+    header.setPointerCapture(ev.pointerId);
+  });
+  window.addEventListener('pointermove', (ev) => {
+    if (!isDragging) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    panel.style.left = (origX + dx) + 'px';
+    panel.style.top = (origY + dy) + 'px';
+    panel.style.right = 'auto';
+  });
+  window.addEventListener('pointerup', (ev) => { isDragging = false; });
+})('floatingMCPHeader', mcpPanel);
+
+setInterval(updateStatusMetrics, 30000);
+setInterval(updateMCPServers, 30000);
+
+// Initialize immediately, but ensure DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  updateStatusMetrics();
+  updateMCPServers();
+});
+
+// Also call immediately in case DOMContentLoaded already fired
 updateStatusMetrics();
+updateMCPServers();
 
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;'}[c])); }
 function formatTime(ts) { try { return new Date(ts).toLocaleTimeString(); } catch (e) { return ts; } }
+
+// Toggle MCP server details
+function toggleServerDetails(serverId) {
+  const detailsContainer = document.getElementById(`details-${serverId}`);
+  
+  if (detailsContainer) {
+    const isVisible = detailsContainer.style.display !== 'none';
+    detailsContainer.style.display = isVisible ? 'none' : 'block';
+  }
+}
 
 const activeOperations = new Map();
 
@@ -388,3 +566,46 @@ async function run() {
   }
   connect();
 })();
+
+// Make floating panels resizable
+function makeResizable(panel) {
+  const resizeHandle = panel.querySelector('.resize-handle');
+  if (!resizeHandle) return;
+
+  let isResizing = false;
+  let startX, startY, startWidth, startHeight;
+
+  resizeHandle.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    startWidth = parseInt(document.defaultView.getComputedStyle(panel).width, 10);
+    startHeight = parseInt(document.defaultView.getComputedStyle(panel).height, 10);
+    
+    e.preventDefault();
+    e.stopPropagation();
+    
+    document.addEventListener('mousemove', doResize);
+    document.addEventListener('mouseup', stopResize);
+  });
+
+  function doResize(e) {
+    if (!isResizing) return;
+    
+    const newWidth = Math.max(250, startWidth + e.clientX - startX);
+    const newHeight = Math.max(150, startHeight + e.clientY - startY);
+    
+    panel.style.width = newWidth + 'px';
+    panel.style.height = newHeight + 'px';
+  }
+
+  function stopResize() {
+    isResizing = false;
+    document.removeEventListener('mousemove', doResize);
+    document.removeEventListener('mouseup', stopResize);
+  }
+}
+
+// Apply resize functionality to both panels
+makeResizable(statusPanel);
+makeResizable(mcpPanel);

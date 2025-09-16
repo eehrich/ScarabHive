@@ -208,6 +208,16 @@ mcp_integration: Optional[MCPIntegration] = None
 def get_mcp_integration(app: Optional[FastAPI] = None) -> MCPIntegration:
     """Get or create the global MCP integration instance"""
     global mcp_integration
+    
+    # First check if the API has an initialized instance
+    try:
+        from agent_system.agent.interface_api import _mcp_integration as api_integration
+        if api_integration is not None and api_integration.initialized:
+            return api_integration
+    except (ImportError, AttributeError):
+        pass  # API module not available or not initialized
+    
+    # Fall back to module-level global instance
     if mcp_integration is None:
         mcp_integration = MCPIntegration(app)
     return mcp_integration

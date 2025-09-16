@@ -51,12 +51,16 @@ header {
   top: 80px;
   right: 24px;
   width: 320px;
+  height: 400px;
+  min-width: 250px;
+  min-height: 150px;
   background: linear-gradient(180deg, #0b1220, #07111a);
   border: 1px solid #243244;
   border-radius: 10px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.6);
   z-index: 1000;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 .floating-panel-header {
   display: flex;
@@ -66,9 +70,50 @@ header {
   background: linear-gradient(180deg, #07111a, #0b1220);
   border-bottom: 1px solid #16202b;
   cursor: grab;
+  flex-shrink: 0;
 }
 .floating-panel-header:active { cursor: grabbing; }
-.floating-panel-body { padding: 10px; max-height: 360px; overflow: auto; }
+.floating-panel-body { 
+  padding: 10px; 
+  overflow: hidden; 
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 50px);
+}
+
+/* Resize handle for floating panels */
+.resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nw-resize;
+  background: linear-gradient(135deg, transparent 0%, transparent 40%, #4a5568 50%, transparent 60%, transparent 100%);
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  background-position: center;
+  z-index: 10;
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 0;
+  height: 0;
+  border-left: 12px solid transparent;
+  border-bottom: 12px solid #4a5568;
+  opacity: 0.6;
+}
+
+.resize-handle:hover::before {
+  opacity: 1;
+  border-bottom-color: #6b7280;
+}
 
 /* Header button spacing */
 #statusToggleBtn { margin-left: 12px; }
@@ -90,6 +135,14 @@ h1 {
   font-size: 12px;
   margin-left: 8px;
   position: relative;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mcp-badge:hover {
+  background: #1a2332;
+  border-color: #394B5C;
+  color: #cbd5e1;
 }
 
 .mcp-connected {
@@ -107,6 +160,236 @@ h1 {
 .mcp-connected.connected {
   background: #34d399; /* green when connected */
   box-shadow: 0 0 6px rgba(52,211,153,0.3);
+}
+
+/* Add disconnected state for better clarity */
+.mcp-connected:not(.connected), .mcp-disconnected {
+  background: #6b7280; /* gray when disconnected */
+}
+
+/* MCP Panel Styles */
+.mcp-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #243244;
+  flex-shrink: 0;
+}
+
+.mcp-servers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+  min-height: 0;
+}
+
+.mcp-server {
+  background: #0a1420;
+  border: 1px solid #243244;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mcp-server:hover {
+  border-color: #394B5C;
+  background: #0e1825;
+}
+
+.server-details {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #243244;
+}
+
+.server-url, .server-error {
+  margin-top: 8px;
+  padding: 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.server-url {
+  background: #0f1820;
+  border: 1px solid #1e3a8a;
+  color: #93c5fd;
+}
+
+.server-error {
+  background: #1f1013;
+  border: 1px solid #dc2626;
+  color: #fca5a5;
+}
+
+.mcp-server-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.mcp-server-name {
+  font-weight: 600;
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.mcp-status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.mcp-status.connected {
+  background: #2e7d321a;
+  color: #81c784;
+  border: 1px solid #2e7d32;
+}
+
+.mcp-status.disconnected {
+  background: #c628281a;
+  color: #ef5350;
+  border: 1px solid #c62828;
+}
+
+.mcp-server-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.mcp-expand-btn {
+  background: none;
+  border: 1px solid #243244;
+  color: #9ab;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mcp-expand-btn:hover {
+  background: #1e2a3a;
+  border-color: #394B5C;
+  color: #cbd5e1;
+}
+
+.mcp-server-type {
+  font-size: 12px;
+  color: #9ab;
+  background: #1e2a3a;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.mcp-tools-count {
+  font-size: 12px;
+  color: #9ab;
+  font-weight: 500;
+}
+
+.mcp-server-description {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+
+.mcp-server-url {
+  font-size: 11px;
+  color: #6b7280;
+  font-family: monospace;
+  background: #0b1220;
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.no-servers {
+  text-align: center;
+  color: #6b7280;
+  font-style: italic;
+  padding: 20px;
+  background: #0a1420;
+  border: 1px dashed #243244;
+  border-radius: 8px;
+}
+
+/* MCP Tools Details */
+.mcp-server-tools {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #243244;
+}
+
+.tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-item {
+  background: #050a0f;
+  border: 1px solid #1e2a3a;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.tool-header {
+  margin-bottom: 4px;
+}
+
+.tool-name {
+  font-weight: 600;
+  color: #cbd5e1;
+  font-size: 13px;
+  font-family: monospace;
+}
+
+.tool-description {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.tool-schema {
+  margin-top: 8px;
+}
+
+.tool-schema details {
+  font-size: 11px;
+}
+
+.tool-schema summary {
+  color: #9ab;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.tool-schema summary:hover {
+  color: #cbd5e1;
+}
+
+.tool-schema pre {
+  background: #0b1220;
+  border: 1px solid #243244;
+  border-radius: 4px;
+  padding: 8px;
+  margin: 4px 0 0 0;
+  overflow-x: auto;
+  font-size: 10px;
+  color: #9ab;
+  line-height: 1.3;
 }
 
 /* Chat area */

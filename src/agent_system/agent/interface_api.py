@@ -17,11 +17,18 @@ from fastapi.templating import Jinja2Templates
 
 from ..servers.agent.server import Agent
 from ..config.loader import load_config
+from ..config.models import AgentConfig
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics
 from ..mcp.integration import initialize_mcp, shutdown_mcp
+
+
+# Global registry for MCP endpoints access
+_app_registry: Optional[MCPRegistry] = None
+_app_config: Optional[AgentConfig] = None
+_mcp_integration = None  # Global reference to the initialized MCP integration
 
 
 # Note: we set cache-control for static files via a small middleware in build_app()
@@ -115,22 +122,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
     agent = Agent("api_agent", config, registry)
+    
+    # Store registry and config globally for MCP endpoint access
+    global _app_registry, _app_config
+    _app_registry = registry
+    _app_config = config
 
     # Initialize MCP integration on startup so the API can call external MCP
     # servers and expose MCP-related endpoints. Use FastAPI startup/shutdown
     # events to ensure proper async initialization and cleanup.
     async def _init_mcp():
+        global _mcp_integration
         logger = logging.getLogger(__name__)
+        logger.info("Starting MCP integration initialization...")
         try:
             # Use only the MCP configuration from the loaded agent.yaml config.
             # Do NOT read separate mcp.yaml files; all configuration should be
             # included via agent.yaml.
             try:
                 mcp_block = config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {})
+                logger.info(f"MCP config loaded: external_servers={len(mcp_block.get('external_servers', {}))}")
             except Exception:
                 mcp_block = getattr(config.mcp, "__dict__", {})
+                logger.warning("Failed to get MCP config with model_dump, using __dict__")
 
-            await initialize_mcp({"mcp": mcp_block}, app)
+            mcp_integration = await initialize_mcp({"mcp": mcp_block}, app)
+            _mcp_integration = mcp_integration  # Store the initialized instance globally
             logger.info("MCP integration initialized for API")
         except Exception as e:
             logger.exception("Failed to initialize MCP integration for API: %s", e)
@@ -143,8 +160,26 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.exception("Error shutting down MCP integration for API: %s", e)
 
-    app.add_event_handler("startup", _init_mcp)
-    app.add_event_handler("shutdown", _shutdown_mcp_event)
+    # Use modern lifespan pattern instead of deprecated on_event
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup
+        logger = logging.getLogger(__name__)
+        logger.info("Lifespan startup: Initializing MCP integration...")
+        await _init_mcp()
+        logger.info("MCP integration initialized during lifespan startup")
+        yield
+        # Shutdown
+        try:
+            await shutdown_mcp()
+            logger.info("MCP integration shut down during lifespan")
+        except Exception as e:
+            logger.exception("Error shutting down MCP integration during lifespan: %s", e)
+
+    # Apply lifespan to existing app
+    app.router.lifespan_context = lifespan
 
     @app.get("/health")
     def health():
@@ -294,6 +329,121 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
+
+    @app.get("/mcp/status")
+    async def mcp_status():
+        """Get MCP server status including plugins and external servers."""
+        try:
+            # Use the global MCP integration instance that was initialized during startup
+            global _mcp_integration
+            
+            # Use the registry approach for plugins
+            if not _app_registry:
+                return {"error": "Registry not initialized"}
+            
+            servers = []
+            
+            # Add plugin servers from registry
+            for server_id, server_obj in _app_registry._servers.items():
+                try:
+                    # Get tools using schema method
+                    tools = []
+                    if hasattr(server_obj, 'get_schema'):
+                        try:
+                            schema = server_obj.get_schema()
+                            if schema:
+                                # Each plugin typically provides one function/tool
+                                if 'function' in schema and 'name' in schema['function']:
+                                    tools = [schema['function']['name']]
+                        except Exception:
+                            # If schema loading fails, treat as no tools
+                            pass
+                    
+                    # Check connection using a simple method call
+                    connected = True
+                    try:
+                        if hasattr(server_obj, 'get_default_action'):
+                            server_obj.get_default_action()
+                    except Exception:
+                        connected = False
+                    
+                    servers.append({
+                        "id": server_id,
+                        "name": server_id.replace('_', ' ').title(),
+                        "type": "plugin",
+                        "connected": connected,
+                        "tools": tools,
+                        "tool_count": len(tools)
+                    })
+                except Exception as e:
+                    # If we can't get info about a server, mark it as disconnected
+                    servers.append({
+                        "id": server_id,
+                        "name": server_id.replace('_', ' ').title(),
+                        "type": "plugin",
+                        "connected": False,
+                        "tools": [],
+                        "tool_count": 0,
+                        "error": str(e)
+                    })
+            
+            # Try to get external servers from the global MCP integration instance
+            try:
+                if _mcp_integration and _mcp_integration.initialized:
+                    # Get external server tools from the real MCP integration
+                    all_tools = await _mcp_integration.list_all_tools()
+                    
+                    for server_name, tools in all_tools.get("external_servers", {}).items():
+                        # If the server appears in the external_servers list with tools, 
+                        # it means it's connected (since list_all_tools() only includes connected servers)
+                        connected = len(tools) > 0
+                        
+                        tool_names = [tool["name"] for tool in tools]
+                        
+                        # Get server config for additional info
+                        description = server_name.replace('_', ' ').title()
+                        url = ""
+                        
+                        try:
+                            if hasattr(_mcp_integration.mcp_config, 'servers'):
+                                server_config = _mcp_integration.mcp_config.servers.get(server_name)
+                                if server_config:
+                                    if hasattr(server_config, 'description') and server_config.description:
+                                        description = server_config.description
+                                    if hasattr(server_config, 'url') and server_config.url:
+                                        url = server_config.url
+                        except Exception:
+                            pass
+                        
+                        servers.append({
+                            "id": server_name,
+                            "name": description,
+                            "type": "external",
+                            "connected": connected,
+                            "tools": tool_names,
+                            "tool_count": len(tool_names),
+                            "url": url
+                        })
+            except Exception as e:
+                # If MCP integration fails, just continue with plugins only
+                logger = logging.getLogger(__name__)
+                logger.error(f"MCP status: Exception getting external servers: {e}")
+                import traceback
+                logger.error(f"MCP status traceback: {traceback.format_exc()}")
+                pass
+            
+            return {
+                "servers": servers,
+                "total_servers": len(servers),
+                "total_tools": sum(s["tool_count"] for s in servers)
+            }
+            
+        except Exception as e:
+            import traceback
+            logger = logging.getLogger(__name__)
+            logger.error(f"MCP status error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"error": f"Failed to get MCP status: {str(e)}"}
 
     @app.get("/favicon.ico")
     async def favicon():
