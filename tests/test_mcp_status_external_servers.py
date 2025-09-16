@@ -72,11 +72,20 @@ async def mcp_integration(mock_client_manager, mock_plugin_registry, mock_http_s
     integration.client_manager = mock_client_manager
     integration.plugin_registry = mock_plugin_registry
     integration.http_server = mock_http_server
-    integration.config_manager = Mock()
     
-    # Set up mcp_config with proper mock structure
-    integration.mcp_config = Mock()
-    integration.mcp_config.servers = {}  # Empty dict for _setup_external_servers_from_config
+    # Create a properly configured mock config manager
+    from agent_system.mcp.config import MCPConfig, MCPConfigManager
+    mock_config_manager = Mock(spec=MCPConfigManager)
+    
+    # Configure load_config to return a proper MCPConfig object
+    def mock_load_config(config_data):
+        # Create a real MCPConfig instance
+        mcp_config = MCPConfig()
+        mcp_config.servers = {}  # Empty dict for _setup_external_servers_from_config to iterate over
+        return mcp_config
+    
+    mock_config_manager.load_config = Mock(side_effect=mock_load_config)
+    integration.config_manager = mock_config_manager
     
     return integration
 

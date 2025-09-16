@@ -8,7 +8,7 @@ SSE-based HTTP transport for MCP communication.
 import json
 import base64
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from aiohttp import ClientTimeout, TCPConnector
 from aiohttp.client_exceptions import ClientError
 
@@ -178,8 +178,11 @@ class TestHTTPStreamingTransport:
         transport = HTTPStreamingTransport("http://example.com")
         
         # Mock session that raises connection error
-        mock_session = AsyncMock()
-        mock_session.post.side_effect = ClientError("Connection failed")
+        mock_session = Mock()  # Use regular Mock, not AsyncMock
+        # Mock post to raise exception when called as context manager
+        mock_context = AsyncMock()
+        mock_context.__aenter__.side_effect = ClientError("Connection failed")
+        mock_session.post.return_value = mock_context
         transport.session = mock_session
         
         message = MCPMessage(
@@ -210,8 +213,11 @@ class TestHTTPStreamingTransport:
         transport = HTTPStreamingTransport("http://example.com")
         
         # Mock session that raises exception
-        mock_session = AsyncMock()
-        mock_session.post.side_effect = ClientError("Connection failed")
+        mock_session = Mock()  # Use regular Mock, not AsyncMock
+        # Mock post to raise exception when entering the context manager
+        mock_context = AsyncMock()
+        mock_context.__aenter__.side_effect = ClientError("Connection failed")
+        mock_session.post.return_value = mock_context
         transport.session = mock_session
         transport.session_id = "test-session"
         

@@ -58,7 +58,10 @@ async def test_lifespan_handles_shutdown_errors():
 
 def test_fastapi_app_has_lifespan():
     """Test that the FastAPI app is configured with lifespan."""
-    from agent_system.agent.interface_api import app
+    from agent_system.agent.interface_api import build_app
+    
+    # Build an app instance to test
+    app = build_app()
     
     # The app should have a lifespan attribute
     assert hasattr(app, 'router')

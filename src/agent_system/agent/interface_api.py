@@ -22,7 +22,7 @@ from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics, publish_status
-from ..mcp.integration import initialize_mcp, shutdown_mcp
+from ..mcp.integration import initialize_mcp, shutdown_mcp, get_mcp_integration
 
 
 # Global registry for MCP endpoints access
@@ -55,22 +55,58 @@ async def lifespan(app: FastAPI):
         logger.info("FastAPI application shutdown complete")
 
 
-app = FastAPI(title="Agent System (MCP)", lifespan=lifespan)
+# Module level templates and static path setup
 templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates"))
-
-# Mount static directory for CSS/JS if it exists - will be configured with cache control in build_app()
 static_path = Path(__file__).parents[3] / "static"
-
-# Global flag to track if middleware has been added
-_middleware_added = False
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
-    global _middleware_added
-
+    
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
+
+    # Initialize MCP integration helper function
+    async def _init_mcp_for_app(app: FastAPI):
+        global _mcp_integration
+        logger = logging.getLogger(__name__)
+        logger.info("Starting MCP integration initialization...")
+        try:
+            # Use only the MCP configuration from the loaded agent.yaml config.
+            # Do NOT read separate mcp.yaml files; all configuration should be
+            # included via agent.yaml.
+            try:
+                mcp_block = config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {})
+                logger.info(f"MCP config loaded: external_servers={len(mcp_block.get('external_servers', {}))}")
+                logger.debug(f"MCP config block: {mcp_block}")
+            except Exception:
+                mcp_block = getattr(config.mcp, "__dict__", {})
+                logger.warning("Failed to get MCP config with model_dump, using __dict__")
+
+            mcp_integration = await initialize_mcp({"mcp": mcp_block}, app)
+            _mcp_integration = mcp_integration  # Store the initialized instance globally
+            logger.info("MCP integration initialized for API")
+        except Exception as e:
+            logger.exception("Failed to initialize MCP integration for API: %s", e)
+
+    # Create a custom lifespan for this app instance
+    @asynccontextmanager
+    async def custom_lifespan(app: FastAPI):
+        # Startup
+        logger = logging.getLogger(__name__)
+        logger.info("Lifespan startup: Initializing MCP integration...")
+        await _init_mcp_for_app(app)
+        logger.info("MCP integration initialized during lifespan startup")
+        yield
+        # Shutdown
+        try:
+            await shutdown_mcp()
+            logger.info("MCP integration shut down during lifespan")
+        except Exception as e:
+            logger.exception("Error shutting down MCP integration during lifespan: %s", e)
+
+    # Create a new FastAPI app instance for this build
+    app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
 
     # Configure static files with cache control based on configuration
     if static_path.exists():
@@ -78,8 +114,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             app.mount("/static", static_files, name="static")
 
             # middleware to add no-cache headers for static files when configured
-            # Only add middleware once to avoid FastAPI runtime errors
-            if config.network.disable_cache and not _middleware_added:
+            if config.network.disable_cache:
                 @app.middleware("http")
                 async def _no_cache_static_middleware(request: Request, call_next: Callable):
                     # only intercept static paths
@@ -91,8 +126,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         return response
 
                     return await call_next(request)
-
-                _middleware_added = True
 
     # Initialize logging. Use a role-specific logfile so the API server does
     # not write into the same file as the CLI (e.g., create `logs/agent-api.log`).
@@ -128,60 +161,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     _app_registry = registry
     _app_config = config
 
-    # Initialize MCP integration on startup so the API can call external MCP
-    # servers and expose MCP-related endpoints. Use FastAPI startup/shutdown
-    # events to ensure proper async initialization and cleanup.
-    async def _init_mcp():
-        global _mcp_integration
-        logger = logging.getLogger(__name__)
-        logger.info("Starting MCP integration initialization...")
-        try:
-            # Use only the MCP configuration from the loaded agent.yaml config.
-            # Do NOT read separate mcp.yaml files; all configuration should be
-            # included via agent.yaml.
-            try:
-                mcp_block = config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {})
-                logger.info(f"MCP config loaded: external_servers={len(mcp_block.get('external_servers', {}))}")
-                logger.debug(f"MCP config block: {mcp_block}")
-            except Exception:
-                mcp_block = getattr(config.mcp, "__dict__", {})
-                logger.warning("Failed to get MCP config with model_dump, using __dict__")
-
-            mcp_integration = await initialize_mcp({"mcp": mcp_block}, app)
-            _mcp_integration = mcp_integration  # Store the initialized instance globally
-            logger.info("MCP integration initialized for API")
-        except Exception as e:
-            logger.exception("Failed to initialize MCP integration for API: %s", e)
-
-    async def _shutdown_mcp_event():
-        logger = logging.getLogger(__name__)
-        try:
-            await shutdown_mcp()
-            logger.info("MCP integration shut down for API")
-        except Exception as e:
-            logger.exception("Error shutting down MCP integration for API: %s", e)
-
-    # Use modern lifespan pattern instead of deprecated on_event
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        # Startup
-        logger = logging.getLogger(__name__)
-        logger.info("Lifespan startup: Initializing MCP integration...")
-        await _init_mcp()
-        logger.info("MCP integration initialized during lifespan startup")
-        yield
-        # Shutdown
-        try:
-            await shutdown_mcp()
-            logger.info("MCP integration shut down during lifespan")
-        except Exception as e:
-            logger.exception("Error shutting down MCP integration during lifespan: %s", e)
-
-    # Apply lifespan to existing app
-    app.router.lifespan_context = lifespan
-
+    # Define route handlers
     @app.get("/health")
     def health():
         return {"status": "ok"}
@@ -576,8 +556,33 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.error(f"MCP status traceback: {traceback.format_exc()}")
                 pass
             
+            # Separate plugins and external servers for expected response format
+            plugins = {}
+            external_servers = {}
+            
+            for server in servers:
+                server_data = {
+                    "id": server["id"],
+                    "name": server["name"],
+                    "connected": server["connected"],
+                    "tools": server["tools"],
+                    "detailed_tools": server["detailed_tools"],
+                    "tool_count": server["tool_count"]
+                }
+                if "url" in server:
+                    server_data["url"] = server["url"]
+                if "error" in server:
+                    server_data["error"] = server["error"]
+                    
+                if server["type"] == "plugin":
+                    plugins[server["id"]] = server_data
+                else:
+                    external_servers[server["id"]] = server_data
+            
             return {
-                "servers": servers,
+                "plugins": plugins,
+                "external_servers": external_servers,
+                "servers": servers,  # Keep original for backward compatibility 
                 "total_servers": len(servers),
                 "total_tools": sum(s["tool_count"] for s in servers)
             }

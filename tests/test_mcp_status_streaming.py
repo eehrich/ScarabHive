@@ -189,10 +189,10 @@ class TestMCPStatusStreaming:
         }
         
         mock_session.post.return_value.__aenter__.return_value = mock_response
-        transport.session = mock_session
         
-        # Start transport
+        # Start transport first, then replace session with mock
         await transport.connect()
+        transport.session = mock_session
         
         try:
             # Create and send a status notification

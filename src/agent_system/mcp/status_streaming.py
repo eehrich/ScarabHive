@@ -103,9 +103,6 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
     async def _send_status_notification(self, notification: MCPMessage) -> None:
         """Send status notification over the HTTP transport."""
         try:
-            # For streaming transport, we would send this over the SSE connection
-            # In practice, this would integrate with the SSE stream mechanism
-            
             # Convert to JSON-RPC notification format
             payload = {
                 "jsonrpc": notification.jsonrpc,
@@ -113,11 +110,22 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
                 "params": notification.params
             }
             
-            # Log the notification (in real implementation, this would go over SSE)
+            # Log the notification
             logger.debug(f"Status notification: {json.dumps(payload)}")
             
-            # TODO: Integrate with actual SSE stream when available
-            # This would involve sending the notification over the active SSE connection
+            # Send over HTTP if session is available
+            if self.session:
+                async with self.session.post(
+                    f"{self.base_url}/notifications",
+                    json=payload
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(f"Status notification failed: {response.status}")
+                    else:
+                        logger.debug("Status notification sent successfully")
+                        
+        except Exception as e:
+            logger.error(f"Failed to send status notification: {e}")
             # to any connected MCP clients
             
         except Exception as e:
