@@ -101,6 +101,8 @@ class MCPConfigManager:
 
     def load_config(self, config_data: Optional[Dict[str, Any]] = None) -> MCPConfig:
         """Load MCP configuration from data or file"""
+        logger.debug(f"MCPConfigManager.load_config called with config_data={config_data is not None}")
+        
         if config_data is None:
             if not self.config_path or not self.config_path.exists():
                 logger.info("No MCP configuration found, using defaults")
@@ -110,9 +112,19 @@ class MCPConfigManager:
                 config_data = yaml.safe_load(f)
 
         if not config_data:
+            logger.info("Empty config_data, using defaults")
             return MCPConfig()
 
-        mcp_data = config_data.get("mcp", {})
+        # Extract MCP data - config_data might already be the mcp section or contain it
+        if "mcp" in config_data:
+            mcp_data = config_data["mcp"]
+            logger.debug("Found 'mcp' key in config_data")
+        else:
+            # Assume config_data is already the mcp section
+            mcp_data = config_data
+            logger.debug("Using config_data directly as mcp_data")
+            
+        logger.debug(f"Extracted mcp_data: keys={list(mcp_data.keys())}")
 
         # Parse main config
         config = MCPConfig(
@@ -132,9 +144,11 @@ class MCPConfigManager:
 
         # Parse external servers
         servers_data = mcp_data.get("external_servers", {})
+        logger.debug(f"Found {len(servers_data)} external servers: {list(servers_data.keys())}")
         for server_name, server_data in servers_data.items():
             server_config = self._parse_server_config(server_name, server_data)
             config.servers[server_name] = server_config
+            logger.debug(f"Parsed server {server_name}: blocked_tools={server_config.blocked_tools}")
 
         self.config = config
         logger.info(f"Loaded MCP configuration with {len(config.servers)} external servers")

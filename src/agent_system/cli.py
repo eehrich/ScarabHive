@@ -308,7 +308,7 @@ async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str
         return
     
     if tool_action == "list":
-        await _list_server_tools(mcp_integration, server_name)
+        await _list_server_tools(mcp_integration, server_name, args)
     elif tool_action == "allow":
         tool_name = getattr(args, 'value', None)
         if not tool_name:
@@ -325,7 +325,7 @@ async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str
         print(json.dumps({"error": f"Unknown tool action: {tool_action}. Use list, allow, or block"}, ensure_ascii=False))
 
 
-async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str) -> None:
+async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
     """List all available tools for a server and show filtering configuration."""
     server_config = mcp_integration.mcp_config.servers[server_name]
     
@@ -380,7 +380,40 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str) 
         else:
             result["effective_tools"] = available_tools
             
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        # Output in requested format
+        if getattr(args, 'out_format', 'json') == "table":
+            # Table format output
+            print(f"\nServer: {server_name}")
+            print("=" * (len(server_name) + 8))
+            
+            if not available_tools:
+                print("No tools available")
+            else:
+                print(f"\nAvailable Tools ({len(available_tools)}):")
+                print("-" * 30)
+                for tool in available_tools:
+                    status = ""
+                    if blocked_tools and tool in blocked_tools:
+                        status = " [BLOCKED]"
+                    elif allowed_tools and tool not in allowed_tools:
+                        status = " [NOT ALLOWED]"
+                    print(f"  {tool}{status}")
+                
+                print(f"\nEffective Tools ({len(result['effective_tools'])}):")
+                print("-" * 30)
+                for tool in result["effective_tools"]:
+                    print(f"  {tool}")
+                
+                if blocked_tools or allowed_tools:
+                    print("\nFiltering Configuration:")
+                    print("-" * 30)
+                    if allowed_tools:
+                        print(f"  Allowed: {', '.join(allowed_tools)}")
+                    if blocked_tools:
+                        print(f"  Blocked: {', '.join(blocked_tools)}")
+        else:
+            # JSON format output
+            print(json.dumps(result, indent=2, ensure_ascii=False))
         
         # Clean up temporary client
         if client_created:
@@ -1188,7 +1221,9 @@ def main() -> None:
                 except Exception as e:
                     logging.getLogger(__name__).debug(f"Error shutting down MCPIntegration: {e}")
             # Return the captured result (if any) after shutdown completes.
-            return result
+            # Use locals().get to avoid UnboundLocalError when `result` was
+            # never assigned due to early returns inside the try/finally.
+            return locals().get('result', None)
 
         # Run the async MCP handler
         try:

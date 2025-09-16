@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from .client import MCPClientManager
 from .plugin_adapter import plugin_mcp_registry
 from .http_server import MCPHTTPServer
-from .config import MCPConfigManager
+from .config import MCPConfigManager, MCPConfig
 from .security import configure_security
 
 logger = logging.getLogger(__name__)
@@ -26,9 +26,9 @@ class MCPIntegration:
     """Main integration class for MCP functionality"""
 
     def __init__(self, app: Optional[FastAPI] = None, config: Optional[Dict[str, Any]] = None):
-        # Load configuration
+        # Initialize configuration manager without loading config yet
         self.config_manager = MCPConfigManager()
-        self.mcp_config = self.config_manager.load_config(config)
+        self.mcp_config = MCPConfig()  # Use default config initially
 
         # Configure security if config provided
         if config:
@@ -44,6 +44,9 @@ class MCPIntegration:
         """Initialize MCP integration from configuration"""
         if self.initialized:
             return
+
+        # Load the MCP configuration properly
+        self.mcp_config = self.config_manager.load_config(config)
 
         mcp_config = config.get('mcp', {})
 
@@ -66,7 +69,7 @@ class MCPIntegration:
             if server:
                 self.http_server.register_server(server_name, server)
 
-        # Connect to external MCP servers
+        # Connect to external MCP servers (using old format for backward compatibility)
         external_servers = mcp_config.get('external_servers', {})
         self.configured_external_servers = external_servers  # Store for status endpoint
         for server_name, server_config in external_servers.items():
@@ -74,7 +77,7 @@ class MCPIntegration:
                 await self.client_manager.add_client(server_name, server_config)
                 logger.info(f"Connected to external MCP server: {server_name}")
             except Exception as e:
-                logger.error(f"Failed to connect to external MCP server {server_name}: {e}")
+                logger.debug(f"Failed to connect to external MCP server {server_name}: {e}")
 
         self.initialized = True
         logger.info("MCP integration initialized successfully")
@@ -110,7 +113,7 @@ class MCPIntegration:
                 await self.client_manager.add_client(server_name, client_config)
                 logger.info(f"Connected to external MCP server: {server_name} at {server_config.url}")
             except Exception as e:
-                logger.error(f"Failed to connect to MCP server {server_name}: {e}")
+                logger.debug(f"Failed to connect to MCP server {server_name}: {e}")
 
     def get_app(self) -> FastAPI:
         """Get the FastAPI app with MCP endpoints"""
@@ -130,7 +133,8 @@ class MCPIntegration:
                 {
                     "name": tool.name,
                     "description": tool.description,
-                    "input_schema": tool.input_schema
+                    "input_schema": tool.input_schema,
+                    "blocked": False  # Plugins don't have blocking yet
                 }
                 for tool in tools
             ]
@@ -138,14 +142,32 @@ class MCPIntegration:
         # Get tools from external servers
         external_tools = await self.client_manager.list_all_tools()
         for server_name, tools in external_tools.items():
-            result["external_servers"][server_name] = [
-                {
+            # Get server configuration to check blocked tools
+            server_config = self.mcp_config.servers.get(server_name)
+            blocked_tools = []
+            if server_config:
+                blocked_tools = server_config.blocked_tools
+                logger.debug(f"Found server config for {server_name}: blocked_tools={blocked_tools}")
+            else:
+                # Fallback: check in configured_external_servers from old format
+                logger.debug(f"No server config found for {server_name} in self.mcp_config.servers")
+                server_info = self.configured_external_servers.get(server_name, {})
+                tools_config = server_info.get("tools", {})
+                blocked_tools = tools_config.get("blocked", [])
+                logger.debug(f"Using fallback from configured_external_servers: blocked_tools={blocked_tools}")
+            
+            filtered_tools = []
+            for tool in tools:
+                is_blocked = tool.name in blocked_tools
+                logger.debug(f"Tool {tool.name}: blocked={is_blocked} (blocked_tools={blocked_tools})")
+                filtered_tools.append({
                     "name": tool.name,
                     "description": tool.description,
-                    "input_schema": tool.input_schema
-                }
-                for tool in tools
-            ]
+                    "input_schema": tool.input_schema,
+                    "blocked": is_blocked
+                })
+            
+            result["external_servers"][server_name] = filtered_tools
 
         return result
 
@@ -159,6 +181,27 @@ class MCPIntegration:
                 server_type = "external"
             else:
                 raise Exception(f"Unknown server: {server_name}")
+
+        # Check if tool is blocked before calling
+        if server_type == "external":
+            # Get server configuration to check blocked tools
+            server_config = self.mcp_config.servers.get(server_name)
+            blocked_tools = []
+            if server_config:
+                blocked_tools = server_config.blocked_tools
+                logger.debug(f"Found server config for {server_name}: blocked_tools={blocked_tools}")
+            else:
+                # Fallback: check in configured_external_servers from old format
+                logger.debug(f"No server config found for {server_name} in self.mcp_config.servers")
+                server_info = self.configured_external_servers.get(server_name, {})
+                tools_config = server_info.get("tools", {})
+                blocked_tools = tools_config.get("blocked", [])
+                logger.debug(f"Using fallback from configured_external_servers: blocked_tools={blocked_tools}")
+            
+            if tool_name in blocked_tools:
+                error_msg = f"Tool '{tool_name}' is blocked on server '{server_name}'"
+                logger.warning(error_msg)
+                raise Exception(error_msg)
 
         if server_type == "plugin":
             return await self.plugin_registry.call_plugin_tool(server_name, tool_name, arguments)

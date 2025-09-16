@@ -142,6 +142,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             try:
                 mcp_block = config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {})
                 logger.info(f"MCP config loaded: external_servers={len(mcp_block.get('external_servers', {}))}")
+                logger.debug(f"MCP config block: {mcp_block}")
             except Exception:
                 mcp_block = getattr(config.mcp, "__dict__", {})
                 logger.warning("Failed to get MCP config with model_dump, using __dict__")
@@ -494,11 +495,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         
                         # Get tools (may be empty if server is down)
                         tools = servers_with_tools.get(server_name, [])
-                        tool_names = [tool["name"] for tool in tools]
+                        # Filter out blocked tools for tool_names, but keep blocked info for detailed_tools
+                        tool_names = [tool["name"] for tool in tools if not tool.get("blocked", False)]
                         detailed_tools = [{
                             'name': tool.get("name", "unknown"),
                             'description': tool.get("description", f"Tool from {description}"),
-                            'parameters': tool.get("parameters", {})
+                            'parameters': tool.get("parameters", {}),
+                            'blocked': tool.get("blocked", False)
                         } for tool in tools]
                         
                         # Do real-time connection check

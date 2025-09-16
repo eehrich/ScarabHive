@@ -146,7 +146,7 @@ class HTTPTransport(MCPTransport):
                 )
             )
         except Exception as e:
-            logger.error(f"Request failed: {e}")
+            logger.debug(f"Request failed: {e}")
             return MCPMessage(
                 jsonrpc="2.0",
                 id=message.id,

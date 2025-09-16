@@ -380,7 +380,7 @@ class MCPClientManager:
             self.clients[name] = client
             logger.info(f"Added MCP client: {name}")
         except Exception as e:
-            logger.error(f"Failed to add MCP client {name}: {e}")
+            logger.debug(f"Failed to add MCP client {name}: {e}")
             raise
 
     async def remove_client(self, name: str) -> None:

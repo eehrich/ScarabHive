@@ -97,8 +97,11 @@ async function updateMCPServers() {
         const toolsList = server.tools && server.tools.length > 0 
           ? server.detailed_tools && server.detailed_tools.length > 0
             ? server.detailed_tools.map(tool => `
-                <li class="tool-item">
-                  <div class="tool-name">${tool.name}</div>
+                <li class="tool-item ${tool.blocked ? 'tool-blocked' : ''}">
+                  <div class="tool-name">
+                    ${tool.name}
+                    ${tool.blocked ? '<span class="tool-status blocked">BLOCKED</span>' : ''}
+                  </div>
                   <div class="tool-description">${tool.description || `Tool for ${server.name.toLowerCase()}`}</div>
                 </li>
               `).join('')
