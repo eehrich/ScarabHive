@@ -38,6 +38,7 @@ class MCPIntegration:
         self.plugin_registry = plugin_mcp_registry
         self.http_server = MCPHTTPServer(app)
         self.initialized = False
+        self.configured_external_servers = {}  # Store original configuration
 
     async def initialize(self, config: Dict[str, Any]) -> None:
         """Initialize MCP integration from configuration"""
@@ -67,6 +68,7 @@ class MCPIntegration:
 
         # Connect to external MCP servers
         external_servers = mcp_config.get('external_servers', {})
+        self.configured_external_servers = external_servers  # Store for status endpoint
         for server_name, server_config in external_servers.items():
             try:
                 await self.client_manager.add_client(server_name, server_config)

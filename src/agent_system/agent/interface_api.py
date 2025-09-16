@@ -330,6 +330,64 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
 
+    def _check_server_connection(server_info):
+        """Check if a server is actually responding with real-time connectivity test"""
+        import socket
+        from urllib.parse import urlparse
+        
+        try:
+            if server_info.get("type") == "plugin":
+                # For plugins, check if they're in the active registry and functioning
+                server_name = server_info.get("id", "")
+                if _app_registry and hasattr(_app_registry, "_servers"):
+                    server_obj = _app_registry._servers.get(server_name)
+                    if server_obj:
+                        try:
+                            # Test if we can call a basic method
+                            server_obj.get_default_action()
+                            return True
+                        except Exception:
+                            return False
+                return False
+                
+            elif server_info.get("type") == "external":
+                # For external servers, do actual connectivity check
+                url = server_info.get("url", "")
+                if not url:
+                    return False
+                    
+                # Parse URL to get host and port
+                parsed = urlparse(url)
+                host = parsed.hostname or "127.0.0.1"
+                port = parsed.port
+                
+                if not port:
+                    # Default ports based on scheme
+                    if parsed.scheme == "https":
+                        port = 443
+                    else:
+                        port = 80
+                
+                # Try socket connection with short timeout
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)  # 2 second timeout
+                try:
+                    result = sock.connect_ex((host, port))
+                    return result == 0
+                finally:
+                    sock.close()
+                    
+        except Exception as e:
+            # Use logging if available, otherwise ignore
+            try:
+                logger = logging.getLogger(__name__)
+                logger.debug(f"Connection check failed for {server_info.get('name', 'unknown')}: {e}")
+            except Exception:
+                pass
+            return False
+        
+        return False
+
     @app.get("/mcp/status")
     async def mcp_status():
         """Get MCP server status including plugins and external servers."""
@@ -359,13 +417,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             # If schema loading fails, treat as no tools
                             pass
                     
-                    # Check connection using a simple method call
-                    connected = True
-                    try:
-                        if hasattr(server_obj, 'get_default_action'):
-                            server_obj.get_default_action()
-                    except Exception:
-                        connected = False
+                    # Check connection using real-time verification
+                    server_info = {
+                        "id": server_id,
+                        "type": "plugin"
+                    }
+                    connected = _check_server_connection(server_info)
                     
                     servers.append({
                         "id": server_id,
@@ -390,30 +447,58 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Try to get external servers from the global MCP integration instance
             try:
                 if _mcp_integration and _mcp_integration.initialized:
-                    # Get external server tools from the real MCP integration
-                    all_tools = await _mcp_integration.list_all_tools()
+                    # Get external servers from client manager (these are connected ones)
+                    connected_servers = _mcp_integration.client_manager.list_clients()
                     
-                    for server_name, tools in all_tools.get("external_servers", {}).items():
-                        # If the server appears in the external_servers list with tools, 
-                        # it means it's connected (since list_all_tools() only includes connected servers)
-                        connected = len(tools) > 0
-                        
-                        tool_names = [tool["name"] for tool in tools]
-                        
-                        # Get server config for additional info
+                    # Get originally configured external servers (including failed connections)
+                    configured_servers = getattr(_mcp_integration, 'configured_external_servers', {})
+                    
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Connected external servers: {connected_servers}")
+                    logger.info(f"Configured external servers: {list(configured_servers.keys())}")
+                    
+                    # Also get any that have tools (for servers that might be configured elsewhere)
+                    all_tools = await _mcp_integration.list_all_tools()
+                    servers_with_tools = all_tools.get("external_servers", {})
+                    
+                    # Combine connected servers with configured servers
+                    all_external_servers = set(connected_servers) | set(configured_servers.keys())
+                    
+                    logger.info(f"All external servers to process: {all_external_servers}")
+                    
+                    for server_name in all_external_servers:
+                        # Get server config for info from stored configuration
                         description = server_name.replace('_', ' ').title()
                         url = ""
                         
+                        # Try to get server config from stored configuration
                         try:
-                            if hasattr(_mcp_integration.mcp_config, 'servers'):
-                                server_config = _mcp_integration.mcp_config.servers.get(server_name)
-                                if server_config:
-                                    if hasattr(server_config, 'description') and server_config.description:
-                                        description = server_config.description
-                                    if hasattr(server_config, 'url') and server_config.url:
-                                        url = server_config.url
+                            server_config = configured_servers.get(server_name, {})
+                            if server_config:
+                                if server_config.get('description'):
+                                    description = server_config['description']
+                                if server_config.get('url'):
+                                    url = server_config['url']
                         except Exception:
                             pass
+                        
+                        # Get tools (may be empty if server is down)
+                        tools = servers_with_tools.get(server_name, [])
+                        tool_names = [tool["name"] for tool in tools]
+                        
+                        # Do real-time connection check
+                        server_info = {
+                            "id": server_name,
+                            "name": description,
+                            "type": "external",
+                            "url": url
+                        }
+                        # Check if server is in connected clients (fast check first)
+                        if server_name in connected_servers:
+                            connected = True
+                        else:
+                            # Do socket-based connection check for disconnected servers
+                            connected = _check_server_connection(server_info)
                         
                         servers.append({
                             "id": server_name,
