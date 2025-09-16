@@ -406,13 +406,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 try:
                     # Get tools using schema method
                     tools = []
+                    detailed_tools = []
                     if hasattr(server_obj, 'get_schema'):
                         try:
                             schema = server_obj.get_schema()
                             if schema:
                                 # Each plugin typically provides one function/tool
                                 if 'function' in schema and 'name' in schema['function']:
-                                    tools = [schema['function']['name']]
+                                    tool_name = schema['function']['name']
+                                    tools = [tool_name]
+                                    # Get description from schema if available
+                                    description = schema['function'].get('description', f'Tool for {server_id}')
+                                    detailed_tools = [{
+                                        'name': tool_name,
+                                        'description': description,
+                                        'parameters': schema['function'].get('parameters', {})
+                                    }]
                         except Exception:
                             # If schema loading fails, treat as no tools
                             pass
@@ -430,6 +439,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         "type": "plugin",
                         "connected": connected,
                         "tools": tools,
+                        "detailed_tools": detailed_tools,
                         "tool_count": len(tools)
                     })
                 except Exception as e:
@@ -485,6 +495,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # Get tools (may be empty if server is down)
                         tools = servers_with_tools.get(server_name, [])
                         tool_names = [tool["name"] for tool in tools]
+                        detailed_tools = [{
+                            'name': tool.get("name", "unknown"),
+                            'description': tool.get("description", f"Tool from {description}"),
+                            'parameters': tool.get("parameters", {})
+                        } for tool in tools]
                         
                         # Do real-time connection check
                         server_info = {
@@ -493,12 +508,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             "type": "external",
                             "url": url
                         }
-                        # Check if server is in connected clients (fast check first)
-                        if server_name in connected_servers:
+                        # Do real-time connection check first, then fall back to client manager list
+                        reachable = _check_server_connection(server_info)
+                        logger.debug(f"MCP status: external server '{server_name}' reachable={reachable} listed_in_clients={server_name in connected_servers} tool_count={len(tool_names)} url={url}")
+                        if reachable:
+                            connected = True
+                        elif server_name in connected_servers and len(tool_names) > 0:
+                            # Server is in client list and has tools - likely connected
                             connected = True
                         else:
-                            # Do socket-based connection check for disconnected servers
-                            connected = _check_server_connection(server_info)
+                            # Either not reachable or no tools available - mark disconnected
+                            connected = False
                         
                         servers.append({
                             "id": server_name,
@@ -506,6 +526,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             "type": "external",
                             "connected": connected,
                             "tools": tool_names,
+                            "detailed_tools": detailed_tools,
                             "tool_count": len(tool_names),
                             "url": url
                         })

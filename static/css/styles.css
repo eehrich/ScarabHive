@@ -72,6 +72,20 @@ header {
   cursor: grab;
   flex-shrink: 0;
 }
+.floating-panel-header #mcpRefreshBtn {
+  background: none;
+  border: 1px solid #243244;
+  color: #9ab;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-right: 8px;
+}
+
+.floating-panel-header #mcpRefreshBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .floating-panel-header:active { cursor: grabbing; }
 .floating-panel-body { 
   padding: 10px; 
@@ -181,11 +195,94 @@ h1 {
 .mcp-servers-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   flex: 1;
   overflow-y: auto;
   padding-right: 4px;
   min-height: 0;
+  scroll-behavior: smooth;
+}
+
+.mcp-server {
+  background: #0a1420;
+  border: 1px solid #243244;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.mcp-server:hover {
+  border-color: #394B5C;
+  background: #0e1825;
+}
+
+.mcp-server-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.server-name-type {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.server-name-type strong {
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.server-type {
+  font-size: 12px;
+  color: #9ab;
+  background: #1e2a3a;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.tool-count {
+  font-size: 12px;
+  color: #9ab;
+  font-weight: 500;
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.expand-indicator {
+  color: #9ab;
+  font-size: 10px;
+  margin-left: 8px;
+  transition: transform 0.2s ease;
+  user-select: none;
+}
+
+.expand-indicator:hover {
+  color: #cbd5e1;
+}
+
+/* CSS triangle indicator: right-pointing by default, rotates down when expanded */
+.expand-indicator {
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 8px solid #9ab;
+  display: inline-block;
+  vertical-align: middle;
+  transform-origin: center;
+}
+
+.expand-indicator.expanded {
+  transform: rotate(90deg);
+  border-left-color: #cbd5e1;
 }
 
 .mcp-server {
@@ -334,32 +431,56 @@ h1 {
 .tools-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
+}
+
+.tools-list h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.tools-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .tool-item {
   background: #050a0f;
   border: 1px solid #1e2a3a;
-  border-radius: 6px;
-  padding: 8px;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 0;
+  transition: background-color 0.2s ease;
+}
+
+.tool-item:hover {
+  background: #0a1018;
+  border-color: #2a3a4a;
 }
 
 .tool-header {
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .tool-name {
   font-weight: 600;
   color: #cbd5e1;
-  font-size: 13px;
-  font-family: monospace;
+  font-size: 12px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  margin: 0 0 2px 0;
 }
 
 .tool-description {
-  font-size: 12px;
+  font-size: 11px;
   color: #94a3b8;
-  line-height: 1.4;
-  margin-bottom: 6px;
+  line-height: 1.3;
+  margin: 0;
+  font-style: italic;
 }
 
 .tool-schema {

@@ -51,8 +51,7 @@ async function updateStatusMetrics() {
   }
 }
 
-// MCP servers update function
-// Simplified MCP servers update function
+// MCP servers update function with state preservation
 async function updateMCPServers() {
   try {
     const response = await fetch('/mcp/status');
@@ -63,10 +62,30 @@ async function updateMCPServers() {
       const totalTools = data.total_tools || 0;
       const servers = data.servers || [];
       
+      // Preserve state before update
+      const mcpMetrics = document.getElementById('floatingMCPMetrics');
+      let scrollPosition = 0;
+      let expandedStates = {};
+      
+      if (mcpMetrics) {
+        const serversList = mcpMetrics.querySelector('.mcp-servers-list');
+        if (serversList) {
+          // Save scroll position
+          scrollPosition = serversList.scrollTop;
+          
+          // Save expanded states
+          const detailElements = serversList.querySelectorAll('[id^="details-"]');
+          detailElements.forEach(el => {
+            const serverId = el.id.replace('details-', '');
+            expandedStates[serverId] = el.style.display !== 'none';
+          });
+        }
+      }
+      
       let connectedServers = 0;
       let html = '';
       
-      // Enhanced styling for servers
+      // Enhanced styling for servers with better tool display
       for (let i = 0; i < servers.length; i++) {
         const server = servers[i];
         if (server.connected) connectedServers++;
@@ -74,9 +93,26 @@ async function updateMCPServers() {
         const statusClass = server.connected ? 'connected' : 'disconnected';
         const statusText = server.connected ? 'Connected' : 'Disconnected';
         
+        // Better tool display with descriptions
         const toolsList = server.tools && server.tools.length > 0 
-          ? server.tools.map(tool => `<li class="tool-item">${tool}</li>`).join('')
-          : '<li class="tool-item">No tools available</li>';
+          ? server.detailed_tools && server.detailed_tools.length > 0
+            ? server.detailed_tools.map(tool => `
+                <li class="tool-item">
+                  <div class="tool-name">${tool.name}</div>
+                  <div class="tool-description">${tool.description || `Tool for ${server.name.toLowerCase()}`}</div>
+                </li>
+              `).join('')
+            : server.tools.map(tool => `
+                <li class="tool-item">
+                  <div class="tool-name">${tool}</div>
+                  <div class="tool-description">Tool for ${server.name.toLowerCase()}</div>
+                </li>
+              `).join('')
+          : '<li class="tool-item"><div class="tool-name">No tools available</div></li>';
+        
+        // Check if this server was expanded before
+        const wasExpanded = expandedStates[server.id] || false;
+        const displayStyle = wasExpanded ? 'block' : 'none';
         
         html += `
           <div class="mcp-server" onclick="toggleServerDetails('${server.id}')">
@@ -87,11 +123,11 @@ async function updateMCPServers() {
               </div>
               <span class="mcp-status ${statusClass}">${statusText}</span>
             </div>
-            <div class="tool-count">${server.tool_count || 0} tools</div>
-            <div class="server-details" id="details-${server.id}" style="display: none;">
+            <div class="tool-count">${server.tool_count || 0} tools <span class="expand-indicator ${wasExpanded ? 'expanded' : ''}" id="indicator-${server.id}"></span></div>
+            <div class="server-details" id="details-${server.id}" style="display: ${displayStyle};">
               <div class="tools-list">
                 <h4>Available Tools:</h4>
-                <ul>${toolsList}</ul>
+                <ul class="tools-container">${toolsList}</ul>
               </div>
               ${server.url ? `<div class="server-url"><strong>URL:</strong> ${server.url}</div>` : ''}
               ${server.error ? `<div class="server-error"><strong>Error:</strong> ${server.error}</div>` : ''}
@@ -119,14 +155,27 @@ async function updateMCPServers() {
         </div>
       `;
       
-      const mcpMetrics = document.getElementById('floatingMCPMetrics');
       if (mcpMetrics) {
         mcpMetrics.innerHTML = summaryHtml;
+        
+        // Restore scroll position after DOM update
+        const serversList = mcpMetrics.querySelector('.mcp-servers-list');
+        if (serversList && typeof scrollPosition === 'number') {
+          // Temporarily disable smooth scrolling to avoid animated jump
+          const prevBehavior = serversList.style.scrollBehavior || '';
+          serversList.style.scrollBehavior = 'auto';
+          requestAnimationFrame(() => {
+            serversList.scrollTop = scrollPosition;
+            // Restore original behavior on next frame to keep UX smooth for user actions
+            requestAnimationFrame(() => {
+              serversList.style.scrollBehavior = prevBehavior;
+            });
+          });
+        }
       }
       
       // Update button to show it's working
       const mcpButton = document.getElementById('mcpToggleBtn');
-      const mcpConnectedBadge = document.getElementById('mcpConnected');
       if (mcpButton) {
         mcpButton.textContent = `MCP-Servers (${totalServers})`;
         // Re-add the badge span (textContent removes it)
@@ -171,6 +220,7 @@ mcpPanel.innerHTML = `
   <div class="floating-panel-header" id="floatingMCPHeader">
     <span>MCP Servers & Tools</span>
     <div style="margin-left:8px;flex:1"></div>
+    <button id="mcpRefreshBtn" title="Refresh now" aria-label="Refresh now">⟳</button>
     <button id="floatingMCPCloseBtn" title="Close" aria-label="Close">✕</button>
   </div>
   <div class="floating-panel-body" id="floatingMCPBody">
@@ -190,6 +240,21 @@ const floatingStatusMetrics = document.getElementById('floatingStatusMetrics');
 const mcpToggleBtn = document.getElementById('mcpToggleBtn');
 const floatingMCPCloseBtn = document.getElementById('floatingMCPCloseBtn');
 const floatingMCPMetrics = document.getElementById('floatingMCPMetrics');
+const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
+
+if (mcpRefreshBtn) {
+  mcpRefreshBtn.addEventListener('click', async (ev) => {
+    mcpRefreshBtn.disabled = true;
+    mcpRefreshBtn.textContent = '...';
+    try {
+      await updateMCPServers();
+    } catch (e) {
+      console.error('Manual MCP refresh failed', e);
+    }
+    mcpRefreshBtn.textContent = '⟳';
+    mcpRefreshBtn.disabled = false;
+  });
+}
 
 statusToggleBtn.addEventListener('click', () => {
   const shown = statusPanel.style.display !== 'none';
@@ -251,7 +316,7 @@ floatingMCPCloseBtn.addEventListener('click', () => {
   let startX = 0, startY = 0, origX = 0, origY = 0;
   header.addEventListener('pointerdown', (ev) => {
     try {
-      if (ev.target && ev.target.closest && ev.target.closest('#floatingMCPCloseBtn')) return;
+      if (ev.target && ev.target.closest && (ev.target.closest('#floatingMCPCloseBtn') || ev.target.closest('#mcpRefreshBtn'))) return;
     } catch (e) {}
     isDragging = true;
     startX = ev.clientX; startY = ev.clientY;
@@ -289,10 +354,16 @@ function formatTime(ts) { try { return new Date(ts).toLocaleTimeString(); } catc
 // Toggle MCP server details
 function toggleServerDetails(serverId) {
   const detailsContainer = document.getElementById(`details-${serverId}`);
+  const indicator = document.getElementById(`indicator-${serverId}`);
   
   if (detailsContainer) {
     const isVisible = detailsContainer.style.display !== 'none';
     detailsContainer.style.display = isVisible ? 'none' : 'block';
+    
+    // Update indicator class (CSS triangle rotates when expanded)
+    if (indicator) {
+      indicator.classList.toggle('expanded', !isVisible);
+    }
   }
 }
 
