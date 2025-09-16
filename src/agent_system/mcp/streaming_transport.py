@@ -14,7 +14,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import asyncio
 from typing import Any, Dict, Optional
 import aiohttp
 
