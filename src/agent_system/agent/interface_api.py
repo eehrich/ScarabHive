@@ -21,7 +21,7 @@ from ..config.models import AgentConfig
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
-from ..mcp.status import status_bus, StatusEvent, get_status_metrics
+from ..mcp.status import status_bus, StatusEvent, get_status_metrics, publish_status
 from ..mcp.integration import initialize_mcp, shutdown_mcp
 
 
@@ -245,6 +245,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         queue = await status_bus.subscribe(server=server, request_id=request_id)
 
+        # Trigger immediate status update for newly connected subscriber
+        try:
+            from ..mcp.status import publish_status, PHASE_PROGRESS
+            # Only publish server summary, not connection noise
+            mcp_integration = getattr(app.state, 'mcp_integration', None)
+            if mcp_integration and hasattr(mcp_integration, 'client_manager'):
+                connected_servers = [name for name, client in mcp_integration.client_manager.clients.items()]
+                await publish_status(
+                    server="AgentSystem",
+                    message=f"Ready - Connected to {len(connected_servers)} MCP servers: {', '.join(connected_servers) if connected_servers else 'none'}",
+                    phase=PHASE_PROGRESS,
+                    meta={"connected_servers": connected_servers, "total_servers": len(connected_servers)}
+                )
+            else:
+                await publish_status(
+                    server="AgentSystem",
+                    message="Ready - Status monitoring active",
+                    phase=PHASE_PROGRESS,
+                    meta={"status": "ready"}
+                )
+        except Exception as e:
+            logger.debug("Failed to publish initial status for new subscriber: %s", e)
+
         async def event_gen():
             sent_events = 0
             try:
@@ -330,6 +353,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
+
+    @app.post("/status/publish-test")
+    async def status_publish_test(server: str = Query(..., description="Server name for test event"), message: str = Query("Test event", description="Message text")):
+        """Diagnostic endpoint to publish a test status event for the given server.
+
+        Helps verifying that the SSE `/status/stream` is delivering events to connected clients.
+        """
+        try:
+            await publish_status(server, message, phase="progress")
+            return {"result": "published", "server": server, "message": message}
+        except Exception as e:
+            return {"error": str(e)}
 
     def _check_server_connection(server_info):
         """Check if a server is actually responding with real-time connectivity test"""

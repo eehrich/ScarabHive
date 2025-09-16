@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from .core import MCPClient, MCPTool, MCPMessage, MCPTransport
 from .transport import HTTPTransport
 from .streaming_transport import HTTPStreamingTransport
+from .status import publish_status, PHASE_START, PHASE_END, PHASE_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +31,91 @@ class StandardMCPClient(MCPClient):
     async def connect(self) -> None:
         """Connect to MCP server"""
         logger.info(f"Connecting MCP client {self.name}")
-        await self.transport.connect()
+        try:
+            try:
+                await publish_status(self.name, "Transport connecting to MCP server", phase=PHASE_START)
+                # Also publish under logical server id (e.g., strip AgentSystem- prefix)
+                if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+                    try:
+                        logical = self.name.split("AgentSystem-", 1)[1]
+                        await publish_status(logical, "Transport connecting to MCP server", phase=PHASE_START)
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("publish_status failed for transport connect start")
+
+            await self.transport.connect()
+
+            try:
+                await publish_status(self.name, "Transport connected to MCP server", phase=PHASE_END)
+                if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+                    try:
+                        logical = self.name.split("AgentSystem-", 1)[1]
+                        await publish_status(logical, "Transport connected to MCP server", phase=PHASE_END)
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("publish_status failed for transport connected")
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Transport connection failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
+                if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+                    try:
+                        logical = self.name.split("AgentSystem-", 1)[1]
+                        await publish_status(logical, f"Transport connection failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("publish_status failed for transport connect error")
+            raise
 
     async def disconnect(self) -> None:
         """Disconnect from MCP server"""
         logger.info(f"Disconnecting MCP client {self.name}")
-        await self.transport.disconnect()
+        try:
+            try:
+                await publish_status(self.name, "Transport disconnecting from MCP server", phase=PHASE_START)
+                if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+                    try:
+                        logical = self.name.split("AgentSystem-", 1)[1]
+                        await publish_status(logical, "Transport disconnecting from MCP server", phase=PHASE_START)
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("publish_status failed for transport disconnect start")
+
+            await self.transport.disconnect()
+
+            try:
+                await publish_status(self.name, "Transport disconnected from MCP server", phase=PHASE_END)
+                if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+                    try:
+                        logical = self.name.split("AgentSystem-", 1)[1]
+                        await publish_status(logical, "Transport disconnected from MCP server", phase=PHASE_END)
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("publish_status failed for transport disconnect end")
+        except Exception as e:
+            try:
+                await publish_status(self.name, f"Transport disconnect failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
+                if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+                    try:
+                        logical = self.name.split("AgentSystem-", 1)[1]
+                        await publish_status(logical, f"Transport disconnect failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("publish_status failed for transport disconnect error")
+            raise
 
     async def initialize(self) -> Dict[str, Any]:
         """Initialize connection and get server capabilities"""
         logger.info(f"Initializing MCP connection for {self.name}")
+        try:
+            await publish_status(self.name, "Initializing MCP connection", phase=PHASE_START)
+        except Exception:
+            logger.debug("publish_status failed for initialize start")
 
         # Prepare initialize params
         params = {
@@ -78,6 +154,19 @@ class StandardMCPClient(MCPClient):
         self.server_capabilities = result.get("capabilities", {})
 
         logger.info(f"Connected to MCP server: {self.server_info.get('name', 'Unknown')}")
+        try:
+            try:
+                await publish_status(self.name, "MCP initialization completed", phase=PHASE_END)
+                if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+                    try:
+                        logical = self.name.split("AgentSystem-", 1)[1]
+                        await publish_status(logical, "MCP initialization completed", phase=PHASE_END)
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("publish_status failed for initialize end")
+        except Exception:
+            pass
         return result
 
     async def list_tools(self) -> List[MCPTool]:
@@ -113,11 +202,32 @@ class StandardMCPClient(MCPClient):
 
         self.available_tools = tools
         logger.debug(f"Found {len(tools)} tools from MCP server")
+        
         return tools
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """Call a tool on the server"""
         logger.debug(f"Calling MCP tool: {name}")
+
+        # Get logical server name for cleaner status messages
+        logical_server = self.name
+        if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
+            logical_server = self.name.split("AgentSystem-", 1)[1]
+
+        # Publish status for tool call start
+        try:
+            await publish_status(
+                logical_server, 
+                f"Starting tool call: {name}", 
+                phase=PHASE_START, 
+                meta={
+                    "tool": name, 
+                    "server": logical_server,
+                    "arguments": {k: str(v)[:50] + "..." if len(str(v)) > 50 else str(v) for k, v in arguments.items()} if arguments else {}
+                }
+            )
+        except Exception:
+            logger.debug("publish_status failed for tool call start")
 
         request = MCPMessage(
             jsonrpc="2.0",
@@ -136,6 +246,21 @@ class StandardMCPClient(MCPClient):
             response = await self.transport.receive_message()
 
         if response.error:
+            # Publish status for tool call error
+            try:
+                await publish_status(
+                    logical_server, 
+                    f"Tool call failed: {name}", 
+                    phase=PHASE_ERROR, 
+                    meta={
+                        "tool": name, 
+                        "server": logical_server,
+                        "error": response.error.message,
+                        "error_code": getattr(response.error, 'code', None)
+                    }
+                )
+            except Exception:
+                logger.debug("publish_status failed for tool call error")
             raise Exception(f"Tool call failed: {response.error.message}")
 
         # Extract content from MCP response format
@@ -145,7 +270,38 @@ class StandardMCPClient(MCPClient):
             # return the first text item found in order
             for item in content_items:
                 if isinstance(item, dict) and item.get("type") == "text":
-                    return item.get("text", "")
+                    text_result = item.get("text", "")
+                    # Publish status for successful tool call
+                    try:
+                        await publish_status(
+                            logical_server, 
+                            f"Tool call completed: {name}", 
+                            phase=PHASE_END, 
+                            meta={
+                                "tool": name, 
+                                "server": logical_server,
+                                "result_length": len(text_result),
+                                "result_preview": text_result[:100] + "..." if len(text_result) > 100 else text_result
+                            }
+                        )
+                    except Exception:
+                        logger.debug("publish_status failed for tool call end")
+                    return text_result
+
+        # Publish status for successful tool call
+        try:
+            await publish_status(
+                logical_server, 
+                f"Tool call completed: {name}", 
+                phase=PHASE_END, 
+                meta={
+                    "tool": name, 
+                    "server": logical_server,
+                    "result_type": type(result).__name__
+                }
+            )
+        except Exception:
+            logger.debug("publish_status failed for tool call end")
 
         return result
 
@@ -365,6 +521,11 @@ class MCPClientManager:
     async def add_client(self, name: str, config: Dict[str, Any]) -> None:
         """Add an MCP client from configuration"""
         try:
+            # Announce connection attempt
+            try:
+                await publish_status(name, "Connecting to external MCP server", phase=PHASE_START)
+            except Exception:
+                logger.debug("publish_status failed for start event")
             # If a client with this name already exists, disconnect it first
             if name in self.clients:
                 try:
@@ -379,16 +540,32 @@ class MCPClientManager:
             client = await MCPClientFactory.create_client_from_config(config)
             self.clients[name] = client
             logger.info(f"Added MCP client: {name}")
+            try:
+                await publish_status(name, "Connected to external MCP server", phase=PHASE_END)
+            except Exception:
+                logger.debug("publish_status failed for connected event")
         except Exception as e:
             logger.debug(f"Failed to add MCP client {name}: {e}")
+            try:
+                await publish_status(name, f"Failed to connect to external MCP server: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
+            except Exception:
+                logger.debug("publish_status failed for error event")
             raise
 
     async def remove_client(self, name: str) -> None:
         """Remove an MCP client"""
         if name in self.clients:
+            try:
+                await publish_status(name, "Disconnecting external MCP client", phase=PHASE_START)
+            except Exception:
+                logger.debug("publish_status failed for disconnect start")
             await self.clients[name].disconnect()
             del self.clients[name]
             logger.info(f"Removed MCP client: {name}")
+            try:
+                await publish_status(name, "Disconnected external MCP client", phase=PHASE_END)
+            except Exception:
+                logger.debug("publish_status failed for disconnect end")
 
     def get_client(self, name: str) -> Optional[StandardMCPClient]:
         """Get an MCP client by name"""
