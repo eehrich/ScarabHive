@@ -481,6 +481,11 @@ class MCPClientFactory:
     async def create_client_from_config(config: Dict[str, Any]) -> StandardMCPClient:
         """Create an MCP client from configuration"""
         transport_type = config.get("transport", "http")
+        
+        # Handle deprecated transport type names
+        if transport_type == "smithery":
+            transport_type = "streaming"
+            logger.warning("Transport type 'smithery' is deprecated. Use 'http' for new configurations.")
 
         if transport_type == "http":
             # Support both 'url' and 'base_url' for compatibility

@@ -36,7 +36,7 @@ class MCPServerConfig:
     timeout: float = 30.0
     max_retries: int = 3
     retry_delay: float = 1.0
-    transport_type: str = "http"  # http, smithery
+    transport_type: str = "http"  # http, streaming; smithery (deprecated)
 
     # Initialization options for MCP server
     initialization_options: Dict[str, Any] = field(default_factory=dict)

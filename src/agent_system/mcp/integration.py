@@ -97,9 +97,16 @@ class MCPIntegration:
                 continue
 
             try:
+                # Map deprecated transport types for backward compatibility
+                transport_type = server_config.transport_type
+                if transport_type == "smithery":
+                    # Legacy support: map smithery to streaming
+                    transport_type = "streaming"
+                    logger.warning(f"Transport type 'smithery' is deprecated for server {server_name}. Use 'http' instead.")
+                
                 # Create client config for the server
                 client_config = {
-                    "transport": server_config.transport_type,
+                    "transport": transport_type,
                     "url": server_config.url,
                     "client_name": f"AgentSystem-{server_name}",
                     "timeout": server_config.timeout,

@@ -57,6 +57,70 @@ mcp:
       priority: 50
 ```
 
+## Transport Types
+
+AgentSystem supports multiple transport protocols for MCP communication:
+
+### HTTP Transport
+
+Standard HTTP transport for basic MCP communication:
+
+```yaml
+external_servers:
+  basic_service:
+    url: "https://api.example.com/mcp"
+    transport_type: "http"
+    enabled: true
+    timeout: 30.0
+```
+
+### HTTP Streaming Transport
+
+Advanced HTTP transport with Server-Sent Events (SSE) for real-time status streaming:
+
+```yaml
+external_servers:
+  streaming_service:
+    url: "https://streaming.example.com/mcp"
+    transport_type: "smithery"  # Legacy alias, use "http" for new configurations
+    enabled: true
+    timeout: 30.0
+    stream_status_events: true  # Enable real-time status streaming
+    session_config:
+      max_session_lifetime: 3600  # 1 hour
+      keepalive_interval: 30      # 30 seconds
+```
+
+**Features of HTTP Streaming Transport:**
+- **Real-time status updates**: Receive status events via SSE streams
+- **Base64 config encoding**: Secure configuration transmission
+- **Session management**: Persistent sessions with unique identifiers
+- **Connection recovery**: Automatic reconnection on network failures
+- **Resource efficiency**: Long-lived connections reduce overhead
+
+**Migration Note**: The `smithery` transport type is deprecated. Use `http` for new configurations. The system automatically uses streaming features when available.
+
+## CLI Management
+
+Use the built-in CLI commands to manage MCP servers:
+
+```bash
+# List all configured servers
+agent-cli mcp list
+
+# Connect to a server
+agent-cli mcp connect weather_service
+
+# Check connection status
+agent-cli mcp status weather_service
+
+# Test server functionality
+agent-cli mcp test weather_service
+
+# Disconnect from a server
+agent-cli mcp disconnect weather_service
+```
+
 ## Authentication Types
 
 ### API Key Authentication
