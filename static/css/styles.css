@@ -201,6 +201,34 @@ h1 {
 .number-input { width:66px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#07111a; color:#e6edf3; font-size:13px; margin-right:8px; }
 .number-input:focus { outline:none; box-shadow:0 0 0 3px rgba(12,56,72,0.12); border-color:#1f9bb5; }
 
+/* Filter input styling */
+.filter-input {
+  width: 160px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #243244;
+  background: #07111a;
+  color: #e6edf3;
+  font-size: 13px;
+  margin-right: 8px;
+}
+.filter-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(12,56,72,0.12);
+  border-color: #1f9bb5;
+}
+.filter-input::placeholder {
+  color: #6b7280;
+}
+
+/* Highlight styling for search matches */
+mark {
+  background: #3a4f60;
+  color: #e6edf3;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
 .mcp-connected {
   display: inline-block;
   width: 10px;

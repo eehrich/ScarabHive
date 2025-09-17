@@ -51,7 +51,7 @@ async function updateStatusMetrics() {
   }
 }
 
-// MCP servers update function with state preservation
+// MCP servers update function with state preservation and filtering
 async function updateMCPServers() {
   try {
     const response = await fetch('/mcp/status');
@@ -61,6 +61,10 @@ async function updateMCPServers() {
       const totalServers = data.total_servers || 0;
       const totalTools = data.total_tools || 0;
       const servers = data.servers || [];
+
+      // Get current filter value
+      const filterInput = document.getElementById('mcpFilterInput');
+      const filterText = filterInput ? filterInput.value.toLowerCase().trim() : '';
 
       // Preserve state before update
       const mcpMetrics = document.getElementById('floatingMCPMetrics');
@@ -84,11 +88,32 @@ async function updateMCPServers() {
 
       let connectedServers = 0;
       let html = '';
+      let filteredCount = 0;
 
       // Enhanced styling for servers with better tool display
       for (let i = 0; i < servers.length; i++) {
         const server = servers[i];
         if (server.connected) connectedServers++;
+
+        // Filter logic - check server name and tool names
+        let matchesFilter = !filterText;
+        if (filterText) {
+          // Check server name
+          if (server.name && server.name.toLowerCase().includes(filterText)) {
+            matchesFilter = true;
+          }
+          // Check tool names
+          if (!matchesFilter && server.tools) {
+            const toolsToCheck = server.detailed_tools || server.tools;
+            matchesFilter = toolsToCheck.some(tool => {
+              const toolName = typeof tool === 'string' ? tool : tool.name;
+              return toolName && toolName.toLowerCase().includes(filterText);
+            });
+          }
+        }
+
+        if (!matchesFilter) continue;
+        filteredCount++;
 
         const statusClass = server.connected ? 'connected' : 'disconnected';
         const statusText = server.connected ? 'Connected' : 'Disconnected';
@@ -96,32 +121,55 @@ async function updateMCPServers() {
         // Better tool display with descriptions
         const toolsList = server.tools && server.tools.length > 0
           ? server.detailed_tools && server.detailed_tools.length > 0
-            ? server.detailed_tools.map(tool => `
-                <li class="tool-item ${tool.blocked ? 'tool-blocked' : ''}">
-                  <div class="tool-name">
-                    ${tool.name}
-                    ${tool.blocked ? '<span class="tool-status blocked">BLOCKED</span>' : ''}
-                  </div>
-                  <div class="tool-description">${tool.description || `Tool for ${server.name.toLowerCase()}`}</div>
-                </li>
-              `).join('')
-            : server.tools.map(tool => `
-                <li class="tool-item">
-                  <div class="tool-name">${tool}</div>
-                  <div class="tool-description">Tool for ${server.name.toLowerCase()}</div>
-                </li>
-              `).join('')
+            ? server.detailed_tools.map(tool => {
+                // Highlight matching tools
+                let toolName = tool.name;
+                let toolDesc = tool.description || `Tool for ${server.name.toLowerCase()}`;
+                if (filterText) {
+                  if (toolName.toLowerCase().includes(filterText)) {
+                    const regex = new RegExp(`(${filterText})`, 'gi');
+                    toolName = toolName.replace(regex, '<mark>$1</mark>');
+                  }
+                }
+                return `
+                  <li class="tool-item ${tool.blocked ? 'tool-blocked' : ''}">
+                    <div class="tool-name">
+                      ${toolName}
+                      ${tool.blocked ? '<span class="tool-status blocked">BLOCKED</span>' : ''}
+                    </div>
+                    <div class="tool-description">${toolDesc}</div>
+                  </li>`;
+              }).join('')
+            : server.tools.map(tool => {
+                let toolName = tool;
+                if (filterText && toolName.toLowerCase().includes(filterText)) {
+                  const regex = new RegExp(`(${filterText})`, 'gi');
+                  toolName = toolName.replace(regex, '<mark>$1</mark>');
+                }
+                return `
+                  <li class="tool-item">
+                    <div class="tool-name">${toolName}</div>
+                    <div class="tool-description">Tool for ${server.name.toLowerCase()}</div>
+                  </li>`;
+              }).join('')
           : '<li class="tool-item"><div class="tool-name">No tools available</div></li>';
 
         // Check if this server was expanded before
         const wasExpanded = expandedStates[server.id] || false;
         const displayStyle = wasExpanded ? 'block' : 'none';
 
+        // Highlight matching server names
+        let serverName = server.name;
+        if (filterText && serverName && serverName.toLowerCase().includes(filterText)) {
+          const regex = new RegExp(`(${filterText})`, 'gi');
+          serverName = serverName.replace(regex, '<mark>$1</mark>');
+        }
+
         html += `
           <div class="mcp-server" onclick="toggleServerDetails('${server.id}')">
             <div class="mcp-server-info">
               <div class="server-name-type">
-                <strong>${server.name}</strong>
+                <strong>${serverName}</strong>
                 <span class="server-type">(${server.type})</span>
               </div>
               <span class="mcp-status ${statusClass}">${statusText}</span>
@@ -152,9 +200,14 @@ async function updateMCPServers() {
             <span class="metric-label">Total Tools</span>
             <span class="metric-value">${totalTools}</span>
           </div>
+          ${filterText ? `
+          <div class="metric-item">
+            <span class="metric-label">Filtered</span>
+            <span class="metric-value">${filteredCount}/${totalServers}</span>
+          </div>` : ''}
         </div>
         <div class="mcp-servers-list">
-          ${html || '<div class="no-servers">No MCP servers configured</div>'}
+          ${html || (filterText ? '<div class="no-servers">No servers match the filter</div>' : '<div class="no-servers">No MCP servers configured</div>')}
         </div>
       `;
 
@@ -223,6 +276,7 @@ mcpPanel.innerHTML = `
   <div class="floating-panel-header" id="floatingMCPHeader">
     <span>MCP Servers & Tools</span>
     <div style="margin-left:8px;flex:1"></div>
+    <input id="mcpFilterInput" type="text" placeholder="Filter servers/tools..." class="filter-input" title="Filter by server or tool name" />
     <button id="mcpRefreshBtn" class="icon-btn" title="Refresh now" aria-label="Refresh now">
       <svg class="mcp-refresh-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -346,6 +400,19 @@ if (mcpRefreshBtn) {
   });
 }
 
+// Filter input event listener
+const mcpFilterInput = document.getElementById('mcpFilterInput');
+if (mcpFilterInput) {
+  let filterTimeout;
+  mcpFilterInput.addEventListener('input', () => {
+    // Debounce the filter to avoid excessive updates while typing
+    clearTimeout(filterTimeout);
+    filterTimeout = setTimeout(() => {
+      updateMCPServers().catch(() => {});
+    }, 300);
+  });
+}
+
 statusToggleBtn.addEventListener('click', () => {
   const shown = statusPanel.style.display !== 'none';
   statusPanel.style.display = shown ? 'none' : 'block';
@@ -406,7 +473,13 @@ floatingMCPCloseBtn.addEventListener('click', () => {
   let startX = 0, startY = 0, origX = 0, origY = 0;
   header.addEventListener('pointerdown', (ev) => {
     try {
-      if (ev.target && ev.target.closest && (ev.target.closest('#floatingMCPCloseBtn') || ev.target.closest('#mcpRefreshBtn'))) return;
+      if (ev.target && ev.target.closest && (
+        ev.target.closest('#floatingMCPCloseBtn') ||
+        ev.target.closest('#mcpRefreshBtn') ||
+        ev.target.closest('#mcpFilterInput') ||
+        ev.target.closest('#mcpAutoRefreshToggle') ||
+        ev.target.closest('#mcpAutoRefreshInterval')
+      )) return;
     } catch (e) {}
     isDragging = true;
     startX = ev.clientX; startY = ev.clientY;
