@@ -20,7 +20,7 @@ class TestFormatter:
         """Create server with limited text length."""
         return ExampleServer(name="test", config={"max_text_length": 10})
     
-    async def test_formatter_uppercase(self, server):
+    async def test_example_formatter_uppercase(self, server):
         """Test uppercase formatting."""
         result = await server.call("test_formatter", {
             "text": "hello world",
@@ -32,7 +32,7 @@ class TestFormatter:
         assert result["formatted"] == "HELLO WORLD"
         assert result["length"] == 11
     
-    async def test_formatter_lowercase(self, server):
+    async def test_example_formatter_lowercase(self, server):
         """Test lowercase formatting."""
         result = await server.call("test_formatter", {
             "text": "HELLO WORLD",
@@ -44,7 +44,7 @@ class TestFormatter:
         assert result["formatted"] == "hello world"
         assert result["length"] == 11
     
-    async def test_formatter_title(self, server):
+    async def test_example_formatter_title(self, server):
         """Test title case formatting."""
         result = await server.call("test_formatter", {
             "text": "hello world",
@@ -56,7 +56,7 @@ class TestFormatter:
         assert result["formatted"] == "Hello World"
         assert result["length"] == 11
     
-    async def test_formatter_reverse(self, server):
+    async def test_example_formatter_reverse(self, server):
         """Test text reversal."""
         result = await server.call("test_formatter", {
             "text": "hello",
@@ -68,7 +68,7 @@ class TestFormatter:
         assert result["formatted"] == "olleh"
         assert result["length"] == 5
     
-    async def test_formatter_empty_string(self, server):
+    async def test_example_formatter_empty_string(self, server):
         """Test formatting empty string."""
         result = await server.call("test_formatter", {
             "text": "",
@@ -79,7 +79,7 @@ class TestFormatter:
         assert result["formatted"] == ""
         assert result["length"] == 0
     
-    async def test_formatter_special_characters(self, server):
+    async def test_example_formatter_special_characters(self, server):
         """Test formatting with special characters."""
         text = "hello, world! 123 @#$"
         result = await server.call("test_formatter", {
@@ -89,7 +89,7 @@ class TestFormatter:
         
         assert result["formatted"] == "$#@ 321 !dlrow ,olleh"
     
-    async def test_formatter_unicode(self, server):
+    async def test_example_formatter_unicode(self, server):
         """Test formatting with unicode characters."""
         text = "café naïve résumé"
         result = await server.call("test_formatter", {
@@ -99,7 +99,7 @@ class TestFormatter:
         
         assert result["formatted"] == "CAFÉ NAÏVE RÉSUMÉ"
     
-    async def test_formatter_invalid_format(self, server):
+    async def test_example_formatter_invalid_format(self, server):
         """Test invalid format type error."""
         with pytest.raises(ValueError, match="Invalid format 'invalid'"):
             await server.call("test_formatter", {
@@ -107,14 +107,14 @@ class TestFormatter:
                 "format": "invalid"
             })
     
-    async def test_formatter_missing_parameters(self, server):
+    async def test_example_formatter_missing_parameters(self, server):
         """Test missing parameters error."""
         with pytest.raises(ValueError, match="Missing required parameters"):
             await server.call("test_formatter", {
                 "text": "hello"
             })
     
-    async def test_formatter_non_string_text(self, server):
+    async def test_example_formatter_non_string_text(self, server):
         """Test non-string text parameter error."""
         with pytest.raises(TypeError, match="Text parameter must be a string"):
             await server.call("test_formatter", {
@@ -122,7 +122,7 @@ class TestFormatter:
                 "format": "uppercase"
             })
     
-    async def test_formatter_text_too_long(self, limited_server):
+    async def test_example_formatter_text_too_long(self, limited_server):
         """Test text length limit enforcement."""
         long_text = "a" * 20  # Exceeds limit of 10
         
@@ -132,7 +132,7 @@ class TestFormatter:
                 "format": "uppercase"
             })
     
-    async def test_formatter_text_at_limit(self, limited_server):
+    async def test_example_formatter_text_at_limit(self, limited_server):
         """Test text exactly at length limit."""
         text = "a" * 10  # Exactly at limit
         
@@ -144,7 +144,7 @@ class TestFormatter:
         assert result["formatted"] == "A" * 10
         assert result["length"] == 10
     
-    async def test_formatter_whitespace_handling(self, server):
+    async def test_example_formatter_whitespace_handling(self, server):
         """Test formatting with various whitespace."""
         text = "  hello  world  "
         result = await server.call("test_formatter", {
@@ -154,7 +154,7 @@ class TestFormatter:
         
         assert result["formatted"] == "  Hello  World  "
     
-    async def test_formatter_multiline_text(self, server):
+    async def test_example_formatter_multiline_text(self, server):
         """Test formatting multiline text."""
         text = "line1\nline2\nline3"
         result = await server.call("test_formatter", {
@@ -164,7 +164,7 @@ class TestFormatter:
         
         assert result["formatted"] == "3enil\n2enil\n1enil"
     
-    async def test_formatter_all_formats_consistency(self, server):
+    async def test_example_formatter_all_formats_consistency(self, server):
         """Test that all formats maintain text length."""
         text = "Hello, World! 123"
         formats = ["uppercase", "lowercase", "title", "reverse"]

@@ -168,26 +168,6 @@ class ExampleServer(MCPServer):
             },
         ]
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return single tool schema for backward compatibility.
-        
-        Returns:
-            Schema of the first tool (calculator)
-        """
-        tools = self.get_tools()
-        if not tools:
-            raise NotImplementedError("No tools defined")
-        return tools[0]
-
-    def get_default_action(self) -> str:
-        """Return the default action name.
-        
-        Returns:
-            Name of the first tool (calculator)
-        """
-        schema = self.get_schema()
-        return schema["function"]["name"]
-
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Route tool calls to appropriate handlers.
         
@@ -367,7 +347,3 @@ class ExampleServer(MCPServer):
         
         self.logger.debug(f"Status request (verbose={verbose}): {len(status)} fields")
         return status
-
-
-# Backward compatibility alias
-MultiToolTestServer = ExampleServer

@@ -5,7 +5,7 @@ import pytest
 from typing import Any
 
 from agent_system.mcp.base import MCPServer
-from plugins.example.server import MultiToolTestServer
+from plugins.example.server import ExampleServer
 
 
 class SingleToolMockServer(MCPServer):
@@ -64,7 +64,7 @@ class TestEnhancedMCPServer:
     
     def test_multi_tool_server_get_tools(self):
         """Test that multi-tool server returns multiple tools."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         tools = server.get_tools()
         
         assert len(tools) == 3
@@ -75,7 +75,7 @@ class TestEnhancedMCPServer:
     
     def test_multi_tool_server_get_schema_backward_compat(self):
         """Test that get_schema() works for multi-tool servers (returns first tool)."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         schema = server.get_schema()
         
         assert schema["function"]["name"] == "test_calculator"
@@ -83,14 +83,14 @@ class TestEnhancedMCPServer:
     
     def test_multi_tool_server_get_default_action(self):
         """Test that get_default_action() extracts from first tool."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         default_action = server.get_default_action()
         
         assert default_action == "test_calculator"
     
     async def test_multi_tool_server_calculator_call(self):
         """Test calling the calculator tool."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         
         result = await server.call("test_calculator", {
             "operation": "add",
@@ -104,7 +104,7 @@ class TestEnhancedMCPServer:
     
     async def test_multi_tool_server_formatter_call(self):
         """Test calling the formatter tool."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         
         result = await server.call("test_formatter", {
             "text": "hello world",
@@ -117,7 +117,7 @@ class TestEnhancedMCPServer:
     
     async def test_multi_tool_server_status_call(self):
         """Test calling the status tool."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         
         result = await server.call("test_status", {"verbose": True})
         
@@ -129,14 +129,14 @@ class TestEnhancedMCPServer:
     
     async def test_multi_tool_server_invalid_tool(self):
         """Test calling an invalid tool raises error."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         
         with pytest.raises(ValueError, match="Unknown tool"):
             await server.call("test_invalid", {})
     
     async def test_calculator_division_by_zero(self):
         """Test division by zero error handling."""
-        server = MultiToolTestServer(name="test")
+        server = ExampleServer(name="test")
         
         with pytest.raises(ValueError, match="Division by zero"):
             await server.call("test_calculator", {

@@ -111,7 +111,6 @@ result = await plugin.call("example_status", {"verbose": True})
 ### 1. Plugin Structure
 - Inherit from `MCPServer` base class
 - Implement `get_tools()` for multi-tool support
-- Provide `get_schema()` and `get_default_action()` for compatibility
 - Use async methods for all operations
 
 ### 2. Schema Definition

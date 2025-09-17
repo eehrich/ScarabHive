@@ -11,7 +11,7 @@ from plugins.example.plugin import PLUGIN_FACTORY
 class TestExamplePluginIntegration:
     """Test complete plugin integration and functionality."""
     
-    def test_plugin_factory(self):
+    def test_example_plugin_factory(self):
         """Test plugin factory creates server correctly."""
         config = {
             "precision": 3,
@@ -27,7 +27,7 @@ class TestExamplePluginIntegration:
         assert server.max_text_length == 500
         assert server.debug_enabled is True
     
-    def test_plugin_factory_default_config(self):
+    def test_example_plugin_factory_default_config(self):
         """Test plugin factory with default configuration."""
         server = PLUGIN_FACTORY("test")
         
@@ -35,12 +35,12 @@ class TestExamplePluginIntegration:
         assert server.max_text_length == 1000
         assert server.debug_enabled is False
     
-    def test_plugin_factory_invalid_config(self):
+    def test_example_plugin_factory_invalid_config(self):
         """Test plugin factory with invalid configuration."""
         with pytest.raises(ValueError, match="Invalid plugin configuration"):
             PLUGIN_FACTORY("test", {"precision": -1})
     
-    def test_get_tools_count(self):
+    def test_example_get_tools_count(self):
         """Test that server provides expected number of tools."""
         server = ExampleServer(name="test")
         tools = server.get_tools()
@@ -52,7 +52,7 @@ class TestExamplePluginIntegration:
         
         assert all(name in tool_names for name in expected_names)
     
-    def test_schema_loading(self):
+    def test_example_schema_loading(self):
         """Test schema loading from external file."""
         server = ExampleServer(name="test")
         
@@ -66,22 +66,32 @@ class TestExamplePluginIntegration:
         assert calc_tool["function"]["name"] == "test_calculator"
         assert "arithmetic operations" in calc_tool["function"]["description"].lower()
     
-    def test_get_schema_backward_compatibility(self):
-        """Test backward compatibility with get_schema()."""
+    def test_example_tools_naming_convention(self):
+        """Test that tools follow modern naming conventions."""
         server = ExampleServer(name="test")
-        schema = server.get_schema()
         
-        assert "function" in schema
-        assert schema["function"]["name"] == "test_calculator"
+        tools = server.get_tools()
+        
+        # Should have tools with proper names
+        assert len(tools) >= 3
+        
+        # First tool should be calculator
+        calc_tool = tools[0]
+        assert calc_tool["function"]["name"] == "test_calculator"
+        assert "arithmetic operations" in calc_tool["function"]["description"].lower()
     
-    def test_get_default_action(self):
-        """Test get_default_action returns first tool name."""
+    def test_example_tools_availability(self):
+        """Test tool availability and naming."""
         server = ExampleServer(name="test")
-        default_action = server.get_default_action()
+        tools = server.get_tools()
         
-        assert default_action == "test_calculator"
+        # Check we have the expected tools
+        tool_names = [tool["function"]["name"] for tool in tools]
+        expected_names = ["test_calculator", "test_formatter", "test_status"]
+        
+        assert all(name in tool_names for name in expected_names)
     
-    async def test_tool_routing(self):
+    async def test_example_tool_routing(self):
         """Test that tool calls are routed correctly."""
         server = ExampleServer(name="test")
         
@@ -99,21 +109,21 @@ class TestExamplePluginIntegration:
         status_result = await server.call("test_status", {})
         assert status_result["server_name"] == "test"
     
-    async def test_invalid_tool_call(self):
+    async def test_example_invalid_tool_call(self):
         """Test calling non-existent tool."""
         server = ExampleServer(name="test")
         
         with pytest.raises(ValueError, match="Unknown tool 'test_invalid'"):
             await server.call("test_invalid", {})
     
-    async def test_wrong_prefix_tool_call(self):
+    async def test_example_wrong_prefix_tool_call(self):
         """Test calling tool with wrong prefix."""
         server = ExampleServer(name="test")
         
         with pytest.raises(ValueError, match="does not match plugin prefix"):
             await server.call("other_calculator", {"operation": "add", "a": 1, "b": 2})
     
-    async def test_configuration_affects_behavior(self):
+    async def test_example_configuration_affects_behavior(self):
         """Test that configuration affects tool behavior."""
         # High precision server
         high_prec_server = ExampleServer(name="test", config={"precision": 5})
@@ -130,7 +140,7 @@ class TestExamplePluginIntegration:
                 "text": "too long text", "format": "uppercase"
             })
     
-    async def test_status_tool_verbose(self):
+    async def test_example_status_tool_verbose(self):
         """Test status tool with verbose output."""
         server = ExampleServer(name="test", config={
             "precision": 3,
@@ -157,7 +167,7 @@ class TestExamplePluginIntegration:
         assert "schema_source" in result
         assert result["schema_source"] in ["external", "inline"]
     
-    async def test_error_handling_and_logging(self):
+    async def test_example_error_handling_and_logging(self):
         """Test error handling includes proper context."""
         server = ExampleServer(name="test")
         
@@ -171,7 +181,7 @@ class TestExamplePluginIntegration:
         except ValueError as e:
             assert "invalid" in str(e).lower()
     
-    def test_template_variable_replacement(self):
+    def test_example_template_variable_replacement(self):
         """Test that template variables are replaced correctly."""
         server = ExampleServer(name="myPlugin")
         tools = server.get_tools()
@@ -181,7 +191,7 @@ class TestExamplePluginIntegration:
             tool_name = tool["function"]["name"]
             assert tool_name.startswith("myPlugin_")
     
-    async def test_concurrent_calls(self):
+    async def test_example_concurrent_calls(self):
         """Test that multiple concurrent calls work correctly."""
         import asyncio
         
