@@ -1,0 +1,6 @@
+name: test_multi_tool
+version: 1.0.0
+author: AgentSystem Tests
+description: Test plugin demonstrating multiple tools per MCPServer
+entrypoint: plugin:PLUGIN_FACTORY
+type: mcp_server
