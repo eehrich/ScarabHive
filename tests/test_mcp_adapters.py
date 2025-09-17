@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 from agent_system.mcp.adapters import MCPAdapter, BaseMCPAdapter

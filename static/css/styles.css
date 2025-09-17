@@ -49,14 +49,30 @@ header {
 .floating-panel {
   position: fixed;
   top: 80px;
-  right: 24px;
-  width: 320px;
+  left: 24px;
+  width: 640px;
+  height: 800px;
+  min-width: 300px;
+  min-height: 200px;
+  /* Allow panels to be resized up to viewport limits with buffer */
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 100px);
   background: linear-gradient(180deg, #0b1220, #07111a);
   border: 1px solid #243244;
   border-radius: 10px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.6);
   z-index: 1000;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Status panel specific positioning - smaller and on the right */
+#floatingStatusPanel {
+  width: 400px !important;
+  height: 500px !important;
+  right: 24px !important;
+  left: auto !important;
+  top: 80px !important;
 }
 .floating-panel-header {
   display: flex;
@@ -66,9 +82,91 @@ header {
   background: linear-gradient(180deg, #07111a, #0b1220);
   border-bottom: 1px solid #16202b;
   cursor: grab;
+  flex-shrink: 0;
+}
+.floating-panel-header .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: #0b1220;
+  border: 1px solid #243244;
+  color: #9ab;
+  padding: 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-right: 8px;
+  transition: background 150ms ease, transform 120ms ease;
+}
+.floating-panel-header .icon-btn:hover {
+  background: #122034;
+  transform: translateY(-1px);
+}
+.floating-panel-header .icon-btn:active { transform: translateY(0); }
+.floating-panel-header .icon-btn[disabled] { opacity: 0.5; cursor: default; }
+.floating-panel-header .icon-btn .mcp-refresh-icon { width: 16px; height: 16px; }
+.floating-panel-header .icon-btn .spinner { display: none; width: 18px; height: 18px; }
+.floating-panel-header .icon-btn.loading .spinner { display: inline-block; }
+.floating-panel-header .icon-btn.loading .mcp-refresh-icon { display: none; }
+
+/* Spinner animation */
+.icon-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.08);
+  border-top-color: #9ab;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.floating-panel-header #mcpRefreshBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .floating-panel-header:active { cursor: grabbing; }
-.floating-panel-body { padding: 10px; max-height: 360px; overflow: auto; }
+.floating-panel-body {
+  padding: 10px;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 50px);
+}
+
+/* Resize handle for floating panels */
+.resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nw-resize;
+  background: linear-gradient(135deg, transparent 0%, transparent 40%, #4a5568 50%, transparent 60%, transparent 100%);
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  background-position: center;
+  z-index: 10;
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 0;
+  height: 0;
+  border-left: 12px solid transparent;
+  border-bottom: 12px solid #4a5568;
+  opacity: 0.6;
+}
+
+.resize-handle:hover::before {
+  opacity: 1;
+  border-bottom-color: #6b7280;
+}
 
 /* Header button spacing */
 #statusToggleBtn { margin-left: 12px; }
@@ -90,6 +188,95 @@ h1 {
   font-size: 12px;
   margin-left: 8px;
   position: relative;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mcp-badge:hover {
+  background: #1a2332;
+  border-color: #394B5C;
+  color: #cbd5e1;
+}
+
+/* Custom toggle for auto-refresh - click-based, not checkbox-based */
+.custom-toggle {
+  pointer-events: auto !important;
+}
+
+.toggle-track {
+  width: 44px;
+  height: 22px;
+  background: #27323b;
+  border: 1px solid #243244;
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  cursor: pointer;
+}
+
+.toggle-track:hover {
+  background: #394958;
+  border-color: #4a5568;
+}
+
+.toggle-track.active {
+  background: linear-gradient(90deg, #12394a, #0a728a);
+  border-color: #0b728a;
+}
+
+.toggle-track.active:hover {
+  background: linear-gradient(90deg, #1a4a5c, #0d8aa6);
+}
+
+.toggle-knob {
+  width: 16px;
+  height: 16px;
+  background: #e6edf3;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  transition: transform 0.2s ease, background 0.2s ease;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+
+.toggle-track.active .toggle-knob {
+  transform: translateX(20px);
+  background: #fff;
+}
+
+/* Old checkbox-style toggle removed; using .custom-toggle and .toggle-track instead */
+
+/* Number input styling */
+.number-input { width:66px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#07111a; color:#e6edf3; font-size:13px; margin-right:8px; }
+.number-input:focus { outline:none; box-shadow:0 0 0 3px rgba(12,56,72,0.12); border-color:#1f9bb5; }
+
+/* Filter input styling */
+.filter-input {
+  width: 160px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #243244;
+  background: #07111a;
+  color: #e6edf3;
+  font-size: 13px;
+  margin-right: 8px;
+}
+.filter-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(12,56,72,0.12);
+  border-color: #1f9bb5;
+}
+.filter-input::placeholder {
+  color: #6b7280;
+}
+
+/* Highlight styling for search matches */
+mark {
+  background: #3a4f60;
+  color: #e6edf3;
+  padding: 0 2px;
+  border-radius: 2px;
 }
 
 .mcp-connected {
@@ -107,6 +294,360 @@ h1 {
 .mcp-connected.connected {
   background: #34d399; /* green when connected */
   box-shadow: 0 0 6px rgba(52,211,153,0.3);
+}
+
+/* Add disconnected state for better clarity */
+.mcp-connected:not(.connected), .mcp-disconnected {
+  background: #6b7280; /* gray when disconnected */
+}
+
+/* MCP Panel Styles */
+.mcp-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #243244;
+  flex-shrink: 0;
+}
+
+.mcp-servers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+  min-height: 0;
+  scroll-behavior: smooth;
+}
+
+/* .mcp-server styles are declared above; duplicated block removed */
+
+.mcp-server-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.server-name-type {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.server-name-type strong {
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.server-type {
+  font-size: 12px;
+  color: #9ab;
+  background: #1e2a3a;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.tool-count {
+  font-size: 12px;
+  color: #9ab;
+  font-weight: 500;
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.expand-indicator {
+  color: #9ab;
+  font-size: 10px;
+  margin-left: 8px;
+  transition: transform 0.2s ease;
+  user-select: none;
+}
+
+.expand-indicator:hover {
+  color: #cbd5e1;
+}
+
+/* CSS triangle indicator: right-pointing by default, rotates down when expanded */
+.expand-indicator {
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 8px solid #9ab;
+  display: inline-block;
+  vertical-align: middle;
+  transform-origin: center;
+}
+
+.expand-indicator.expanded {
+  transform: rotate(90deg);
+  border-left-color: #cbd5e1;
+}
+
+.mcp-server {
+  background: #0a1420;
+  border: 1px solid #243244;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mcp-server:hover {
+  border-color: #394B5C;
+  background: #0e1825;
+}
+
+.server-details {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #243244;
+}
+
+.server-url, .server-error {
+  margin-top: 8px;
+  padding: 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.server-url {
+  background: #0f1820;
+  border: 1px solid #1e3a8a;
+  color: #93c5fd;
+}
+
+.server-error {
+  background: #1f1013;
+  border: 1px solid #dc2626;
+  color: #fca5a5;
+}
+
+.mcp-server-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.mcp-server-name {
+  font-weight: 600;
+  color: #cbd5e1;
+  font-size: 14px;
+}
+
+.mcp-status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.mcp-status.connected {
+  background: #2e7d321a;
+  color: #81c784;
+  border: 1px solid #2e7d32;
+}
+
+.mcp-status.disconnected {
+  background: #c628281a;
+  color: #ef5350;
+  border: 1px solid #c62828;
+}
+
+.mcp-server-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.mcp-expand-btn {
+  background: none;
+  border: 1px solid #243244;
+  color: #9ab;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mcp-expand-btn:hover {
+  background: #1e2a3a;
+  border-color: #394B5C;
+  color: #cbd5e1;
+}
+
+.mcp-server-type {
+  font-size: 12px;
+  color: #9ab;
+  background: #1e2a3a;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.mcp-tools-count {
+  font-size: 12px;
+  color: #9ab;
+  font-weight: 500;
+}
+
+.mcp-server-description {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+
+.mcp-server-url {
+  font-size: 11px;
+  color: #6b7280;
+  font-family: monospace;
+  background: #0b1220;
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.no-servers {
+  text-align: center;
+  color: #6b7280;
+  font-style: italic;
+  padding: 20px;
+  background: #0a1420;
+  border: 1px dashed #243244;
+  border-radius: 8px;
+}
+
+/* MCP Tools Details */
+.mcp-server-tools {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #243244;
+}
+
+.tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tools-list h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.tools-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-item {
+  background: #050a0f;
+  border: 1px solid #1e2a3a;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 0;
+  transition: background-color 0.2s ease;
+}
+
+.tool-item:hover {
+  background: #0a1018;
+  border-color: #2a3a4a;
+}
+
+.tool-header {
+  margin-bottom: 2px;
+}
+
+.tool-name {
+  font-weight: 600;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  margin: 0 0 2px 0;
+}
+
+.tool-description {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.3;
+  margin: 0;
+  font-style: italic;
+}
+
+/* Blocked tools styling */
+.tool-item.tool-blocked {
+  opacity: 0.5;
+  background: #0a0a0a;
+  border-color: #2a2a2a;
+}
+
+.tool-item.tool-blocked:hover {
+  background: #0f0f0f;
+  border-color: #3a3a3a;
+}
+
+.tool-item.tool-blocked .tool-name,
+.tool-item.tool-blocked .tool-description {
+  color: #6b7280;
+}
+
+.tool-status.blocked {
+  display: inline-block;
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tool-schema {
+  margin-top: 8px;
+}
+
+.tool-schema details {
+  font-size: 11px;
+}
+
+.tool-schema summary {
+  color: #9ab;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.tool-schema summary:hover {
+  color: #cbd5e1;
+}
+
+.tool-schema pre {
+  background: #0b1220;
+  border: 1px solid #243244;
+  border-radius: 4px;
+  padding: 8px;
+  margin: 4px 0 0 0;
+  overflow-x: auto;
+  font-size: 10px;
+  color: #9ab;
+  line-height: 1.3;
 }
 
 /* Chat area */

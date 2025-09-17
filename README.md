@@ -165,6 +165,77 @@ Plugin-Management with:
 agent-cli plugins list|info|enable|disable|search|status — manage plugins
 ```
 
+## MCP (Model Context Protocol) Integration
+
+AgentSystem provides comprehensive MCP support for both consuming external MCP servers and exposing local functionality as MCP endpoints.
+
+### MCP CLI Commands
+
+Manage external MCP server connections:
+
+```bash
+# List all configured MCP servers
+agent-cli mcp list [--format json|table]
+
+# Connect to a specific server
+agent-cli mcp connect <server_name>
+
+# Disconnect from a server  
+agent-cli mcp disconnect <server_name>
+
+# Check server status and connection details
+agent-cli mcp status [server_name]
+
+# Test server connectivity and functionality
+agent-cli mcp test <server_name>
+
+# Manage server features
+agent-cli mcp feature list <server_name>
+agent-cli mcp feature <server_name> <feature> on|off
+```
+
+### HTTP Streaming Transport
+
+The `HTTPStreamingTransport` (formerly SmitheryHTTPTransport) provides efficient MCP communication over HTTP with Server-Sent Events (SSE):
+
+- **Real-time status streaming**: Status events are pushed to clients via SSE
+- **Base64 config encoding**: Secure configuration transmission
+- **Session management**: Persistent sessions with unique IDs
+- **Error handling**: Robust error recovery and connection management
+
+Transport types supported:
+- `http`: Standard HTTP transport for basic MCP communication
+- `smithery`: Legacy alias for HTTP streaming transport (deprecated)
+
+### Configuration
+
+MCP settings are configured in `config/mcp.yaml`. See `docs/mcp_configuration.md` for detailed configuration options including:
+
+- External server definitions
+- Authentication methods (API key, Bearer token, Basic auth)
+- Transport settings and timeouts
+- Feature filtering and security options
+- SSL verification and retry policies
+
+Example configuration:
+
+```yaml
+mcp:
+  enabled: true
+  expose_local_server: true
+  local_server_port: 8000
+  
+  servers:
+    weather_service:
+      url: "https://api.weather.com/mcp"
+      transport_type: "http"
+      enabled: true
+      description: "Weather data service"
+      auth:
+        type: "api_key"
+        api_key: "${WEATHER_API_KEY}"
+```
+
 ## Development (with AI)
 - Follow instructions and guidlines. For repository rules: venv activation, testing, and commit guidance.
 - Run tests with `pytest -q` or `python -m pytest -q` and do not leave failing tests.

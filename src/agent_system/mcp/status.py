@@ -89,6 +89,11 @@ class StatusBus:
             event: The status event to publish
         """
         published_count = 0
+        # Diagnostic: log subscriber count and filters to help debug delivery
+        try:
+            logger.debug("StatusBus.publish(): subscribers=%s filters=%s event_server=%s request_id=%s", len(self._subscribers), self._filters, event.server, event.request_id)
+        except Exception:
+            logger.debug("StatusBus.publish(): subscribers=%s event_server=%s", len(self._subscribers), event.server)
         for i, queue in enumerate(self._subscribers):
             filter_ = self._filters[i]
             if filter_["server"] and event.server != filter_["server"]:

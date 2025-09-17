@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-import tempfile
 import textwrap
 
 from agent_system.mcp.plugins import discover_plugins

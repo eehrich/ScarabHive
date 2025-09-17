@@ -134,7 +134,7 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
         eps = metadata.entry_points()
         # try to select by group if available
         try:
-            selected = eps.select(group=group)
+            selected = list(eps.select(group=group))
         except Exception:
             # older API returns a list-like; filter manually
             selected = [ep for ep in eps if getattr(ep, "group", None) == group]
@@ -156,8 +156,9 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
                             spec = importlib.util.find_spec(pkg)
                             if spec is not None:
                                 # package (has submodule_search_locations)
-                                if getattr(spec, "submodule_search_locations", None):
-                                    pkg_path = Path(spec.submodule_search_locations[0])
+                                submodule_locations = getattr(spec, "submodule_search_locations", None)
+                                if submodule_locations:
+                                    pkg_path = Path(submodule_locations[0])
                                     meta_path = pkg_path / "plugin.yaml"
                                     if meta_path.exists():
                                         metadata_obj = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
@@ -211,9 +212,11 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
         try:
             import importlib
             spec = importlib.util.find_spec("plugins")
-            if spec is not None and getattr(spec, "submodule_search_locations", None):
-                for p in spec.submodule_search_locations:
-                    source_dirs.append(Path(p))
+            if spec is not None:
+                submodule_locations = getattr(spec, "submodule_search_locations", None)
+                if submodule_locations:
+                    for p in submodule_locations:
+                        source_dirs.append(Path(p))
         except Exception:
             # ignore and continue — we'll still discover entrypoint plugins
             pass
@@ -234,24 +237,15 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
         try:
-            if isinstance(raw, Path):
-                p = raw
-                if not p.is_absolute():
-                    # Path objects should be resolved against current working dir
-                    try:
-                        p = p.resolve()
-                    except Exception:
-                        p = Path.cwd().joinpath(p)
-            else:
-                # strings (likely from config or env) resolve relative to repo_root
-                p = Path(raw)
-                if not p.is_absolute():
-                    # resolve relative to current working dir when caller
-                    # supplied a relative path
-                    try:
-                        p = p.resolve()
-                    except Exception:
-                        p = Path.cwd().joinpath(p)
+            # All items in source_dirs are Path objects
+            p = raw
+
+            # Resolve relative paths
+            if not p.is_absolute():
+                try:
+                    p = p.resolve()
+                except Exception:
+                    p = Path.cwd().joinpath(p)
 
             if not p.exists():
                 # skip non-existing dirs silently

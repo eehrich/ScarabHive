@@ -51,11 +51,213 @@ async function updateStatusMetrics() {
   }
 }
 
-// Floating status panel
+// MCP servers update function with state preservation and filtering
+async function updateMCPServers() {
+  try {
+    const response = await fetch('/mcp/status');
+    if (response.ok) {
+      const data = await response.json();
+
+      const totalServers = data.total_servers || 0;
+      const totalTools = data.total_tools || 0;
+      const servers = data.servers || [];
+
+      // Get current filter value
+      const filterInput = document.getElementById('mcpFilterInput');
+      const filterText = filterInput ? filterInput.value.toLowerCase().trim() : '';
+
+      // Preserve state before update
+      const mcpMetrics = document.getElementById('floatingMCPMetrics');
+      let scrollPosition = 0;
+      let expandedStates = {};
+
+      if (mcpMetrics) {
+        const serversList = mcpMetrics.querySelector('.mcp-servers-list');
+        if (serversList) {
+          // Save scroll position
+          scrollPosition = serversList.scrollTop;
+
+          // Save expanded states
+          const detailElements = serversList.querySelectorAll('[id^="details-"]');
+          detailElements.forEach(el => {
+            const serverId = el.id.replace('details-', '');
+            expandedStates[serverId] = el.style.display !== 'none';
+          });
+        }
+      }
+
+      let connectedServers = 0;
+      let html = '';
+      let filteredCount = 0;
+
+      // Enhanced styling for servers with better tool display
+      for (let i = 0; i < servers.length; i++) {
+        const server = servers[i];
+        if (server.connected) connectedServers++;
+
+        // Filter logic - check server name and tool names
+        let matchesFilter = !filterText;
+        if (filterText) {
+          // Check server name
+          if (server.name && server.name.toLowerCase().includes(filterText)) {
+            matchesFilter = true;
+          }
+          // Check tool names
+          if (!matchesFilter && server.tools) {
+            const toolsToCheck = server.detailed_tools || server.tools;
+            matchesFilter = toolsToCheck.some(tool => {
+              const toolName = typeof tool === 'string' ? tool : tool.name;
+              return toolName && toolName.toLowerCase().includes(filterText);
+            });
+          }
+        }
+
+        if (!matchesFilter) continue;
+        filteredCount++;
+
+        const statusClass = server.connected ? 'connected' : 'disconnected';
+        const statusText = server.connected ? 'Connected' : 'Disconnected';
+
+        // Better tool display with descriptions
+        const toolsList = server.tools && server.tools.length > 0
+          ? server.detailed_tools && server.detailed_tools.length > 0
+            ? server.detailed_tools.map(tool => {
+                // Highlight matching tools
+                let toolName = tool.name;
+                let toolDesc = tool.description || `Tool for ${server.name.toLowerCase()}`;
+                if (filterText) {
+                  if (toolName.toLowerCase().includes(filterText)) {
+                    const regex = new RegExp(`(${filterText})`, 'gi');
+                    toolName = toolName.replace(regex, '<mark>$1</mark>');
+                  }
+                }
+                return `
+                  <li class="tool-item ${tool.blocked ? 'tool-blocked' : ''}">
+                    <div class="tool-name">
+                      ${toolName}
+                      ${tool.blocked ? '<span class="tool-status blocked">BLOCKED</span>' : ''}
+                    </div>
+                    <div class="tool-description">${toolDesc}</div>
+                  </li>`;
+              }).join('')
+            : server.tools.map(tool => {
+                let toolName = tool;
+                if (filterText && toolName.toLowerCase().includes(filterText)) {
+                  const regex = new RegExp(`(${filterText})`, 'gi');
+                  toolName = toolName.replace(regex, '<mark>$1</mark>');
+                }
+                return `
+                  <li class="tool-item">
+                    <div class="tool-name">${toolName}</div>
+                    <div class="tool-description">Tool for ${server.name.toLowerCase()}</div>
+                  </li>`;
+              }).join('')
+          : '<li class="tool-item"><div class="tool-name">No tools available</div></li>';
+
+        // Check if this server was expanded before
+        const wasExpanded = expandedStates[server.id] || false;
+        const displayStyle = wasExpanded ? 'block' : 'none';
+
+        // Highlight matching server names
+        let serverName = server.name;
+        if (filterText && serverName && serverName.toLowerCase().includes(filterText)) {
+          const regex = new RegExp(`(${filterText})`, 'gi');
+          serverName = serverName.replace(regex, '<mark>$1</mark>');
+        }
+
+        html += `
+          <div class="mcp-server" onclick="toggleServerDetails('${server.id}')">
+            <div class="mcp-server-info">
+              <div class="server-name-type">
+                <strong>${serverName}</strong>
+                <span class="server-type">(${server.type})</span>
+              </div>
+              <span class="mcp-status ${statusClass}">${statusText}</span>
+            </div>
+            <div class="tool-count">${server.tool_count || 0} tools <span class="expand-indicator ${wasExpanded ? 'expanded' : ''}" id="indicator-${server.id}"></span></div>
+            <div class="server-details" id="details-${server.id}" style="display: ${displayStyle};">
+              <div class="tools-list">
+                <h4>Available Tools:</h4>
+                <ul class="tools-container">${toolsList}</ul>
+              </div>
+              ${server.url ? `<div class="server-url"><strong>URL:</strong> ${server.url}</div>` : ''}
+              ${server.error ? `<div class="server-error"><strong>Error:</strong> ${server.error}</div>` : ''}
+            </div>
+          </div>`;
+      }
+
+      const summaryHtml = `
+        <div class="mcp-summary">
+          <div class="metric-item">
+            <span class="metric-label">Total Servers</span>
+            <span class="metric-value">${totalServers}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Connected</span>
+            <span class="metric-value">${connectedServers}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Total Tools</span>
+            <span class="metric-value">${totalTools}</span>
+          </div>
+          ${filterText ? `
+          <div class="metric-item">
+            <span class="metric-label">Filtered</span>
+            <span class="metric-value">${filteredCount}/${totalServers}</span>
+          </div>` : ''}
+        </div>
+        <div class="mcp-servers-list">
+          ${html || (filterText ? '<div class="no-servers">No servers match the filter</div>' : '<div class="no-servers">No MCP servers configured</div>')}
+        </div>
+      `;
+
+      if (mcpMetrics) {
+        mcpMetrics.innerHTML = summaryHtml;
+
+        // Restore scroll position after DOM update
+        const serversList = mcpMetrics.querySelector('.mcp-servers-list');
+        if (serversList && typeof scrollPosition === 'number') {
+          // Temporarily disable smooth scrolling to avoid animated jump
+          const prevBehavior = serversList.style.scrollBehavior || '';
+          serversList.style.scrollBehavior = 'auto';
+          requestAnimationFrame(() => {
+            serversList.scrollTop = scrollPosition;
+            // Restore original behavior on next frame to keep UX smooth for user actions
+            requestAnimationFrame(() => {
+              serversList.style.scrollBehavior = prevBehavior;
+            });
+          });
+        }
+      }
+
+      // Update button to show it's working
+      const mcpButton = document.getElementById('mcpToggleBtn');
+      if (mcpButton) {
+        mcpButton.textContent = `MCP-Servers (${totalServers})`;
+        // Re-add the badge span (textContent removes it)
+        const badgeSpan = document.createElement('span');
+        badgeSpan.id = 'mcpConnected';
+        badgeSpan.className = connectedServers > 0 ? 'mcp-connected connected' : 'mcp-connected';
+        badgeSpan.title = `${connectedServers}/${totalServers} servers connected`;
+        badgeSpan.setAttribute('aria-hidden', 'true');
+        mcpButton.appendChild(badgeSpan);
+      }
+
+    }
+  } catch (error) {
+    console.error('MCP Update: Error:', error);
+  }
+}// Floating status panel
 const statusPanel = document.createElement('div');
 statusPanel.id = 'floatingStatusPanel';
 statusPanel.className = 'floating-panel';
 statusPanel.style.display = 'none';
+// Position status panel on the right side with smaller size
+statusPanel.style.top = '80px';
+statusPanel.style.right = '24px';
+statusPanel.style.left = 'auto';
+statusPanel.style.width = '400px';
+statusPanel.style.height = '500px';
 statusPanel.innerHTML = `
   <div class="floating-panel-header" id="floatingStatusHeader">
     <span>Status & Metrics</span>
@@ -67,24 +269,266 @@ statusPanel.innerHTML = `
       <div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div>
     </div>
   </div>
+  <div class="resize-handle"></div>
 `;
 document.body.appendChild(statusPanel);
 
+// Floating MCP panel
+const mcpPanel = document.createElement('div');
+mcpPanel.id = 'floatingMCPPanel';
+mcpPanel.className = 'floating-panel';
+mcpPanel.style.display = 'none';
+mcpPanel.innerHTML = `
+  <div class="floating-panel-header" id="floatingMCPHeader">
+    <span>MCP Servers & Tools</span>
+    <div style="margin-left:8px;flex:1"></div>
+    <input id="mcpFilterInput" type="text" placeholder="Filter servers/tools..." class="filter-input" title="Filter by server or tool name" />
+    <button id="mcpRefreshBtn" class="icon-btn" title="Refresh now" aria-label="Refresh now">
+      <svg class="mcp-refresh-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M21 3v6h-6" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="spinner icon-spinner" aria-hidden="true"></span>
+    </button>
+    <div id="mcpAutoRefreshToggle" class="custom-toggle" style="display: flex; align-items: center; gap: 8px; margin-right: 8px; cursor: pointer;" title="Toggle auto-refresh">
+      <div class="toggle-track">
+        <div class="toggle-knob"></div>
+      </div>
+      <span style="color: #9ab; font-size: 13px; user-select: none;">Auto-refresh</span>
+    </div>
+    <input id="mcpAutoRefreshInterval" class="number-input" type="number" min="5" step="5" value="30" title="Auto-refresh interval (seconds)" />
+    <button id="floatingMCPCloseBtn" title="Close" aria-label="Close">✕</button>
+  </div>
+  <div class="floating-panel-body" id="floatingMCPBody">
+    <div class="mcp-metrics" id="floatingMCPMetrics">
+      <div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div>
+    </div>
+  </div>
+  <div class="resize-handle"></div>
+`;
+document.body.appendChild(mcpPanel);
+
+// NOW get references to elements after they're created
 const statusToggleBtn = document.getElementById('statusToggleBtn');
 const floatingCloseBtn = document.getElementById('floatingCloseBtn');
 const floatingStatusMetrics = document.getElementById('floatingStatusMetrics');
 
-statusToggleBtn.addEventListener('click', () => {
-  const shown = statusPanel.style.display !== 'none';
-  statusPanel.style.display = shown ? 'none' : 'block';
-  statusToggleBtn.setAttribute('aria-expanded', String(!shown));
-  if (!shown) updateStatusMetrics().catch(() => {});
-});
+// MCP panel elements
+const mcpToggleBtn = document.getElementById('mcpToggleBtn');
+const floatingMCPCloseBtn = document.getElementById('floatingMCPCloseBtn');
+const floatingMCPMetrics = document.getElementById('floatingMCPMetrics');
+const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
+const mcpFilterInput = document.getElementById('mcpFilterInput');
 
-floatingCloseBtn.addEventListener('click', () => {
-  statusPanel.style.display = 'none';
-  statusToggleBtn.setAttribute('aria-expanded', 'false');
-});
+// Auto-refresh elements
+const autoToggle = document.getElementById('mcpAutoRefreshToggle');
+const autoIntervalInput = document.getElementById('mcpAutoRefreshInterval');
+
+// Try to restore saved panel state (position/size/visible/auto-refresh)
+function loadPanelState(id) {
+  try {
+    const raw = localStorage.getItem('panelState:' + id);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
+function savePanelState(id, state) {
+  try {
+    localStorage.setItem('panelState:' + id, JSON.stringify(state));
+  } catch (e) { /* ignore */ }
+}
+
+function applyPanelState(panel, state) {
+  if (!panel || !state) return;
+  
+  // For status panel, preserve right-side positioning
+  if (panel.id === 'floatingStatusPanel') {
+    if (state.right !== undefined) {
+      panel.style.right = state.right + 'px';
+      panel.style.left = 'auto';
+    } else if (state.left !== undefined) {
+      // If old state had left positioning, convert to right
+      const viewport = window.innerWidth;
+      const width = state.width || 400;
+      panel.style.right = (viewport - state.left - width) + 'px';
+      panel.style.left = 'auto';
+    }
+  } else {
+    // For other panels, use left positioning
+    if (state.left !== undefined) panel.style.left = state.left + 'px';
+  }
+  
+  if (state.top !== undefined) panel.style.top = state.top + 'px';
+  if (state.width !== undefined) panel.style.width = state.width + 'px';
+  if (state.height !== undefined) panel.style.height = state.height + 'px';
+  if (state.visible) panel.style.display = 'block';
+}
+
+// Restore MCP panel state if present
+const savedMcp = loadPanelState('floatingMCPPanel');
+if (savedMcp) applyPanelState(mcpPanel, savedMcp);
+
+// Restore status panel state if present
+const savedStatus = loadPanelState('floatingStatusPanel');
+if (savedStatus) {
+  applyPanelState(statusPanel, savedStatus);
+} else {
+  // Ensure default right positioning if no saved state
+  statusPanel.style.right = '24px';
+  statusPanel.style.left = 'auto';
+  statusPanel.style.top = '80px';
+  statusPanel.style.width = '400px';
+  statusPanel.style.height = '500px';
+}
+
+// DEBUG: Add a global function to reset panel positions
+window.resetPanelPositions = function() {
+  localStorage.removeItem('panelState:floatingStatusPanel');
+  localStorage.removeItem('panelState:floatingMCPPanel');
+  
+  // Reset status panel to right side
+  statusPanel.style.right = '24px';
+  statusPanel.style.left = 'auto';
+  statusPanel.style.top = '80px';
+  statusPanel.style.width = '400px';
+  statusPanel.style.height = '500px';
+  
+  // Reset MCP panel to left side
+  mcpPanel.style.left = '24px';
+  mcpPanel.style.right = 'auto';
+  mcpPanel.style.top = '80px';
+  mcpPanel.style.width = '640px';
+  mcpPanel.style.height = '800px';
+  
+  // positions reset
+};
+
+// Auto-refresh control
+let mcpAutoRefreshTimer = null;
+function startMcpAutoRefresh(intervalSec) {
+  stopMcpAutoRefresh();
+  const ms = Math.max(5000, (intervalSec || 30) * 1000);
+  mcpAutoRefreshTimer = setInterval(() => { updateMCPServers().catch(()=>{}); }, ms);
+}
+function stopMcpAutoRefresh() {
+  if (mcpAutoRefreshTimer) { clearInterval(mcpAutoRefreshTimer); mcpAutoRefreshTimer = null; }
+}
+
+// Initialize auto-refresh UI from preferences
+let autoRefreshEnabled = false;
+try {
+  const pref = loadPanelState('floatingMCPPanel') || {};
+  if (pref.autoRefresh) {
+    autoRefreshEnabled = true;
+    if (autoToggle) {
+      const track = autoToggle.querySelector('.toggle-track');
+      if (track) track.classList.add('active');
+    }
+    const interval = pref.autoRefreshInterval || 30;
+    if (autoIntervalInput) autoIntervalInput.value = interval;
+    startMcpAutoRefresh(interval);
+  }
+} catch (e) {}
+
+if (autoToggle) {
+  autoToggle.addEventListener('click', (ev) => {
+    // Prevent event from bubbling to drag handler
+    ev.stopPropagation();
+    
+    autoRefreshEnabled = !autoRefreshEnabled;
+    const track = autoToggle.querySelector('.toggle-track');
+    if (track) track.classList.toggle('active', autoRefreshEnabled);
+    
+    const interval = parseInt(autoIntervalInput.value || '30', 10);
+    // persist
+    const state = loadPanelState('floatingMCPPanel') || {};
+    state.autoRefresh = autoRefreshEnabled;
+    state.autoRefreshInterval = interval;
+    savePanelState('floatingMCPPanel', state);
+    if (autoRefreshEnabled) startMcpAutoRefresh(interval); else stopMcpAutoRefresh();
+  });
+} else {
+  // Auto-refresh toggle missing; leave without throwing
+}
+if (autoIntervalInput) {
+  autoIntervalInput.addEventListener('change', () => {
+    const interval = parseInt(autoIntervalInput.value || '30', 10);
+    const state = loadPanelState('floatingMCPPanel') || {};
+    state.autoRefreshInterval = interval; savePanelState('floatingMCPPanel', state);
+    if (autoRefreshEnabled) startMcpAutoRefresh(interval);
+  });
+}
+
+if (mcpRefreshBtn) {
+  mcpRefreshBtn.addEventListener('click', async (ev) => {
+    try {
+      mcpRefreshBtn.classList.add('loading');
+      mcpRefreshBtn.setAttribute('aria-busy', 'true');
+      mcpRefreshBtn.disabled = true;
+      await updateMCPServers();
+    } catch (e) {
+      console.error('Manual MCP refresh failed', e);
+    } finally {
+      mcpRefreshBtn.classList.remove('loading');
+      mcpRefreshBtn.removeAttribute('aria-busy');
+      mcpRefreshBtn.disabled = false;
+    }
+  });
+}
+
+// Filter input event listener
+if (mcpFilterInput) {
+  let filterTimeout;
+  mcpFilterInput.addEventListener('input', () => {
+    // Debounce the filter to avoid excessive updates while typing
+    clearTimeout(filterTimeout);
+    filterTimeout = setTimeout(() => {
+      updateMCPServers().catch(() => {});
+    }, 300);
+  });
+}
+
+if (statusToggleBtn) {
+  statusToggleBtn.addEventListener('click', () => {
+    const shown = statusPanel.style.display !== 'none';
+    statusPanel.style.display = shown ? 'none' : 'block';
+    // Force right positioning every time we open it
+    if (!shown) {
+      statusPanel.style.right = '24px';
+      statusPanel.style.left = 'auto';
+      statusPanel.style.top = '80px';
+    }
+    statusToggleBtn.setAttribute('aria-expanded', String(!shown));
+    if (!shown) updateStatusMetrics().catch(() => {});
+  });
+} else {
+  // Status toggle not present in DOM
+}
+
+if (floatingCloseBtn) {
+  floatingCloseBtn.addEventListener('click', () => {
+    statusPanel.style.display = 'none';
+    if (statusToggleBtn) statusToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+// MCP panel event listeners
+if (mcpToggleBtn) {
+  mcpToggleBtn.addEventListener('click', () => {
+    const shown = mcpPanel.style.display !== 'none';
+    mcpPanel.style.display = shown ? 'none' : 'block';
+    mcpToggleBtn.setAttribute('aria-expanded', String(!shown));
+    if (!shown) updateMCPServers().catch(() => {});
+  });
+}
+
+if (floatingMCPCloseBtn) {
+  floatingMCPCloseBtn.addEventListener('click', () => {
+    mcpPanel.style.display = 'none';
+    if (mcpToggleBtn) mcpToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+}
 
 // Make panel draggable
 (function makeDraggable(headerId, panel) {
@@ -93,7 +537,65 @@ floatingCloseBtn.addEventListener('click', () => {
   let startX = 0, startY = 0, origX = 0, origY = 0;
   header.addEventListener('pointerdown', (ev) => {
     try {
-      if (ev.target && ev.target.closest && ev.target.closest('#floatingCloseBtn')) return;
+      // If the pointerdown originated on an interactive control, ignore so clicks work
+      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
+      if (interactive) return;
+      // Also ignore custom toggle elements
+      if (ev.target && ev.target.closest && (ev.target.closest('#floatingCloseBtn') || ev.target.closest('.custom-toggle'))) return;
+    } catch (e) {}
+    isDragging = true;
+    startX = ev.clientX; startY = ev.clientY;
+    const rect = panel.getBoundingClientRect();
+    origX = rect.left; origY = rect.top;
+    header.setPointerCapture(ev.pointerId);
+  });
+  window.addEventListener('pointermove', (ev) => {
+    if (!isDragging) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    
+    // For status panel, maintain right positioning logic during drag
+    if (panel.id === 'floatingStatusPanel') {
+      const newLeft = origX + dx;
+      panel.style.left = newLeft + 'px';
+      panel.style.right = 'auto';  // Temporarily use left during drag for smoother movement
+    } else {
+      panel.style.left = (origX + dx) + 'px';
+      panel.style.right = 'auto';
+    }
+    panel.style.top = (origY + dy) + 'px';
+  });
+  window.addEventListener('pointerup', (ev) => { 
+    isDragging = false;
+    
+    // After drag ends, convert status panel back to right positioning
+    if (panel.id === 'floatingStatusPanel') {
+      const rect = panel.getBoundingClientRect();
+      const viewport = window.innerWidth;
+      const rightPos = viewport - rect.right;
+      panel.style.right = rightPos + 'px';
+      panel.style.left = 'auto';
+    }
+  });
+})('floatingStatusHeader', statusPanel);
+
+// Make MCP panel draggable
+(function makeDraggable(headerId, panel) {
+  const header = document.getElementById(headerId);
+  let isDragging = false;
+  let startX = 0, startY = 0, origX = 0, origY = 0;
+  header.addEventListener('pointerdown', (ev) => {
+    try {
+      // Ignore pointerdown if user clicked on interactive controls so they receive the event
+      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
+      if (interactive) return;
+      if (ev.target && ev.target.closest && (
+        ev.target.closest('#floatingMCPCloseBtn') ||
+        ev.target.closest('#mcpRefreshBtn') ||
+        ev.target.closest('#mcpFilterInput') ||
+        ev.target.closest('.custom-toggle') ||
+        ev.target.closest('#mcpAutoRefreshInterval')
+      )) return;
     } catch (e) {}
     isDragging = true;
     startX = ev.clientX; startY = ev.clientY;
@@ -110,13 +612,67 @@ floatingCloseBtn.addEventListener('click', () => {
     panel.style.right = 'auto';
   });
   window.addEventListener('pointerup', (ev) => { isDragging = false; });
-})('floatingStatusHeader', statusPanel);
+})('floatingMCPHeader', mcpPanel);
 
-setInterval(updateStatusMetrics, 2000);
+// Persist position when dragging ends for both panels
+function attachDragPersist(headerId, panel, stateKey) {
+  const header = document.getElementById(headerId);
+  if (!header || !panel) return;
+  header.addEventListener('pointerup', () => {
+    try {
+      const rect = panel.getBoundingClientRect();
+      const state = loadPanelState(stateKey) || {};
+      
+      // For status panel, save right position instead of left
+      if (panel.id === 'floatingStatusPanel') {
+        const viewport = window.innerWidth;
+        state.right = Math.round(viewport - rect.right);
+        state.top = Math.round(rect.top);
+        // Remove old left positioning if it exists
+        delete state.left;
+      } else {
+        // For other panels, use left positioning
+        state.left = Math.round(rect.left);
+        state.top = Math.round(rect.top);
+      }
+      
+      savePanelState(stateKey, state);
+    } catch (e) {}
+  });
+}
+attachDragPersist('floatingStatusHeader', statusPanel, 'floatingStatusPanel');
+attachDragPersist('floatingMCPHeader', mcpPanel, 'floatingMCPPanel');
+
+// Auto-refresh disabled by default. Use manual refresh via button to update MCP panel.
+
+// Initialize immediately, but ensure DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  updateStatusMetrics();
+  updateMCPServers();
+});
+
+// Also call immediately in case DOMContentLoaded already fired
 updateStatusMetrics();
+updateMCPServers();
 
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;'}[c])); }
 function formatTime(ts) { try { return new Date(ts).toLocaleTimeString(); } catch (e) { return ts; } }
+
+// Toggle MCP server details
+function toggleServerDetails(serverId) {
+  const detailsContainer = document.getElementById(`details-${serverId}`);
+  const indicator = document.getElementById(`indicator-${serverId}`);
+
+  if (detailsContainer) {
+    const isVisible = detailsContainer.style.display !== 'none';
+    detailsContainer.style.display = isVisible ? 'none' : 'block';
+
+    // Update indicator class (CSS triangle rotates when expanded)
+    if (indicator) {
+      indicator.classList.toggle('expanded', !isVisible);
+    }
+  }
+}
 
 const activeOperations = new Map();
 
@@ -388,3 +944,62 @@ async function run() {
   }
   connect();
 })();
+
+// Make floating panels resizable
+function makeResizable(panel) {
+  const resizeHandle = panel.querySelector('.resize-handle');
+  if (!resizeHandle) return;
+
+  let isResizing = false;
+  let startX, startY, startWidth, startHeight;
+
+  resizeHandle.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    startWidth = parseInt(document.defaultView.getComputedStyle(panel).width, 10);
+    startHeight = parseInt(document.defaultView.getComputedStyle(panel).height, 10);
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    document.addEventListener('mousemove', doResize);
+    document.addEventListener('mouseup', stopResize);
+  });
+
+  function doResize(e) {
+    if (!isResizing) return;
+
+    const newWidth = Math.max(250, startWidth + e.clientX - startX);
+    const newHeight = Math.max(150, startHeight + e.clientY - startY);
+
+    panel.style.width = newWidth + 'px';
+    panel.style.height = newHeight + 'px';
+  }
+
+  function stopResize() {
+    isResizing = false;
+    document.removeEventListener('mousemove', doResize);
+    document.removeEventListener('mouseup', stopResize);
+    // Persist size change
+    try {
+      const rect = panel.getBoundingClientRect();
+      const state = loadPanelState(panel.id) || {};
+      state.width = Math.round(rect.width);
+      state.height = Math.round(rect.height);
+      
+      // For status panel, also update right position since resizing can affect it
+      if (panel.id === 'floatingStatusPanel') {
+        const viewport = window.innerWidth;
+        state.right = Math.round(viewport - rect.right);
+        delete state.left;  // Remove any old left positioning
+      }
+      
+      savePanelState(panel.id, state);
+    } catch (e) {}
+  }
+}
+
+// Apply resize functionality to both panels
+makeResizable(statusPanel);
+makeResizable(mcpPanel);

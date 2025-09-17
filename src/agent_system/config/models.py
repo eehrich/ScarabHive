@@ -26,6 +26,8 @@ class MCPConfig(BaseModel):
     backup_suffix: str = ".bak"
     # How many backup rotations to keep (1 = keep only .bak, 0 = no backups)
     backup_rotate: int = 1
+    # External MCP servers configuration
+    external_servers: dict[str, dict] = {}
 
 
 class NetworkConfig(BaseModel):

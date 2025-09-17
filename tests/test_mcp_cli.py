@@ -1,10 +1,7 @@
 """Tests for MCP server CLI interfaces."""
 
-import pytest
 import subprocess
 import sys
-import os
-import importlib.util
 from pathlib import Path
 
 # Add the src directory to the Python path for imports

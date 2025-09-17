@@ -30,12 +30,13 @@ async def test_status_stream_single_event():
 
         pub_task = asyncio.create_task(_delayed_publish())
         resp = await asyncio.wait_for(
-            client.get("/status/stream", params={"close_after": 1}), timeout=5
+            client.get("/status/stream", params={"close_after": 2}), timeout=5  # Expect 2 events now
         )
         await pub_task
         assert resp.status_code == 200
         body = resp.text.splitlines()
-        data_lines = [l for l in body if l.startswith("data: ")]
-        assert len(data_lines) == 1, body
-        payload = json.loads(data_lines[0][6:])
+        data_lines = [line for line in resp.text.splitlines() if line.startswith("data: ")]
+        assert len(data_lines) == 2, body  # Should have 2 events now
+        # Check the second event (our published one)
+        payload = json.loads(data_lines[1][6:])  # [1] for second event
         assert payload["server"] == "only_http"
