@@ -4,7 +4,7 @@ from typing import Any
 
 from ..config.models import AgentConfig
 from ..mcp.base import MCPRegistry
-from ..mcp.plugins import discover_all_plugins
+from ..plugins import discover_all_plugins
 from pathlib import Path
 import logging
 

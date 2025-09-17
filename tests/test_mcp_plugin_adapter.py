@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import AsyncMock
 from typing import Any, Dict
 
-from agent_system.mcp.plugin_adapter import PluginMCPAdapter, PluginMCPRegistry
+from agent_system.plugins.mcp_adapter import PluginMCPAdapter, PluginMCPRegistry
 from agent_system.mcp.core import MCPCapability
 
 

@@ -1,6 +1,6 @@
 import textwrap
 
-from agent_system.mcp.plugins import discover_plugins
+from agent_system.plugins import discover_plugins
 from agent_system.mcp.base import MCPRegistry, MCPServer
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.config.models import AgentConfig

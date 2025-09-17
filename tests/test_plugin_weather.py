@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from io import StringIO
 import sys
 
-from agent_system.mcp.plugins import discover_all_plugins
+from agent_system.plugins import discover_all_plugins
 from plugins.weather.server import WeatherServer
 from plugins.weather.__main__ import main, build_parser, cli_main
 

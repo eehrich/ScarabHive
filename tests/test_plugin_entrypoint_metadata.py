@@ -43,7 +43,7 @@ def test_entrypoint_plugin_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr("importlib.util.find_spec", lambda name: spec)
 
     # Execute discovery and assert metadata attached
-    from agent_system.mcp.plugins import discover_entrypoint_plugins
+    from agent_system.plugins import discover_entrypoint_plugins
 
     found = discover_entrypoint_plugins()
     assert "fakepkg" in found

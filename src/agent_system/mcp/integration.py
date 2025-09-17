@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 
 from .client import MCPClientManager
-from .plugin_adapter import plugin_mcp_registry
+from ..plugins.mcp_adapter import plugin_mcp_registry
 from .http_server import MCPHTTPServer
 from .config import MCPConfigManager, MCPConfig
 from .security import configure_security

@@ -9,7 +9,7 @@ import types
 from typing import Callable, Dict, Iterable
 import yaml
 
-from .base import MCPServer
+from ..mcp.base import MCPServer
 
 logger = logging.getLogger(__name__)
 

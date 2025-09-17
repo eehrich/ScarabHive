@@ -11,8 +11,7 @@ from typing import Any, Dict, List, Optional
 import json
 from pathlib import Path
 
-from .core import MCPServer, MCPTool, MCPCapability
-from .plugins import discover_plugins
+from ..mcp.core import MCPServer, MCPTool, MCPCapability
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +114,9 @@ class PluginMCPRegistry:
 
     def discover_plugins(self, plugin_dirs: List[str]) -> None:
         """Discover plugins from directories"""
+        # Import here to avoid circular dependency
+        from .discovery import discover_plugins
+        
         for plugin_dir in plugin_dirs:
             path = Path(plugin_dir)
             if path.exists() and path.is_dir():

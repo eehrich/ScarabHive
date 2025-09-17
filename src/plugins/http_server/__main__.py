@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import sys
 
-from agent_system.mcp.plugins import discover_all_plugins
+from agent_system.plugins import discover_all_plugins
 from agent_system.utils.logging import setup_logging
 
 from .server import HTTPServer

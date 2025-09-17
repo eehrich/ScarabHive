@@ -117,7 +117,7 @@ class TestPluginDiscoveryIntegration:
     def test_plugin_discovery_finds_all_plugins(self, temp_workspace):
         """Test that plugin discovery finds all expected plugins."""
         # Import the discovery function
-        from agent_system.mcp.plugins import discover_all_plugins
+        from agent_system.plugins import discover_all_plugins
 
         # Discover plugins
         plugins = discover_all_plugins([temp_workspace / "plugins"])
@@ -131,7 +131,7 @@ class TestPluginDiscoveryIntegration:
 
     def test_plugin_metadata_loading(self, temp_workspace):
         """Test that plugin metadata is loaded correctly."""
-        from agent_system.mcp.plugins import discover_all_plugins
+        from agent_system.plugins import discover_all_plugins
 
         plugins = discover_all_plugins([temp_workspace / "plugins"])
 

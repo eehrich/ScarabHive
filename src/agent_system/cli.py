@@ -18,7 +18,7 @@ except Exception:
     tabulate = None
 
 from .config.settings import load_settings
-from .mcp.plugins import discover_all_plugins
+from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .mcp.integration import MCPIntegration

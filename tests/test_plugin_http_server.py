@@ -233,7 +233,7 @@ class TestHTTPCLI:
 def test_http_server_plugin_discovered():
     """Test that the HTTP server plugin is discoverable."""
     from pathlib import Path
-    from agent_system.mcp.plugins import discover_all_plugins
+    from agent_system.plugins import discover_all_plugins
 
     repo_root = Path(__file__).resolve().parents[1]
     default_dir = repo_root / 'plugins'
