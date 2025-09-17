@@ -6,7 +6,7 @@ from agent_system.plugins import discovery as plugins
 
 
 @pytest.mark.asyncio
-async def test_discovered_plugin_has_metadata():
+async def test_plugin_metadata_discovery_has_metadata():
     # discover plugins under the project plugins/ directory
     default_dir = Path('plugins')
     if not default_dir.exists():

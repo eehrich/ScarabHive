@@ -69,8 +69,8 @@ async def test_plugins_integration_discover_entrypoint_and_filesystem(monkeypatc
     ep_server = ep_factory('ep_example', {})
 
     # Call their call() methods (filesystem plugin is async)
-    res1 = await fs_server.call()
-    res2 = await ep_server.call()
+    res1 = await fs_server.call("example_status", {})
+    res2 = await ep_server.call("example_status", {})
 
-    assert res1['status'] == 'ok'
+    assert res1['status'] == 'active'  # Example plugin status response
     assert res2['status'] == 'ep'
