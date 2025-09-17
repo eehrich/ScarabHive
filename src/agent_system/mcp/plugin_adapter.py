@@ -34,8 +34,25 @@ class PluginMCPAdapter(MCPServer):
 
         tools = []
 
-        # Get schema from plugin if available
-        if hasattr(self.plugin_server, 'get_schema'):
+        # First, check for the new multi-tool interface
+        if hasattr(self.plugin_server, 'get_tools'):
+            try:
+                tool_schemas = self.plugin_server.get_tools()
+                for tool_schema in tool_schemas:
+                    if isinstance(tool_schema, dict) and 'function' in tool_schema:
+                        func_def = tool_schema['function']
+                        tool = MCPTool(
+                            name=func_def['name'],
+                            description=func_def.get('description', f'Tool {func_def["name"]}'),
+                            input_schema=func_def.get('parameters', {})
+                        )
+                        tools.append(tool)
+            except (NotImplementedError, AttributeError):
+                # Fall back to legacy single-tool interface
+                pass
+
+        # Fallback: Get schema from plugin if available (legacy interface)
+        if not tools and hasattr(self.plugin_server, 'get_schema'):
             schema = self.plugin_server.get_schema()
             if isinstance(schema, dict) and 'functions' in schema:
                 for func_def in schema['functions']:
