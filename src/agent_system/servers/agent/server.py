@@ -14,6 +14,7 @@ from ...mcp.base import MCPRegistry, MCPServer
 from ...llm.clients import ChatMessage
 from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
+from ...context import ContextConfig, ContextManager, ConversationSummarizer, TokenOptimizer
 from .planner import Planner
 from .executor import Executor
 
@@ -94,6 +95,51 @@ class Agent(MCPServer):
                     else:
                         logger.warning("LLM initialization failed: %s", msg)
                     self.llm = None
+
+        # Initialize context management system
+        self._init_context_management()
+
+    def _init_context_management(self):
+        """Initialize the context management system."""
+        try:
+            # Create context configuration from agent config
+            context_window = getattr(self.agent_config, "context_window", 32768)
+            
+            # Get additional context settings from agent config if available
+            context_attr = getattr(self.agent_config, "context", None)
+            if context_attr and hasattr(context_attr, '__dict__'):
+                # If it's an object, convert to dict
+                context_settings = vars(context_attr)
+            elif isinstance(context_attr, dict):
+                context_settings = context_attr
+            else:
+                context_settings = {}
+            
+            self.context_config = ContextConfig(
+                context_window=context_window,
+                summarization_threshold=context_settings.get("summarization_threshold", context_window // 3),
+                preserve_recent_messages=context_settings.get("preserve_recent_messages", 10),
+                enable_compression=context_settings.get("enable_compression", True)
+            )
+            
+            # Initialize context manager
+            self.context_manager = ContextManager(self.context_config)
+            
+            # Initialize and set summarizer
+            summarizer = ConversationSummarizer(self.llm)
+            self.context_manager.set_summarizer(summarizer)
+            
+            # Initialize optimizer
+            self.token_optimizer = TokenOptimizer()
+            
+            logger.info("Context management initialized - window: %d, summarization threshold: %d", 
+                       context_window, self.context_config.summarization_threshold)
+                       
+        except Exception as e:
+            logger.error("Failed to initialize context management: %s", e)
+            # Fallback to None - will use legacy behavior
+            self.context_manager = None
+            self.token_optimizer = None
 
     @property
     def description(self) -> str:
@@ -210,16 +256,32 @@ class Agent(MCPServer):
             executor = Executor(self.registry)
             executor = Executor(self.registry)
             for step in range(max_steps):
-                # Debug: Log message count and estimated token count
-                message_count = len(messages)
-                estimated_tokens = self._estimate_token_count(messages)
-                context_window = getattr(self.agent_config, "context_window", 32768)
-                logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
-                           step + 1, message_count, estimated_tokens, context_window)
-                
-                if estimated_tokens > context_window * 0.9:  # 90% threshold
-                    logger.warning("Token count approaching context window limit: %d/%d tokens", 
-                                 estimated_tokens, context_window)
+                # Enhanced context management and token tracking
+                if self.context_manager:
+                    # Apply token optimization
+                    if self.token_optimizer:
+                        messages = self.token_optimizer.optimize_messages(messages)
+                    
+                    # Check token count and issue appropriate warnings
+                    estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
+                    
+                    # Apply context management if needed
+                    if self.context_manager.should_manage_context(estimated_tokens, warning_level):
+                        logger.info("Applying context management at step %d", step + 1)
+                        messages = self.context_manager.manage_context(messages)
+                        # Re-check after management
+                        estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
+                else:
+                    # Fallback to legacy token warning
+                    message_count = len(messages)
+                    estimated_tokens = self._estimate_token_count(messages)
+                    context_window = getattr(self.agent_config, "context_window", 32768)
+                    logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
+                               step + 1, message_count, estimated_tokens, context_window)
+                    
+                    if estimated_tokens > context_window * 0.9:  # 90% threshold
+                        logger.warning("Token count approaching context window limit: %d/%d tokens", 
+                                     estimated_tokens, context_window)
                 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
@@ -531,16 +593,32 @@ class Agent(MCPServer):
             executor = Executor(self.registry)
             
             for step in range(max_steps):
-                # Debug: Log message count and estimated token count
-                message_count = len(messages)
-                estimated_tokens = self._estimate_token_count(messages)
-                context_window = getattr(self.agent_config, "context_window", 32768)
-                logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
-                           step + 1, message_count, estimated_tokens, context_window)
-                
-                if estimated_tokens > context_window * 0.9:  # 90% threshold
-                    logger.warning("Token count approaching context window limit: %d/%d tokens", 
-                                 estimated_tokens, context_window)
+                # Enhanced context management and token tracking
+                if self.context_manager:
+                    # Apply token optimization
+                    if self.token_optimizer:
+                        messages = self.token_optimizer.optimize_messages(messages)
+                    
+                    # Check token count and issue appropriate warnings
+                    estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
+                    
+                    # Apply context management if needed
+                    if self.context_manager.should_manage_context(estimated_tokens, warning_level):
+                        logger.info("Applying context management at step %d", step + 1)
+                        messages = self.context_manager.manage_context(messages)
+                        # Re-check after management
+                        estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
+                else:
+                    # Fallback to legacy token warning
+                    message_count = len(messages)
+                    estimated_tokens = self._estimate_token_count(messages)
+                    context_window = getattr(self.agent_config, "context_window", 32768)
+                    logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
+                               step + 1, message_count, estimated_tokens, context_window)
+                    
+                    if estimated_tokens > context_window * 0.9:  # 90% threshold
+                        logger.warning("Token count approaching context window limit: %d/%d tokens", 
+                                     estimated_tokens, context_window)
                 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
