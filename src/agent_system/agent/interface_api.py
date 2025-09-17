@@ -444,12 +444,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             tool_definitions = server_obj.get_tools()
                             if tool_definitions:
                                 for tool_def in tool_definitions:
-                                    tool_name = tool_def.get('name', f'{server_id}_tool')
+                                    # Handle both direct tool definition and function-wrapped definition
+                                    if 'function' in tool_def:
+                                        func_def = tool_def['function']
+                                        tool_name = func_def.get('name', f'{server_id}_tool')
+                                        description = func_def.get('description', f'Tool for {server_id}')
+                                        parameters = func_def.get('parameters', {})
+                                    else:
+                                        tool_name = tool_def.get('name', f'{server_id}_tool')
+                                        description = tool_def.get('description', f'Tool for {server_id}')
+                                        parameters = tool_def.get('input_schema', {})
+                                    
                                     tools.append(tool_name)
                                     detailed_tools.append({
                                         'name': tool_name,
-                                        'description': tool_def.get('description', f'Tool for {server_id}'),
-                                        'parameters': tool_def.get('input_schema', {})
+                                        'description': description,
+                                        'parameters': parameters
                                     })
                         except Exception:
                             # If get_tools() fails, fall back to get_schema()
