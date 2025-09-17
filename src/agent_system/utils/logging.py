@@ -7,6 +7,63 @@ import sys
 from typing import Optional
 
 
+class ColorizedFormatter(logging.Formatter):
+    """A colored log formatter that mimics uvicorn's styling."""
+    
+    # ANSI color codes
+    COLORS = {
+        'TRACE': '\033[34m',     # Blue
+        'DEBUG': '\033[36m',     # Cyan  
+        'INFO': '\033[32m',      # Green
+        'WARNING': '\033[33m',   # Yellow
+        'ERROR': '\033[31m',     # Red
+        'CRITICAL': '\033[91m',  # Bright Red
+        'RESET': '\033[0m',      # Reset
+        'BOLD': '\033[1m',       # Bold
+        'DIM': '\033[2m',        # Dim
+    }
+    
+    def __init__(self, fmt=None, datefmt=None, style='%', use_colors=None):
+        super().__init__(fmt, datefmt, style)
+        if use_colors is None:
+            self.use_colors = sys.stdout.isatty()
+        else:
+            self.use_colors = use_colors
+    
+    def color_level_name(self, level_name: str, level_no: int) -> str:
+        if not self.use_colors:
+            return level_name
+            
+        color_map = {
+            logging.DEBUG: self.COLORS['DEBUG'],
+            logging.INFO: self.COLORS['INFO'], 
+            logging.WARNING: self.COLORS['WARNING'],
+            logging.ERROR: self.COLORS['ERROR'],
+            logging.CRITICAL: self.COLORS['CRITICAL'],
+        }
+        
+        color = color_map.get(level_no, '')
+        if color:
+            return f"{color}{level_name}{self.COLORS['RESET']}"
+        return level_name
+    
+    def format(self, record):
+        # Create a copy to avoid modifying the original record
+        record_copy = logging.makeLogRecord(record.__dict__)
+        
+        # Color the level name
+        if self.use_colors:
+            record_copy.levelname = self.color_level_name(record.levelname, record.levelno)
+            
+            # Also add some subtle coloring to the logger name
+            if hasattr(record_copy, 'name'):
+                # Make agent_system loggers slightly dimmed
+                if record_copy.name.startswith('agent_system'):
+                    record_copy.name = f"{self.COLORS['DIM']}{record.name}{self.COLORS['RESET']}"
+        
+        return super().format(record_copy)
+
+
 class SafeUnicodeFormatter(logging.Formatter):
     """Formatter that safely handles Unicode characters and preserves ANSI colors on TTY."""
     
@@ -98,10 +155,16 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     file_handler.setFormatter(file_formatter)
     root.addHandler(file_handler)
 
-    # Console handler (level adjusted by CLI depending on --verbose) - preserve ANSI codes for TTY
+    # Console handler (level adjusted by CLI depending on --verbose) - use colored formatter for TTY
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(lvl)
-    console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=True)
+    
+    # Use colored formatter for console output if it's a TTY
+    if sys.stdout.isatty():
+        console_formatter = ColorizedFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    else:
+        console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=True)
+    
     console_handler.setFormatter(console_formatter)
     # Set encoding to handle Unicode characters properly
     if hasattr(console_handler.stream, 'reconfigure'):
