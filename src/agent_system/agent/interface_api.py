@@ -348,6 +348,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
 
+
+# Compatibility shim: expose a simple getter so tests can patch this module
+# function to supply a mock MCPIntegration. It delegates to the real
+# integration module when available.
+def get_mcp_integration(app: Optional[FastAPI] = None):
+    from ..mcp.integration import get_mcp_integration as _get
+
+    return _get(app)
+
     @app.post("/status/publish-test")
     async def status_publish_test(server: str = Query(..., description="Server name for test event"), message: str = Query("Test event", description="Message text")):
         """Diagnostic endpoint to publish a test status event for the given server.

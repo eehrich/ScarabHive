@@ -1,0 +1,47 @@
+# Example plugin schema for multi-tool example
+# Provides three function tools: <name>_calculator, <name>_formatter, <name>_status
+tools:
+  - type: function
+    function:
+      name: "{name}_calculator"
+      description: "Perform basic arithmetic operations"
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: ["add", "subtract", "multiply", "divide"]
+            description: "The arithmetic operation to perform"
+          a:
+            type: number
+            description: "First number"
+          b:
+            type: number
+            description: "Second number"
+        required: ["operation", "a", "b"]
+  - type: function
+    function:
+      name: "{name}_formatter"
+      description: "Format text in various ways"
+      parameters:
+        type: object
+        properties:
+          text:
+            type: string
+            description: "Text to format"
+          format:
+            type: string
+            enum: ["uppercase","lowercase","title","reverse"]
+            description: "Format to apply"
+        required: ["text","format"]
+  - type: function
+    function:
+      name: "{name}_status"
+      description: "Get server status information"
+      parameters:
+        type: object
+        properties:
+          verbose:
+            type: boolean
+            default: false
+            description: "Include detailed status information"

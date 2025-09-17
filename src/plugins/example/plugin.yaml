@@ -1,5 +1,45 @@
 name: example
-author: "Enrico Ehrich"
-version: 0.0.1
-description: "Example plugin that returns a static ok result"
+version: 1.0.0
+author: "AgentSystem Team"
+description: "Reference implementation demonstrating MCP plugin best practices with calculator, formatter, and status tools"
 entrypoint: plugin:PLUGIN_FACTORY
+type: mcp_server
+
+# Plugin configuration schema
+config_schema:
+  type: object
+  properties:
+    precision:
+      type: integer
+      default: 2
+      minimum: 0
+      maximum: 10
+      description: "Decimal precision for calculations"
+    max_text_length:
+      type: integer
+      default: 1000
+      minimum: 1
+      maximum: 100000
+      description: "Maximum text length for formatting operations"
+    enable_debug:
+      type: boolean
+      default: false
+      description: "Enable debug logging for development"
+  additionalProperties: false
+
+# Plugin metadata
+tags:
+  - example
+  - reference
+  - calculator
+  - formatter
+  - demo
+
+# Dependencies (automatically installed)
+dependencies:
+  - pydantic>=2.0.0
+
+# Minimum requirements
+requires:
+  python: ">=3.8"
+  agent_system: ">=1.0.0"

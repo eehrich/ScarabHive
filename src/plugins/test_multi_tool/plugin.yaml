@@ -1,7 +1,0 @@
-# Deprecated test_multi_tool plugin. Use plugins.example instead.
-name: test_multi_tool
-version: 0.0.0-deprecated
-author: AgentSystem
-description: Deprecated placeholder
-entrypoint: plugin:PLUGIN_FACTORY
-type: none
