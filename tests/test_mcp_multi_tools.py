@@ -5,7 +5,7 @@ import pytest
 from typing import Any
 
 from agent_system.mcp.base import MCPServer
-from plugins.test_multi_tool.server import MultiToolTestServer
+from plugins.example.server import MultiToolTestServer
 
 
 class SingleToolMockServer(MCPServer):

@@ -1,10 +1,9 @@
-"""Plugin factory for the multi-tool test plugin."""
+"""Placeholder plugin factory for test_multi_tool.
+
+This package has been deprecated in favor of `plugins.example`.
+The placeholder keeps imports resolvable for a short migration window.
+"""
+
 from __future__ import annotations
 
-from typing import Any
-from .server import MultiToolTestServer
-
-
-def PLUGIN_FACTORY(name: str, config: dict[str, Any] | None = None) -> MultiToolTestServer:
-    """Create and configure the multi-tool test server."""
-    return MultiToolTestServer(name=name, config=config)
+__all__ = []
