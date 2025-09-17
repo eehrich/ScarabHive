@@ -536,6 +536,6 @@ class WebScraperServer(MCPServer):
             raise RuntimeError("Missing required schema.yaml for web_scraper plugin")
         return schema
 
-    def get_default_action(self) -> str:
+    def _get_default_action_impl(self) -> str:
         """Return the default action for web scraper."""
         return "fetch"

@@ -434,10 +434,39 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Add plugin servers from registry
             for server_id, server_obj in _app_registry._servers.items():
                 try:
-                    # Get tools using schema method
+                    # Get tools using both get_tools() and get_schema() methods
                     tools = []
                     detailed_tools = []
-                    if hasattr(server_obj, 'get_schema'):
+                    
+                    # Try get_tools() first (for multi-tool plugins like IBKR)
+                    if hasattr(server_obj, 'get_tools'):
+                        try:
+                            tool_definitions = server_obj.get_tools()
+                            if tool_definitions:
+                                for tool_def in tool_definitions:
+                                    # Handle both direct tool definition and function-wrapped definition
+                                    if 'function' in tool_def:
+                                        func_def = tool_def['function']
+                                        tool_name = func_def.get('name', f'{server_id}_tool')
+                                        description = func_def.get('description', f'Tool for {server_id}')
+                                        parameters = func_def.get('parameters', {})
+                                    else:
+                                        tool_name = tool_def.get('name', f'{server_id}_tool')
+                                        description = tool_def.get('description', f'Tool for {server_id}')
+                                        parameters = tool_def.get('input_schema', {})
+                                    
+                                    tools.append(tool_name)
+                                    detailed_tools.append({
+                                        'name': tool_name,
+                                        'description': description,
+                                        'parameters': parameters
+                                    })
+                        except Exception:
+                            # If get_tools() fails, fall back to get_schema()
+                            pass
+                    
+                    # Fall back to get_schema() if get_tools() didn't work or doesn't exist
+                    if not tools and hasattr(server_obj, 'get_schema'):
                         try:
                             schema = server_obj.get_schema()
                             if schema:
