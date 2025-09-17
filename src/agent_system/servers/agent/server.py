@@ -195,9 +195,15 @@ class Agent(MCPServer):
                     except Exception as e:
                         logger.debug("Failed to build schema for external tool %s: %s", tool_name, e)
                 else:
-                    # Regular plugin tool
+                    # Regular plugin tool - support multiple tools per server
                     server = self.registry.get(tool_name)
-                    tools_schema.append(server.get_schema())
+                    if hasattr(server, 'get_tools'):
+                        # New multi-tool interface
+                        server_tools = server.get_tools()
+                        tools_schema.extend(server_tools)
+                    else:
+                        # Fallback to legacy single-tool interface
+                        tools_schema.append(server.get_schema())
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             
@@ -510,9 +516,15 @@ class Agent(MCPServer):
                     except Exception as e:
                         logger.debug("Failed to build schema for external tool %s: %s", tool_name, e)
                 else:
-                    # Regular plugin tool
+                    # Regular plugin tool - support multiple tools per server
                     server = self.registry.get(tool_name)
-                    tools_schema.append(server.get_schema())
+                    if hasattr(server, 'get_tools'):
+                        # New multi-tool interface
+                        server_tools = server.get_tools()
+                        tools_schema.extend(server_tools)
+                    else:
+                        # Fallback to legacy single-tool interface
+                        tools_schema.append(server.get_schema())
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}
