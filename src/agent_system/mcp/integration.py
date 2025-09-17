@@ -71,8 +71,16 @@ class MCPIntegration:
 
         # Connect to external MCP servers (using old format for backward compatibility)
         external_servers = mcp_config.get('external_servers', {})
-        self.configured_external_servers = external_servers  # Store for status endpoint
+        # Only store enabled servers for status endpoint
+        self.configured_external_servers = {
+            name: config for name, config in external_servers.items() 
+            if config.get('enabled', True)
+        }
         for server_name, server_config in external_servers.items():
+            # Only connect to enabled servers
+            if not server_config.get('enabled', True):
+                logger.debug(f"Skipping disabled external MCP server: {server_name}")
+                continue
             try:
                 await self.client_manager.add_client(server_name, server_config)
                 logger.info(f"Connected to external MCP server: {server_name}")
