@@ -23,9 +23,9 @@ src/plugins/example/
 ├── README.md             # This documentation
 └── tests/                # Plugin-specific tests
     ├── __init__.py
-    ├── test_calculator.py
-    ├── test_formatter.py
-    └── test_integration.py
+    ├── test_example_calculator.py
+    ├── test_example_formatter.py
+    └── test_example_integration.py
 ```
 
 ## Key Features Demonstrated
@@ -164,7 +164,7 @@ Run the plugin tests:
 pytest src/plugins/example/tests/ -v
 
 # Run specific test file
-pytest src/plugins/example/tests/test_calculator.py -v
+pytest src/plugins/example/tests/test_example_calculator.py -v
 
 # Run with coverage
 pytest src/plugins/example/tests/ --cov=src.plugins.example --cov-report=html
