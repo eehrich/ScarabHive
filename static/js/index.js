@@ -57,22 +57,22 @@ async function updateMCPServers() {
     const response = await fetch('/mcp/status');
     if (response.ok) {
       const data = await response.json();
-      
+
       const totalServers = data.total_servers || 0;
       const totalTools = data.total_tools || 0;
       const servers = data.servers || [];
-      
+
       // Preserve state before update
       const mcpMetrics = document.getElementById('floatingMCPMetrics');
       let scrollPosition = 0;
       let expandedStates = {};
-      
+
       if (mcpMetrics) {
         const serversList = mcpMetrics.querySelector('.mcp-servers-list');
         if (serversList) {
           // Save scroll position
           scrollPosition = serversList.scrollTop;
-          
+
           // Save expanded states
           const detailElements = serversList.querySelectorAll('[id^="details-"]');
           detailElements.forEach(el => {
@@ -81,20 +81,20 @@ async function updateMCPServers() {
           });
         }
       }
-      
+
       let connectedServers = 0;
       let html = '';
-      
+
       // Enhanced styling for servers with better tool display
       for (let i = 0; i < servers.length; i++) {
         const server = servers[i];
         if (server.connected) connectedServers++;
-        
+
         const statusClass = server.connected ? 'connected' : 'disconnected';
         const statusText = server.connected ? 'Connected' : 'Disconnected';
-        
+
         // Better tool display with descriptions
-        const toolsList = server.tools && server.tools.length > 0 
+        const toolsList = server.tools && server.tools.length > 0
           ? server.detailed_tools && server.detailed_tools.length > 0
             ? server.detailed_tools.map(tool => `
                 <li class="tool-item ${tool.blocked ? 'tool-blocked' : ''}">
@@ -112,11 +112,11 @@ async function updateMCPServers() {
                 </li>
               `).join('')
           : '<li class="tool-item"><div class="tool-name">No tools available</div></li>';
-        
+
         // Check if this server was expanded before
         const wasExpanded = expandedStates[server.id] || false;
         const displayStyle = wasExpanded ? 'block' : 'none';
-        
+
         html += `
           <div class="mcp-server" onclick="toggleServerDetails('${server.id}')">
             <div class="mcp-server-info">
@@ -137,7 +137,7 @@ async function updateMCPServers() {
             </div>
           </div>`;
       }
-      
+
       const summaryHtml = `
         <div class="mcp-summary">
           <div class="metric-item">
@@ -157,10 +157,10 @@ async function updateMCPServers() {
           ${html || '<div class="no-servers">No MCP servers configured</div>'}
         </div>
       `;
-      
+
       if (mcpMetrics) {
         mcpMetrics.innerHTML = summaryHtml;
-        
+
         // Restore scroll position after DOM update
         const serversList = mcpMetrics.querySelector('.mcp-servers-list');
         if (serversList && typeof scrollPosition === 'number') {
@@ -176,7 +176,7 @@ async function updateMCPServers() {
           });
         }
       }
-      
+
       // Update button to show it's working
       const mcpButton = document.getElementById('mcpToggleBtn');
       if (mcpButton) {
@@ -189,7 +189,7 @@ async function updateMCPServers() {
         badgeSpan.setAttribute('aria-hidden', 'true');
         mcpButton.appendChild(badgeSpan);
       }
-      
+
     }
   } catch (error) {
     console.error('MCP Update: Error:', error);
@@ -223,7 +223,18 @@ mcpPanel.innerHTML = `
   <div class="floating-panel-header" id="floatingMCPHeader">
     <span>MCP Servers & Tools</span>
     <div style="margin-left:8px;flex:1"></div>
-    <button id="mcpRefreshBtn" title="Refresh now" aria-label="Refresh now">⟳</button>
+    <button id="mcpRefreshBtn" class="icon-btn" title="Refresh now" aria-label="Refresh now">
+      <svg class="mcp-refresh-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M21 3v6h-6" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="spinner icon-spinner" aria-hidden="true"></span>
+    </button>
+    <label class="toggle-switch" title="Auto-refresh">
+      <input id="mcpAutoRefreshToggle" type="checkbox" />
+      <span class="toggle-slider"></span>
+    </label>
+    <input id="mcpAutoRefreshInterval" class="number-input" type="number" min="5" step="5" value="30" title="Auto-refresh interval (seconds)" />
     <button id="floatingMCPCloseBtn" title="Close" aria-label="Close">✕</button>
   </div>
   <div class="floating-panel-body" id="floatingMCPBody">
@@ -234,6 +245,79 @@ mcpPanel.innerHTML = `
   <div class="resize-handle"></div>
 `;
 document.body.appendChild(mcpPanel);
+
+// Try to restore saved panel state (position/size/visible/auto-refresh)
+function loadPanelState(id) {
+  try {
+    const raw = localStorage.getItem('panelState:' + id);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
+function savePanelState(id, state) {
+  try {
+    localStorage.setItem('panelState:' + id, JSON.stringify(state));
+  } catch (e) { /* ignore */ }
+}
+
+function applyPanelState(panel, state) {
+  if (!panel || !state) return;
+  if (state.left !== undefined) panel.style.left = state.left + 'px';
+  if (state.top !== undefined) panel.style.top = state.top + 'px';
+  if (state.width !== undefined) panel.style.width = state.width + 'px';
+  if (state.height !== undefined) panel.style.height = state.height + 'px';
+  if (state.visible) panel.style.display = 'block';
+}
+
+// Restore MCP panel state if present
+const savedMcp = loadPanelState('floatingMCPPanel');
+if (savedMcp) applyPanelState(mcpPanel, savedMcp);
+
+// Auto-refresh control
+let mcpAutoRefreshTimer = null;
+function startMcpAutoRefresh(intervalSec) {
+  stopMcpAutoRefresh();
+  const ms = Math.max(5000, (intervalSec || 30) * 1000);
+  mcpAutoRefreshTimer = setInterval(() => { updateMCPServers().catch(()=>{}); }, ms);
+}
+function stopMcpAutoRefresh() {
+  if (mcpAutoRefreshTimer) { clearInterval(mcpAutoRefreshTimer); mcpAutoRefreshTimer = null; }
+}
+
+// Initialize auto-refresh UI from preferences
+const autoToggle = document.getElementById('mcpAutoRefreshToggle');
+const autoIntervalInput = document.getElementById('mcpAutoRefreshInterval');
+try {
+  const pref = loadPanelState('floatingMCPPanel') || {};
+  if (pref.autoRefresh) {
+    if (autoToggle) autoToggle.checked = true;
+    const interval = pref.autoRefreshInterval || 30;
+    if (autoIntervalInput) autoIntervalInput.value = interval;
+    startMcpAutoRefresh(interval);
+  }
+} catch (e) {}
+
+if (autoToggle) {
+  autoToggle.addEventListener('change', () => {
+    const enabled = autoToggle.checked;
+    const interval = parseInt(autoIntervalInput.value || '30', 10);
+    // persist
+    const state = loadPanelState('floatingMCPPanel') || {};
+    state.autoRefresh = enabled;
+    state.autoRefreshInterval = interval;
+    savePanelState('floatingMCPPanel', state);
+    if (enabled) startMcpAutoRefresh(interval); else stopMcpAutoRefresh();
+  });
+}
+if (autoIntervalInput) {
+  autoIntervalInput.addEventListener('change', () => {
+    const interval = parseInt(autoIntervalInput.value || '30', 10);
+    const state = loadPanelState('floatingMCPPanel') || {};
+    state.autoRefreshInterval = interval; savePanelState('floatingMCPPanel', state);
+    if (autoToggle && autoToggle.checked) startMcpAutoRefresh(interval);
+  });
+}
 
 const statusToggleBtn = document.getElementById('statusToggleBtn');
 const floatingCloseBtn = document.getElementById('floatingCloseBtn');
@@ -247,15 +331,18 @@ const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
 
 if (mcpRefreshBtn) {
   mcpRefreshBtn.addEventListener('click', async (ev) => {
-    mcpRefreshBtn.disabled = true;
-    mcpRefreshBtn.textContent = '...';
     try {
+      mcpRefreshBtn.classList.add('loading');
+      mcpRefreshBtn.setAttribute('aria-busy', 'true');
+      mcpRefreshBtn.disabled = true;
       await updateMCPServers();
     } catch (e) {
       console.error('Manual MCP refresh failed', e);
+    } finally {
+      mcpRefreshBtn.classList.remove('loading');
+      mcpRefreshBtn.removeAttribute('aria-busy');
+      mcpRefreshBtn.disabled = false;
     }
-    mcpRefreshBtn.textContent = '⟳';
-    mcpRefreshBtn.disabled = false;
   });
 }
 
@@ -338,8 +425,24 @@ floatingMCPCloseBtn.addEventListener('click', () => {
   window.addEventListener('pointerup', (ev) => { isDragging = false; });
 })('floatingMCPHeader', mcpPanel);
 
-setInterval(updateStatusMetrics, 30000);
-setInterval(updateMCPServers, 30000);
+// Persist position when dragging ends for both panels
+function attachDragPersist(headerId, panel, stateKey) {
+  const header = document.getElementById(headerId);
+  if (!header || !panel) return;
+  header.addEventListener('pointerup', () => {
+    try {
+      const rect = panel.getBoundingClientRect();
+      const state = loadPanelState(stateKey) || {};
+      state.left = Math.round(rect.left);
+      state.top = Math.round(rect.top);
+      savePanelState(stateKey, state);
+    } catch (e) {}
+  });
+}
+attachDragPersist('floatingStatusHeader', statusPanel, 'floatingStatusPanel');
+attachDragPersist('floatingMCPHeader', mcpPanel, 'floatingMCPPanel');
+
+// Auto-refresh disabled by default. Use manual refresh via button to update MCP panel.
 
 // Initialize immediately, but ensure DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -358,11 +461,11 @@ function formatTime(ts) { try { return new Date(ts).toLocaleTimeString(); } catc
 function toggleServerDetails(serverId) {
   const detailsContainer = document.getElementById(`details-${serverId}`);
   const indicator = document.getElementById(`indicator-${serverId}`);
-  
+
   if (detailsContainer) {
     const isVisible = detailsContainer.style.display !== 'none';
     detailsContainer.style.display = isVisible ? 'none' : 'block';
-    
+
     // Update indicator class (CSS triangle rotates when expanded)
     if (indicator) {
       indicator.classList.toggle('expanded', !isVisible);
@@ -655,20 +758,20 @@ function makeResizable(panel) {
     startY = e.clientY;
     startWidth = parseInt(document.defaultView.getComputedStyle(panel).width, 10);
     startHeight = parseInt(document.defaultView.getComputedStyle(panel).height, 10);
-    
+
     e.preventDefault();
     e.stopPropagation();
-    
+
     document.addEventListener('mousemove', doResize);
     document.addEventListener('mouseup', stopResize);
   });
 
   function doResize(e) {
     if (!isResizing) return;
-    
+
     const newWidth = Math.max(250, startWidth + e.clientX - startX);
     const newHeight = Math.max(150, startHeight + e.clientY - startY);
-    
+
     panel.style.width = newWidth + 'px';
     panel.style.height = newHeight + 'px';
   }
@@ -677,6 +780,14 @@ function makeResizable(panel) {
     isResizing = false;
     document.removeEventListener('mousemove', doResize);
     document.removeEventListener('mouseup', stopResize);
+    // Persist size change
+    try {
+      const rect = panel.getBoundingClientRect();
+      const state = loadPanelState(panel.id) || {};
+      state.width = Math.round(rect.width);
+      state.height = Math.round(rect.height);
+      savePanelState(panel.id, state);
+    } catch (e) {}
   }
 }
 

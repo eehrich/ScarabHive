@@ -49,11 +49,14 @@ header {
 .floating-panel {
   position: fixed;
   top: 80px;
-  right: 24px;
-  width: 320px;
-  height: 400px;
-  min-width: 250px;
-  min-height: 150px;
+  left: 24px;
+  width: 640px;
+  height: 800px;
+  min-width: 500px;
+  min-height: 300px;
+  /* Make responsive: never exceed 90% of viewport width/height */
+  max-width: min(640px, 90vw);
+  max-height: min(800px, 90vh);
   background: linear-gradient(180deg, #0b1220, #07111a);
   border: 1px solid #243244;
   border-radius: 10px;
@@ -72,24 +75,51 @@ header {
   cursor: grab;
   flex-shrink: 0;
 }
-.floating-panel-header #mcpRefreshBtn {
-  background: none;
+.floating-panel-header .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: #0b1220;
   border: 1px solid #243244;
   color: #9ab;
-  padding: 4px 8px;
-  border-radius: 6px;
+  padding: 6px;
+  border-radius: 10px;
   cursor: pointer;
   margin-right: 8px;
+  transition: background 150ms ease, transform 120ms ease;
 }
+.floating-panel-header .icon-btn:hover {
+  background: #122034;
+  transform: translateY(-1px);
+}
+.floating-panel-header .icon-btn:active { transform: translateY(0); }
+.floating-panel-header .icon-btn[disabled] { opacity: 0.5; cursor: default; }
+.floating-panel-header .icon-btn .mcp-refresh-icon { width: 16px; height: 16px; }
+.floating-panel-header .icon-btn .spinner { display: none; width: 18px; height: 18px; }
+.floating-panel-header .icon-btn.loading .spinner { display: inline-block; }
+.floating-panel-header .icon-btn.loading .mcp-refresh-icon { display: none; }
+
+/* Spinner animation */
+.icon-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.08);
+  border-top-color: #9ab;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .floating-panel-header #mcpRefreshBtn:disabled {
   opacity: 0.5;
   cursor: default;
 }
 .floating-panel-header:active { cursor: grabbing; }
-.floating-panel-body { 
-  padding: 10px; 
-  overflow: hidden; 
+.floating-panel-body {
+  padding: 10px;
+  overflow: hidden;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -158,6 +188,18 @@ h1 {
   border-color: #394B5C;
   color: #cbd5e1;
 }
+
+/* Toggle switch for auto-refresh */
+.toggle-switch { display:inline-block; position:relative; width:44px; height:22px; vertical-align:middle; margin-right:8px; }
+.toggle-switch input { opacity:0; width:0; height:0; }
+.toggle-slider { position:absolute; cursor:pointer; top:2px; left:2px; right:2px; bottom:2px; background:#27323b; transition:.2s; border-radius:999px; border:1px solid #243244; }
+.toggle-slider::before { content:''; position:absolute; height:16px; width:16px; left:3px; top:50%; transform:translateY(-50%); background:#e6edf3; border-radius:50%; transition:.2s; box-shadow:0 2px 6px rgba(0,0,0,0.4) inset; }
+.toggle-switch input:checked + .toggle-slider { background: linear-gradient(90deg,#12394a,#0a728a); border-color:#0b728a; }
+.toggle-switch input:checked + .toggle-slider::before { transform:translateY(-50%) translateX(20px); background:#fff; }
+
+/* Number input styling */
+.number-input { width:66px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#07111a; color:#e6edf3; font-size:13px; margin-right:8px; }
+.number-input:focus { outline:none; box-shadow:0 0 0 3px rgba(12,56,72,0.12); border-color:#1f9bb5; }
 
 .mcp-connected {
   display: inline-block;
