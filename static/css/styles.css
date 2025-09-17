@@ -52,11 +52,11 @@ header {
   left: 24px;
   width: 640px;
   height: 800px;
-  min-width: 500px;
-  min-height: 300px;
-  /* Make responsive: never exceed 90% of viewport width/height */
-  max-width: min(640px, 90vw);
-  max-height: min(800px, 90vh);
+  min-width: 300px;
+  min-height: 200px;
+  /* Allow panels to be resized up to viewport limits with buffer */
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 100px);
   background: linear-gradient(180deg, #0b1220, #07111a);
   border: 1px solid #243244;
   border-radius: 10px;
@@ -64,6 +64,15 @@ header {
   z-index: 1000;
   display: flex;
   flex-direction: column;
+}
+
+/* Status panel specific positioning - smaller and on the right */
+#floatingStatusPanel {
+  width: 400px !important;
+  height: 500px !important;
+  right: 24px !important;
+  left: auto !important;
+  top: 80px !important;
 }
 .floating-panel-header {
   display: flex;
@@ -189,13 +198,54 @@ h1 {
   color: #cbd5e1;
 }
 
-/* Toggle switch for auto-refresh */
-.toggle-switch { display:inline-block; position:relative; width:44px; height:22px; vertical-align:middle; margin-right:8px; }
-.toggle-switch input { opacity:0; width:0; height:0; }
-.toggle-slider { position:absolute; cursor:pointer; top:2px; left:2px; right:2px; bottom:2px; background:#27323b; transition:.2s; border-radius:999px; border:1px solid #243244; }
-.toggle-slider::before { content:''; position:absolute; height:16px; width:16px; left:3px; top:50%; transform:translateY(-50%); background:#e6edf3; border-radius:50%; transition:.2s; box-shadow:0 2px 6px rgba(0,0,0,0.4) inset; }
-.toggle-switch input:checked + .toggle-slider { background: linear-gradient(90deg,#12394a,#0a728a); border-color:#0b728a; }
-.toggle-switch input:checked + .toggle-slider::before { transform:translateY(-50%) translateX(20px); background:#fff; }
+/* Custom toggle for auto-refresh - click-based, not checkbox-based */
+.custom-toggle {
+  pointer-events: auto !important;
+}
+
+.toggle-track {
+  width: 44px;
+  height: 22px;
+  background: #27323b;
+  border: 1px solid #243244;
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  cursor: pointer;
+}
+
+.toggle-track:hover {
+  background: #394958;
+  border-color: #4a5568;
+}
+
+.toggle-track.active {
+  background: linear-gradient(90deg, #12394a, #0a728a);
+  border-color: #0b728a;
+}
+
+.toggle-track.active:hover {
+  background: linear-gradient(90deg, #1a4a5c, #0d8aa6);
+}
+
+.toggle-knob {
+  width: 16px;
+  height: 16px;
+  background: #e6edf3;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  transition: transform 0.2s ease, background 0.2s ease;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+
+.toggle-track.active .toggle-knob {
+  transform: translateX(20px);
+  background: #fff;
+}
+
+/* Old checkbox-style toggle removed; using .custom-toggle and .toggle-track instead */
 
 /* Number input styling */
 .number-input { width:66px; padding:6px 8px; border-radius:6px; border:1px solid #243244; background:#07111a; color:#e6edf3; font-size:13px; margin-right:8px; }
@@ -273,20 +323,7 @@ mark {
   scroll-behavior: smooth;
 }
 
-.mcp-server {
-  background: #0a1420;
-  border: 1px solid #243244;
-  border-radius: 8px;
-  padding: 12px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  position: relative;
-}
-
-.mcp-server:hover {
-  border-color: #394B5C;
-  background: #0e1825;
-}
+/* .mcp-server styles are declared above; duplicated block removed */
 
 .mcp-server-info {
   display: flex;

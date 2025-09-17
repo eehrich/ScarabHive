@@ -252,6 +252,12 @@ const statusPanel = document.createElement('div');
 statusPanel.id = 'floatingStatusPanel';
 statusPanel.className = 'floating-panel';
 statusPanel.style.display = 'none';
+// Position status panel on the right side with smaller size
+statusPanel.style.top = '80px';
+statusPanel.style.right = '24px';
+statusPanel.style.left = 'auto';
+statusPanel.style.width = '400px';
+statusPanel.style.height = '500px';
 statusPanel.innerHTML = `
   <div class="floating-panel-header" id="floatingStatusHeader">
     <span>Status & Metrics</span>
@@ -284,10 +290,12 @@ mcpPanel.innerHTML = `
       </svg>
       <span class="spinner icon-spinner" aria-hidden="true"></span>
     </button>
-    <label class="toggle-switch" title="Auto-refresh">
-      <input id="mcpAutoRefreshToggle" type="checkbox" />
-      <span class="toggle-slider"></span>
-    </label>
+    <div id="mcpAutoRefreshToggle" class="custom-toggle" style="display: flex; align-items: center; gap: 8px; margin-right: 8px; cursor: pointer;" title="Toggle auto-refresh">
+      <div class="toggle-track">
+        <div class="toggle-knob"></div>
+      </div>
+      <span style="color: #9ab; font-size: 13px; user-select: none;">Auto-refresh</span>
+    </div>
     <input id="mcpAutoRefreshInterval" class="number-input" type="number" min="5" step="5" value="30" title="Auto-refresh interval (seconds)" />
     <button id="floatingMCPCloseBtn" title="Close" aria-label="Close">✕</button>
   </div>
@@ -299,6 +307,22 @@ mcpPanel.innerHTML = `
   <div class="resize-handle"></div>
 `;
 document.body.appendChild(mcpPanel);
+
+// NOW get references to elements after they're created
+const statusToggleBtn = document.getElementById('statusToggleBtn');
+const floatingCloseBtn = document.getElementById('floatingCloseBtn');
+const floatingStatusMetrics = document.getElementById('floatingStatusMetrics');
+
+// MCP panel elements
+const mcpToggleBtn = document.getElementById('mcpToggleBtn');
+const floatingMCPCloseBtn = document.getElementById('floatingMCPCloseBtn');
+const floatingMCPMetrics = document.getElementById('floatingMCPMetrics');
+const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
+const mcpFilterInput = document.getElementById('mcpFilterInput');
+
+// Auto-refresh elements
+const autoToggle = document.getElementById('mcpAutoRefreshToggle');
+const autoIntervalInput = document.getElementById('mcpAutoRefreshInterval');
 
 // Try to restore saved panel state (position/size/visible/auto-refresh)
 function loadPanelState(id) {
@@ -317,7 +341,24 @@ function savePanelState(id, state) {
 
 function applyPanelState(panel, state) {
   if (!panel || !state) return;
-  if (state.left !== undefined) panel.style.left = state.left + 'px';
+  
+  // For status panel, preserve right-side positioning
+  if (panel.id === 'floatingStatusPanel') {
+    if (state.right !== undefined) {
+      panel.style.right = state.right + 'px';
+      panel.style.left = 'auto';
+    } else if (state.left !== undefined) {
+      // If old state had left positioning, convert to right
+      const viewport = window.innerWidth;
+      const width = state.width || 400;
+      panel.style.right = (viewport - state.left - width) + 'px';
+      panel.style.left = 'auto';
+    }
+  } else {
+    // For other panels, use left positioning
+    if (state.left !== undefined) panel.style.left = state.left + 'px';
+  }
+  
   if (state.top !== undefined) panel.style.top = state.top + 'px';
   if (state.width !== undefined) panel.style.width = state.width + 'px';
   if (state.height !== undefined) panel.style.height = state.height + 'px';
@@ -327,6 +368,41 @@ function applyPanelState(panel, state) {
 // Restore MCP panel state if present
 const savedMcp = loadPanelState('floatingMCPPanel');
 if (savedMcp) applyPanelState(mcpPanel, savedMcp);
+
+// Restore status panel state if present
+const savedStatus = loadPanelState('floatingStatusPanel');
+if (savedStatus) {
+  applyPanelState(statusPanel, savedStatus);
+} else {
+  // Ensure default right positioning if no saved state
+  statusPanel.style.right = '24px';
+  statusPanel.style.left = 'auto';
+  statusPanel.style.top = '80px';
+  statusPanel.style.width = '400px';
+  statusPanel.style.height = '500px';
+}
+
+// DEBUG: Add a global function to reset panel positions
+window.resetPanelPositions = function() {
+  localStorage.removeItem('panelState:floatingStatusPanel');
+  localStorage.removeItem('panelState:floatingMCPPanel');
+  
+  // Reset status panel to right side
+  statusPanel.style.right = '24px';
+  statusPanel.style.left = 'auto';
+  statusPanel.style.top = '80px';
+  statusPanel.style.width = '400px';
+  statusPanel.style.height = '500px';
+  
+  // Reset MCP panel to left side
+  mcpPanel.style.left = '24px';
+  mcpPanel.style.right = 'auto';
+  mcpPanel.style.top = '80px';
+  mcpPanel.style.width = '640px';
+  mcpPanel.style.height = '800px';
+  
+  // positions reset
+};
 
 // Auto-refresh control
 let mcpAutoRefreshTimer = null;
@@ -340,12 +416,15 @@ function stopMcpAutoRefresh() {
 }
 
 // Initialize auto-refresh UI from preferences
-const autoToggle = document.getElementById('mcpAutoRefreshToggle');
-const autoIntervalInput = document.getElementById('mcpAutoRefreshInterval');
+let autoRefreshEnabled = false;
 try {
   const pref = loadPanelState('floatingMCPPanel') || {};
   if (pref.autoRefresh) {
-    if (autoToggle) autoToggle.checked = true;
+    autoRefreshEnabled = true;
+    if (autoToggle) {
+      const track = autoToggle.querySelector('.toggle-track');
+      if (track) track.classList.add('active');
+    }
     const interval = pref.autoRefreshInterval || 30;
     if (autoIntervalInput) autoIntervalInput.value = interval;
     startMcpAutoRefresh(interval);
@@ -353,35 +432,33 @@ try {
 } catch (e) {}
 
 if (autoToggle) {
-  autoToggle.addEventListener('change', () => {
-    const enabled = autoToggle.checked;
+  autoToggle.addEventListener('click', (ev) => {
+    // Prevent event from bubbling to drag handler
+    ev.stopPropagation();
+    
+    autoRefreshEnabled = !autoRefreshEnabled;
+    const track = autoToggle.querySelector('.toggle-track');
+    if (track) track.classList.toggle('active', autoRefreshEnabled);
+    
     const interval = parseInt(autoIntervalInput.value || '30', 10);
     // persist
     const state = loadPanelState('floatingMCPPanel') || {};
-    state.autoRefresh = enabled;
+    state.autoRefresh = autoRefreshEnabled;
     state.autoRefreshInterval = interval;
     savePanelState('floatingMCPPanel', state);
-    if (enabled) startMcpAutoRefresh(interval); else stopMcpAutoRefresh();
+    if (autoRefreshEnabled) startMcpAutoRefresh(interval); else stopMcpAutoRefresh();
   });
+} else {
+  // Auto-refresh toggle missing; leave without throwing
 }
 if (autoIntervalInput) {
   autoIntervalInput.addEventListener('change', () => {
     const interval = parseInt(autoIntervalInput.value || '30', 10);
     const state = loadPanelState('floatingMCPPanel') || {};
     state.autoRefreshInterval = interval; savePanelState('floatingMCPPanel', state);
-    if (autoToggle && autoToggle.checked) startMcpAutoRefresh(interval);
+    if (autoRefreshEnabled) startMcpAutoRefresh(interval);
   });
 }
-
-const statusToggleBtn = document.getElementById('statusToggleBtn');
-const floatingCloseBtn = document.getElementById('floatingCloseBtn');
-const floatingStatusMetrics = document.getElementById('floatingStatusMetrics');
-
-// MCP panel elements
-const mcpToggleBtn = document.getElementById('mcpToggleBtn');
-const floatingMCPCloseBtn = document.getElementById('floatingMCPCloseBtn');
-const floatingMCPMetrics = document.getElementById('floatingMCPMetrics');
-const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
 
 if (mcpRefreshBtn) {
   mcpRefreshBtn.addEventListener('click', async (ev) => {
@@ -401,7 +478,6 @@ if (mcpRefreshBtn) {
 }
 
 // Filter input event listener
-const mcpFilterInput = document.getElementById('mcpFilterInput');
 if (mcpFilterInput) {
   let filterTimeout;
   mcpFilterInput.addEventListener('input', () => {
@@ -413,17 +489,29 @@ if (mcpFilterInput) {
   });
 }
 
-statusToggleBtn.addEventListener('click', () => {
-  const shown = statusPanel.style.display !== 'none';
-  statusPanel.style.display = shown ? 'none' : 'block';
-  statusToggleBtn.setAttribute('aria-expanded', String(!shown));
-  if (!shown) updateStatusMetrics().catch(() => {});
-});
+if (statusToggleBtn) {
+  statusToggleBtn.addEventListener('click', () => {
+    const shown = statusPanel.style.display !== 'none';
+    statusPanel.style.display = shown ? 'none' : 'block';
+    // Force right positioning every time we open it
+    if (!shown) {
+      statusPanel.style.right = '24px';
+      statusPanel.style.left = 'auto';
+      statusPanel.style.top = '80px';
+    }
+    statusToggleBtn.setAttribute('aria-expanded', String(!shown));
+    if (!shown) updateStatusMetrics().catch(() => {});
+  });
+} else {
+  // Status toggle not present in DOM
+}
 
-floatingCloseBtn.addEventListener('click', () => {
-  statusPanel.style.display = 'none';
-  statusToggleBtn.setAttribute('aria-expanded', 'false');
-});
+if (floatingCloseBtn) {
+  floatingCloseBtn.addEventListener('click', () => {
+    statusPanel.style.display = 'none';
+    if (statusToggleBtn) statusToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+}
 
 // MCP panel event listeners
 if (mcpToggleBtn) {
@@ -435,10 +523,12 @@ if (mcpToggleBtn) {
   });
 }
 
-floatingMCPCloseBtn.addEventListener('click', () => {
-  mcpPanel.style.display = 'none';
-  if (mcpToggleBtn) mcpToggleBtn.setAttribute('aria-expanded', 'false');
-});
+if (floatingMCPCloseBtn) {
+  floatingMCPCloseBtn.addEventListener('click', () => {
+    mcpPanel.style.display = 'none';
+    if (mcpToggleBtn) mcpToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+}
 
 // Make panel draggable
 (function makeDraggable(headerId, panel) {
@@ -447,7 +537,11 @@ floatingMCPCloseBtn.addEventListener('click', () => {
   let startX = 0, startY = 0, origX = 0, origY = 0;
   header.addEventListener('pointerdown', (ev) => {
     try {
-      if (ev.target && ev.target.closest && ev.target.closest('#floatingCloseBtn')) return;
+      // If the pointerdown originated on an interactive control, ignore so clicks work
+      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
+      if (interactive) return;
+      // Also ignore custom toggle elements
+      if (ev.target && ev.target.closest && (ev.target.closest('#floatingCloseBtn') || ev.target.closest('.custom-toggle'))) return;
     } catch (e) {}
     isDragging = true;
     startX = ev.clientX; startY = ev.clientY;
@@ -459,11 +553,30 @@ floatingMCPCloseBtn.addEventListener('click', () => {
     if (!isDragging) return;
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
-    panel.style.left = (origX + dx) + 'px';
+    
+    // For status panel, maintain right positioning logic during drag
+    if (panel.id === 'floatingStatusPanel') {
+      const newLeft = origX + dx;
+      panel.style.left = newLeft + 'px';
+      panel.style.right = 'auto';  // Temporarily use left during drag for smoother movement
+    } else {
+      panel.style.left = (origX + dx) + 'px';
+      panel.style.right = 'auto';
+    }
     panel.style.top = (origY + dy) + 'px';
-    panel.style.right = 'auto';
   });
-  window.addEventListener('pointerup', (ev) => { isDragging = false; });
+  window.addEventListener('pointerup', (ev) => { 
+    isDragging = false;
+    
+    // After drag ends, convert status panel back to right positioning
+    if (panel.id === 'floatingStatusPanel') {
+      const rect = panel.getBoundingClientRect();
+      const viewport = window.innerWidth;
+      const rightPos = viewport - rect.right;
+      panel.style.right = rightPos + 'px';
+      panel.style.left = 'auto';
+    }
+  });
 })('floatingStatusHeader', statusPanel);
 
 // Make MCP panel draggable
@@ -473,11 +586,14 @@ floatingMCPCloseBtn.addEventListener('click', () => {
   let startX = 0, startY = 0, origX = 0, origY = 0;
   header.addEventListener('pointerdown', (ev) => {
     try {
+      // Ignore pointerdown if user clicked on interactive controls so they receive the event
+      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
+      if (interactive) return;
       if (ev.target && ev.target.closest && (
         ev.target.closest('#floatingMCPCloseBtn') ||
         ev.target.closest('#mcpRefreshBtn') ||
         ev.target.closest('#mcpFilterInput') ||
-        ev.target.closest('#mcpAutoRefreshToggle') ||
+        ev.target.closest('.custom-toggle') ||
         ev.target.closest('#mcpAutoRefreshInterval')
       )) return;
     } catch (e) {}
@@ -506,8 +622,20 @@ function attachDragPersist(headerId, panel, stateKey) {
     try {
       const rect = panel.getBoundingClientRect();
       const state = loadPanelState(stateKey) || {};
-      state.left = Math.round(rect.left);
-      state.top = Math.round(rect.top);
+      
+      // For status panel, save right position instead of left
+      if (panel.id === 'floatingStatusPanel') {
+        const viewport = window.innerWidth;
+        state.right = Math.round(viewport - rect.right);
+        state.top = Math.round(rect.top);
+        // Remove old left positioning if it exists
+        delete state.left;
+      } else {
+        // For other panels, use left positioning
+        state.left = Math.round(rect.left);
+        state.top = Math.round(rect.top);
+      }
+      
       savePanelState(stateKey, state);
     } catch (e) {}
   });
@@ -859,6 +987,14 @@ function makeResizable(panel) {
       const state = loadPanelState(panel.id) || {};
       state.width = Math.round(rect.width);
       state.height = Math.round(rect.height);
+      
+      // For status panel, also update right position since resizing can affect it
+      if (panel.id === 'floatingStatusPanel') {
+        const viewport = window.innerWidth;
+        state.right = Math.round(viewport - rect.right);
+        delete state.left;  // Remove any old left positioning
+      }
+      
       savePanelState(panel.id, state);
     } catch (e) {}
   }
