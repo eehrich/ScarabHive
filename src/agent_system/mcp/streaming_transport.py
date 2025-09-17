@@ -253,7 +253,7 @@ class HTTPStreamingTransport(MCPTransport):
 
                         # If no session in headers, we need to maintain session state differently
                         if not self.session_id:
-                            logger.warning("No session ID found in headers")
+                            logger.debug("No session ID found in headers, will use connection-based session")
                 else:
                     response_data = await response.json()
 
