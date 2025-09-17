@@ -5,6 +5,7 @@ __pycache__/
 .backups/
 dist/
 build/
+external/
 *.egg-info/
 .DS_Store
 logs/
