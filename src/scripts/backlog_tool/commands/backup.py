@@ -13,6 +13,10 @@ def cmd_backup(args: argparse.Namespace) -> int:
     if not os.path.exists(path):
         print(f"ERROR: backlog file not found: {path}", file=sys.stderr)
         return 2
+    
+    # Get backup configuration from args (set by config loading)
+    backup_dir = getattr(args, "backup_dir", None)
+    
     if getattr(args, "prune", False):
         # pruning behavior
         keep = getattr(args, "keep", None)
@@ -21,7 +25,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
             keep = getattr(args, "max_backups", 10)
         older = getattr(args, "older_than", None)
         if getattr(args, "dry_run", False):
-            removed = bl.prune_backups(path, keep=keep, older_than_days=older)
+            removed = bl.prune_backups(path, keep=keep, older_than_days=older, backup_dir=backup_dir)
             print("Dry-run: backups that would be removed:")
             for r in removed:
                 print(r)
@@ -31,7 +35,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
             return 3
 
         print("Analyzing backups to prune...")
-        removed = bl.prune_backups(path, keep=keep, older_than_days=older)
+        removed = bl.prune_backups(path, keep=keep, older_than_days=older, backup_dir=backup_dir)
 
         if removed:
             print(f"Pruning {len(removed)} backup files...")
@@ -50,6 +54,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
 
         return 0
 
-    bak = bl.make_backup(path)
+    max_backups = getattr(args, "max_backups", None)
+    bak = bl.make_backup(path, backup_dir, max_backups)
     print(f"Created backup: {bak}")
     return 0

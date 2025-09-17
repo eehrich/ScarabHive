@@ -147,7 +147,9 @@ def _cmd_add_task_bulk(args: argparse.Namespace) -> int:
             print(f"  - {error}", file=sys.stderr)
 
     if getattr(args, "write", False) and created_tasks:
-        bak = bl.make_backup(path)
+        backup_dir = getattr(args, "backup_dir", None)
+        max_backups = getattr(args, "max_backups", None)
+        bak = bl.make_backup(path, backup_dir, max_backups)
         bl.safe_write(path, bl.build_markdown(backlog))
         print(f"\nWrote changes to {path}; backup: {bak}")
     elif not getattr(args, "write", False):
@@ -225,7 +227,9 @@ def cmd_add_task(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"ERROR: {e}. Check task title and id format.", file=sys.stderr)
             return 2
-        bak = bl.make_backup(path)
+        backup_dir = getattr(args, "backup_dir", None)
+        max_backups = getattr(args, "max_backups", None)
+        bak = bl.make_backup(path, backup_dir, max_backups)
         bl.safe_write(path, bl.build_markdown(backlog))
         print(f"Created task {t.id} under epic {epic_id}; backup: {bak}")
     return 0
@@ -317,7 +321,9 @@ def _cmd_add_epic_bulk(args: argparse.Namespace) -> int:
             print(f"  - {error}", file=sys.stderr)
 
     if getattr(args, "write", False) and created_epics:
-        bak = bl.make_backup(path)
+        backup_dir = getattr(args, "backup_dir", None)
+        max_backups = getattr(args, "max_backups", None)
+        bak = bl.make_backup(path, backup_dir, max_backups)
         bl.safe_write(path, bl.build_markdown(backlog))
         print(f"\nWrote changes to {path}; backup: {bak}")
     elif not getattr(args, "write", False):
@@ -381,7 +387,9 @@ def cmd_add_epic(args: argparse.Namespace) -> int:
             except ValueError as ve:
                 print(f"ERROR: {ve}", file=sys.stderr)
                 return 2
-            bak = bl.make_backup(path)
+            backup_dir = getattr(args, "backup_dir", None)
+            max_backups = getattr(args, "max_backups", None)
+            bak = bl.make_backup(path, backup_dir, max_backups)
             bl.safe_write(path, bl.build_markdown(backlog_obj))
             print(f"Created epic {e.id}; backup: {bak}")
         else:
@@ -394,7 +402,9 @@ def cmd_add_epic(args: argparse.Namespace) -> int:
             except ValueError as ve:
                 print(f"ERROR: {ve}", file=sys.stderr)
                 return 2
-            bak = bl.make_backup(path)
+            backup_dir = getattr(args, "backup_dir", None)
+            max_backups = getattr(args, "max_backups", None)
+            bak = bl.make_backup(path, backup_dir, max_backups)
             bl.safe_write(path, bl.build_markdown(backlog))
             print(f"Created epic {e.id}; backup: {bak}")
     return 0

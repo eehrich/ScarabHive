@@ -767,11 +767,13 @@ def safe_write(path: str, text: str) -> None:
         raise IOError(f"Failed to write file {path}: {e}") from e
 
 
-def make_backup(path: str) -> str:
-    """Create a timestamped backup of `path` under a .backups directory.
+def make_backup(path: str, backup_dir: str = None, max_backups: int = None) -> str:
+    """Create a timestamped backup of `path` under a backup directory.
 
     Args:
         path: File path to backup
+        backup_dir: Custom backup directory name (default: '.backups')
+        max_backups: Maximum number of backups to keep (triggers pruning if specified)
 
     Returns:
         Path to the created backup file
@@ -789,7 +791,8 @@ def make_backup(path: str) -> str:
     try:
         p = os.path.abspath(path)
         d = os.path.dirname(p)
-        backups_dir = os.path.join(d, '.backups')
+        backup_dir_name = backup_dir or '.backups'
+        backups_dir = os.path.join(d, backup_dir_name)
         os.makedirs(backups_dir, exist_ok=True)
 
         ts = time.strftime('%Y%m%d_%H%M%S')
@@ -799,6 +802,14 @@ def make_backup(path: str) -> str:
 
         shutil.copy2(p, dest)
         logger.info(f"Created backup: {dest}")
+        
+        # Auto-prune old backups if max_backups is specified
+        if max_backups is not None:
+            try:
+                prune_backups(path, keep=max_backups, backup_dir=backup_dir)
+            except Exception as e:
+                logger.warning(f"Failed to prune old backups: {e}")
+        
         return dest
 
     except Exception as e:
@@ -806,10 +817,20 @@ def make_backup(path: str) -> str:
         raise IOError(f"Failed to create backup: {e}") from e
 
 
-def list_backups(path: str) -> list[str]:
+def list_backups(path: str, backup_dir: str = None) -> list[str]:
+    """List all backup files for the given path.
+
+    Args:
+        path: File path to list backups for
+        backup_dir: Custom backup directory name (default: '.backups')
+
+    Returns:
+        List of backup file paths, sorted by modification time (oldest first)
+    """
     p = os.path.abspath(path)
     d = os.path.dirname(p)
-    backups_dir = os.path.join(d, '.backups')
+    backup_dir_name = backup_dir or '.backups'
+    backups_dir = os.path.join(d, backup_dir_name)
     if not os.path.isdir(backups_dir):
         return []
     files = [os.path.join(backups_dir, f) for f in os.listdir(backups_dir)
@@ -829,12 +850,19 @@ def restore_backup(path: str, backup_path: str) -> None:
     os.replace(tmp, path)
 
 
-def prune_backups(path: str, keep: Optional[int] = None, older_than_days: Optional[int] = None) -> List[str]:
+def prune_backups(path: str, keep: Optional[int] = None, older_than_days: Optional[int] = None, backup_dir: str = None) -> List[str]:
     """Prune backups for `path` by keeping the newest `keep` files and/or removing files older than `older_than_days`.
 
-    Returns a list of removed file paths.
+    Args:
+        path: File path to prune backups for
+        keep: Number of newest backups to keep (optional)
+        older_than_days: Remove backups older than this many days (optional) 
+        backup_dir: Custom backup directory name (default: '.backups')
+
+    Returns:
+        List of removed file paths
     """
-    files = list_backups(path)
+    files = list_backups(path, backup_dir)
     if not files:
         return []
 
