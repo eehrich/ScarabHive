@@ -22,7 +22,7 @@ from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics, publish_status
-from ..mcp.integration import initialize_mcp, shutdown_mcp, get_mcp_integration
+from ..mcp.integration import initialize_mcp, shutdown_mcp
 
 
 # Global registry for MCP endpoints access
@@ -62,7 +62,7 @@ static_path = Path(__file__).parents[3] / "static"
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
-    
+
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
     config = load_config(cfg_path)
 
@@ -140,7 +140,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Determine logfile for API: prefer explicit per-role setting if provided.
     log_path = config.logging.file_api or _role_logfile(config.logging.file or "logs/agent.log", "api")
-    log_file = setup_logging(config.logging.enabled, config.logging.level, log_path)
+
+    # Allow overriding the configured log level via environment variable
+    # (useful for temporary runs or CI). If AGENT_LOG_LEVEL is set, prefer it
+    # over the value in config.logging.level. We still honor config.logging.enabled.
+    env_level = os.getenv("AGENT_LOG_LEVEL")
+    level_to_use = env_level if env_level else config.logging.level
+    # If possible, mutate the config object so other code sees the override
+    try:
+        if env_level and hasattr(config, "logging") and hasattr(config.logging, "level"):
+            config.logging.level = env_level
+    except Exception:
+        # Non-fatal if we can't assign back into the config model
+        pass
+
+    log_file = setup_logging(config.logging.enabled, level_to_use, log_path)
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
 
@@ -155,7 +169,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
     agent = Agent("api_agent", config, registry)
-    
+
     # Store registry and config globally for MCP endpoint access
     global _app_registry, _app_config
     _app_registry = registry
@@ -350,7 +364,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Check if a server is actually responding with real-time connectivity test"""
         import socket
         from urllib.parse import urlparse
-        
+
         try:
             if server_info.get("type") == "plugin":
                 # For plugins, check if they're in the active registry and functioning
@@ -365,25 +379,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         except Exception:
                             return False
                 return False
-                
+
             elif server_info.get("type") == "external":
                 # For external servers, do actual connectivity check
                 url = server_info.get("url", "")
                 if not url:
                     return False
-                    
+
                 # Parse URL to get host and port
                 parsed = urlparse(url)
                 host = parsed.hostname or "127.0.0.1"
                 port = parsed.port
-                
+
                 if not port:
                     # Default ports based on scheme
                     if parsed.scheme == "https":
                         port = 443
                     else:
                         port = 80
-                
+
                 # Try socket connection with short timeout
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(2)  # 2 second timeout
@@ -392,7 +406,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     return result == 0
                 finally:
                     sock.close()
-                    
+
         except Exception as e:
             # Use logging if available, otherwise ignore
             try:
@@ -401,7 +415,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             except Exception:
                 pass
             return False
-        
+
         return False
 
     @app.get("/mcp/status")
@@ -410,13 +424,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             # Use the global MCP integration instance that was initialized during startup
             global _mcp_integration
-            
+
             # Use the registry approach for plugins
             if not _app_registry:
                 return {"error": "Registry not initialized"}
-            
+
             servers = []
-            
+
             # Add plugin servers from registry
             for server_id, server_obj in _app_registry._servers.items():
                 try:
@@ -441,14 +455,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         except Exception:
                             # If schema loading fails, treat as no tools
                             pass
-                    
+
                     # Check connection using real-time verification
                     server_info = {
                         "id": server_id,
                         "type": "plugin"
                     }
                     connected = _check_server_connection(server_info)
-                    
+
                     servers.append({
                         "id": server_id,
                         "name": server_id.replace('_', ' ').title(),
@@ -469,34 +483,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         "tool_count": 0,
                         "error": str(e)
                     })
-            
+
             # Try to get external servers from the global MCP integration instance
             try:
                 if _mcp_integration and _mcp_integration.initialized:
                     # Get external servers from client manager (these are connected ones)
                     connected_servers = _mcp_integration.client_manager.list_clients()
-                    
+
                     # Get originally configured external servers (including failed connections)
                     configured_servers = getattr(_mcp_integration, 'configured_external_servers', {})
-                    
+
                     logger = logging.getLogger(__name__)
                     logger.info(f"Connected external servers: {connected_servers}")
                     logger.info(f"Configured external servers: {list(configured_servers.keys())}")
-                    
+
                     # Also get any that have tools (for servers that might be configured elsewhere)
                     all_tools = await _mcp_integration.list_all_tools()
                     servers_with_tools = all_tools.get("external_servers", {})
-                    
+
                     # Combine connected servers with configured servers
                     all_external_servers = set(connected_servers) | set(configured_servers.keys())
-                    
+
                     logger.info(f"All external servers to process: {all_external_servers}")
-                    
+
                     for server_name in all_external_servers:
                         # Get server config for info from stored configuration
                         description = server_name.replace('_', ' ').title()
                         url = ""
-                        
+
                         # Try to get server config from stored configuration
                         try:
                             server_config = configured_servers.get(server_name, {})
@@ -507,7 +521,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                     url = server_config['url']
                         except Exception:
                             pass
-                        
+
                         # Get tools (may be empty if server is down)
                         tools = servers_with_tools.get(server_name, [])
                         # Filter out blocked tools for tool_names, but keep blocked info for detailed_tools
@@ -518,7 +532,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             'parameters': tool.get("parameters", {}),
                             'blocked': tool.get("blocked", False)
                         } for tool in tools]
-                        
+
                         # Do real-time connection check
                         server_info = {
                             "id": server_name,
@@ -537,7 +551,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         else:
                             # Either not reachable or no tools available - mark disconnected
                             connected = False
-                        
+
                         servers.append({
                             "id": server_name,
                             "name": description,
@@ -555,11 +569,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 import traceback
                 logger.error(f"MCP status traceback: {traceback.format_exc()}")
                 pass
-            
+
             # Separate plugins and external servers for expected response format
             plugins = {}
             external_servers = {}
-            
+
             for server in servers:
                 server_data = {
                     "id": server["id"],
@@ -573,20 +587,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     server_data["url"] = server["url"]
                 if "error" in server:
                     server_data["error"] = server["error"]
-                    
+
                 if server["type"] == "plugin":
                     plugins[server["id"]] = server_data
                 else:
                     external_servers[server["id"]] = server_data
-            
+
             return {
                 "plugins": plugins,
                 "external_servers": external_servers,
-                "servers": servers,  # Keep original for backward compatibility 
+                "servers": servers,  # Keep original for backward compatibility
                 "total_servers": len(servers),
                 "total_tools": sum(s["tool_count"] for s in servers)
             }
-            
+
         except Exception as e:
             import traceback
             logger = logging.getLogger(__name__)
@@ -624,8 +638,10 @@ def run() -> None:
     port_env = os.getenv("PORT")
     port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
 
-    # Configure log level
-    uvicorn_log_level = config.logging.level.lower() if config.logging.enabled else "info"
+    # Configure log level. Allow AGENT_LOG_LEVEL to override for the running
+    # uvicorn process as well so console logging can be forced without editing
+    # `agent.yaml`.
+    uvicorn_log_level = (os.getenv("AGENT_LOG_LEVEL") or (config.logging.level if config.logging.enabled else "info")).lower()
 
     # Run the server - uvicorn handles SIGINT/SIGTERM gracefully by default
     logger = logging.getLogger(__name__)
