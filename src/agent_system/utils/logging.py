@@ -177,7 +177,6 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     # Configure specific loggers to inherit from root but with appropriate levels
     loggers_to_configure = [
         "uvicorn",
-        "uvicorn.access", 
         "uvicorn.error",
         "httpcore",
         "httpx",
@@ -189,5 +188,11 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
         logger.setLevel(lvl)
         # Don't add handlers, they will inherit from root
         logger.propagate = True
+
+    # Special handling for uvicorn.access to prevent duplicate logs
+    # Uvicorn will create its own handlers, so we disable propagation
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.setLevel(lvl)
+    access_logger.propagate = False  # Prevent propagation to root to avoid duplicates
 
     return file_path
