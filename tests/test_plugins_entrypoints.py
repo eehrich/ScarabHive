@@ -13,7 +13,7 @@ class DummyEP:
         return self._load
 
 
-def test_discover_entrypoint_plugins(monkeypatch):
+def test_plugins_discover_entrypoint_plugins(monkeypatch):
     called = {}
 
     def factory(cfg=None):

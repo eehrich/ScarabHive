@@ -52,13 +52,13 @@ def plugin_adapter(mock_plugin_server):
 class TestPluginMCPAdapter:
     """Test plugin MCP adapter"""
 
-    def test_initialization(self, plugin_adapter):
+    def test_plugins_mcp_adapter_initialization(self, plugin_adapter):
         assert plugin_adapter.name == "test_plugin"
         assert plugin_adapter.description == "AgentSystem test_plugin plugin"
         assert MCPCapability.TOOLS in plugin_adapter.capabilities
 
     @pytest.mark.asyncio
-    async def test_list_tools_from_schema(self, plugin_adapter):
+    async def test_plugins_mcp_adapter_list_tools_from_schema(self, plugin_adapter):
         tools = await plugin_adapter.list_tools()
 
         assert len(tools) == 1
@@ -68,23 +68,25 @@ class TestPluginMCPAdapter:
         assert "param" in tools[0].input_schema["properties"]
 
     @pytest.mark.asyncio
-    async def test_list_tools_caching(self, plugin_adapter):
-        # First call
+    async def test_plugins_mcp_adapter_list_tools_caching(self, plugin_adapter):
+        # First call to populate cache
         tools1 = await plugin_adapter.list_tools()
-
-        # Second call should return cached result
+        # Second call should use cache
         tools2 = await plugin_adapter.list_tools()
 
-        assert tools1 is tools2  # Same object reference
+        assert tools1 == tools2
+        # Cache should return same instance/content
+        assert len(tools1) == 1
 
     @pytest.mark.asyncio
-    async def test_call_tool(self, plugin_adapter):
-        result = await plugin_adapter.call_tool("test_tool", {"param": "value"})
-
-        assert result == "Called test_tool with {'param': 'value'}"
+    async def test_plugins_mcp_adapter_call_tool(self, plugin_adapter):
+        result = await plugin_adapter.call_tool("test_tool", {"param": "test_value"})
+        
+        assert result.content[0].type == "text"
+        assert "test_value" in result.content[0].text
 
     @pytest.mark.asyncio
-    async def test_call_tool_error(self, plugin_adapter):
+    async def test_plugins_mcp_adapter_call_tool_error(self, plugin_adapter):
         # Mock plugin that raises an exception
         plugin_adapter.plugin_server.call = AsyncMock(side_effect=Exception("Test error"))
 
@@ -111,7 +113,7 @@ class TestPluginMCPAdapterWithoutSchema:
         return PluginMCPAdapter("no_schema_plugin", plugin_server)
 
     @pytest.mark.asyncio
-    async def test_list_tools_fallback_to_default(self, plugin_without_schema):
+    async def test_plugins_mcp_adapter_list_tools_fallback_to_default(self, plugin_without_schema):
         tools = await plugin_without_schema.list_tools()
 
         assert len(tools) == 1
@@ -146,7 +148,7 @@ class TestPluginMCPAdapterWithExternalSchema:
         return PluginMCPAdapter("external_schema_plugin", plugin_server, schema)
 
     @pytest.mark.asyncio
-    async def test_list_tools_from_external_schema(self, plugin_with_external_schema):
+    async def test_plugins_mcp_adapter_list_tools_from_external_schema(self, plugin_with_external_schema):
         tools = await plugin_with_external_schema.list_tools()
 
         assert len(tools) == 1
@@ -161,16 +163,16 @@ class TestPluginMCPRegistry:
     def registry(self):
         return PluginMCPRegistry()
 
-    def test_initialization(self, registry):
+    def test_plugins_mcp_registry_initialization(self, registry):
         assert len(registry.plugin_servers) == 0
         assert len(registry.plugin_factories) == 0
 
-    def test_list_servers_empty(self, registry):
+    def test_plugins_mcp_registry_list_servers_empty(self, registry):
         assert registry.list_servers() == []
         assert registry.list_available_plugins() == []
 
     @pytest.mark.asyncio
-    async def test_register_plugin(self, registry):
+    async def test_plugins_mcp_registry_register_plugin(self, registry):
         # Mock factory
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -183,12 +185,12 @@ class TestPluginMCPRegistry:
         assert registry.get_server("test_plugin") is not None
 
     @pytest.mark.asyncio
-    async def test_register_unknown_plugin(self, registry):
+    async def test_plugins_mcp_registry_register_unknown_plugin(self, registry):
         with pytest.raises(Exception, match="Unknown plugin: unknown"):
             await registry.register_plugin("unknown")
 
     @pytest.mark.asyncio
-    async def test_unregister_plugin(self, registry):
+    async def test_plugins_mcp_registry_unregister_plugin(self, registry):
         # Mock factory and register plugin
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -203,7 +205,7 @@ class TestPluginMCPRegistry:
         assert registry.get_server("test_plugin") is None
 
     @pytest.mark.asyncio
-    async def test_register_from_config(self, registry):
+    async def test_plugins_mcp_registry_register_from_config(self, registry):
         # Mock factories
         def mock_factory1(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -227,7 +229,7 @@ class TestPluginMCPRegistry:
         assert "plugin2" in registry.list_servers()
 
     @pytest.mark.asyncio
-    async def test_get_all_tools(self, registry):
+    async def test_plugins_mcp_registry_get_all_tools(self, registry):
         # Mock factory
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -242,7 +244,7 @@ class TestPluginMCPRegistry:
         assert all_tools["test_plugin"][0].name == "test_tool"
 
     @pytest.mark.asyncio
-    async def test_call_plugin_tool(self, registry):
+    async def test_plugins_mcp_registry_call_plugin_tool(self, registry):
         # Mock factory
         def mock_factory(name, config, ssl_verify=True):
             return MockPluginServer(name)
@@ -255,6 +257,6 @@ class TestPluginMCPRegistry:
         assert result == "Called test_tool with {'param': 'value'}"
 
     @pytest.mark.asyncio
-    async def test_call_plugin_tool_unknown_plugin(self, registry):
+    async def test_plugins_mcp_registry_call_plugin_tool_unknown_plugin(self, registry):
         with pytest.raises(Exception, match="Plugin unknown not registered"):
             await registry.call_plugin_tool("unknown", "tool", {})

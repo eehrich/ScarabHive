@@ -7,7 +7,7 @@ from pathlib import Path
 import importlib.util
 import pytest
 
-from agent_system.mcp import plugins
+from agent_system.plugins import discovery as plugins
 
 logger = logging.getLogger(__name__)
 

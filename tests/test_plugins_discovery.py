@@ -6,7 +6,7 @@ from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.config.models import AgentConfig
 
 
-def test_discover_plugins_and_bootstrap(tmp_path, monkeypatch):
+def test_plugins_discovery_and_bootstrap(tmp_path, monkeypatch):
     # Create a fake plugin file
     plugin_code = textwrap.dedent('''
     from agent_system.mcp.base import MCPServer
@@ -47,7 +47,7 @@ def test_discover_plugins_and_bootstrap(tmp_path, monkeypatch):
     assert isinstance(srv, MCPServer)
 
 
-def test_bootstrap_respects_plugin_dirs(tmp_path, monkeypatch):
+def test_plugins_discovery_respects_plugin_dirs(tmp_path, monkeypatch):
     # create a plugins dir at a custom path
     custom_dir = tmp_path / "my_plugins"
     custom_dir.mkdir()

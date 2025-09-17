@@ -24,7 +24,7 @@ class FakeDist:
 
 
 @pytest.mark.asyncio
-async def test_integration_discover_entrypoint_and_filesystem(monkeypatch, tmp_path):
+async def test_plugins_integration_discover_entrypoint_and_filesystem(monkeypatch, tmp_path):
     # filesystem plugin exists in project plugins/ (or src/plugins/) - ensure discover_all_plugins sees it
     default_dir = Path("plugins")
     if not default_dir.exists():

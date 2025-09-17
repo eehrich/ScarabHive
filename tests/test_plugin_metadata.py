@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_system.mcp import plugins
+from agent_system.plugins import discovery as plugins
 
 
 @pytest.mark.asyncio
