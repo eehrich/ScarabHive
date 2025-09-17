@@ -110,22 +110,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Configure static files with cache control based on configuration
     if static_path.exists():
-            static_files = StaticFiles(directory=str(static_path))
-            app.mount("/static", static_files, name="static")
+        static_files = StaticFiles(directory=str(static_path))
+        app.mount("/static", static_files, name="static")
 
-            # middleware to add no-cache headers for static files when configured
-            if config.network.disable_cache:
-                @app.middleware("http")
-                async def _no_cache_static_middleware(request: Request, call_next: Callable):
-                    # only intercept static paths
-                    if request.url.path.startswith("/static"):
-                        response = await call_next(request)
-                        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                        response.headers["Pragma"] = "no-cache"
-                        response.headers["Expires"] = "0"
-                        return response
+        # middleware to add no-cache headers for static files when configured
+        if config.network.disable_cache:
+            @app.middleware("http")
+            async def _no_cache_static_middleware(request: Request, call_next: Callable):
+                # only intercept static paths
+                if request.url.path.startswith("/static"):
+                    response = await call_next(request)
+                    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    response.headers["Pragma"] = "no-cache"
+                    response.headers["Expires"] = "0"
+                    return response
 
-                    return await call_next(request)
+                return await call_next(request)
 
     # Initialize logging. Use a role-specific logfile so the API server does
     # not write into the same file as the CLI (e.g., create `logs/agent-api.log`).
@@ -347,15 +347,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
-
-
-# Compatibility shim: expose a simple getter so tests can patch this module
-# function to supply a mock MCPIntegration. It delegates to the real
-# integration module when available.
-def get_mcp_integration(app: Optional[FastAPI] = None):
-    from ..mcp.integration import get_mcp_integration as _get
-
-    return _get(app)
 
     @app.post("/status/publish-test")
     async def status_publish_test(server: str = Query(..., description="Server name for test event"), message: str = Query("Test event", description="Message text")):
@@ -656,6 +647,14 @@ def get_mcp_integration(app: Optional[FastAPI] = None):
             raise HTTPException(status_code=404, detail="Favicon not found")
 
     return app
+
+
+# Compatibility shim: expose a simple getter so tests can patch this module
+# function to supply a mock MCPIntegration. It delegates to the real
+# integration module when available.
+def get_mcp_integration(app: Optional[FastAPI] = None):
+    from ..mcp.integration import get_mcp_integration as _get
+    return _get(app)
 
 
 def run() -> None:
