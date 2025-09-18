@@ -88,96 +88,43 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Response Content */
-.response-content {
-  margin-top: 12px;
-}
-
-/* Response Header */
-.response-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 0;
-  padding: 8px 12px;
-  background: #1a2332;
-  border: 1px solid #334155;
-  border-radius: 8px 8px 0 0;
-  font-weight: 500;
-}
-
-.response-header.error {
-  background: #2d1b1b;
-  border-color: #dc2626;
-  color: #fca5a5;
-}
-
-.response-icon {
-  font-size: 16px;
-}
-
-.response-label {
-  font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: #cbd5e1;
-}
-
-/* Response Text */
-.response-text {
-  line-height: 1.6;
-  color: #e6edf3;
-  font-size: 15px;
-  padding: 12px;
-  background: #1a2332;
-  border-radius: 0 0 8px 8px;
-  border: 1px solid #334155;
-  border-top: none;
-}
-
-.response-header.error + .response-text {
-  background: #2d1b1b;
-  border-color: #dc2626;
-  color: #fca5a5;
-}
-
-/* Typography in Responses */
-.response-text h1,
-.response-text h2,
-.response-text h3 {
+/* Typography in Response Content */
+.container-section .response-text h1,
+.container-section .response-text h2,
+.container-section .response-text h3 {
   margin: 16px 0 8px 0;
   color: #f0f6fc;
   font-weight: 600;
 }
 
-.response-text h1 {
+.container-section .response-text h1 {
   font-size: 1.5em;
   border-bottom: 1px solid #21262d;
   padding-bottom: 8px;
 }
 
-.response-text h2 {
+.container-section .response-text h2 {
   font-size: 1.3em;
   border-bottom: 1px solid #21262d;
   padding-bottom: 6px;
 }
 
-.response-text h3 {
+.container-section .response-text h3 {
   font-size: 1.1em;
   color: #e6edf3;
 }
 
-.response-text strong {
+.container-section .response-text strong {
   color: #ffd700;
   font-weight: 600;
 }
 
-.response-text em {
+.container-section .response-text em {
   color: #87ceeb;
   font-style: italic;
 }
 
-.response-text code {
+.container-section .response-text code {
   background: #21262d;
   color: #f85149;
   padding: 2px 4px;
@@ -185,7 +132,7 @@ button:disabled {
   font-size: 0.9em;
 }
 
-.response-text pre {
+.container-section .response-text pre {
   background: #161b22;
   border: 1px solid #21262d;
   border-radius: 6px;
@@ -194,7 +141,7 @@ button:disabled {
   overflow-x: auto;
 }
 
-.response-text pre code {
+.container-section .response-text pre code {
   background: none;
   color: #e6edf3;
   padding: 0;
@@ -202,19 +149,41 @@ button:disabled {
   font-size: inherit;
 }
 
-.response-text ul,
-.response-text ol {
+.container-section .response-text ul,
+.container-section .response-text ol {
   margin: 8px 0;
   padding-left: 20px;
 }
 
-.response-text li {
+.container-section .response-text li {
   margin: 4px 0;
   color: #e6edf3;
 }
 
+.container-section .response-text p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.container-section .response-text p:first-child {
+  margin-top: 0;
+}
+
+.container-section .response-text p:last-child {
+  margin-bottom: 0;
+}
+
+.container-section .response-text a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.container-section .response-text a:hover {
+  text-decoration: underline;
+}
+
 /* Markdown Tables */
-.response-text .markdown-table {
+.container-section .response-text .markdown-table {
   border-collapse: collapse;
   margin: 12px 0;
   width: 100%;
@@ -224,7 +193,7 @@ button:disabled {
   overflow: hidden;
 }
 
-.response-text .markdown-table th {
+.container-section .response-text .markdown-table th {
   background: #21262d;
   color: #f0f6fc;
   font-weight: 600;
@@ -233,31 +202,18 @@ button:disabled {
   border-bottom: 1px solid #30363d;
 }
 
-.response-text .markdown-table td {
+.container-section .response-text .markdown-table td {
   padding: 8px 12px;
   border-bottom: 1px solid #21262d;
   color: #e6edf3;
 }
 
-.response-text .markdown-table tr:last-child td {
+.container-section .response-text .markdown-table tr:last-child td {
   border-bottom: none;
 }
 
-.response-text .markdown-table tr:nth-child(even) {
+.container-section .response-text .markdown-table tr:nth-child(even) {
   background: #161b22;
-}
-
-.response-text p {
-  margin: 8px 0;
-  line-height: 1.5;
-}
-
-.response-text p:first-child {
-  margin-top: 0;
-}
-
-.response-text p:last-child {
-  margin-bottom: 0;
 }
 
 /* Progress View */
@@ -437,45 +393,125 @@ button:disabled {
   text-decoration: underline;
 }
 
-/* Thinking Box */
-details[id="thinkingBox"] {
+/* Unified Container Design */
+.container-section {
   margin: 8px 0;
-  background: #0d1117;
-  border: 1px solid #21262d;
+  background: #0f172a;
+  border: 1px solid #1f2937;
   border-radius: 8px;
   overflow: hidden;
 }
 
-details[id="thinkingBox"] summary {
-  padding: 10px 14px;
-  background: linear-gradient(90deg, #161b22, #1c2128);
-  cursor: pointer;
-  user-select: none;
-  font-weight: 500;
-  color: #58a6ff;
-  border-bottom: 1px solid #21262d;
+.toggle-arrow {
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  color: #94a3b8; /* neutral arrow color */
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.type-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 18px;
+  margin-left: 6px;
+  margin-right: 6px;
+  color: #cbd5e1;
+  flex-shrink: 0;
+}
+
+.type-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+/* Ensure SVG colors are preserved from the original definitions */
+.type-icon svg path,
+.type-icon svg rect,
+.type-icon svg circle {
+  stroke: attr(stroke);
+  fill: attr(fill);
+}
+
+/* Keep the toggle arrow neutral (not blue) in ALL states */
+.toggle-arrow,
+.container-header .toggle-arrow,
+.container-header:hover .toggle-arrow,
+.container-header:active .toggle-arrow,
+.container-header:focus .toggle-arrow,
+.container-section .toggle-arrow {
+  color: #94a3b8 !important;
+  background: none !important;
+}
+
+/* Extremely specific override to prevent any blue inheritance */
+.msg .container-section .container-header .toggle-arrow,
+.assistant .container-section .container-header .toggle-arrow,
+div .container-section .container-header .toggle-arrow {
+  color: #94a3b8 !important;
+}
+
+/* Additional hover styles for type-icon but not for toggle-arrow */
+.container-header:hover .type-icon {
+  color: #cbd5e1;
+}
+.container-header {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px 12px;
+  background: #1a2332;
+  border-bottom: 1px solid #334155;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
 }
 
-details[id="thinkingBox"] summary:hover {
-  background: linear-gradient(90deg, #1c2128, #21262d);
+.container-header:hover {
+  background: #1e293b;
+  border-bottom-color: #475569;
 }
 
-details[id="thinkingBox"] summary::before {
-  content: "🤔";
-  font-size: 16px;
+.container-header:active {
+  background: #0f172a;
+  transform: translateY(1px);
 }
 
-details[id="thinkingBox"][open] summary::before {
-  content: "💭";
+.container-label {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #cbd5e1;
+  font-weight: 500;
+  transition: color 0.2s ease;
 }
 
-details[id="thinkingBox"] pre {
+.container-header:hover .container-label {
+  color: #e2e8f0;
+}
+
+.container-body {
+  background: #1a2332;
+}
+
+/* Make thinking background same as response body */
+.container-section [data-toggle="thinking"] + .container-body,
+.container-section [data-toggle="thinking"] ~ .container-body {
+  background: #1a2332;
+}
+
+/* Thinking Container Specific */
+.container-section .container-body pre {
   margin: 0;
   padding: 16px;
-  background: #0d1117;
+  background: #1a2332;
   border: none;
   border-radius: 0;
   font-family: 'SF Mono', Monaco, 'Inconsolata', 'Roboto Mono', 'Source Code Pro', monospace;
@@ -488,49 +524,48 @@ details[id="thinkingBox"] pre {
   overflow-y: auto;
 }
 
-/* Thinking content formatting with custom scrollbar */
-details[id="thinkingBox"] pre::-webkit-scrollbar {
+/* Status Container Specific */
+.container-section .container-body {
+  padding: 4px;
+}
+
+/* Status container should not have max-height restriction for status/response */
+.container-section[data-toggle="status"] .container-body,
+.container-section[data-toggle="response"] .container-body {
+  max-height: none;
+  overflow: visible;
+}
+
+/* Response Container Specific */
+.container-section .response-text {
+  line-height: 1.6;
+  color: #e6edf3;
+  font-size: 15px;
+  padding: 12px;
+  background: #1a2332;
+}
+
+.container-section .response-text.error {
+  background: #2d1b1b;
+  color: #fca5a5;
+}
+
+/* Custom scrollbar for thinking content */
+.container-section .container-body pre::-webkit-scrollbar {
   width: 8px;
 }
 
-details[id="thinkingBox"] pre::-webkit-scrollbar-track {
+.container-section .container-body pre::-webkit-scrollbar-track {
   background: #161b22;
 }
 
-details[id="thinkingBox"] pre::-webkit-scrollbar-thumb {
+.container-section .container-body pre::-webkit-scrollbar-thumb {
   background: #30363d;
   border-radius: 4px;
 }
 
-details[id="thinkingBox"] pre::-webkit-scrollbar-thumb:hover {
+.container-section .container-body pre::-webkit-scrollbar-thumb:hover {
   background: #484f58;
-}
-
-/* Status Container */
-.status-container {
-  margin: 8px 0;
-  background: #0f172a;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.status-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: #1a2332;
-  border-bottom: 1px solid #334155;
-  font-size: 13px;
-  font-weight: 500;
-  color: #cbd5e1;
-}
-
-.status-body {
-  max-height: 200px;
-  overflow-y: auto;
-  padding: 4px;
 }
 
 /* Operation Progress (VS Code-style) */

@@ -1,8 +1,6 @@
 // Main AgentSystem initialization - modular but without ES6 imports
-console.log('=== AGENTSYSTEM MODULAR LOADING ===');
 
 document.addEventListener('DOMContentLoaded', function() {
-  console.log('AgentSystem initializing...');
   
   // Wait for all modules to be loaded
   if (typeof window.AgentSystem === 'undefined') {
@@ -19,8 +17,6 @@ document.addEventListener('DOMContentLoaded', function() {
     return;
   }
   
-  console.log('All modules loaded successfully');
-  
   // Initialize button event listeners
   const statusBtn = document.getElementById('statusToggleBtn');
   const mcpBtn = document.getElementById('mcpToggleBtn');
@@ -28,26 +24,20 @@ document.addEventListener('DOMContentLoaded', function() {
   
   if (statusBtn) {
     statusBtn.addEventListener('click', function() {
-      console.log('Status button clicked');
       window.AgentSystem.Status.showPanel();
     });
-    console.log('Status button initialized');
   }
   
   if (mcpBtn) {
     mcpBtn.addEventListener('click', function() {
-      console.log('MCP button clicked');
       window.AgentSystem.MCP.showPanel();
     });
-    console.log('MCP button initialized');
   }
   
   if (debugBtn) {
     debugBtn.addEventListener('click', function() {
-      console.log('Debug button clicked');
       window.AgentSystem.Debug.showPanel();
     });
-    console.log('Debug button initialized');
   }
   
   // Initialize chat form
@@ -135,35 +125,93 @@ document.addEventListener('DOMContentLoaded', function() {
     const box = document.createElement('div');
     box.className = 'msg assistant';
     box.innerHTML = `
-      <details id="thinkingBox" open><summary>Thinking…</summary><pre id="thinking"></pre></details>
-      <div id="conversationFlow" class="conversation-flow">
-        <div id="statusContainer" class="status-container">
-          <div class="status-header">
-            <span class="response-icon">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <rect x="3" y="4" width="18" height="16" rx="2" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
-                <path d="M7 9l2 2 4-4" stroke="#56d364" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </span>
-            <span class="response-label">Status</span>
-          </div>
-          <div id="statusBody" class="status-body"></div>
+      <div class="container-section">
+        <div class="container-header" data-toggle="thinking">
+          <span class="toggle-arrow">▶</span>
+          <span class="type-icon">🤔</span>
+          <span class="container-label">Thinking...</span>
         </div>
-        <div id="assistantText" class="response-content"></div>
+        <div class="container-body" id="thinking" style="display: none;">
+          <pre id="thinkingContent"></pre>
+        </div>
+      </div>
+      <div class="container-section" style="display: none;">
+        <div class="container-header" data-toggle="status">
+          <span class="toggle-arrow">▼</span>
+          <span class="type-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">     
+              <rect x="3" y="4" width="18" height="16" rx="2" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
+              <path d="M7 9l2 2 4-4" stroke="#56d364" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="container-label">Status</span>
+        </div>
+        <div class="container-body" id="statusBody" style="display: block;"></div>
+      </div>
+      <div class="container-section" style="display: none;">
+        <div class="container-header" data-toggle="response">
+          <span class="toggle-arrow">▼</span>
+          <span class="type-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"> 
+              <rect x="2" y="3" width="20" height="14" rx="3" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
+              <circle cx="8.5" cy="9" r="1.1" fill="#cbd5e1" />
+              <circle cx="15.5" cy="9" r="1.1" fill="#cbd5e1" />
+              <path d="M7 13c1 0 2 0.8 3 0.8s2-0.8 3-0.8" stroke="#9fb8d9" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
+              <rect x="6" y="15.5" width="6" height="3" rx="0.8" fill="#071028" />
+            </svg>
+          </span>
+          <span class="container-label">Response</span>
+        </div>
+        <div class="container-body" id="assistantText" style="display: block;"></div>
       </div>
     `;
     row.appendChild(box);
     chatContainer.appendChild(row);
     scrollBottom();
+    
+    // Add click handlers for toggling containers
+    const headers = box.querySelectorAll('.container-header');
+    headers.forEach(header => {
+      // ensure initial arrow matches default body display
+      const body = header.nextElementSibling;
+      const arrow = header.querySelector('.toggle-arrow');
+      if (body && arrow) {
+        arrow.textContent = (body.style.display === 'none') ? '▶' : '▼';
+      }
+
+      header.addEventListener('click', () => {
+        const body = header.nextElementSibling;
+        if (body && body.classList.contains('container-body')) {
+          const isHidden = body.style.display === 'none';
+          body.style.display = isHidden ? 'block' : 'none';
+
+          // Update only the collapse/expand arrow, keep type-icon intact
+          const arrow = header.querySelector('.toggle-arrow');
+          if (arrow) {
+            arrow.textContent = isHidden ? '▼' : '▶';
+          }
+        }
+      });
+    });
+    
     return {
       row, 
       box, 
       t: box.querySelector('#assistantText'), 
-      think: box.querySelector('#thinking'),
-      status: box.querySelector('#statusBody'), 
-      thinkBox: box.querySelector('#thinkingBox'), 
-      conversationFlow: box.querySelector('#conversationFlow')
+      think: box.querySelector('#thinkingContent'),
+      status: box.querySelector('#statusBody'),
+      thinkingSection: box.querySelector('[data-toggle="thinking"]').parentElement,
+      statusSection: box.querySelector('[data-toggle="status"]').parentElement,
+      responseSection: box.querySelector('[data-toggle="response"]').parentElement
     };
+  }
+
+  // Helper function to show a section when content is added
+  function showSection(element) {
+    const section = element.closest('.container-section');
+    if (section && section.style.display === 'none') {
+      section.style.display = 'block';
+    }
   }
 
   // Status event management for operation progress (from original status_functions.js)
@@ -171,6 +219,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function addStatusEvent(container, ev) {
     if (!container || !ev) return;
+    
+    // Show the status section when first content is added
+    const statusSection = container.closest('.container-section');
+    if (statusSection && statusSection.style.display === 'none') {
+      statusSection.style.display = 'block';
+    }
     
     // If request_id is missing/null use server-only key to avoid duplicate entries
     const opIdPart = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
@@ -249,11 +303,8 @@ document.addEventListener('DOMContentLoaded', function() {
       
       const task = taskInput.value.trim();
       if (!task) {
-        console.log('Empty task, not submitting');
         return;
       }
-      
-      console.log('Submitting task:', task);
       
       // Add user message to chat
       addUser(task);
@@ -304,25 +355,17 @@ document.addEventListener('DOMContentLoaded', function() {
               } else {
                 blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
               }
+              // Show thinking container when content is added
+              const thinkingBody = blk.thinkingSection.querySelector('.container-body');
+              if (thinkingBody) thinkingBody.style.display = 'block';
               break;
             case 'final':
               const content = data.summary || data.content || '';
-              blk.t.innerHTML = `
-                <div class="response-header">
-                  <span class="response-icon">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                      <rect x="2" y="3" width="20" height="14" rx="3" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
-                      <circle cx="8.5" cy="9" r="1.1" fill="#cbd5e1" />
-                      <circle cx="15.5" cy="9" r="1.1" fill="#cbd5e1" />
-                      <path d="M7 13c1 0 2 0.8 3 0.8s2-0.8 3-0.8" stroke="#9fb8d9" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
-                      <rect x="6" y="15.5" width="6" height="3" rx="0.8" fill="#071028" />
-                    </svg>
-                  </span>
-                  <span class="response-label">Response</span>
-                </div>
-                <div class="response-text">${markdownToHtml(content)}</div>
-              `;
-              blk.thinkBox.open = false;
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
+              // Hide thinking container when response is ready
+              const thinkingBodyFinal = blk.thinkingSection.querySelector('.container-body');
+              if (thinkingBodyFinal) thinkingBodyFinal.style.display = 'none';
               break;
             case 'end':
               es.close();
@@ -330,24 +373,13 @@ document.addEventListener('DOMContentLoaded', function() {
               runBtn.disabled = false;
               break;
             case 'error':
-              blk.t.innerHTML = `
-                <div class="response-header error">
-                  <span class="response-icon">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                      <path d="M12 2L2 20h20L12 2z" fill="#2b0505" stroke="#f85149" stroke-width="0.8" />
-                      <rect x="11" y="8" width="2" height="6" fill="#f85149" />
-                      <rect x="11" y="16" width="2" height="2" fill="#f85149" />
-                    </svg>
-                  </span>
-                  <span class="response-label">Error</span>
-                </div>
-                <div class="response-text">${escapeHtml(data.message)}</div>
-              `;
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
               break;
           }
           scrollBottom();
         } catch (err) {
-          console.error('SSE parse error:', err);
+          // ignore JSON parse errors
         }
       };
 
@@ -358,35 +390,11 @@ document.addEventListener('DOMContentLoaded', function() {
             const r = await fetch('/run?task=' + encodeURIComponent(task), { method: 'POST' });
             const j = await r.json();
             const content = j.summary || JSON.stringify(j, null, 2);
-            blk.t.innerHTML = `
-              <div class="response-header">
-                <span class="response-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                    <rect x="2" y="3" width="20" height="14" rx="3" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
-                    <circle cx="8.5" cy="9" r="1.1" fill="#cbd5e1" />
-                    <circle cx="15.5" cy="9" r="1.1" fill="#cbd5e1" />
-                    <path d="M7 13c1 0 2 0.8 3 0.8s2-0.8 3-0.8" stroke="#9fb8d9" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" />
-                    <rect x="6" y="15.5" width="6" height="3" rx="0.8" fill="#071028" />
-                  </svg>
-                </span>
-                <span class="response-label">Response</span>
-              </div>
-              <div class="response-text">${markdownToHtml(content)}</div>
-            `;
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
           } catch (e) {
-            blk.t.innerHTML = `
-              <div class="response-header error">
-                <span class="response-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                    <path d="M12 2L2 20h20L12 2z" fill="#2b0505" stroke="#f85149" stroke-width="0.8" />
-                    <rect x="11" y="8" width="2" height="6" fill="#f85149" />
-                    <rect x="11" y="16" width="2" height="2" fill="#f85149" />
-                  </svg>
-                </span>
-                <span class="response-label">Error</span>
-              </div>
-              <div class="response-text">Request failed: ${escapeHtml(String(e))}</div>
-            `;
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(e))}</div>`;
           }
           runBtn.disabled = false;
           es.close();
@@ -401,12 +409,8 @@ document.addEventListener('DOMContentLoaded', function() {
       };
     });
     
-    console.log('Chat form initialized with SSE support');
   } else {
     console.warn('Chat form elements not found');
   }
   
-  console.log('=== AGENTSYSTEM INITIALIZATION COMPLETE ===');
 });
-
-console.log('AgentSystem main script loaded');
