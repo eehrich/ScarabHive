@@ -260,7 +260,7 @@ class Agent(MCPServer):
                 if self.context_manager:
                     # Apply token optimization
                     if self.token_optimizer:
-                        messages = self.token_optimizer.optimize_messages(messages)
+                        messages = await self.token_optimizer.optimize_messages(messages)
                     
                     # Check token count and issue appropriate warnings
                     estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
@@ -268,7 +268,7 @@ class Agent(MCPServer):
                     # Apply context management if needed
                     if self.context_manager.should_manage_context(estimated_tokens, warning_level):
                         logger.info("Applying context management at step %d", step + 1)
-                        messages = self.context_manager.manage_context(messages)
+                        messages = await self.context_manager.manage_context(messages)
                         # Re-check after management
                         estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
                 else:
@@ -597,7 +597,7 @@ class Agent(MCPServer):
                 if self.context_manager:
                     # Apply token optimization
                     if self.token_optimizer:
-                        messages = self.token_optimizer.optimize_messages(messages)
+                        messages = await self.token_optimizer.optimize_messages(messages)
                     
                     # Check token count and issue appropriate warnings
                     estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
@@ -605,7 +605,7 @@ class Agent(MCPServer):
                     # Apply context management if needed
                     if self.context_manager.should_manage_context(estimated_tokens, warning_level):
                         logger.info("Applying context management at step %d", step + 1)
-                        messages = self.context_manager.manage_context(messages)
+                        messages = await self.context_manager.manage_context(messages)
                         # Re-check after management
                         estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
                 else:

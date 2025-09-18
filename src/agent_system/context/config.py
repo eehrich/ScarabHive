@@ -41,6 +41,8 @@ class ContextConfig:
     # Summarization settings
     summarization_ratio: float = 0.5  # Reduce to 50% of original size
     preserve_recent_messages: int = 10  # Always keep last N messages
+    max_summary_words: int = 500  # Maximum words in generated summary
+    tool_result_preview_chars: int = 200  # Characters to show in tool result preview
     
     # Token optimization settings
     enable_compression: bool = True

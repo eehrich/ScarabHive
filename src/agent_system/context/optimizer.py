@@ -5,6 +5,7 @@ import re
 import json
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
+from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -19,20 +20,55 @@ class TokenOptimizer:
             "compression_ratio": 0.0
         }
     
-    def optimize_messages(self, messages: List[ChatMessage]) -> List[ChatMessage]:
+    async def optimize_messages(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Apply various optimization techniques to reduce token count."""
+        if not messages:
+            return messages
+        
+        # Publish start status event
+        await publish_status(
+            server="token-optimizer",
+            message=f"🔧 Starting token optimization for {len(messages)} messages",
+            phase=PHASE_START,
+            meta={"message_count": len(messages)}
+        )
+            
+        logger.debug("🔧 Starting token optimization for %d messages...", len(messages))
+        
         optimized = []
         total_original_tokens = 0
         total_optimized_tokens = 0
         
-        for msg in messages:
-            original_tokens = self._estimate_message_tokens(msg)
-            optimized_msg = self._optimize_message(msg)
-            optimized_tokens = self._estimate_message_tokens(optimized_msg)
-            
-            optimized.append(optimized_msg)
-            total_original_tokens += original_tokens
-            total_optimized_tokens += optimized_tokens
+        try:
+            for i, msg in enumerate(messages):
+                original_tokens = self._estimate_message_tokens(msg)
+                optimized_msg = self._optimize_message(msg)
+                optimized_tokens = self._estimate_message_tokens(optimized_msg)
+                
+                optimized.append(optimized_msg)
+                total_original_tokens += original_tokens
+                total_optimized_tokens += optimized_tokens
+                
+                # Log progress for large batches
+                if len(messages) > 10 and (i + 1) % 10 == 0:
+                    logger.debug("   📊 Processed %d/%d messages...", i + 1, len(messages))
+                    await publish_status(
+                        server="token-optimizer",
+                        message=f"📊 Processed {i + 1}/{len(messages)} messages",
+                        phase=PHASE_PROGRESS,
+                        meta={"processed": i + 1, "total": len(messages)}
+                    )
+        except Exception as e:
+            await publish_status(
+                server="token-optimizer",
+                message=f"❌ Token optimization failed: {str(e)}",
+                phase=PHASE_ERROR,
+                level="error",
+                meta={"error": str(e), "processed": len(optimized)}
+            )
+            logger.error("Token optimization failed: %s", e)
+            # Return original messages as fallback
+            return messages
         
         # Update stats
         self.compression_stats["messages_processed"] += len(messages)
@@ -43,9 +79,28 @@ class TokenOptimizer:
             ratio = (total_optimized_tokens / total_original_tokens) * 100
             self.compression_stats["compression_ratio"] = ratio
             
+            logger.debug("✅ Token optimization complete:")
+            logger.debug("   🪙 Tokens: %d → %d (saved %d tokens)", 
+                       total_original_tokens, total_optimized_tokens, tokens_saved)
             if tokens_saved > 0:
-                logger.debug("Optimized %d messages: saved %d tokens (%.1f%% compression)", 
-                           len(messages), tokens_saved, 100 - ratio)
+                logger.debug("   📉 Compression: %.1f%% (%.1f%% reduction)", 
+                           ratio, 100 - ratio)
+            else:
+                logger.debug("   📊 No optimization opportunities found")
+            
+            # Publish completion status event
+            await publish_status(
+                server="token-optimizer",
+                message=f"✅ Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
+                phase=PHASE_END,
+                meta={
+                    "original_tokens": total_original_tokens,
+                    "optimized_tokens": total_optimized_tokens,
+                    "tokens_saved": tokens_saved,
+                    "compression_ratio": ratio,
+                    "messages_processed": len(messages)
+                }
+            )
         
         return optimized
     
@@ -214,10 +269,15 @@ class TokenOptimizer:
     
     def compress_tool_results(self, messages: List[ChatMessage], max_result_length: int = 2000) -> List[ChatMessage]:
         """Specifically compress long tool results that often cause token bloat."""
+        tool_results_found = 0
+        tool_results_compressed = 0
+        total_chars_saved = 0
+        
         compressed = []
         
         for msg in messages:
             if getattr(msg, 'role', None) == 'tool' and msg.content:
+                tool_results_found += 1
                 content = str(msg.content)
                 if len(content) > max_result_length:
                     # Truncate with summary
@@ -233,11 +293,22 @@ class TokenOptimizer:
                     )
                     compressed.append(compressed_msg)
                     
-                    logger.debug("Compressed tool result from %d to %d chars", 
-                               len(content), len(compressed_content))
+                    chars_saved = len(content) - len(compressed_content)
+                    total_chars_saved += chars_saved
+                    tool_results_compressed += 1
+                    
+                    logger.debug("📦 Compressed tool result: %d → %d chars (saved %d)", 
+                               len(content), len(compressed_content), chars_saved)
                 else:
                     compressed.append(msg)
             else:
                 compressed.append(msg)
+        
+        if tool_results_found > 0:
+            logger.debug("🛠️  Tool result compression complete:")
+            logger.debug("   📊 Tool results found: %d", tool_results_found)
+            logger.debug("   📦 Results compressed: %d", tool_results_compressed)
+            if total_chars_saved > 0:
+                logger.debug("   💾 Characters saved: %d", total_chars_saved)
         
         return compressed

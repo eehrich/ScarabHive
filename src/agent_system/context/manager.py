@@ -1,9 +1,11 @@
 """Context window manager with enhanced warning system."""
 
 import logging
+import time
 from typing import List, Optional, Tuple
 from ..llm.clients import ChatMessage
 from .config import ContextConfig, WarningLevel
+from ..mcp.status import publish_status, PHASE_START, PHASE_END, PHASE_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -73,24 +75,88 @@ class ContextManager:
         # Auto-manage if we hit orange level or above
         return current_level in [WarningLevel.ORANGE, WarningLevel.RED] or self.config.should_summarize(current_tokens)
     
-    def manage_context(self, messages: List[ChatMessage]) -> List[ChatMessage]:
+    async def manage_context(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Apply context management strategy to reduce token count."""
         current_tokens = self.estimate_token_count(messages)
         
         if not self.config.should_summarize(current_tokens):
             return messages
         
-        logger.info("Applying context management strategy: %s", self.config.strategy.value)
+        # Publish start status event
+        await publish_status(
+            server="context-manager",
+            message="🔄 Starting context management",
+            phase=PHASE_START,
+            meta={"tokens": current_tokens, "strategy": self.config.strategy.value}
+        )
         
-        if self.config.strategy == self.config.strategy.TRUNCATE_OLDEST:
-            return self._truncate_oldest(messages)
-        elif self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST and self._summarizer:
-            return self._summarize_conversation(messages)
-        elif self.config.strategy == self.config.strategy.SLIDING_WINDOW:
-            return self._apply_sliding_window(messages)
-        else:
-            # Fallback to truncation
-            return self._truncate_oldest(messages)
+        percentage = (current_tokens / self.config.context_window) * 100
+        logger.debug("🔄 Context management triggered: %d tokens (%.1f%% of context window)", 
+                   current_tokens, percentage)
+        logger.debug("📋 Strategy: %s", self.config.strategy.value.replace('_', ' ').title())
+        
+        original_count = len(messages)
+        start_time = time.time()
+        
+        try:
+            if self.config.strategy == self.config.strategy.TRUNCATE_OLDEST:
+                logger.debug("✂️  Truncating oldest messages to reduce context size...")
+                result = self._truncate_oldest(messages)
+            elif self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST and self._summarizer:
+                logger.debug("📝 Summarizing conversation history to preserve context...")
+                result = await self._summarize_conversation(messages)
+            elif self.config.strategy == self.config.strategy.SLIDING_WINDOW:
+                logger.debug("🪟 Applying sliding window to keep most relevant messages...")
+                result = self._apply_sliding_window(messages)
+            else:
+                # Fallback to truncation
+                logger.debug("✂️  Applying fallback truncation strategy...")
+                result = self._truncate_oldest(messages)
+            
+            # Report results
+            end_time = time.time()
+            new_tokens = self.estimate_token_count(result)
+            new_count = len(result)
+            saved_tokens = current_tokens - new_tokens
+            processing_time = (end_time - start_time) * 1000  # Convert to milliseconds
+            
+            logger.debug("✅ Context management completed in %.1fms:", processing_time)
+            logger.debug("   📊 Messages: %d → %d (removed %d)", 
+                       original_count, new_count, original_count - new_count)
+            logger.debug("   🪙 Tokens: %d → %d (saved %d tokens, %.1f%% reduction)", 
+                       current_tokens, new_tokens, saved_tokens, (saved_tokens / current_tokens) * 100)
+            logger.debug("   📈 New usage: %.1f%% of context window", 
+                       (new_tokens / self.config.context_window) * 100)
+            
+            # Publish success status event
+            await publish_status(
+                server="context-manager",
+                message=f"✅ Context management complete: {original_count}→{new_count} messages, saved {saved_tokens:,} tokens",
+                phase=PHASE_END,
+                meta={
+                    "original_messages": original_count,
+                    "final_messages": new_count,
+                    "original_tokens": current_tokens,
+                    "final_tokens": new_tokens,
+                    "tokens_saved": saved_tokens,
+                    "processing_time_ms": processing_time
+                }
+            )
+            
+            return result
+            
+        except Exception as e:
+            # Publish error status event
+            await publish_status(
+                server="context-manager",
+                message=f"❌ Context management failed: {str(e)}",
+                phase=PHASE_ERROR,
+                level="error",
+                meta={"error": str(e), "strategy": self.config.strategy.value}
+            )
+            logger.error("Context management failed: %s", e)
+            # Return original messages as fallback
+            return messages
     
     def _log_token_breakdown(self, messages: List[ChatMessage], total_tokens: int, step: int):
         """Log detailed token usage breakdown."""
@@ -165,7 +231,7 @@ class ContextManager:
         result.extend(recent_messages)
         
         removed_count = len(messages) - len(result)
-        logger.info("Truncated %d oldest messages, kept %d messages", removed_count, len(result))
+        logger.debug("Truncated %d oldest messages, kept %d messages", removed_count, len(result))
         
         return result
     
@@ -193,19 +259,19 @@ class ContextManager:
                 result = [messages[0]]
         
         removed_count = len(messages) - len(result)
-        logger.info("Applied sliding window: kept %d messages (%.1f%% of context), removed %d", 
+        logger.debug("Applied sliding window: kept %d messages (%.1f%% of context), removed %d", 
                    len(result), (current_tokens / self.config.context_window) * 100, removed_count)
         
         return result
     
-    def _summarize_conversation(self, messages: List[ChatMessage]) -> List[ChatMessage]:
+    async def _summarize_conversation(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Summarize conversation using the summarizer."""
         if not self._summarizer:
             logger.warning("Summarizer not available, falling back to truncation")
             return self._truncate_oldest(messages)
         
         try:
-            return self._summarizer.summarize_conversation(messages, self.config)
+            return await self._summarizer.summarize_conversation(messages, self.config)
         except Exception as e:
             logger.error("Summarization failed: %s, falling back to truncation", e)
             return self._truncate_oldest(messages)

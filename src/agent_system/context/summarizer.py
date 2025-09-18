@@ -4,6 +4,7 @@ import logging
 from typing import List
 from ..llm.clients import ChatMessage, make_llm
 from .config import ContextConfig
+from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ class ConversationSummarizer:
     def __init__(self, llm_client=None):
         self.llm_client = llm_client or make_llm()
     
-    def summarize_conversation(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
+    async def summarize_conversation(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
         """Summarize older conversation while preserving recent messages."""
         if len(messages) <= config.preserve_recent_messages:
             return messages
@@ -34,8 +35,20 @@ class ConversationSummarizer:
             result = [system_msg] + to_preserve if system_msg else to_preserve
             return result
         
+        # Publish start status event
+        await publish_status(
+            server="conversation-summarizer",
+            message=f"📝 Starting conversation summarization: {len(to_summarize)} messages to summarize",
+            phase=PHASE_START,
+            meta={"messages_to_summarize": len(to_summarize), "messages_to_preserve": len(to_preserve)}
+        )
+        
+        logger.debug("🤖 Starting LLM-based conversation summarization...")
+        logger.debug("   📝 Messages to summarize: %d", len(to_summarize))
+        logger.debug("   💾 Messages to preserve: %d", len(to_preserve))
+        
         # Create summary of older conversation
-        summary_text = self._create_summary(to_summarize)
+        summary_text = await self._create_summary(to_summarize, config)
         
         # Build result with summary
         result = []
@@ -49,39 +62,91 @@ class ConversationSummarizer:
                 content=f"[CONVERSATION SUMMARY] The following is a summary of earlier conversation:\n\n{summary_text}\n\n[END SUMMARY] Recent conversation continues below:"
             )
             result.append(summary_msg)
+            logger.debug("✅ Conversation summary created (length: %d characters)", len(summary_text))
+        else:
+            logger.warning("⚠️  Summary creation failed, proceeding without summary")
         
         # Add preserved recent messages
         result.extend(to_preserve)
         
-        logger.info("Summarized %d messages into summary, kept %d recent messages", 
-                   len(to_summarize), len(to_preserve))
+        logger.debug("📊 Summarization complete:")
+        logger.debug("   🗂️  Original messages: %d → Final messages: %d", 
+                   len(to_summarize) + len(to_preserve), len(result))
+        logger.debug("   📝 Summary included: %s", "Yes" if summary_text else "No")
+        
+        # Publish completion status event
+        await publish_status(
+            server="conversation-summarizer",
+            message=f"✅ Summarization complete: {len(to_summarize) + len(to_preserve)}→{len(result)} messages",
+            phase=PHASE_END,
+            meta={
+                "original_messages": len(to_summarize) + len(to_preserve),
+                "final_messages": len(result),
+                "summary_included": bool(summary_text),
+                "summary_length": len(summary_text) if summary_text else 0
+            }
+        )
         
         return result
     
-    def _create_summary(self, messages: List[ChatMessage]) -> str:
+    async def _create_summary(self, messages: List[ChatMessage], config: ContextConfig) -> str:
         """Create a concise summary of the conversation messages."""
         try:
+            logger.debug("🔄 Preparing conversation for LLM summarization...")
+            
             # Prepare conversation text for summarization
-            conversation_text = self._format_messages_for_summary(messages)
+            conversation_text = self._format_messages_for_summary(messages, config)
             
             # Create summarization prompt
-            summary_prompt = self._create_summary_prompt(conversation_text)
+            summary_prompt = self._create_summary_prompt(conversation_text, config)
+            
+            await publish_status(
+                server="conversation-summarizer",
+                message=f"🤖 Requesting summary from LLM ({len(conversation_text):,} chars)",
+                phase=PHASE_PROGRESS,
+                meta={"input_chars": len(conversation_text)}
+            )
+            
+            logger.debug("🤖 Requesting summary from LLM (input: %d chars)...", len(conversation_text))
             
             # Get summary from LLM
             summary_messages = [ChatMessage(role="user", content=summary_prompt)]
             response = self.llm_client.complete(summary_messages)
             
             if response and response.content:
+                summary_length = len(response.content.strip())
+                reduction_ratio = (1 - summary_length / len(conversation_text)) * 100
+                logger.debug("✅ LLM summary complete (output: %d chars, %.1f%% reduction)", 
+                           summary_length, reduction_ratio)
+                
+                await publish_status(
+                    server="conversation-summarizer", 
+                    message=f"✅ LLM summary complete: {len(conversation_text):,}→{summary_length:,} chars ({reduction_ratio:.1f}% reduction)",
+                    phase=PHASE_PROGRESS,
+                    meta={
+                        "input_chars": len(conversation_text),
+                        "output_chars": summary_length,
+                        "reduction_ratio": reduction_ratio
+                    }
+                )
+                
                 return response.content.strip()
             else:
-                logger.warning("LLM returned empty summary response")
-                return self._create_fallback_summary(messages)
+                logger.warning("⚠️  LLM returned empty summary, using fallback method")
+                return await self._create_fallback_summary(messages)
                 
         except Exception as e:
-            logger.error("Failed to create LLM summary: %s", e)
-            return self._create_fallback_summary(messages)
+            await publish_status(
+                server="conversation-summarizer",
+                message=f"❌ LLM summary failed: {str(e)}, using fallback method",
+                phase=PHASE_ERROR,
+                level="error",
+                meta={"error": str(e), "fallback": "text_extraction"}
+            )
+            logger.error("❌ LLM summary failed: %s, using fallback method", e)
+            return await self._create_fallback_summary(messages)
     
-    def _format_messages_for_summary(self, messages: List[ChatMessage]) -> str:
+    def _format_messages_for_summary(self, messages: List[ChatMessage], config: ContextConfig) -> str:
         """Format messages into readable text for summarization."""
         formatted_parts = []
         
@@ -110,14 +175,15 @@ class ConversationSummarizer:
             elif role == "tool":
                 # Summarize tool results (they can be very long)
                 tool_id = getattr(msg, 'tool_call_id', 'unknown')
-                content_preview = str(content)[:200] + "..." if len(str(content)) > 200 else str(content)
+                preview_chars = config.tool_result_preview_chars
+                content_preview = str(content)[:preview_chars] + "..." if len(str(content)) > preview_chars else str(content)
                 formatted_parts.append(f"Tool Result ({tool_id}): {content_preview}")
             elif role == "system":
                 formatted_parts.append(f"System: {content}")
         
         return "\n".join(formatted_parts)
     
-    def _create_summary_prompt(self, conversation_text: str) -> str:
+    def _create_summary_prompt(self, conversation_text: str, config: ContextConfig) -> str:
         """Create the prompt for summarizing conversation."""
         return f"""Please create a concise but comprehensive summary of the following conversation. Focus on:
 
@@ -127,14 +193,14 @@ class ConversationSummarizer:
 4. Current state and next steps if mentioned
 5. Any critical context needed for continuation
 
-Keep the summary under 500 words but ensure all essential information is preserved.
+Keep the summary under {config.max_summary_words} words but ensure all essential information is preserved.
 
 CONVERSATION TO SUMMARIZE:
 {conversation_text}
 
 SUMMARY:"""
     
-    def _create_fallback_summary(self, messages: List[ChatMessage]) -> str:
+    async def _create_fallback_summary(self, messages: List[ChatMessage]) -> str:
         """Create a simple fallback summary when LLM summarization fails."""
         user_count = sum(1 for msg in messages if getattr(msg, 'role', None) == 'user')
         assistant_count = sum(1 for msg in messages if getattr(msg, 'role', None) == 'assistant')
