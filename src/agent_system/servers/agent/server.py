@@ -604,6 +604,9 @@ class Agent(MCPServer):
                 messages.append(ChatMessage(role="system", content=tools_msg))
             messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
 
+            # Track messages for debugging
+            self._current_messages = messages.copy()
+
             # Build tool schemas and maintain mapping for external tools
             tools_schema: List[Dict] = []
             tool_name_mapping = {}  # Maps OpenAI-compatible names to original names
@@ -846,10 +849,15 @@ class Agent(MCPServer):
                 # Check for final content
                 elif content:
                     results["summary"] = content
+                    # Update tracked messages with final response
+                    self._current_messages = messages.copy()
                     yield {"type": "final", "summary": content}
                     break
                 # If we had tool calls, continue to next iteration to let LLM respond to tool results
                 # Don't add extra assistant messages here as it creates invalid conversation flow
+
+                # Update tracked messages at end of each step
+                self._current_messages = messages.copy()
 
             else:
                 # Max steps reached - get final answer
