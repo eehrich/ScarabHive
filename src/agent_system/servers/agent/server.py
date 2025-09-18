@@ -48,6 +48,9 @@ class Agent(MCPServer):
         # Agent-specific initialization
         self.agent_config = config
         self.registry = registry
+        # Mark this Agent as internal by default so it doesn't show up in UI lists
+        # Consumers who want it visible can set `agent._mcp_public = True` after construction.
+        self._mcp_public = False
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
         self.llm = llm

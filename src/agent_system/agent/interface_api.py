@@ -512,6 +512,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Add plugin servers from registry
             for server_id, server_obj in _app_registry._servers.items():
                 try:
+                    # Skip servers that explicitly mark themselves as internal/private
+                    if getattr(server_obj, '_mcp_public', True) is False:
+                        continue
                     # Get tools using both get_tools() and get_schema() methods
                     tools = []
                     detailed_tools = []
