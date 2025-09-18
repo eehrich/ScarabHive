@@ -35,6 +35,14 @@ class HTTPStreamingTransport(MCPTransport):
 
     async def connect(self) -> None:
         """Establish HTTP session"""
+        # If session exists but is closed, reset it so we recreate
+        if self.session is not None and getattr(self.session, 'closed', False):
+            try:
+                await self.session.close()
+            except Exception:
+                pass
+            self.session = None
+
         if self.session is None:
             connector = aiohttp.TCPConnector(verify_ssl=self.ssl_verify)
             timeout = aiohttp.ClientTimeout(total=self.timeout)
@@ -191,7 +199,8 @@ class HTTPStreamingTransport(MCPTransport):
 
     async def send_request(self, message: MCPMessage) -> MCPMessage:
         """Send request and return response for streaming HTTP"""
-        if not self.session:
+        # Ensure we have a usable session
+        if not self.session or getattr(self.session, 'closed', False):
             await self.connect()
 
         # Convert message to JSON-RPC 2.0 format
@@ -202,33 +211,77 @@ class HTTPStreamingTransport(MCPTransport):
             "id": message.id
         }
 
+        # We'll allow one automatic retry if initialization is required
+        retried = False
         try:
             if not self.session:
                 raise RuntimeError("Session not initialized")
+            while True:
+                url = self._build_url()
+                headers = {}
 
-            url = self._build_url()
-            headers = {}
+                # Add session ID to subsequent requests after initialization
+                if self.session_id and message.method != "initialize":
+                    headers['Mcp-Session-Id'] = self.session_id
 
-            # Add session ID to subsequent requests after initialization
-            if self.session_id and message.method != "initialize":
-                headers['Mcp-Session-Id'] = self.session_id
+                # Debug: log initialize payload and destination when debugging 422 errors
+                if message.method == "initialize":
+                    logger.debug(f"Sending initialize to {url} with headers={headers} payload={json.dumps(payload)} config={self.config}")
 
-            # Debug: log initialize payload and destination when debugging 422 errors
-            if message.method == "initialize":
-                logger.debug(f"Sending initialize to {url} with headers={headers} payload={json.dumps(payload)} config={self.config}")
-            async with self.session.post(url, json=payload, headers=headers or None) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"HTTP {response.status}: {error_text}")
-                    return MCPMessage(
-                        jsonrpc="2.0",
-                        id=message.id,
-                        error=MCPError(
-                            code=-32000,  # Server error
-                            message=f"HTTP {response.status}",
-                            data={"details": error_text}
+                async with self.session.post(url, json=payload, headers=headers or None) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"HTTP {response.status}: {error_text}")
+
+                        # If the server complains about missing session ID or transport closed, try reinitializing once
+                        lower_err = error_text.lower() if isinstance(error_text, str) else ''
+                        if not retried and (response.status == 400 and ("no valid session" in lower_err or "transport is closed" in lower_err or "session" in lower_err)):
+                            logger.info("Attempting to reinitialize transport after server returned 400 / session error")
+                            retried = True
+                            try:
+                                # Reset any existing session id and try initialize
+                                self.session_id = None
+                                # Perform initialize
+                                init_msg = MCPMessage(
+                                    jsonrpc="2.0",
+                                    id=message.id + "-init",
+                                    method="initialize",
+                                    params={
+                                        "protocolVersion": "2024-11-05",
+                                        "capabilities": {"tools": {}},
+                                        "clientInfo": {"name": "AgentSystem", "version": "1.0.0"},
+                                        "initializationOptions": self.config or {}
+                                    }
+                                )
+                                init_resp = await self.send_request(init_msg)
+                                if init_resp and not init_resp.error:
+                                    logger.info("Reinitialize successful, retrying original request")
+                                    # continue loop to retry original request
+                                    continue
+                                else:
+                                    logger.warning("Reinitialize failed or returned error, aborting retry")
+                                    return MCPMessage(
+                                        jsonrpc="2.0",
+                                        id=message.id,
+                                        error=MCPError(code=-32000, message=f"HTTP {response.status}", data={"details": error_text})
+                                    )
+                            except Exception as e:
+                                logger.error(f"Reinitialize attempt failed: {e}")
+                                return MCPMessage(
+                                    jsonrpc="2.0",
+                                    id=message.id,
+                                    error=MCPError(code=-32000, message="Request failed", data={"details": str(e)})
+                                )
+                        # Not retriable or already retried
+                        return MCPMessage(
+                            jsonrpc="2.0",
+                            id=message.id,
+                            error=MCPError(
+                                code=-32000,  # Server error
+                                message=f"HTTP {response.status}",
+                                data={"details": error_text}
+                            )
                         )
-                    )
 
                 # Streaming servers may return SSE format for some responses
                 content_type = response.headers.get('content-type', '')

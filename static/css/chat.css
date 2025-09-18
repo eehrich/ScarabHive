@@ -1,0 +1,638 @@
+/*
+  chat.css — Chat area and message styles for Agent System
+*/
+
+/* Chat Container */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 100px;
+}
+
+/* Message Row */
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+/* Message Bubble Base */
+.msg {
+  max-width: 80%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  line-height: 1.45;
+  box-shadow: 0 1px 0 #0008 inset, 0 0 0 1px #ffffff12 inset;
+}
+
+/* User Message Styling */
+.user {
+  margin-left: auto;
+  background: #1f2937;
+  border: 1px solid #334155;
+}
+
+/* Assistant Message Styling */
+.assistant {
+  background: #0f172a;
+  border: 1px solid #243244;
+}
+
+/* Input Bar */
+.inputBar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, transparent, #0b0f14 30%);
+  border-top: 1px solid #1f2937;
+}
+
+/* Chat Form */
+form {
+  display: flex;
+  gap: 8px;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+/* Text Input */
+input[type="text"] {
+  flex: 1;
+  background: #0f172a;
+  color: #e6edf3;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 12px 14px;
+  outline: none;
+}
+
+input::placeholder {
+  color: #64748b;
+}
+
+/* Submit Button */
+button {
+  background: #2563eb;
+  color: white;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Response Content */
+.response-content {
+  margin-top: 12px;
+}
+
+/* Response Header */
+.response-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+  padding: 8px 12px;
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-radius: 8px 8px 0 0;
+  font-weight: 500;
+}
+
+.response-header.error {
+  background: #2d1b1b;
+  border-color: #dc2626;
+  color: #fca5a5;
+}
+
+.response-icon {
+  font-size: 16px;
+}
+
+.response-label {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #cbd5e1;
+}
+
+/* Response Text */
+.response-text {
+  line-height: 1.6;
+  color: #e6edf3;
+  font-size: 15px;
+  padding: 12px;
+  background: #1a2332;
+  border-radius: 0 0 8px 8px;
+  border: 1px solid #334155;
+  border-top: none;
+}
+
+.response-header.error + .response-text {
+  background: #2d1b1b;
+  border-color: #dc2626;
+  color: #fca5a5;
+}
+
+/* Typography in Responses */
+.response-text h1,
+.response-text h2,
+.response-text h3 {
+  margin: 16px 0 8px 0;
+  color: #f0f6fc;
+  font-weight: 600;
+}
+
+.response-text h1 {
+  font-size: 1.5em;
+  border-bottom: 1px solid #21262d;
+  padding-bottom: 8px;
+}
+
+.response-text h2 {
+  font-size: 1.3em;
+  border-bottom: 1px solid #21262d;
+  padding-bottom: 6px;
+}
+
+.response-text h3 {
+  font-size: 1.1em;
+  color: #e6edf3;
+}
+
+.response-text strong {
+  color: #ffd700;
+  font-weight: 600;
+}
+
+.response-text em {
+  color: #87ceeb;
+  font-style: italic;
+}
+
+.response-text code {
+  background: #21262d;
+  color: #f85149;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.response-text pre {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.response-text pre code {
+  background: none;
+  color: #e6edf3;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.response-text ul,
+.response-text ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.response-text li {
+  margin: 4px 0;
+  color: #e6edf3;
+}
+
+/* Markdown Tables */
+.response-text .markdown-table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  width: 100%;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.response-text .markdown-table th {
+  background: #21262d;
+  color: #f0f6fc;
+  font-weight: 600;
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #30363d;
+}
+
+.response-text .markdown-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #21262d;
+  color: #e6edf3;
+}
+
+.response-text .markdown-table tr:last-child td {
+  border-bottom: none;
+}
+
+.response-text .markdown-table tr:nth-child(even) {
+  background: #161b22;
+}
+
+.response-text p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.response-text p:first-child {
+  margin-top: 0;
+}
+
+.response-text p:last-child {
+  margin-bottom: 0;
+}
+
+/* Progress View */
+.operation-progress {
+  margin: 4px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.progress-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: #e6edf3;
+}
+
+.progress-icon {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Success checkmark */
+.checkmark {
+  color: #56d364;
+  font-weight: bold;
+  font-size: 14px;
+  animation: checkmarkPop 0.3s ease-out;
+}
+
+@keyframes checkmarkPop {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* Error cross */
+.error-mark {
+  color: #f85149;
+  font-weight: bold;
+  font-size: 14px;
+  animation: errorShake 0.4s ease-out;
+}
+
+@keyframes errorShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+.progress-server {
+  color: #58a6ff;
+  font-weight: 500;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.progress-message {
+  color: #e6edf3;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-time {
+  color: #8b949e;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.operation-progress.completed .progress-message {
+  color: #56d364;
+}
+
+.operation-progress.error .progress-message {
+  color: #f85149;
+}
+
+/* Conversation Flow */
+.conversation-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Thinking Animation */
+.thinking-indicator .response-header {
+  background: linear-gradient(-45deg, #1a2332, #1f2837, #1a2332, #1f2837);
+  background-size: 400% 400%;
+  animation: thinkingGradient 2s ease-in-out infinite;
+}
+
+.thinking-indicator .response-icon {
+  animation: thinkingPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes thinkingGradient {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes thinkingPulse {
+  0%, 100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+/* Enhanced message styling */
+.row {
+  margin-bottom: 16px;
+}
+
+.msg.user {
+  margin-left: auto;
+  max-width: 75%;
+}
+
+.msg.assistant {
+  max-width: 90%;
+}
+
+/* Better code block styling */
+.response-text pre {
+  position: relative;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+  overflow-x: auto;
+  font-family: 'SF Mono', Monaco, 'Inconsolata', 'Roboto Mono', 'Source Code Pro', monospace;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.response-text pre code {
+  color: #e6edf3;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Improved list styling */
+.response-text ul, .response-text ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+
+.response-text li {
+  margin: 6px 0;
+  line-height: 1.5;
+}
+
+/* Better link styling if needed */
+.response-text a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.response-text a:hover {
+  text-decoration: underline;
+}
+
+/* Thinking Box */
+details[id="thinkingBox"] {
+  margin: 8px 0;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+details[id="thinkingBox"] summary {
+  padding: 10px 14px;
+  background: linear-gradient(90deg, #161b22, #1c2128);
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+  color: #58a6ff;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+details[id="thinkingBox"] summary:hover {
+  background: linear-gradient(90deg, #1c2128, #21262d);
+}
+
+details[id="thinkingBox"] summary::before {
+  content: "🤔";
+  font-size: 16px;
+}
+
+details[id="thinkingBox"][open] summary::before {
+  content: "💭";
+}
+
+details[id="thinkingBox"] pre {
+  margin: 0;
+  padding: 16px;
+  background: #0d1117;
+  border: none;
+  border-radius: 0;
+  font-family: 'SF Mono', Monaco, 'Inconsolata', 'Roboto Mono', 'Source Code Pro', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #e6edf3;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Thinking content formatting with custom scrollbar */
+details[id="thinkingBox"] pre::-webkit-scrollbar {
+  width: 8px;
+}
+
+details[id="thinkingBox"] pre::-webkit-scrollbar-track {
+  background: #161b22;
+}
+
+details[id="thinkingBox"] pre::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+details[id="thinkingBox"] pre::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* Status Container */
+.status-container {
+  margin: 8px 0;
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #1a2332;
+  border-bottom: 1px solid #334155;
+  font-size: 13px;
+  font-weight: 500;
+  color: #cbd5e1;
+}
+
+.status-body {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+/* Operation Progress (VS Code-style) */
+.operation-progress {
+  margin: 4px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.progress-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: #e6edf3;
+}
+
+.progress-icon {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Animated spinner */
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #21262d;
+  border-top: 2px solid #58a6ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Success checkmark */
+.checkmark {
+  color: #56d364;
+  font-weight: bold;
+  font-size: 14px;
+  animation: checkmarkPop 0.3s ease-out;
+}
+
+@keyframes checkmarkPop {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* Error cross */
+.error-mark {
+  color: #f85149;
+  font-weight: bold;
+  font-size: 14px;
+  animation: errorShake 0.4s ease-out;
+}
+
+@keyframes errorShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+.progress-server {
+  color: #58a6ff;
+  font-weight: 500;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.progress-message {
+  color: #e6edf3;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-time {
+  color: #8b949e;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.operation-progress.completed .progress-message {
+  color: #56d364;
+}
+
+.operation-progress.error .progress-message {
+  color: #f85149;
+}
+
+/* Conversation Flow */
+.conversation-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

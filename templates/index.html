@@ -4,8 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent System (MCP)</title>
-    <link rel="stylesheet" href="/static/css/styles.css" />
-    <link rel="stylesheet" href="/static/css/index.css" />
+    <link rel="stylesheet" href="/static/css/base.css" />
+    <link rel="stylesheet" href="/static/css/layout.css" />
+    <link rel="stylesheet" href="/static/css/panels.css" />
+    <link rel="stylesheet" href="/static/css/mcp.css" />
+    <link rel="stylesheet" href="/static/css/debug.css" />
+    <link rel="stylesheet" href="/static/css/chat.css" />
+    <link rel="stylesheet" href="/static/css/components.css" />
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
   </head>
   <body>
@@ -33,6 +38,11 @@
       </form>
     </div>
 
-    <script src="/static/js/index.js"></script>
+        <!-- Load JavaScript Modules (order matters) -->
+    <script src="{{ url_for('static', path='js/panel_manager.js') }}"></script>
+    <script src="{{ url_for('static', path='js/mcp_module.js') }}"></script>
+    <script src="{{ url_for('static', path='js/status_module.js') }}"></script>
+    <script src="{{ url_for('static', path='js/debug_module.js') }}"></script>
+    <script src="{{ url_for('static', path='js/main.js') }}"></script>
   </body>
 </html>

@@ -1,0 +1,252 @@
+/*
+  panels.css — Floating panel styles for Agent System
+*/
+
+/* Floating panels base styling */
+.floating-panel {
+  position: fixed;
+  top: 80px;
+  left: 24px;
+  width: 640px;
+  height: 800px;
+  min-width: 300px;
+  min-height: 200px;
+  /* Allow panels to be resized up to viewport limits with buffer */
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 100px);
+  background: linear-gradient(180deg, #0b1220, #07111a);
+  border: 1px solid #243244;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Status panel specific positioning - smaller and on the right */
+#floatingStatusPanel {
+  width: 400px;
+  height: 700px;
+  right: 24px;
+  left: auto;
+  top: 80px;
+}
+
+/* Debug panel specific positioning - medium size on the left */
+#floatingDebugPanel {
+  width: 600px;
+  height: 700px;
+  left: 24px;
+  right: auto;
+  top: 80px;
+}
+
+/* Panel header styling */
+.floating-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, #07111a, #0b1220);
+  border-bottom: 1px solid #16202b;
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.floating-panel-header:active {
+  cursor: grabbing;
+}
+
+/* Icon buttons in panel headers */
+.floating-panel-header .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: #0b1220;
+  border: 1px solid #243244;
+  color: #9ab;
+  padding: 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-right: 8px;
+  transition: background 150ms ease, transform 120ms ease;
+}
+
+.floating-panel-header .icon-btn:hover {
+  background: #122034;
+  transform: translateY(-1px);
+}
+
+.floating-panel-header .icon-btn:active {
+  transform: translateY(0);
+}
+
+.floating-panel-header .icon-btn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.floating-panel-header .icon-btn .mcp-refresh-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.floating-panel-header .icon-btn .spinner {
+  display: none;
+  width: 18px;
+  height: 18px;
+}
+
+.floating-panel-header .icon-btn.loading .spinner {
+  display: inline-block;
+}
+
+.floating-panel-header .icon-btn.loading .mcp-refresh-icon {
+  display: none;
+}
+
+.floating-panel-header #mcpRefreshBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Panel body content area */
+.floating-panel-body {
+  padding: 10px;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 50px);
+}
+
+/* Inner wrapper to hold content and allow proper scrolling layout inside flex container */
+.floating-panel-body .panel-content {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Resize handle for floating panels */
+.resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nw-resize;
+  background: linear-gradient(135deg, transparent 0%, transparent 40%, #4a5568 50%, transparent 60%, transparent 100%);
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  background-position: center;
+  z-index: 10;
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 0;
+  height: 0;
+  border-left: 12px solid transparent;
+  border-bottom: 12px solid #4a5568;
+  opacity: 0.6;
+}
+
+.resize-handle:hover::before {
+  opacity: 1;
+  border-bottom-color: #6b7280;
+}
+
+/* MCP badge and connection indicator */
+.mcp-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #0b1220;
+  border: 1px solid #243244;
+  color: #9ab;
+  font-size: 12px;
+  margin-left: 8px;
+  position: relative;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mcp-badge:hover {
+  background: #1a2332;
+  border-color: #394B5C;
+  color: #cbd5e1;
+}
+
+/* Custom toggle switches */
+.custom-toggle {
+  pointer-events: auto !important;
+}
+
+.toggle-track {
+  width: 44px;
+  height: 22px;
+  background: #27323b;
+  border: 1px solid #243244;
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  cursor: pointer;
+}
+
+.toggle-track:hover {
+  background: #394958;
+  border-color: #4a5568;
+}
+
+.toggle-track.active {
+  background: linear-gradient(90deg, #12394a, #0a728a);
+  border-color: #0b728a;
+}
+
+.toggle-track.active:hover {
+  background: linear-gradient(90deg, #1a4a5c, #0d8aa6);
+}
+
+.toggle-knob {
+  width: 16px;
+  height: 16px;
+  background: #e6edf3;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  transition: transform 0.2s ease, background 0.2s ease;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+
+.toggle-track.active .toggle-knob {
+  transform: translateX(20px);
+  background: #fff;
+}
+
+/* Number input styling */
+.number-input {
+  width: 66px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #243244;
+  background: #07111a;
+  color: #e6edf3;
+  font-size: 13px;
+  margin-right: 8px;
+}
+
+.number-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(12,56,72,0.12);
+  border-color: #1f9bb5;
+}

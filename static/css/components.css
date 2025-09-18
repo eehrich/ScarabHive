@@ -1,0 +1,342 @@
+/*
+  components.css — General component and utility styles for Agent System
+*/
+
+/* Collapsible panels */
+details {
+  background: #0b1220;
+  border: 1px solid #243244;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+summary {
+  cursor: pointer;
+  color: #9ab;
+  font-weight: 500;
+}
+
+/* Typography */
+pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}
+
+/* General text content */
+h1 {
+  margin: 0;
+  font-size: 18px;
+  color: #cbd5e1;
+}
+
+/* Utility classes for spacing and layout */
+.text-center {
+  text-align: center;
+}
+
+.text-left {
+  text-align: left;
+}
+
+.text-right {
+  text-align: right;
+}
+
+.margin-0 {
+  margin: 0;
+}
+
+.padding-0 {
+  padding: 0;
+}
+
+.flex {
+  display: flex;
+}
+
+.flex-column {
+  flex-direction: column;
+}
+
+.flex-row {
+  flex-direction: row;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.justify-center {
+  justify-content: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.gap-4 {
+  gap: 4px;
+}
+
+.gap-8 {
+  gap: 8px;
+}
+
+.gap-12 {
+  gap: 12px;
+}
+
+.gap-16 {
+  gap: 16px;
+}
+
+/* Common color classes */
+.text-primary {
+  color: #cbd5e1;
+}
+
+.text-secondary {
+  color: #9ab;
+}
+
+.text-muted {
+  color: #6b7280;
+}
+
+.text-success {
+  color: #81c784;
+}
+
+.text-error {
+  color: #ef5350;
+}
+
+.text-warning {
+  color: #ffb74d;
+}
+
+.text-info {
+  color: #42a5f5;
+}
+
+/* Background colors */
+.bg-primary {
+  background: #0b1220;
+}
+
+.bg-secondary {
+  background: #0a1420;
+}
+
+.bg-dark {
+  background: #07111a;
+}
+
+/* Border utilities */
+.border {
+  border: 1px solid #243244;
+}
+
+.border-radius {
+  border-radius: 8px;
+}
+
+.border-radius-sm {
+  border-radius: 4px;
+}
+
+.border-radius-lg {
+  border-radius: 12px;
+}
+
+/* Show/hide utilities */
+.hidden {
+  display: none !important;
+}
+
+.visible {
+  display: block !important;
+}
+
+/* Transition utilities */
+.transition {
+  transition: all 0.2s ease;
+}
+
+.transition-fast {
+  transition: all 0.15s ease;
+}
+
+.transition-slow {
+  transition: all 0.3s ease;
+}
+
+/* Cursor utilities */
+.cursor-pointer {
+  cursor: pointer;
+}
+
+.cursor-default {
+  cursor: default;
+}
+
+.cursor-grab {
+  cursor: grab;
+}
+
+.cursor-grabbing {
+  cursor: grabbing;
+}
+
+/* Opacity utilities */
+.opacity-50 {
+  opacity: 0.5;
+}
+
+.opacity-75 {
+  opacity: 0.75;
+}
+
+.opacity-90 {
+  opacity: 0.9;
+}
+
+/* Z-index utilities */
+.z-10 {
+  z-index: 10;
+}
+
+.z-100 {
+  z-index: 100;
+}
+
+.z-1000 {
+  z-index: 1000;
+}
+
+/* Overflow utilities */
+.overflow-hidden {
+  overflow: hidden;
+}
+
+.overflow-auto {
+  overflow: auto;
+}
+
+.overflow-x-auto {
+  overflow-x: auto;
+}
+
+.overflow-y-auto {
+  overflow-y: auto;
+}
+
+/* Position utilities */
+.relative {
+  position: relative;
+}
+
+.absolute {
+  position: absolute;
+}
+
+.fixed {
+  position: fixed;
+}
+
+.sticky {
+  position: sticky;
+}
+
+/* Flex utilities */
+.flex-1 {
+  flex: 1;
+}
+
+.flex-auto {
+  flex: auto;
+}
+
+.flex-none {
+  flex: none;
+}
+
+.flex-grow {
+  flex-grow: 1;
+}
+
+.flex-shrink {
+  flex-shrink: 1;
+}
+
+.flex-shrink-0 {
+  flex-shrink: 0;
+}
+
+/* Width/Height utilities */
+.w-full {
+  width: 100%;
+}
+
+.h-full {
+  height: 100%;
+}
+
+.min-w-0 {
+  min-width: 0;
+}
+
+.min-h-0 {
+  min-height: 0;
+}
+
+/* Scroll behavior */
+.scroll-smooth {
+  scroll-behavior: smooth;
+}
+
+/* Selection styling */
+::selection {
+  background: #1e88e5;
+  color: #ffffff;
+}
+
+/* Focus states for accessibility */
+*:focus {
+  outline: 2px solid #1e88e5;
+  outline-offset: 2px;
+}
+
+/* Scrollbar styling for webkit browsers */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0b1220;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #243244;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Firefox scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #243244 #0b1220;
+}

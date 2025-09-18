@@ -1,0 +1,57 @@
+/*
+  base.css — Base styles and CSS variables for Agent System
+*/
+
+/* CSS Variables */
+:root {
+  color-scheme: dark;
+}
+
+/* CSS Reset and Base Styles */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+  background: #0b0f14;
+  color: #e6edf3;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  line-height: 1.2;
+}
+
+p {
+  margin: 0 0 16px 0;
+  line-height: 1.6;
+}
+
+/* Spinner animations */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid #243244;
+  border-top: 1px solid #58a6ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* Icon spinner */
+.icon-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.08);
+  border-top-color: #9ab;
+  animation: spin 1s linear infinite;
+}
