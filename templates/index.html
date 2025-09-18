@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/static/css/base.css" />
     <link rel="stylesheet" href="/static/css/layout.css" />
     <link rel="stylesheet" href="/static/css/panels.css" />
-    <link rel="stylesheet" href="/static/css/mcp.css" />
+        <link rel="stylesheet" href="{{ url_for('static', path='css/mcp.css') }}?v=blocked-tools">
     <link rel="stylesheet" href="/static/css/debug.css" />
     <link rel="stylesheet" href="/static/css/chat.css" />
     <link rel="stylesheet" href="/static/css/components.css" />
@@ -40,7 +40,7 @@
 
         <!-- Load JavaScript Modules (order matters) -->
     <script src="{{ url_for('static', path='js/panel_manager.js') }}"></script>
-    <script src="{{ url_for('static', path='js/mcp_module.js') }}"></script>
+    <script src="{{ url_for('static', path='js/mcp_module.js') }}?v=blocked-tools"></script>
     <script src="{{ url_for('static', path='js/status_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/debug_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/main.js') }}"></script>
