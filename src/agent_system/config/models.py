@@ -63,11 +63,24 @@ class ContextConfig(BaseModel):
     location: str = "Germany"
 
 
+class ContextManagementConfig(BaseModel):
+    enabled: bool = True
+    strategy: str = "SUMMARIZE_OLDEST"
+    preserve_recent_messages: int = 10
+    prediction_threshold: float = 0.90
+    summarization_threshold: float | int = 0.80
+    max_summary_words: int = 500
+    tool_result_preview_chars: int = 200
+    warning_levels: dict[str, float] = {"yellow": 0.7, "orange": 0.85, "red": 0.95}
+    optimization: dict | None = None
+
+
 class AgentConfig(BaseModel):
     llm: LLMConfig = LLMConfig()
     mcp: MCPConfig = MCPConfig()
     network: NetworkConfig = NetworkConfig()
     servers: dict[str, dict] = {}
+    context_management: ContextManagementConfig | None = None
     logging: LoggingConfig = LoggingConfig()
     prompts: PromptsConfig = PromptsConfig()
     context: ContextConfig = ContextConfig()

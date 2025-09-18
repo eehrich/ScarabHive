@@ -79,8 +79,10 @@ class MCPConfig:
     # External servers
     servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
 
-    # Global settings
+    # Global connection settings
     default_timeout: float = 30.0
+    default_ssl_verify: bool = True
+    parallel_connect: bool = False
     max_concurrent_requests: int = 10
     enable_health_checks: bool = True
     health_check_interval: float = 300.0  # 5 minutes
@@ -102,7 +104,7 @@ class MCPConfigManager:
     def load_config(self, config_data: Optional[Dict[str, Any]] = None) -> MCPConfig:
         """Load MCP configuration from data or file"""
         logger.debug(f"MCPConfigManager.load_config called with config_data={config_data is not None}")
-        
+
         if config_data is None:
             if not self.config_path or not self.config_path.exists():
                 logger.info("No MCP configuration found, using defaults")
@@ -123,16 +125,19 @@ class MCPConfigManager:
             # Assume config_data is already the mcp section
             mcp_data = config_data
             logger.debug("Using config_data directly as mcp_data")
-            
+
         logger.debug(f"Extracted mcp_data: keys={list(mcp_data.keys())}")
 
         # Parse main config
+        connection_settings = mcp_data.get("connection", {})
         config = MCPConfig(
             enabled=mcp_data.get("enabled", True),
             expose_local_server=mcp_data.get("expose_local_server", True),
             local_server_port=mcp_data.get("local_server_port", 8000),
             local_server_host=mcp_data.get("local_server_host", "localhost"),
-            default_timeout=mcp_data.get("default_timeout", 30.0),
+            default_timeout=connection_settings.get("timeout", mcp_data.get("default_timeout", 30.0)),
+            default_ssl_verify=connection_settings.get("ssl_verify", True),
+            parallel_connect=connection_settings.get("parallel_connect", False),
             max_concurrent_requests=mcp_data.get("max_concurrent_requests", 10),
             enable_health_checks=mcp_data.get("enable_health_checks", True),
             health_check_interval=mcp_data.get("health_check_interval", 300.0),
@@ -146,7 +151,7 @@ class MCPConfigManager:
         servers_data = mcp_data.get("external_servers", {})
         logger.debug(f"Found {len(servers_data)} external servers: {list(servers_data.keys())}")
         for server_name, server_data in servers_data.items():
-            server_config = self._parse_server_config(server_name, server_data)
+            server_config = self._parse_server_config(server_name, server_data, config)
             config.servers[server_name] = server_config
             logger.debug(f"Parsed server {server_name}: blocked_tools={server_config.blocked_tools}")
 
@@ -154,7 +159,7 @@ class MCPConfigManager:
         logger.info(f"Loaded MCP configuration with {len(config.servers)} external servers")
         return config
 
-    def _parse_server_config(self, name: str, data: Dict[str, Any]) -> MCPServerConfig:
+    def _parse_server_config(self, name: str, data: Dict[str, Any], global_config: MCPConfig) -> MCPServerConfig:
         """Parse individual server configuration"""
         config = MCPServerConfig(
             name=name,
@@ -172,9 +177,9 @@ class MCPConfigManager:
         config.username = auth_data.get("username")
         config.password = auth_data.get("password")
 
-        # Connection settings
-        config.ssl_verify = data.get("ssl_verify", True)
-        config.timeout = data.get("timeout", 30.0)
+        # Connection settings - use global defaults if not specified
+        config.ssl_verify = data.get("ssl_verify", global_config.default_ssl_verify)
+        config.timeout = data.get("timeout", global_config.default_timeout)
         config.max_retries = data.get("max_retries", 3)
         config.retry_delay = data.get("retry_delay", 1.0)
         # Support new key `transport` while preserving backward-compatible `transport_type`

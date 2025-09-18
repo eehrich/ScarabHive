@@ -33,9 +33,13 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
 }
 
-#statusToggleBtn {
+/* Common button styling for header buttons */
+#statusToggleBtn,
+#mcpToggleBtn,
+#debugToggleBtn {
   padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid #243244;
@@ -43,6 +47,40 @@ header {
   color: #9ab;
   font-size: 13px;
   cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  line-height: 1.2;
+}
+
+#statusToggleBtn:hover,
+#mcpToggleBtn:hover,
+#debugToggleBtn:hover {
+  background: #16202b;
+  border-color: #354155;
+  color: #b3c5d4;
+}
+
+#statusToggleBtn:active,
+#mcpToggleBtn:active,
+#debugToggleBtn:active {
+  background: #0a1018;
+  transform: translateY(1px);
+}
+
+/* Header title styling */
+header h1 {
+  color: #e5f1ff;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  flex: 1;
+}
+
+/* Header right section for buttons */
+header .header-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 /* Floating status panel */
@@ -69,9 +107,18 @@ header {
 /* Status panel specific positioning - smaller and on the right */
 #floatingStatusPanel {
   width: 400px !important;
-  height: 500px !important;
+  height: 700px !important;
   right: 24px !important;
   left: auto !important;
+  top: 80px !important;
+}
+
+/* Debug panel specific positioning - medium size on the left */
+#floatingDebugPanel {
+  width: 600px !important;
+  height: 700px !important;
+  left: 24px !important;
+  right: auto !important;
   top: 80px !important;
 }
 .floating-panel-header {
@@ -1128,4 +1175,87 @@ pre {
 .response-header.error .response-icon svg path,
 .response-header.error .response-icon svg rect {
   stroke: none;
+}
+
+/* Debug panel styles */
+.debug-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+}
+
+.debug-section {
+  background: #0a1420;
+  border: 1px solid #243244;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.debug-section h3 {
+  margin: 0 0 12px 0;
+  color: #cbd5e1;
+  font-size: 14px;
+  font-weight: 600;
+  border-bottom: 1px solid #243244;
+  padding-bottom: 6px;
+}
+
+.debug-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.debug-messages {
+  max-height: 400px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.debug-message {
+  background: #0b1220;
+  border: 1px solid #1e2a3a;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.debug-message-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.debug-message-role {
+  background: #1e2a3a;
+  color: #9ab;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.debug-message-index {
+  color: #666;
+  font-size: 10px;
+}
+
+.debug-message-tokens {
+  color: #42a5f5;
+  font-size: 10px;
+  margin-left: auto;
+}
+
+.debug-message-content {
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.4;
 }

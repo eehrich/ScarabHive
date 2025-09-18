@@ -66,12 +66,19 @@ class HTTPStreamingTransport(MCPTransport):
 
     def _build_url(self) -> str:
         """Build URL with optional config parameter for streaming transport"""
-        url = f"{self.base_url}/mcp"
+        # Check if base_url already ends with /mcp to avoid double suffix
+        if self.base_url.endswith('/mcp'):
+            url = self.base_url
+        else:
+            url = f"{self.base_url}/mcp"
+
         if self.config:
             # Encode config as base64 for the transport
             config_json = json.dumps(self.config)
             config_b64 = base64.b64encode(config_json.encode()).decode()
-            url += f"?config={config_b64}"
+            # Handle existing query parameters
+            separator = '&' if '?' in url else '?'
+            url += f"{separator}config={config_b64}"
         return url
 
     async def _send_initialized_notification(self) -> None:
@@ -112,7 +119,7 @@ class HTTPStreamingTransport(MCPTransport):
             "jsonrpc": notification.jsonrpc,
             "method": notification.method
         }
-        
+
         if notification.params:
             payload["params"] = notification.params
 

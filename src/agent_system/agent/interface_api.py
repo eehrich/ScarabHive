@@ -21,6 +21,7 @@ from ..config.models import AgentConfig
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
+from ..llm.clients import ChatMessage
 from ..mcp.status import status_bus, StatusEvent, get_status_metrics, publish_status
 from ..mcp.integration import initialize_mcp, shutdown_mcp
 
@@ -77,6 +78,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # included via agent.yaml.
             try:
                 mcp_block = config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {})
+
+                # Add global network settings to MCP config
+                if not mcp_block.get('connection'):
+                    mcp_block['connection'] = {}
+
+                # Use global ssl_verify setting if not specifically set in MCP config
+                if 'ssl_verify' not in mcp_block['connection']:
+                    mcp_block['connection']['ssl_verify'] = config.network.ssl_verify
+
                 logger.info(f"MCP config loaded: external_servers={len(mcp_block.get('external_servers', {}))}")
                 logger.debug(f"MCP config block: {mcp_block}")
             except Exception:
@@ -169,6 +179,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
     agent = Agent("api_agent", config, registry)
+    registry.register("agent", agent)
 
     # Store registry and config globally for MCP endpoint access
     global _app_registry, _app_config
@@ -360,6 +371,73 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    @app.get("/debug/context")
+    async def debug_context():
+        """Diagnostic endpoint to get current context management state and conversation messages."""
+        try:
+            # Get the agent from registry if available
+            agent = None
+            if _app_registry:
+                agent_servers = [s for s in _app_registry.list() if s == "agent"]
+                if agent_servers:
+                    agent = _app_registry.get("agent")
+
+            if not agent or not hasattr(agent, 'context_manager'):
+                return {
+                    "error": "Agent or context manager not available",
+                    "context_window": "N/A",
+                    "prediction_threshold": 0,
+                    "summarization_threshold": "N/A",
+                    "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},
+                    "messages": []
+                }
+
+            # Get context manager usage stats
+            usage_stats = agent.context_manager.get_usage_stats() if hasattr(agent.context_manager, 'get_usage_stats') else {}
+
+            # Get current conversation messages if available
+            messages = []
+            if hasattr(agent, '_current_messages') and agent._current_messages:
+                # Estimate tokens for each message and prepare for display
+                for i, msg in enumerate(agent._current_messages):
+                    # Make sure msg is a ChatMessage object before estimating tokens
+                    if not isinstance(msg, ChatMessage):
+                        # Attempt to convert dict to ChatMessage if possible
+                        try:
+                            msg = ChatMessage(**msg)
+                        except (TypeError, ValueError):
+                            # Skip if conversion fails
+                            continue
+
+                    estimated_tokens = agent.context_manager.estimate_token_count([msg]) if agent.context_manager else None
+                    messages.append({
+                        "role": getattr(msg, 'role', 'unknown'),
+                        "content": getattr(msg, 'content', ''),
+                        "estimated_tokens": estimated_tokens,
+                        "has_tool_calls": bool(getattr(msg, 'tool_calls', None))
+                    })
+
+            return {
+                "context_window": usage_stats.get("context_window", "N/A"),
+                "prediction_threshold": usage_stats.get("prediction_threshold", 0),
+                "summarization_threshold": usage_stats.get("summarization_threshold", "N/A"),
+                "actual_usage": usage_stats.get("actual_usage", {"total_tokens": 0, "last_call_tokens": 0}),
+                "warning_levels": usage_stats.get("warning_levels", {}),
+                "messages": messages,
+                "message_count": len(messages)
+            }
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Debug context endpoint failed: %s", e)
+            return {
+                "error": f"Debug endpoint failed: {str(e)}",
+                "context_window": "Error",
+                "prediction_threshold": 0,
+                "summarization_threshold": "Error",
+                "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},
+                "messages": []
+            }
+
     def _check_server_connection(server_info):
         """Check if a server is actually responding with real-time connectivity test"""
         import socket
@@ -437,7 +515,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Get tools using both get_tools() and get_schema() methods
                     tools = []
                     detailed_tools = []
-                    
+
                     # Try get_tools() first (for multi-tool plugins like IBKR)
                     if hasattr(server_obj, 'get_tools'):
                         try:
@@ -454,7 +532,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                         tool_name = tool_def.get('name', f'{server_id}_tool')
                                         description = tool_def.get('description', f'Tool for {server_id}')
                                         parameters = tool_def.get('input_schema', {})
-                                    
+
                                     tools.append(tool_name)
                                     detailed_tools.append({
                                         'name': tool_name,
@@ -464,7 +542,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         except Exception:
                             # If get_tools() fails, fall back to get_schema()
                             pass
-                    
+
                     # Fall back to get_schema() if get_tools() didn't work or doesn't exist
                     if not tools and hasattr(server_obj, 'get_schema'):
                         try:

@@ -10,13 +10,14 @@
   </head>
   <body>
     <header>
-      <h1>
-        Scarab Agent System
-        <button id="mcpToggleBtn" class="mcp-badge" aria-expanded="false" title="Show MCP servers & tools">MCP-Servers
-          <span id="mcpConnected" class="mcp-connected" title="Connection status" aria-hidden="true"></span>
+      <h1>Scarab Agent System</h1>
+      <div class="header-buttons">
+        <button id="mcpToggleBtn" aria-expanded="false" title="Show MCP servers & tools">
+          MCP-Servers (<span id="mcpConnected">15</span>)
         </button>
-      </h1>
-      <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
+        <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
+        <button id="debugToggleBtn" aria-expanded="false" title="Show debug messages">Debug</button>
+      </div>
     </header>
 
     <main class="main-container">

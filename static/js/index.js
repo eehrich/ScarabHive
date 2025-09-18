@@ -247,6 +247,132 @@ async function updateMCPServers() {
   } catch (error) {
     console.error('MCP Update: Error:', error);
   }
+}
+
+// Debug info update function
+async function updateDebugInfo() {
+  try {
+    const response = await fetch('/debug/context');
+    if (response.ok) {
+      const data = await response.json();
+
+      // Update context statistics
+      // Compute friendly displays: both absolute tokens and percentage
+      const ctxWindow = Number(data.context_window || 0);
+
+      // Prediction threshold: backend gives fraction (e.g., 0.9). Show tokens and percent.
+      const predFrac = Number(data.prediction_threshold || 0);
+      const predPercent = (predFrac * 100).toFixed(1) + "%";
+      const predTokens = ctxWindow ? Math.round(ctxWindow * predFrac).toLocaleString() : 'N/A';
+
+      // Summarization threshold: backend now returns absolute tokens. If it's <=1 assume it's a fraction.
+      let sumTokensRaw = data.summarization_threshold;
+      let sumTokens = 'N/A';
+      let sumPercent = 'N/A';
+      if (typeof sumTokensRaw === 'number') {
+        if (sumTokensRaw > 1) {
+          sumTokens = sumTokensRaw.toLocaleString();
+          sumPercent = ctxWindow ? ((sumTokensRaw / ctxWindow) * 100).toFixed(1) + '%' : 'N/A';
+        } else {
+          // fraction provided (0..1)
+          sumTokens = ctxWindow ? Math.round(ctxWindow * sumTokensRaw).toLocaleString() : 'N/A';
+          sumPercent = (sumTokensRaw * 100).toFixed(1) + '%';
+        }
+      }
+
+      const contextStatsHtml = `
+        <div class="metric-item">
+          <span class="metric-label">Context Window</span>
+          <span class="metric-value">${ctxWindow ? ctxWindow.toLocaleString() : 'N/A'}</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">Prediction Threshold</span>
+          <span class="metric-value">${predTokens} (${predPercent})</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">Summarization Threshold</span>
+          <span class="metric-value">${sumTokens} (${sumPercent})</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">Actual Total Tokens</span>
+          <span class="metric-value">${(data.actual_usage?.total_tokens || 0).toLocaleString()}</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">Last Call Tokens</span>
+          <span class="metric-value">${(data.actual_usage?.last_call_tokens || 0).toLocaleString()}</span>
+        </div>
+      `;
+
+      // Update messages display
+      let messagesHtml = '';
+      if (data.messages && data.messages.length > 0) {
+        messagesHtml = data.messages.map((msg, index) => {
+          const truncatedContent = (msg.content || '').length > 200
+            ? (msg.content || '').substring(0, 200) + '...'
+            : (msg.content || '');
+
+          return `
+            <div class="debug-message">
+              <div class="debug-message-header">
+                <span class="debug-message-role">${msg.role || 'unknown'}</span>
+                <span class="debug-message-index">#${index + 1}</span>
+                <span class="debug-message-tokens">${msg.estimated_tokens || '?'} tokens</span>
+              </div>
+              <div class="debug-message-content">${escapeHtml(truncatedContent)}</div>
+            </div>
+          `;
+        }).join('');
+      } else {
+        messagesHtml = '<div class="metric-item"><span class="metric-label">No messages in conversation</span></div>';
+      }
+
+      const debugContextStats = document.getElementById('debugContextStats');
+      const debugMessages = document.getElementById('debugMessages');
+
+      if (debugContextStats) debugContextStats.innerHTML = contextStatsHtml;
+      if (debugMessages) debugMessages.innerHTML = messagesHtml;
+
+    } else {
+      // Error response
+      const debugContextStats = document.getElementById('debugContextStats');
+      const debugMessages = document.getElementById('debugMessages');
+
+      if (debugContextStats) {
+        debugContextStats.innerHTML = `
+          <div class="metric-item">
+            <span class="metric-label">Error</span>
+            <span class="metric-value">Failed to load debug info</span>
+          </div>
+        `;
+      }
+      if (debugMessages) {
+        debugMessages.innerHTML = '<div class="metric-item"><span class="metric-label">Debug endpoint not available</span></div>';
+      }
+    }
+  } catch (error) {
+    console.error('Failed to update debug info:', error);
+    const debugContextStats = document.getElementById('debugContextStats');
+    const debugMessages = document.getElementById('debugMessages');
+
+    if (debugContextStats) {
+      debugContextStats.innerHTML = `
+        <div class="metric-item">
+          <span class="metric-label">Error</span>
+          <span class="metric-value">Network error</span>
+        </div>
+      `;
+    }
+    if (debugMessages) {
+      debugMessages.innerHTML = '<div class="metric-item"><span class="metric-label">Failed to load messages</span></div>';
+    }
+  }
+}
+
+// Helper function to escape HTML
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }// Floating status panel
 const statusPanel = document.createElement('div');
 statusPanel.id = 'floatingStatusPanel';
@@ -257,7 +383,7 @@ statusPanel.style.top = '80px';
 statusPanel.style.right = '24px';
 statusPanel.style.left = 'auto';
 statusPanel.style.width = '400px';
-statusPanel.style.height = '500px';
+statusPanel.style.height = '700px';
 statusPanel.innerHTML = `
   <div class="floating-panel-header" id="floatingStatusHeader">
     <span>Status & Metrics</span>
@@ -308,6 +434,48 @@ mcpPanel.innerHTML = `
 `;
 document.body.appendChild(mcpPanel);
 
+// Floating Debug panel
+const debugPanel = document.createElement('div');
+debugPanel.id = 'floatingDebugPanel';
+debugPanel.className = 'floating-panel';
+debugPanel.style.display = 'none';
+// Position debug panel in the center-left
+debugPanel.style.top = '80px';
+debugPanel.style.left = '24px';
+debugPanel.style.width = '600px';
+debugPanel.style.height = '700px';
+debugPanel.innerHTML = `
+  <div class="floating-panel-header" id="floatingDebugHeader">
+    <span>Debug Messages & Context</span>
+    <div style="margin-left:8px;flex:1"></div>
+    <button id="debugRefreshBtn" class="icon-btn" title="Refresh debug info" aria-label="Refresh debug info">
+      <svg class="mcp-refresh-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M21 3v6h-6" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <button id="floatingDebugCloseBtn" title="Close" aria-label="Close">✕</button>
+  </div>
+  <div class="floating-panel-body" id="floatingDebugBody">
+    <div class="debug-content" id="floatingDebugContent">
+      <div class="debug-section">
+        <h3>Context Statistics</h3>
+        <div id="debugContextStats" class="debug-stats">
+          <div class="metric-item"><span class="metric-label">Loading...</span><span class="metric-value">...</span></div>
+        </div>
+      </div>
+      <div class="debug-section">
+        <h3>Current Messages</h3>
+        <div id="debugMessages" class="debug-messages">
+          <div class="metric-item"><span class="metric-label">No messages yet</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="resize-handle"></div>
+`;
+document.body.appendChild(debugPanel);
+
 // NOW get references to elements after they're created
 const statusToggleBtn = document.getElementById('statusToggleBtn');
 const floatingCloseBtn = document.getElementById('floatingCloseBtn');
@@ -319,6 +487,12 @@ const floatingMCPCloseBtn = document.getElementById('floatingMCPCloseBtn');
 const floatingMCPMetrics = document.getElementById('floatingMCPMetrics');
 const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
 const mcpFilterInput = document.getElementById('mcpFilterInput');
+
+// Debug panel elements
+const debugToggleBtn = document.getElementById('debugToggleBtn');
+const floatingDebugCloseBtn = document.getElementById('floatingDebugCloseBtn');
+const floatingDebugContent = document.getElementById('floatingDebugContent');
+const debugRefreshBtn = document.getElementById('debugRefreshBtn');
 
 // Auto-refresh elements
 const autoToggle = document.getElementById('mcpAutoRefreshToggle');
@@ -341,7 +515,7 @@ function savePanelState(id, state) {
 
 function applyPanelState(panel, state) {
   if (!panel || !state) return;
-  
+
   // For status panel, preserve right-side positioning
   if (panel.id === 'floatingStatusPanel') {
     if (state.right !== undefined) {
@@ -358,7 +532,7 @@ function applyPanelState(panel, state) {
     // For other panels, use left positioning
     if (state.left !== undefined) panel.style.left = state.left + 'px';
   }
-  
+
   if (state.top !== undefined) panel.style.top = state.top + 'px';
   if (state.width !== undefined) panel.style.width = state.width + 'px';
   if (state.height !== undefined) panel.style.height = state.height + 'px';
@@ -386,21 +560,21 @@ if (savedStatus) {
 window.resetPanelPositions = function() {
   localStorage.removeItem('panelState:floatingStatusPanel');
   localStorage.removeItem('panelState:floatingMCPPanel');
-  
+
   // Reset status panel to right side
   statusPanel.style.right = '24px';
   statusPanel.style.left = 'auto';
   statusPanel.style.top = '80px';
   statusPanel.style.width = '400px';
   statusPanel.style.height = '500px';
-  
+
   // Reset MCP panel to left side
   mcpPanel.style.left = '24px';
   mcpPanel.style.right = 'auto';
   mcpPanel.style.top = '80px';
   mcpPanel.style.width = '640px';
   mcpPanel.style.height = '800px';
-  
+
   // positions reset
 };
 
@@ -435,11 +609,11 @@ if (autoToggle) {
   autoToggle.addEventListener('click', (ev) => {
     // Prevent event from bubbling to drag handler
     ev.stopPropagation();
-    
+
     autoRefreshEnabled = !autoRefreshEnabled;
     const track = autoToggle.querySelector('.toggle-track');
     if (track) track.classList.toggle('active', autoRefreshEnabled);
-    
+
     const interval = parseInt(autoIntervalInput.value || '30', 10);
     // persist
     const state = loadPanelState('floatingMCPPanel') || {};
@@ -530,6 +704,29 @@ if (floatingMCPCloseBtn) {
   });
 }
 
+// Debug panel event listeners
+if (debugToggleBtn) {
+  debugToggleBtn.addEventListener('click', () => {
+    const shown = debugPanel.style.display !== 'none';
+    debugPanel.style.display = shown ? 'none' : 'block';
+    debugToggleBtn.setAttribute('aria-expanded', String(!shown));
+    if (!shown) updateDebugInfo().catch(() => {});
+  });
+}
+
+if (floatingDebugCloseBtn) {
+  floatingDebugCloseBtn.addEventListener('click', () => {
+    debugPanel.style.display = 'none';
+    if (debugToggleBtn) debugToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+if (debugRefreshBtn) {
+  debugRefreshBtn.addEventListener('click', () => {
+    updateDebugInfo().catch(() => {});
+  });
+}
+
 // Make panel draggable
 (function makeDraggable(headerId, panel) {
   const header = document.getElementById(headerId);
@@ -553,7 +750,7 @@ if (floatingMCPCloseBtn) {
     if (!isDragging) return;
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
-    
+
     // For status panel, maintain right positioning logic during drag
     if (panel.id === 'floatingStatusPanel') {
       const newLeft = origX + dx;
@@ -565,9 +762,9 @@ if (floatingMCPCloseBtn) {
     }
     panel.style.top = (origY + dy) + 'px';
   });
-  window.addEventListener('pointerup', (ev) => { 
+  window.addEventListener('pointerup', (ev) => {
     isDragging = false;
-    
+
     // After drag ends, convert status panel back to right positioning
     if (panel.id === 'floatingStatusPanel') {
       const rect = panel.getBoundingClientRect();
@@ -614,6 +811,39 @@ if (floatingMCPCloseBtn) {
   window.addEventListener('pointerup', (ev) => { isDragging = false; });
 })('floatingMCPHeader', mcpPanel);
 
+// Make Debug panel draggable
+(function makeDraggable(headerId, panel) {
+  const header = document.getElementById(headerId);
+  let isDragging = false;
+  let startX = 0, startY = 0, origX = 0, origY = 0;
+  header.addEventListener('pointerdown', (ev) => {
+    try {
+      // Ignore pointerdown if user clicked on interactive controls so they receive the event
+      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
+      if (interactive) return;
+      if (ev.target && ev.target.closest && (
+        ev.target.closest('#floatingDebugCloseBtn') ||
+        ev.target.closest('#debugRefreshBtn') ||
+        ev.target.closest('.custom-toggle')
+      )) return;
+    } catch (e) {}
+    isDragging = true;
+    startX = ev.clientX; startY = ev.clientY;
+    const rect = panel.getBoundingClientRect();
+    origX = rect.left; origY = rect.top;
+    header.setPointerCapture(ev.pointerId);
+  });
+  window.addEventListener('pointermove', (ev) => {
+    if (!isDragging) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    panel.style.left = (origX + dx) + 'px';
+    panel.style.top = (origY + dy) + 'px';
+    panel.style.right = 'auto';
+  });
+  window.addEventListener('pointerup', (ev) => { isDragging = false; });
+})('floatingDebugHeader', debugPanel);
+
 // Persist position when dragging ends for both panels
 function attachDragPersist(headerId, panel, stateKey) {
   const header = document.getElementById(headerId);
@@ -622,7 +852,7 @@ function attachDragPersist(headerId, panel, stateKey) {
     try {
       const rect = panel.getBoundingClientRect();
       const state = loadPanelState(stateKey) || {};
-      
+
       // For status panel, save right position instead of left
       if (panel.id === 'floatingStatusPanel') {
         const viewport = window.innerWidth;
@@ -635,13 +865,14 @@ function attachDragPersist(headerId, panel, stateKey) {
         state.left = Math.round(rect.left);
         state.top = Math.round(rect.top);
       }
-      
+
       savePanelState(stateKey, state);
     } catch (e) {}
   });
 }
 attachDragPersist('floatingStatusHeader', statusPanel, 'floatingStatusPanel');
 attachDragPersist('floatingMCPHeader', mcpPanel, 'floatingMCPPanel');
+attachDragPersist('floatingDebugHeader', debugPanel, 'floatingDebugPanel');
 
 // Auto-refresh disabled by default. Use manual refresh via button to update MCP panel.
 
@@ -929,20 +1160,36 @@ async function run() {
 (function manageMcpIndicator() {
   const indicator = document.getElementById('mcpConnected');
   if (!indicator) return;
-  function setConnected(v) {
-    if (v) { indicator.classList.add('connected'); indicator.setAttribute('title', 'Connected'); indicator.setAttribute('aria-hidden', 'false'); }
-    else { indicator.classList.remove('connected'); indicator.setAttribute('title', 'Disconnected'); indicator.setAttribute('aria-hidden', 'true'); }
+
+  function updateCount(count) {
+    indicator.textContent = count || '0';
+    indicator.setAttribute('title', `${count} MCP servers connected`);
   }
-  let sse = null;
-  function connect() {
+
+  // Update count when MCP data is refreshed
+  function updateFromMetrics() {
     try {
-      sse = new EventSource('/status/stream');
-      sse.onopen = () => setConnected(true);
-      sse.onmessage = () => {};
-      sse.onerror = () => { setConnected(false); try { sse.close(); } catch (e) {} sse = null; setTimeout(connect, 3000); };
-    } catch (e) { setConnected(false); setTimeout(connect, 3000); }
+      const metrics = document.getElementById('floatingMCPMetrics');
+      if (metrics) {
+        const serverElements = metrics.querySelectorAll('.mcp-server');
+        updateCount(serverElements.length);
+      }
+    } catch (e) {
+      updateCount(0);
+    }
   }
-  connect();
+
+  // Call update periodically and when MCP panel is refreshed
+  updateFromMetrics();
+  setInterval(updateFromMetrics, 5000);
+
+  // Also update when MCP refresh button is clicked
+  const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
+  if (mcpRefreshBtn) {
+    mcpRefreshBtn.addEventListener('click', () => {
+      setTimeout(updateFromMetrics, 1000); // Delay to allow refresh to complete
+    });
+  }
 })();
 
 // Make floating panels resizable
@@ -987,19 +1234,20 @@ function makeResizable(panel) {
       const state = loadPanelState(panel.id) || {};
       state.width = Math.round(rect.width);
       state.height = Math.round(rect.height);
-      
+
       // For status panel, also update right position since resizing can affect it
       if (panel.id === 'floatingStatusPanel') {
         const viewport = window.innerWidth;
         state.right = Math.round(viewport - rect.right);
         delete state.left;  // Remove any old left positioning
       }
-      
+
       savePanelState(panel.id, state);
     } catch (e) {}
   }
 }
 
-// Apply resize functionality to both panels
+// Apply resize functionality to all floating panels
 makeResizable(statusPanel);
 makeResizable(mcpPanel);
+makeResizable(debugPanel);

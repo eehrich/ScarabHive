@@ -29,12 +29,12 @@ class Agent(MCPServer):
     This enables direct agent-to-agent communication without wrapper classes.
     """
 
-    def __init__(self, name: str, config: AgentConfig, registry: MCPRegistry, 
+    def __init__(self, name: str, config: AgentConfig, registry: MCPRegistry,
                  agent_config: dict | None = None, ssl_verify: bool = True,
                  llm: object | None = None, llm_factory: object | None = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
-        
+
         Args:
             name: Name of this agent (used when serving as MCP Server)
             config: Agent configuration
@@ -99,35 +99,42 @@ class Agent(MCPServer):
         # Initialize context management system
         self._init_context_management()
 
+        # Track current conversation messages for debugging
+        self._current_messages: List[ChatMessage] = []
+
     def _init_context_management(self):
         """Initialize the context management system."""
         try:
-            # Create context configuration from agent config
-            context_window = getattr(self.agent_config, "context_window", 32768)
-            
-            # Get context_management settings from agent config if available
-            context_mgmt_attr = getattr(self.agent_config, "context_management", None)
-            if context_mgmt_attr and hasattr(context_mgmt_attr, '__dict__'):
-                # If it's an object, convert to dict
-                context_mgmt_settings = vars(context_mgmt_attr)
-            elif isinstance(context_mgmt_attr, dict):
-                context_mgmt_settings = context_mgmt_attr
+            # Read context window from LLM config if present
+            context_window = self.agent_config.llm.context_window if getattr(self.agent_config, 'llm', None) else 32768
+
+            # Read user-provided context management settings (may be None)
+            context_mgmt = getattr(self.agent_config, 'context_management', None) or {}
+
+            # Normalize to dict if it's a pydantic model
+            if hasattr(context_mgmt, '__dict__'):
+                context_mgmt_settings = vars(context_mgmt)
             else:
-                context_mgmt_settings = {}
-            
-            # Create ContextConfig with proper parameters
+                context_mgmt_settings = dict(context_mgmt)
+
+            # Create ContextConfig with proper parameters from context_mgmt_settings
             from ...context.config import ContextConfig, ContextStrategy
-            
+
             # Convert strategy string to enum if needed
             strategy_str = context_mgmt_settings.get("strategy", "SUMMARIZE_OLDEST")
             if isinstance(strategy_str, str):
                 strategy = ContextStrategy(strategy_str)
             else:
                 strategy = strategy_str
-            
+
+            # summarization_threshold may be provided as float (percentage) or int (absolute tokens)
+            summarization_threshold = context_mgmt_settings.get("summarization_threshold", 0.80)
+            # If percentage (0..1) leave as-is; ContextConfig.from_dict handles translation to tokens
+
             self.context_config = ContextConfig(
-                context_window=context_window,
-                summarization_threshold=context_mgmt_settings.get("summarization_threshold", context_window // 3),
+                context_window=int(context_window),
+                summarization_threshold=summarization_threshold,
+                prediction_threshold=context_mgmt_settings.get("prediction_threshold", 0.90),
                 preserve_recent_messages=context_mgmt_settings.get("preserve_recent_messages", 10),
                 strategy=strategy,
                 max_summary_words=context_mgmt_settings.get("max_summary_words", 500),
@@ -135,10 +142,10 @@ class Agent(MCPServer):
                 enable_compression=context_mgmt_settings.get("optimization", {}).get("enabled", True),
                 compress_tool_results=context_mgmt_settings.get("optimization", {}).get("compress_tool_results", True)
             )
-            
+
             # Initialize context manager
             self.context_manager = ContextManager(self.context_config)
-            
+
             # Initialize and set summarizer with dedicated LLM client
             # Create a separate LLM client for summarization to prevent recursive context management
             summarizer_llm = None
@@ -159,16 +166,16 @@ class Agent(MCPServer):
                 except Exception as e:
                     logger.warning("Failed to create dedicated summarizer LLM client: %s", e)
                     summarizer_llm = None
-            
+
             summarizer = ConversationSummarizer(summarizer_llm)
             self.context_manager.set_summarizer(summarizer)
-            
+
             # Initialize optimizer
             self.token_optimizer = TokenOptimizer()
-            
-            logger.info("Context management initialized - window: %d, summarization threshold: %d", 
-                       context_window, self.context_config.summarization_threshold)
-                       
+
+            logger.info("Context management initialized - window: %d, summarization threshold: %d, prediction threshold: %.1f%%",
+                       context_window, self.context_config.summarization_threshold, self.context_config.prediction_threshold * 100)
+
         except Exception as e:
             logger.error("Failed to initialize context management: %s", e)
             # Fallback to default configuration
@@ -195,14 +202,14 @@ class Agent(MCPServer):
 
         try:
             logger = logging.getLogger(__name__)
-            
+
             # Initialize MCP integration tracking
             mcp_integration = None
             mcp_initialized_locally = False
-            
+
             # Get tools from the local registry (plugins)
             available_tools = self.registry.list()
-            
+
             # Also include tools from external MCP servers
             try:
                 from ...mcp.integration import get_mcp_integration
@@ -214,7 +221,7 @@ class Agent(MCPServer):
                         await mcp_integration.initialize(mcp_config)
                         mcp_initialized_locally = True
                         logger.debug("Initialized MCP integration for agent")
-                
+
                 if mcp_integration and mcp_integration.initialized:
                     all_tools = await mcp_integration.list_all_tools()
                     # Add external server tools to available tools
@@ -230,7 +237,7 @@ class Agent(MCPServer):
 
             # Render prompts
             rendered = render_prompts(
-                self.agent_config.prompts.system_template, 
+                self.agent_config.prompts.system_template,
                 {"tools": available_tools, "max_steps": max_steps},
                 auto_datetime=self.agent_config.context.auto_datetime,
                 timezone=self.agent_config.context.timezone,
@@ -243,10 +250,13 @@ class Agent(MCPServer):
             planner = Planner(self.llm, system_msg, tools_msg)
             messages = planner.initial_messages(task)
 
+            # Track messages for debugging
+            self._current_messages = messages.copy()
+
             # Build tool schemas and maintain mapping for external tools
             tools_schema: List[Dict] = []
             tool_name_mapping = {}  # Maps OpenAI-compatible names to original names
-            
+
             for tool_name in available_tools:
                 # Check if it's an external tool (contains a dot)
                 if "." in tool_name:
@@ -254,7 +264,7 @@ class Agent(MCPServer):
                     # Create OpenAI-compatible name (replace dots with underscores)
                     openai_tool_name = tool_name.replace(".", "_")
                     tool_name_mapping[openai_tool_name] = tool_name
-                    
+
                     # Create a schema for external tools
                     try:
                         from ...mcp.integration import get_mcp_integration
@@ -288,7 +298,7 @@ class Agent(MCPServer):
                         tools_schema.append(server.get_schema())
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
-            
+
             executor = Executor(self.registry)
             executor = Executor(self.registry)
             for step in range(max_steps):
@@ -297,10 +307,10 @@ class Agent(MCPServer):
                     # Apply token optimization
                     if self.token_optimizer:
                         messages = await self.token_optimizer.optimize_messages(messages)
-                    
+
                     # Check token count and issue appropriate warnings
                     estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
-                    
+
                     # Apply context management if needed
                     if self.context_manager.should_manage_context(estimated_tokens, warning_level):
                         logger.info("Applying context management at step %d", step + 1)
@@ -312,20 +322,26 @@ class Agent(MCPServer):
                     message_count = len(messages)
                     estimated_tokens = self._estimate_token_count(messages)
                     context_window = getattr(self.agent_config, "context_window", 32768)
-                    logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
+                    logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)",
                                step + 1, message_count, estimated_tokens, context_window)
-                    
+
                     if estimated_tokens > context_window * 0.9:  # 90% threshold
-                        logger.warning("Token count approaching context window limit: %d/%d tokens", 
+                        logger.warning("Token count approaching context window limit: %d/%d tokens",
                                      estimated_tokens, context_window)
-                
+
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
                 # Get LLM response via Planner
                 llm_out = await planner.chat(messages, tools_schema)
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
-                
+
+                # Track actual token usage if available and context manager is active
+                if self.context_manager and 'usage' in llm_out:
+                    usage_data = llm_out['usage']
+                    self.context_manager.update_token_usage(usage_data)
+                    logger.debug("Updated token usage from LLM response: %s", usage_data)
+
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
 
@@ -333,16 +349,16 @@ class Agent(MCPServer):
                 if tool_calls:
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
-                    
+
                     # Execute ALL tool calls
                     for i, tc in enumerate(tool_calls):
                         func = tc.get("function", {})
                         openai_tool_name = func.get("name")  # This is the OpenAI-compatible name
                         raw_args = func.get("arguments")
-                        
+
                         # Map back to original tool name if it was converted
                         tool_name = tool_name_mapping.get(openai_tool_name, openai_tool_name)
-                        
+
                         # Parse arguments
                         params: Dict[str, Any] = {}
                         if isinstance(raw_args, str) and raw_args:
@@ -353,20 +369,20 @@ class Agent(MCPServer):
                                 params = {}
                         elif isinstance(raw_args, dict):
                             params = raw_args
-                        
+
                         if not tool_name or tool_name not in available_tools:
                             logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
                             # Add error message for this specific tool call
                             tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                             error_content = json.dumps({"error": f"Tool '{tool_name}' is not available."})
                             messages.append(ChatMessage(
-                                role="tool", 
+                                role="tool",
                                 tool_call_id=tool_call_id,
                                 name=sanitize_for_llm(openai_tool_name or "unknown"),
                                 content=sanitize_json_content(error_content)
                             ))
                             continue
-                        
+
                         # Get action name and validate
                         if "." in tool_name:
                             # External tool - call via MCP integration
@@ -377,21 +393,21 @@ class Agent(MCPServer):
                                 mcp_integration = get_mcp_integration()
                                 tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, params, "external")
                                 logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
-                                
+
                                 results["calls"].append({
-                                    "server": tool_name, 
-                                    "action": actual_tool_name, 
-                                    "params": params, 
+                                    "server": tool_name,
+                                    "action": actual_tool_name,
+                                    "params": params,
                                     "result": tool_result
                                 })
-                                
+
                                 # Add tool result to conversation
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                                 tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
                                 # Sanitize tool result content before adding to messages
                                 tool_msg_content = sanitize_json_content(tool_msg_content)
                                 messages.append(ChatMessage(
-                                    role="tool", 
+                                    role="tool",
                                     tool_call_id=tool_call_id,
                                     name=sanitize_for_llm(openai_tool_name),
                                     content=tool_msg_content
@@ -401,53 +417,53 @@ class Agent(MCPServer):
                                 tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
                                 error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
                                 messages.append(ChatMessage(
-                                    role="tool", 
+                                    role="tool",
                                     tool_call_id=tool_call_id,
                                     name=sanitize_for_llm(openai_tool_name),
                                     content=sanitize_json_content(error_content)
                                 ))
                         else:
-                            # Plugin tool - use existing logic  
+                            # Plugin tool - use existing logic
                             server = self.registry.get(tool_name)
                             action_name = params.get("action") or params.get("tool") or server.get_default_action()
-                            
+
                             # Validate action against server schema
                             schema = server.get_schema()
                             valid_actions = []
                             if "function" in schema and "parameters" in schema["function"]:
                                 action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
                                 valid_actions = action_prop.get("enum", [])
-                            
+
                             if valid_actions and action_name not in valid_actions:
-                                logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
+                                logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.",
                                              action_name, tool_name, valid_actions)
                                 action_name = server.get_default_action()
                                 params["action"] = action_name
-                            
+
                             try:
                                 logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
                                 tool_result = await executor.invoke(tool_name, params)
                                 logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
-                                
+
                                 results["calls"].append({
-                                    "server": tool_name, 
-                                    "action": action_name, 
-                                    "params": params, 
+                                    "server": tool_name,
+                                    "action": action_name,
+                                    "params": params,
                                     "result": tool_result
                                 })
-                                
+
                                 # Add tool result to conversation
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                                 tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
                                 # Sanitize tool result content before adding to messages
                                 tool_msg_content = sanitize_json_content(tool_msg_content)
                                 messages.append(ChatMessage(
-                                    role="tool", 
-                                    tool_call_id=tool_call_id, 
-                                    name=openai_tool_name, 
+                                    role="tool",
+                                    tool_call_id=tool_call_id,
+                                    name=openai_tool_name,
                                     content=tool_msg_content
                                 ))
-                                
+
                             except Exception as e:
                                 logger.exception("Tool %s invocation failed: %s", tool_name, e)
                                 results.setdefault("errors", []).append(str(e))
@@ -455,7 +471,7 @@ class Agent(MCPServer):
                                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                                 error_content = json.dumps({"error": sanitize_for_llm(str(e))})
                                 messages.append(ChatMessage(
-                                    role="tool", 
+                                    role="tool",
                                     tool_call_id=tool_call_id,
                                     name=sanitize_for_llm(openai_tool_name),
                                     content=sanitize_json_content(error_content)
@@ -464,9 +480,14 @@ class Agent(MCPServer):
                 # Check for final content
                 elif content:
                     results["summary"] = content
+                    # Update tracked messages with final response
+                    self._current_messages = messages.copy()
                     break
                 # If we had tool calls, continue to next iteration to let LLM respond to tool results
                 # Don't add extra assistant messages here as it creates invalid conversation flow
+
+                # Update tracked messages at end of each step
+                self._current_messages = messages.copy()
 
             else:
                 # Max steps reached - get final answer
@@ -481,7 +502,7 @@ class Agent(MCPServer):
                 except Exception as e:
                     logger.exception("Failed to get final answer: %s", e)
                     results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
-                
+
         except Exception as e:
             logger.exception("LLM planning failed: %s", e)
             results.setdefault("errors", []).append(f"LLM planning failed: {e}")
@@ -503,17 +524,17 @@ class Agent(MCPServer):
             # Count content characters
             if msg.content:
                 total_chars += len(str(msg.content))
-            
+
             # Count tool calls
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 for tc in msg.tool_calls:
                     func = tc.get("function", {})
                     total_chars += len(str(func.get("name", "")))
                     total_chars += len(str(func.get("arguments", "")))
-            
+
             # Add role and structure overhead
             total_chars += 50  # rough overhead per message
-        
+
         # Very rough token estimation: ~4 chars per token for most languages
         # This is conservative and language-dependent
         estimated_tokens = total_chars // 4
@@ -530,14 +551,14 @@ class Agent(MCPServer):
 
         try:
             logger = logging.getLogger(__name__)
-            
+
             # Initialize MCP integration tracking
             mcp_integration = None
             mcp_initialized_locally = False
-            
+
             # Get tools from the local registry (plugins)
             available_tools = self.registry.list()
-            
+
             # Also include tools from external MCP servers
             try:
                 from ...mcp.integration import get_mcp_integration
@@ -549,7 +570,7 @@ class Agent(MCPServer):
                         await mcp_integration.initialize(mcp_config)
                         mcp_initialized_locally = True
                         logger.debug("Initialized MCP integration for agent in run_events")
-                
+
                 if mcp_integration and mcp_integration.initialized:
                     all_tools = await mcp_integration.list_all_tools()
                     # Add external server tools to available tools
@@ -565,7 +586,7 @@ class Agent(MCPServer):
 
             # Render prompts
             rendered = render_prompts(
-                self.agent_config.prompts.system_template, 
+                self.agent_config.prompts.system_template,
                 {"tools": available_tools, "max_steps": max_steps-1},
                 auto_datetime=self.agent_config.context.auto_datetime,
                 timezone=self.agent_config.context.timezone,
@@ -583,7 +604,7 @@ class Agent(MCPServer):
             # Build tool schemas and maintain mapping for external tools
             tools_schema: List[Dict] = []
             tool_name_mapping = {}  # Maps OpenAI-compatible names to original names
-            
+
             for tool_name in available_tools:
                 # Check if it's an external tool (contains a dot)
                 if "." in tool_name:
@@ -591,7 +612,7 @@ class Agent(MCPServer):
                     # Create OpenAI-compatible name (replace dots with underscores)
                     openai_tool_name = tool_name.replace(".", "_")
                     tool_name_mapping[openai_tool_name] = tool_name
-                    
+
                     # Create a schema for external tools
                     try:
                         from ...mcp.integration import get_mcp_integration
@@ -627,17 +648,17 @@ class Agent(MCPServer):
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}
             executor = Executor(self.registry)
-            
+
             for step in range(max_steps):
                 # Enhanced context management and token tracking
                 if self.context_manager:
                     # Apply token optimization
                     if self.token_optimizer:
                         messages = await self.token_optimizer.optimize_messages(messages)
-                    
+
                     # Check token count and issue appropriate warnings
                     estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
-                    
+
                     # Apply context management if needed
                     if self.context_manager.should_manage_context(estimated_tokens, warning_level):
                         logger.info("Applying context management at step %d", step + 1)
@@ -649,13 +670,13 @@ class Agent(MCPServer):
                     message_count = len(messages)
                     estimated_tokens = self._estimate_token_count(messages)
                     context_window = getattr(self.agent_config, "context_window", 32768)
-                    logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)", 
+                    logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)",
                                step + 1, message_count, estimated_tokens, context_window)
-                    
+
                     if estimated_tokens > context_window * 0.9:  # 90% threshold
-                        logger.warning("Token count approaching context window limit: %d/%d tokens", 
+                        logger.warning("Token count approaching context window limit: %d/%d tokens",
                                      estimated_tokens, context_window)
-                
+
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
                 # Emit thinking event before LLM call
@@ -665,10 +686,10 @@ class Agent(MCPServer):
                 llm_out = await self.llm.chat_tools(messages, tools_schema)
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
-                
+
                 # Emit thinking event with LLM response content
                 yield {"type": "thinking", "step": step + 1, "assistant": assistant}
-                
+
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
 
@@ -676,16 +697,16 @@ class Agent(MCPServer):
                 if tool_calls:
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
-                    
+
                     # Execute ALL tool calls with immediate streaming
                     for i, tc in enumerate(tool_calls):
                         func = tc.get("function", {})
                         openai_tool_name = func.get("name")  # This is the OpenAI-compatible name
                         raw_args = func.get("arguments")
-                        
+
                         # Map back to original tool name if it was converted
                         tool_name = tool_name_mapping.get(openai_tool_name, openai_tool_name)
-                        
+
                         # Parse arguments
                         params: Dict[str, Any] = {}
                         if isinstance(raw_args, str) and raw_args:
@@ -696,52 +717,52 @@ class Agent(MCPServer):
                                 params = {}
                         elif isinstance(raw_args, dict):
                             params = raw_args
-                        
+
                         if not tool_name or tool_name not in available_tools:
                             logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
                             yield {"type": "error", "message": f"Unknown tool: {tool_name}"}
                             # Add error result for this specific tool call
                             tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                             messages.append(ChatMessage(
-                                role="tool", 
+                                role="tool",
                                 tool_call_id=tool_call_id,
                                 name=openai_tool_name or "unknown",
                                 content=json.dumps({"error": f"Tool '{tool_name}' is not available."})
                             ))
                             continue
-                        
+
                         # Get action name and validate
                         if "." in tool_name:
                             # External tool - call via MCP integration
                             server_name, actual_tool_name = tool_name.split(".", 1)
-                            
+
                             # Emit MCP call event immediately
                             yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": params}
-                            
+
                             try:
                                 logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name, params)
                                 from ...mcp.integration import get_mcp_integration
                                 mcp_integration = get_mcp_integration()
                                 tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, params, "external")
                                 logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
-                                
+
                                 results["calls"].append({
-                                    "server": tool_name, 
-                                    "action": actual_tool_name, 
-                                    "params": params, 
+                                    "server": tool_name,
+                                    "action": actual_tool_name,
+                                    "params": params,
                                     "result": tool_result
                                 })
-                                
+
                                 # Emit MCP result event immediately
                                 yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result}
-                                
+
                                 # Add tool result to conversation
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                                 tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
                                 # Sanitize tool result content before adding to messages
                                 tool_msg_content = sanitize_json_content(tool_msg_content)
                                 messages.append(ChatMessage(
-                                    role="tool", 
+                                    role="tool",
                                     tool_call_id=tool_call_id,
                                     name=sanitize_for_llm(openai_tool_name),
                                     content=tool_msg_content
@@ -752,7 +773,7 @@ class Agent(MCPServer):
                                 tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
                                 error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
                                 messages.append(ChatMessage(
-                                    role="tool", 
+                                    role="tool",
                                     tool_call_id=tool_call_id,
                                     name=sanitize_for_llm(openai_tool_name),
                                     content=sanitize_json_content(error_content)
@@ -761,50 +782,50 @@ class Agent(MCPServer):
                             # Plugin tool - use existing logic
                             server = self.registry.get(tool_name)
                             action_name = params.get("action") or params.get("tool") or server.get_default_action()
-                            
+
                             # Validate action against server schema
                             schema = server.get_schema()
                             valid_actions = []
                             if "function" in schema and "parameters" in schema["function"]:
                                 action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
                                 valid_actions = action_prop.get("enum", [])
-                            
+
                             if valid_actions and action_name not in valid_actions:
-                                logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.", 
+                                logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.",
                                              action_name, tool_name, valid_actions)
                                 action_name = server.get_default_action()
                                 params["action"] = action_name
-                            
+
                             # Emit MCP call event immediately
                             yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": params}
-                            
+
                             try:
                                 logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
                                 tool_result = await executor.invoke(tool_name, params)
                                 logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
-                                
+
                                 results["calls"].append({
-                                    "server": tool_name, 
-                                    "action": action_name, 
-                                    "params": params, 
+                                    "server": tool_name,
+                                    "action": action_name,
+                                    "params": params,
                                     "result": tool_result
                                 })
-                                
+
                                 # Emit MCP result event immediately
                                 yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result}
-                                
+
                                 # Add tool result to conversation
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                                 tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
                                 # Sanitize tool result content before adding to messages
                                 tool_msg_content = sanitize_json_content(tool_msg_content)
                                 messages.append(ChatMessage(
-                                    role="tool", 
-                                    tool_call_id=tool_call_id, 
-                                    name=openai_tool_name, 
+                                    role="tool",
+                                    tool_call_id=tool_call_id,
+                                    name=openai_tool_name,
                                     content=tool_msg_content
                                 ))
-                                
+
                             except Exception as e:
                                 logger.exception("Tool %s invocation failed: %s", tool_name, e)
                                 results.setdefault("errors", []).append(str(e))
@@ -813,7 +834,7 @@ class Agent(MCPServer):
                                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                                 error_content = json.dumps({"error": sanitize_for_llm(str(e))})
                                 messages.append(ChatMessage(
-                                    role="tool", 
+                                    role="tool",
                                     tool_call_id=tool_call_id,
                                     name=sanitize_for_llm(openai_tool_name),
                                     content=sanitize_json_content(error_content)
@@ -843,7 +864,7 @@ class Agent(MCPServer):
                     logger.exception("Failed to get final answer: %s", e)
                     results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
                     yield {"type": "error", "message": f"Failed to get final answer: {e}"}
-                
+
         except Exception as e:
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
         finally:
@@ -854,28 +875,28 @@ class Agent(MCPServer):
                     logger.debug("Shut down MCP integration after agent run_events")
                 except Exception as e:
                     logger.debug("Error shutting down MCP integration in run_events: %s", e)
-            
+
         yield {"type": "end"}
 
     # MCPServer interface implementation
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """
         MCPServer interface: Handle tool calls from other agents.
-        
+
         Args:
             tool: The tool/action to execute (should be "run" or "execute")
             params: Parameters including the task to execute
-            
+
         Returns:
             The agent's execution result
         """
         # Validate action
         if tool not in ["run", "execute", "ask"]:
             return {
-                "status": "error", 
+                "status": "error",
                 "error": f"Unknown action '{tool}'. Available actions: run, execute, ask"
             }
-            
+
         # Extract task from parameters
         task = params.get("task") or params.get("query") or params.get("prompt")
         if not task:
@@ -883,12 +904,12 @@ class Agent(MCPServer):
                 "status": "error",
                 "error": "Missing required parameter: 'task', 'query', or 'prompt'"
             }
-            
+
         try:
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])
             result = await self.run(str(task))
-            
+
             # Wrap result with agent metadata
             return {
                 "status": "success",
@@ -897,20 +918,20 @@ class Agent(MCPServer):
                 "result": result,
                 "summary": self._extract_summary(result)
             }
-            
+
         except Exception as e:
             logger.error("Agent %s failed to execute task: %s", self.name, e)
             return {
                 "status": "error",
-                "agent": self.name, 
+                "agent": self.name,
                 "task": task,
                 "error": str(e)
             }
-    
+
     def get_schema(self) -> dict[str, Any]:
         """
         MCPServer interface: Return the OpenAI function schema for this agent.
-        
+
         Returns:
             OpenAI function schema dict
         """
@@ -928,7 +949,7 @@ class Agent(MCPServer):
                             "description": "Action to perform (run/execute/ask the agent)"
                         },
                         "task": {
-                            "type": "string", 
+                            "type": "string",
                             "description": "The task/query/prompt to execute"
                         }
                     },
@@ -936,18 +957,18 @@ class Agent(MCPServer):
                 },
             },
         }
-        
+
     def get_default_action(self) -> str:
         """MCPServer interface: Return the default action for this agent."""
         return "run"
-        
+
     def _extract_summary(self, result: Dict[str, Any]) -> str:
         """
         Extract a summary from the agent result for easier consumption.
-        
+
         Args:
             result: The agent execution result
-            
+
         Returns:
             A summary string
         """
@@ -955,19 +976,19 @@ class Agent(MCPServer):
             # Look for summary in result
             if "summary" in result:
                 return str(result["summary"])
-            
+
             # If there are successful tool calls, summarize them
             calls = result.get("calls", [])
             if calls:
                 successful_calls = [c for c in calls if "error" not in str(c.get("result", ""))]
                 if successful_calls:
                     return f"Executed {len(successful_calls)} tool(s) successfully"
-                    
+
             # Check for errors
             errors = result.get("errors", [])
             if errors:
                 return f"Failed with {len(errors)} error(s): {errors[0]}"
-                
+
             return "Task completed"
-        
+
         return str(result)[:200]  # Fallback to string representation

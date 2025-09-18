@@ -308,7 +308,17 @@ class OpenAIAsyncClient(LLMClient):
                         "function": {"name": name, "arguments": arguments},
                     })
                 out["tool_calls"] = out_calls
-            return {"assistant": out}
+
+            # Include usage data if available
+            result = {"assistant": out}
+            if hasattr(resp, 'usage') and resp.usage:
+                result["usage"] = {
+                    "prompt_tokens": resp.usage.prompt_tokens,
+                    "completion_tokens": resp.usage.completion_tokens,
+                    "total_tokens": resp.usage.total_tokens
+                }
+
+            return result
         except Exception as e:
             logger.exception("OpenAI chat with tools failed: %s", e)
             return {"assistant": {"role": "assistant", "content": ""}}

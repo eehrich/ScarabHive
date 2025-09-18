@@ -73,7 +73,7 @@ class MCPIntegration:
         external_servers = mcp_config.get('external_servers', {})
         # Only store enabled servers for status endpoint
         self.configured_external_servers = {
-            name: config for name, config in external_servers.items() 
+            name: config for name, config in external_servers.items()
             if config.get('enabled', True)
         }
         for server_name, server_config in external_servers.items():
@@ -99,11 +99,20 @@ class MCPIntegration:
 
     async def _setup_external_servers_from_config(self) -> None:
         """Setup external servers from new configuration format"""
-        for server_name, server_config in self.mcp_config.servers.items():
-            if not server_config.enabled:
-                logger.debug(f"Skipping disabled MCP server: {server_name}")
-                continue
+        enabled_servers = [
+            (server_name, server_config)
+            for server_name, server_config in self.mcp_config.servers.items()
+            if server_config.enabled
+        ]
 
+        if not enabled_servers:
+            logger.info("No enabled external MCP servers to connect to")
+            return
+
+        logger.info(f"Connecting to {len(enabled_servers)} external MCP servers...")
+
+        async def connect_server(server_name: str, server_config) -> None:
+            """Connect to a single server"""
             try:
                 # Map deprecated transport types for backward compatibility
                 transport_type = server_config.transport_type
@@ -111,7 +120,7 @@ class MCPIntegration:
                     # Legacy support: map smithery to streaming
                     transport_type = "streaming"
                     logger.warning(f"Transport type 'smithery' is deprecated for server {server_name}. Use 'http' instead.")
-                
+
                 # Create client config for the server
                 client_config = {
                     "transport": transport_type,
@@ -129,6 +138,20 @@ class MCPIntegration:
                 logger.info(f"Connected to external MCP server: {server_name} at {server_config.url}")
             except Exception as e:
                 logger.debug(f"Failed to connect to MCP server {server_name}: {e}")
+
+        # Connect to servers in parallel if enabled
+        if self.mcp_config.parallel_connect:
+            logger.info("Connecting to MCP servers in parallel...")
+            import asyncio
+            tasks = [
+                connect_server(server_name, server_config)
+                for server_name, server_config in enabled_servers
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            # Connect sequentially (original behavior)
+            for server_name, server_config in enabled_servers:
+                await connect_server(server_name, server_config)
 
     def get_app(self) -> FastAPI:
         """Get the FastAPI app with MCP endpoints"""
@@ -170,7 +193,7 @@ class MCPIntegration:
                 tools_config = server_info.get("tools", {})
                 blocked_tools = tools_config.get("blocked", [])
                 logger.debug(f"Using fallback from configured_external_servers: blocked_tools={blocked_tools}")
-            
+
             filtered_tools = []
             for tool in tools:
                 is_blocked = tool.name in blocked_tools
@@ -181,7 +204,7 @@ class MCPIntegration:
                     "input_schema": tool.input_schema,
                     "blocked": is_blocked
                 })
-            
+
             result["external_servers"][server_name] = filtered_tools
 
         return result
@@ -212,7 +235,7 @@ class MCPIntegration:
                 tools_config = server_info.get("tools", {})
                 blocked_tools = tools_config.get("blocked", [])
                 logger.debug(f"Using fallback from configured_external_servers: blocked_tools={blocked_tools}")
-            
+
             if tool_name in blocked_tools:
                 error_msg = f"Tool '{tool_name}' is blocked on server '{server_name}'"
                 logger.warning(error_msg)
@@ -268,7 +291,7 @@ mcp_integration: Optional[MCPIntegration] = None
 def get_mcp_integration(app: Optional[FastAPI] = None) -> MCPIntegration:
     """Get or create the global MCP integration instance"""
     global mcp_integration
-    
+
     # First check if the API has an initialized instance
     try:
         from agent_system.agent.interface_api import _mcp_integration as api_integration
@@ -276,7 +299,7 @@ def get_mcp_integration(app: Optional[FastAPI] = None) -> MCPIntegration:
             return api_integration
     except (ImportError, AttributeError):
         pass  # API module not available or not initialized
-    
+
     # Fall back to module-level global instance
     if mcp_integration is None:
         mcp_integration = MCPIntegration(app)

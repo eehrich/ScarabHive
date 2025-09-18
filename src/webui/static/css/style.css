@@ -1,0 +1,78 @@
+/* Increase status panel height */
+.status-panel {
+    max-height: 600px; /* Increased from previous smaller value */
+    min-height: 400px;
+    overflow-y: auto;
+}
+
+/* Debug Messages Modal Styles */
+.debug-message {
+    border: 1px solid #ddd;
+    margin: 10px 0;
+    padding: 10px;
+    border-radius: 5px;
+    background-color: #f9f9f9;
+}
+
+.debug-message .message-header {
+    background-color: #e9ecef;
+    padding: 5px 10px;
+    margin: -10px -10px 10px -10px;
+    border-radius: 5px 5px 0 0;
+    font-size: 14px;
+}
+
+.debug-message .message-index {
+    float: right;
+    color: #666;
+}
+
+.debug-message .message-content {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    max-height: 300px;
+    overflow-y: auto;
+    background-color: #fff;
+    padding: 10px;
+    border: 1px solid #eee;
+    border-radius: 3px;
+}
+
+.debug-message .message-content pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
+    padding: 15px;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+}
+
+.stat-item {
+    padding: 10px;
+    background-color: white;
+    border-radius: 3px;
+    border-left: 4px solid #007bff;
+}
+
+/* Enhanced modal for larger content */
+.modal-content {
+    animation: modalOpen 0.3s ease-out;
+}
+
+@keyframes modalOpen {
+    from {
+        opacity: 0;
+        transform: translate(-50%, -60%);
+    }
+    to {
+        opacity: 1;
+        transform: translate(-50%, -50%);
+    }
+}
