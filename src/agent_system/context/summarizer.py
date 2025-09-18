@@ -2,7 +2,7 @@
 
 import logging
 from typing import List
-from ..llm.clients import ChatMessage, make_llm
+from ..llm.clients import ChatMessage
 from .config import ContextConfig
 from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
 
@@ -13,7 +13,12 @@ class ConversationSummarizer:
     """Summarizes conversation history to fit within context windows."""
     
     def __init__(self, llm_client=None):
-        self.llm_client = llm_client or make_llm()
+        """Initialize the conversation summarizer.
+        
+        Args:
+            llm_client: Optional LLM client. If None, summarization will fall back to simple text extraction.
+        """
+        self.llm_client = llm_client
     
     async def summarize_conversation(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
         """Summarize older conversation while preserving recent messages."""
@@ -91,6 +96,11 @@ class ConversationSummarizer:
     
     async def _create_summary(self, messages: List[ChatMessage], config: ContextConfig) -> str:
         """Create a concise summary of the conversation messages."""
+        # If no LLM client is available, use fallback method immediately
+        if not self.llm_client:
+            logger.warning("⚠️  No LLM client available for summarization, using fallback method")
+            return await self._create_fallback_summary(messages)
+        
         try:
             logger.debug("🔄 Preparing conversation for LLM summarization...")
             

@@ -17,6 +17,7 @@ class ContextManager:
         self.config = config
         self._last_warning_level: Optional[WarningLevel] = None
         self._summarizer = None  # Will be set when summarizer is available
+        self._summarization_in_progress = False  # Prevent recursive summarization loops
     
     def set_summarizer(self, summarizer):
         """Set the conversation summarizer."""
@@ -270,8 +271,16 @@ class ContextManager:
             logger.warning("Summarizer not available, falling back to truncation")
             return self._truncate_oldest(messages)
         
+        # Check if summarization is already in progress to prevent infinite loops
+        if self._summarization_in_progress:
+            logger.warning("Summarization already in progress, falling back to truncation to prevent loop")
+            return self._truncate_oldest(messages)
+        
         try:
+            self._summarization_in_progress = True
             return await self._summarizer.summarize_conversation(messages, self.config)
         except Exception as e:
             logger.error("Summarization failed: %s, falling back to truncation", e)
             return self._truncate_oldest(messages)
+        finally:
+            self._summarization_in_progress = False

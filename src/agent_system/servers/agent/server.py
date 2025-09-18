@@ -139,8 +139,28 @@ class Agent(MCPServer):
             # Initialize context manager
             self.context_manager = ContextManager(self.context_config)
             
-            # Initialize and set summarizer
-            summarizer = ConversationSummarizer(self.llm)
+            # Initialize and set summarizer with dedicated LLM client
+            # Create a separate LLM client for summarization to prevent recursive context management
+            summarizer_llm = None
+            if self.llm and getattr(self.agent_config, "llm", None):
+                try:
+                    # Create a direct LLM client that bypasses context management
+                    from ...llm.clients import make_llm
+                    summarizer_llm = make_llm(
+                        self.agent_config.llm.provider,
+                        self.agent_config.llm.model,
+                        self.agent_config.llm.openai_api_key,
+                        self.agent_config.llm.ollama_url,
+                        self.agent_config.llm.context_window,
+                        getattr(self.agent_config.llm, "ollama_mode", None),
+                        getattr(self.agent_config.llm, "request_timeout", None),
+                        ssl_verify=getattr(self.agent_config, "network").ssl_verify if getattr(self.agent_config, "network", None) else None,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to create dedicated summarizer LLM client: %s", e)
+                    summarizer_llm = None
+            
+            summarizer = ConversationSummarizer(summarizer_llm)
             self.context_manager.set_summarizer(summarizer)
             
             # Initialize optimizer
