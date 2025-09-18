@@ -307,20 +307,26 @@ async function updateDebugInfo() {
       let messagesHtml = '';
       if (data.messages && data.messages.length > 0) {
         messagesHtml = data.messages.map((msg, index) => {
-          const truncatedContent = (msg.content || '').length > 200
-            ? (msg.content || '').substring(0, 200) + '...'
-            : (msg.content || '');
+            const fullContent = msg.content || '';
+            const maxPreview = 200;
+            const needsTruncate = fullContent.length > maxPreview;
+            const preview = needsTruncate ? fullContent.substring(0, maxPreview) + '...' : fullContent;
+            const msgId = `debug-msg-${index}`;
 
-          return `
-            <div class="debug-message">
-              <div class="debug-message-header">
-                <span class="debug-message-role">${msg.role || 'unknown'}</span>
-                <span class="debug-message-index">#${index + 1}</span>
-                <span class="debug-message-tokens">${msg.estimated_tokens || '?'} tokens</span>
+            return `
+              <div class="debug-message" id="${msgId}">
+                <div class="debug-message-header">
+                  <span class="debug-message-role">${msg.role || 'unknown'}</span>
+                  <span class="debug-message-index">#${index + 1}</span>
+                  <span class="debug-message-tokens">${msg.estimated_tokens || '?'} tokens</span>
+                  ${needsTruncate ? `<button class="debug-toggle" data-target="${msgId}" aria-expanded="false">Show more</button>` : ''}
+                </div>
+                <div class="debug-message-content">
+                  <div class="debug-preview">${escapeHtml(preview)}</div>
+                  <div class="debug-full" style="display:none">${escapeHtml(fullContent)}</div>
+                </div>
               </div>
-              <div class="debug-message-content">${escapeHtml(truncatedContent)}</div>
-            </div>
-          `;
+            `;
         }).join('');
       } else {
         messagesHtml = '<div class="metric-item"><span class="metric-label">No messages in conversation</span></div>';
@@ -331,6 +337,34 @@ async function updateDebugInfo() {
 
       if (debugContextStats) debugContextStats.innerHTML = contextStatsHtml;
       if (debugMessages) debugMessages.innerHTML = messagesHtml;
+
+          // Attach toggle handlers for expandable debug messages
+          if (debugMessages) {
+            const toggles = debugMessages.querySelectorAll('.debug-toggle');
+            toggles.forEach(btn => {
+              btn.addEventListener('click', (ev) => {
+                const targetId = btn.getAttribute('data-target');
+                const container = document.getElementById(targetId);
+                if (!container) return;
+                const preview = container.querySelector('.debug-preview');
+                const full = container.querySelector('.debug-full');
+                const expanded = btn.getAttribute('aria-expanded') === 'true';
+                if (expanded) {
+                  // collapse
+                  if (full) full.style.display = 'none';
+                  if (preview) preview.style.display = '';
+                  btn.textContent = 'Show more';
+                  btn.setAttribute('aria-expanded', 'false');
+                } else {
+                  // expand
+                  if (preview) preview.style.display = 'none';
+                  if (full) full.style.display = 'block';
+                  btn.textContent = 'Show less';
+                  btn.setAttribute('aria-expanded', 'true');
+                }
+              });
+            });
+          }
 
     } else {
       // Error response
@@ -710,7 +744,16 @@ if (debugToggleBtn) {
     const shown = debugPanel.style.display !== 'none';
     debugPanel.style.display = shown ? 'none' : 'block';
     debugToggleBtn.setAttribute('aria-expanded', String(!shown));
-    if (!shown) updateDebugInfo().catch(() => {});
+    if (!shown) {
+      updateDebugInfo().catch(() => {});
+      // Start polling while the debug panel is open so messages/stats stay fresh
+      try {
+        if (window._debugPollInterval) clearInterval(window._debugPollInterval);
+      } catch (e) {}
+      window._debugPollInterval = setInterval(() => updateDebugInfo().catch(() => {}), 2000);
+    } else {
+      try { if (window._debugPollInterval) { clearInterval(window._debugPollInterval); window._debugPollInterval = null; } } catch (e) {}
+    }
   });
 }
 
@@ -718,12 +761,14 @@ if (floatingDebugCloseBtn) {
   floatingDebugCloseBtn.addEventListener('click', () => {
     debugPanel.style.display = 'none';
     if (debugToggleBtn) debugToggleBtn.setAttribute('aria-expanded', 'false');
+    try { if (window._debugPollInterval) { clearInterval(window._debugPollInterval); window._debugPollInterval = null; } } catch (e) {}
   });
 }
 
 if (debugRefreshBtn) {
   debugRefreshBtn.addEventListener('click', () => {
     updateDebugInfo().catch(() => {});
+    try { if (window._debugPollInterval) { clearInterval(window._debugPollInterval); window._debugPollInterval = setInterval(() => updateDebugInfo().catch(() => {}), 2000); } } catch (e) {}
   });
 }
 
@@ -908,21 +953,32 @@ function toggleServerDetails(serverId) {
 const activeOperations = new Map();
 
 function addStatusEvent(container, ev) {
-  const operationKey = `${ev.server}_${ev.request_id || 'default'}`;
+  // If request_id is missing/null use server-only key to avoid duplicate entries
+  const opIdPart = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
+  const operationKey = opIdPart ? `${ev.server}_${opIdPart}` : `${ev.server}`;
   if (ev.phase === 'start') {
-    const operationDiv = document.createElement('div');
-    operationDiv.className = 'operation-progress';
-    operationDiv.setAttribute('data-operation', operationKey);
-    operationDiv.innerHTML = `
-      <div class="progress-line">
-        <span class="progress-icon"><div class="spinner"></div></span>
-        <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
-        <span class="progress-message">${escapeHtml(ev.message || 'Starting...')}</span>
-        <span class="progress-time">${formatTime(ev.timestamp)}</span>
-      </div>
-    `;
-    container.appendChild(operationDiv);
-    activeOperations.set(operationKey, operationDiv);
+    // If we already have an active operation for this key, update it
+    if (activeOperations.has(operationKey)) {
+      const existing = activeOperations.get(operationKey);
+      const msg = existing.querySelector('.progress-message');
+      const time = existing.querySelector('.progress-time');
+      if (msg) msg.textContent = ev.message || 'Starting...';
+      if (time) time.textContent = formatTime(ev.timestamp);
+    } else {
+      const operationDiv = document.createElement('div');
+      operationDiv.className = 'operation-progress';
+      operationDiv.setAttribute('data-operation', operationKey);
+      operationDiv.innerHTML = `
+        <div class="progress-line">
+          <span class="progress-icon"><div class="spinner"></div></span>
+          <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
+          <span class="progress-message">${escapeHtml(ev.message || 'Starting...')}</span>
+          <span class="progress-time">${formatTime(ev.timestamp)}</span>
+        </div>
+      `;
+      container.appendChild(operationDiv);
+      activeOperations.set(operationKey, operationDiv);
+    }
   } else if (ev.phase === 'progress') {
     const operationDiv = activeOperations.get(operationKey);
     if (operationDiv) {
