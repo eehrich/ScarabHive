@@ -7,10 +7,10 @@ from enum import Enum
 
 class ContextStrategy(Enum):
     """Strategy for handling context window limits."""
-    TRUNCATE_OLDEST = "truncate_oldest"
-    SUMMARIZE_OLDEST = "summarize_oldest"
-    SLIDING_WINDOW = "sliding_window"
-    SMART_COMPRESSION = "smart_compression"
+    TRUNCATE_OLDEST = "TRUNCATE_OLDEST"
+    SUMMARIZE_OLDEST = "SUMMARIZE_OLDEST"
+    SLIDING_WINDOW = "SLIDING_WINDOW"
+    SMART_COMPRESSION = "SMART_COMPRESSION"
 
 
 class WarningLevel(Enum):

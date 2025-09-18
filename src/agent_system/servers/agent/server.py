@@ -14,7 +14,7 @@ from ...mcp.base import MCPRegistry, MCPServer
 from ...llm.clients import ChatMessage
 from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
-from ...context import ContextConfig, ContextManager, ConversationSummarizer, TokenOptimizer
+from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
 from .planner import Planner
 from .executor import Executor
 
@@ -105,21 +105,35 @@ class Agent(MCPServer):
             # Create context configuration from agent config
             context_window = getattr(self.agent_config, "context_window", 32768)
             
-            # Get additional context settings from agent config if available
-            context_attr = getattr(self.agent_config, "context", None)
-            if context_attr and hasattr(context_attr, '__dict__'):
+            # Get context_management settings from agent config if available
+            context_mgmt_attr = getattr(self.agent_config, "context_management", None)
+            if context_mgmt_attr and hasattr(context_mgmt_attr, '__dict__'):
                 # If it's an object, convert to dict
-                context_settings = vars(context_attr)
-            elif isinstance(context_attr, dict):
-                context_settings = context_attr
+                context_mgmt_settings = vars(context_mgmt_attr)
+            elif isinstance(context_mgmt_attr, dict):
+                context_mgmt_settings = context_mgmt_attr
             else:
-                context_settings = {}
+                context_mgmt_settings = {}
+            
+            # Create ContextConfig with proper parameters
+            from ...context.config import ContextConfig, ContextStrategy
+            
+            # Convert strategy string to enum if needed
+            strategy_str = context_mgmt_settings.get("strategy", "SUMMARIZE_OLDEST")
+            if isinstance(strategy_str, str):
+                strategy = ContextStrategy(strategy_str)
+            else:
+                strategy = strategy_str
             
             self.context_config = ContextConfig(
                 context_window=context_window,
-                summarization_threshold=context_settings.get("summarization_threshold", context_window // 3),
-                preserve_recent_messages=context_settings.get("preserve_recent_messages", 10),
-                enable_compression=context_settings.get("enable_compression", True)
+                summarization_threshold=context_mgmt_settings.get("summarization_threshold", context_window // 3),
+                preserve_recent_messages=context_mgmt_settings.get("preserve_recent_messages", 10),
+                strategy=strategy,
+                max_summary_words=context_mgmt_settings.get("max_summary_words", 500),
+                tool_result_preview_chars=context_mgmt_settings.get("tool_result_preview_chars", 200),
+                enable_compression=context_mgmt_settings.get("optimization", {}).get("enabled", True),
+                compress_tool_results=context_mgmt_settings.get("optimization", {}).get("compress_tool_results", True)
             )
             
             # Initialize context manager
@@ -137,7 +151,9 @@ class Agent(MCPServer):
                        
         except Exception as e:
             logger.error("Failed to initialize context management: %s", e)
-            # Fallback to None - will use legacy behavior
+            # Fallback to default configuration
+            from ...context.config import ContextConfig
+            self.context_config = ContextConfig()
             self.context_manager = None
             self.token_optimizer = None
 

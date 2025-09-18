@@ -109,12 +109,12 @@ class ConversationSummarizer:
             
             logger.debug("🤖 Requesting summary from LLM (input: %d chars)...", len(conversation_text))
             
-            # Get summary from LLM
+            # Get summary from LLM using chat method
             summary_messages = [ChatMessage(role="user", content=summary_prompt)]
-            response = self.llm_client.complete(summary_messages)
+            response_content = await self.llm_client.chat(summary_messages)
             
-            if response and response.content:
-                summary_length = len(response.content.strip())
+            if response_content and response_content.strip():
+                summary_length = len(response_content.strip())
                 reduction_ratio = (1 - summary_length / len(conversation_text)) * 100
                 logger.debug("✅ LLM summary complete (output: %d chars, %.1f%% reduction)", 
                            summary_length, reduction_ratio)
@@ -130,7 +130,7 @@ class ConversationSummarizer:
                     }
                 )
                 
-                return response.content.strip()
+                return response_content.strip()
             else:
                 logger.warning("⚠️  LLM returned empty summary, using fallback method")
                 return await self._create_fallback_summary(messages)
