@@ -267,6 +267,12 @@ The system emits detailed status events during operation:
 - Consider different summarization prompts
 - Verify LLM model capabilities
 
+**Infinite loop in conversation summarizer**:
+- Check that summarizer has a dedicated LLM client (fixed in latest version)
+- Verify `_summarization_in_progress` flag is functioning
+- Monitor for recursive context management calls in logs
+- Fallback to `TRUNCATE_OLDEST` strategy if loops persist
+
 ### Debugging
 
 Enable debug logging to see detailed context management operations:
@@ -277,6 +283,20 @@ logging:
 ```
 
 Monitor logs in `logs/api.log` for context management events and any errors.
+
+## Architecture Notes
+
+### Infinite Loop Prevention
+
+The system includes safeguards to prevent infinite loops in context management:
+
+1. **Dedicated LLM Client**: The conversation summarizer uses a separate LLM client that bypasses the agent's context management system, preventing recursive calls.
+
+2. **Loop Detection Flag**: The `ContextManager` tracks active summarization operations with `_summarization_in_progress` flag and falls back to truncation if a recursive call is detected.
+
+3. **Graceful Fallbacks**: If LLM summarization fails or is unavailable, the system automatically falls back to rule-based text extraction summarization.
+
+These safeguards ensure that context management remains stable even under high-load conditions or configuration issues.
 
 ## Migration and Updates
 
