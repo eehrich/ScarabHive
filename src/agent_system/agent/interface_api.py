@@ -438,6 +438,62 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "messages": []
             }
 
+    @app.get("/debug/context/usage")
+    async def debug_context_usage():
+        """Get context usage tracking data for monitoring and debugging."""
+        try:
+            from ..context.tracker import get_tracker
+            tracker = get_tracker()
+            
+            # Get latest snapshot and recent history
+            latest = tracker.get_latest()
+            recent_history = tracker.get_history(last_n=100)  # Last 100 data points
+            
+            # Get statistics for different time windows
+            stats_1h = tracker.get_statistics(time_window_seconds=3600)  # Last hour
+            stats_24h = tracker.get_statistics(time_window_seconds=86400)  # Last 24 hours
+            
+            return {
+                "latest": latest,
+                "recent_history": recent_history,
+                "statistics": {
+                    "last_hour": stats_1h,
+                    "last_24_hours": stats_24h,
+                    "all_time": tracker.get_statistics()
+                }
+            }
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Context usage endpoint failed: %s", e)
+            return {"error": f"Failed to get context usage data: {str(e)}"}
+
+    @app.get("/debug/context/usage/history")
+    async def debug_context_usage_history(last_n: int = 50):
+        """Get context usage history for graphing."""
+        try:
+            from ..context.tracker import get_tracker
+            tracker = get_tracker()
+            
+            history = tracker.get_history(last_n=last_n)
+            return {"history": history, "count": len(history)}
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Context usage history endpoint failed: %s", e)
+            return {"error": f"Failed to get context usage history: {str(e)}"}
+
+    @app.post("/debug/context/usage/clear")
+    async def debug_context_usage_clear():
+        """Clear context usage history (for testing/debugging)."""
+        try:
+            from ..context.tracker import get_tracker
+            tracker = get_tracker()
+            tracker.clear_history()
+            return {"result": "Context usage history cleared"}
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Context usage clear endpoint failed: %s", e)
+            return {"error": f"Failed to clear context usage history: {str(e)}"}
+
     def _check_server_connection(server_info):
         """Check if a server is actually responding with real-time connectivity test"""
         import socket

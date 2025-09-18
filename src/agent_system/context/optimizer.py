@@ -19,10 +19,38 @@ class TokenOptimizer:
             "tokens_saved": 0,
             "compression_ratio": 0.0
         }
+        # Guarding against repeated immediate optimization calls that cause log storms
+        self._last_run_time = 0.0
+        self._last_tokens_saved = 0
+        self._last_input_fingerprint = None
+        # Cooldown in seconds between optimization attempts when no savings were observed
+        self._cooldown_seconds = 1.0
     
     async def optimize_messages(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Apply various optimization techniques to reduce token count."""
         if not messages:
+            return messages
+
+        # Quick fingerprint of input to detect repeated identical inputs
+        try:
+            fingerprint_parts = []
+            for m in messages:
+                fingerprint_parts.append(str(len(str(m.content or ""))))
+                if hasattr(m, 'tool_calls') and m.tool_calls:
+                    fingerprint_parts.append(str(len(m.tool_calls)))
+            input_fingerprint = "|".join(fingerprint_parts)
+        except Exception:
+            input_fingerprint = None
+
+        # If we recently ran optimization on the same input and it saved nothing,
+        # skip re-running until cooldown expires to avoid repeated log/status events.
+        import time
+        now = time.time()
+        if (input_fingerprint is not None and
+                input_fingerprint == self._last_input_fingerprint and
+                self._last_tokens_saved <= 0 and
+                (now - self._last_run_time) < self._cooldown_seconds):
+            logger.debug("⏱️ Skipping token optimization due to cooldown and no prior savings")
             return messages
         
         # Publish start status event
@@ -73,6 +101,13 @@ class TokenOptimizer:
         # Update stats
         self.compression_stats["messages_processed"] += len(messages)
         tokens_saved = total_original_tokens - total_optimized_tokens
+        # Record last run metadata
+        try:
+            self._last_run_time = time.time()
+            self._last_tokens_saved = int(tokens_saved)
+            self._last_input_fingerprint = input_fingerprint
+        except Exception:
+            pass
         self.compression_stats["tokens_saved"] += tokens_saved
         
         if total_original_tokens > 0:

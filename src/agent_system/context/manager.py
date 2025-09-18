@@ -5,6 +5,7 @@ import time
 from typing import List, Optional, Tuple
 from ..llm.clients import ChatMessage
 from .config import ContextConfig, WarningLevel
+from .tracker import record_context_usage
 from ..mcp.status import publish_status, PHASE_START, PHASE_END, PHASE_ERROR
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,15 @@ class ContextManager:
                    current_tokens, percentage)
         logger.debug("📋 Strategy: %s", self.config.strategy.value.replace('_', ' ').title())
 
+        # Record context management trigger
+        record_context_usage(
+            total_tokens=current_tokens,
+            message_count=len(messages),
+            context_window=self.config.context_window,
+            management_triggered=True,
+            management_strategy=self.config.strategy.value
+        )
+
         original_count = len(messages)
         start_time = time.time()
 
@@ -254,6 +264,18 @@ class ContextManager:
             step, total_tokens, breakdown["user_messages"], breakdown["assistant_messages"],
             breakdown["tool_calls"], breakdown["tool_results"], breakdown["system_messages"]
         )
+        
+        # Record context usage for tracking and monitoring
+        record_context_usage(
+            total_tokens=total_tokens,
+            user_tokens=breakdown["user_messages"],
+            assistant_tokens=breakdown["assistant_messages"],
+            tool_call_tokens=breakdown["tool_calls"],
+            tool_result_tokens=breakdown["tool_results"],
+            system_tokens=breakdown["system_messages"],
+            message_count=len(messages),
+            context_window=self.config.context_window
+        )
 
     def _issue_warning(self, level: WarningLevel, tokens: int, message_count: int):
         """Issue appropriate warning based on level. Warnings are for UI/logging only."""
@@ -275,6 +297,14 @@ class ContextManager:
                 "🔴 Context usage WARNING (red): %d/%d tokens (%.1f%%, threshold: %d tokens, %d messages) - Critical level reached!",
                 tokens, self.config.context_window, percentage, threshold_tokens, message_count
             )
+        
+        # Record warning in usage tracker
+        record_context_usage(
+            total_tokens=tokens,
+            message_count=message_count,
+            context_window=self.config.context_window,
+            warning_level=level.value
+        )
 
     def _truncate_oldest(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Truncate oldest messages while preserving recent ones."""

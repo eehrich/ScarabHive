@@ -36,7 +36,9 @@ header .header-buttons {
 /* Common button styling for header buttons */
 #statusToggleBtn,
 #mcpToggleBtn,
-#debugToggleBtn {
+#debugToggleBtn,
+.header-button,
+#contextDebugToggleBtn {
   padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid #243244;
@@ -51,7 +53,9 @@ header .header-buttons {
 
 #statusToggleBtn:hover,
 #mcpToggleBtn:hover,
-#debugToggleBtn:hover {
+#debugToggleBtn:hover,
+.header-button:hover,
+#contextDebugToggleBtn:hover {
   background: #16202b;
   border-color: #354155;
   color: #b3c5d4;
@@ -59,7 +63,9 @@ header .header-buttons {
 
 #statusToggleBtn:active,
 #mcpToggleBtn:active,
-#debugToggleBtn:active {
+#debugToggleBtn:active,
+.header-button:active,
+#contextDebugToggleBtn:active {
   background: #0a1018;
   transform: translateY(1px);
 }

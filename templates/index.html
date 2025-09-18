@@ -4,14 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent System (MCP)</title>
-    <link rel="stylesheet" href="/static/css/base.css" />
-    <link rel="stylesheet" href="/static/css/layout.css" />
-    <link rel="stylesheet" href="/static/css/panels.css" />
-        <link rel="stylesheet" href="{{ url_for('static', path='css/mcp.css') }}?v=blocked-tools">
-    <link rel="stylesheet" href="/static/css/debug.css" />
-    <link rel="stylesheet" href="/static/css/chat.css" />
-    <link rel="stylesheet" href="/static/css/components.css" />
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/base.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/layout.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/panels.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/mcp.css') }}?v=blocked-tools">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/context_debug.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/debug.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/chat.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/components.css') }}" />
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
   </head>
   <body>
     <header>
@@ -22,6 +23,9 @@
         </button>
         <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
         <button id="debugToggleBtn" aria-expanded="false" title="Show debug messages">Debug</button>
+        <button id="contextDebugToggleBtn" class="header-button" aria-expanded="false" title="Show context usage debug">
+          Context
+        </button>
       </div>
     </header>
 
@@ -43,6 +47,7 @@
     <script src="{{ url_for('static', path='js/mcp_module.js') }}?v=blocked-tools"></script>
     <script src="{{ url_for('static', path='js/status_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/debug_module.js') }}"></script>
+    <script src="{{ url_for('static', path='js/context_debug_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/main.js') }}"></script>
   </body>
 </html>

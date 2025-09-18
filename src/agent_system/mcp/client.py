@@ -522,6 +522,10 @@ class MCPClientManager:
 
     def __init__(self):
         self.clients: Dict[str, StandardMCPClient] = {}
+        # Tool list caching to reduce external server queries
+        self._tools_cache: Optional[Dict[str, List[MCPTool]]] = None
+        self._tools_cache_time = 0.0
+        self._tools_cache_ttl = 30.0  # Cache for 30 seconds
 
     async def add_client(self, name: str, config: Dict[str, Any]) -> None:
         """Add an MCP client from configuration"""
@@ -582,6 +586,17 @@ class MCPClientManager:
 
     async def list_all_tools(self) -> Dict[str, List[MCPTool]]:
         """List tools from all clients"""
+        import time
+        
+        # Check cache validity
+        now = time.time()
+        if (self._tools_cache is not None and 
+            (now - self._tools_cache_time) < self._tools_cache_ttl):
+            logger.debug("Returning cached MCP tools list (age: %.1fs)", now - self._tools_cache_time)
+            return self._tools_cache
+        
+        logger.debug("Refreshing MCP tools cache...")
+        
         all_tools = {}
         for name, client in self.clients.items():
             try:
@@ -590,7 +605,24 @@ class MCPClientManager:
             except Exception as e:
                 logger.error(f"Failed to list tools from client {name}: {e}")
                 all_tools[name] = []
+        
+        # Update cache
+        self._tools_cache = all_tools
+        self._tools_cache_time = now
+        logger.debug("MCP tools cache updated")
+        
         return all_tools
+    
+    def invalidate_tools_cache(self) -> None:
+        """Invalidate the tools cache"""
+        self._tools_cache = None
+        self._tools_cache_time = 0.0
+        logger.debug("MCP tools cache invalidated")
+
+    def set_cache_ttl(self, ttl_seconds: float) -> None:
+        """Set the cache TTL for tool listings"""
+        self._tools_cache_ttl = ttl_seconds
+        logger.debug(f"MCP client manager cache TTL set to {ttl_seconds}s")
 
     async def call_tool(self, client_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Call a tool on a specific client"""

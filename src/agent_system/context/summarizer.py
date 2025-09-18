@@ -39,6 +39,44 @@ class ConversationSummarizer:
         if not to_summarize:
             result = [system_msg] + to_preserve if system_msg else to_preserve
             return result
+
+        # Ensure we preserve assistant messages that triggered tool calls and their tool results
+        # These are important for continuing the conversation and should not be summarized away.
+        try:
+            additional_preserve = []
+            preserve_ids = set()
+
+            # Collect candidate assistant messages with tool_calls from the to_summarize block
+            for msg in to_summarize:
+                if getattr(msg, 'role', None) == 'assistant' and getattr(msg, 'tool_calls', None):
+                    # Avoid duplicating if already in to_preserve
+                    if msg not in to_preserve and msg not in additional_preserve:
+                        additional_preserve.append(msg)
+                        # Collect tool call ids referenced so we can keep matching tool results
+                        for tc in msg.tool_calls:
+                            tcid = tc.get('id') if isinstance(tc, dict) else None
+                            if tcid:
+                                preserve_ids.add(tcid)
+
+            # Find tool result messages that match collected tool_call_ids
+            if preserve_ids:
+                for msg in to_summarize:
+                    if getattr(msg, 'role', None) == 'tool':
+                        tid = getattr(msg, 'tool_call_id', None)
+                        if tid and tid in preserve_ids and msg not in to_preserve and msg not in additional_preserve:
+                            additional_preserve.append(msg)
+
+            if additional_preserve:
+                # Maintain original chronological order when adding to_preserve
+                for p in additional_preserve:
+                    if p in to_summarize:
+                        to_summarize.remove(p)
+                    if p not in to_preserve:
+                        to_preserve.append(p)
+
+                logger.debug("🔒 Preserved %d important assistant/tool messages during summarization", len(additional_preserve))
+        except Exception:
+            logger.exception("Failed while preserving assistant/tool messages before summarization")
         
         # Publish start status event
         await publish_status(
@@ -71,8 +109,9 @@ class ConversationSummarizer:
         else:
             logger.warning("⚠️  Summary creation failed, proceeding without summary")
         
-        # Add preserved recent messages
-        result.extend(to_preserve)
+        # Add preserved recent messages (with tool result truncation)
+        truncated_preserved = self._truncate_tool_results(to_preserve, config)
+        result.extend(truncated_preserved)
         
         logger.debug("📊 Summarization complete:")
         logger.debug("   🗂️  Original messages: %d → Final messages: %d", 
@@ -93,6 +132,37 @@ class ConversationSummarizer:
         )
         
         return result
+    
+    def _truncate_tool_results(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
+        """Truncate large tool results in messages to prevent context overflow."""
+        truncated_messages = []
+        max_chars = config.tool_result_preview_chars
+        
+        for msg in messages:
+            role = getattr(msg, 'role', None)
+            content = getattr(msg, 'content', '')
+            
+            if role == "tool" and len(str(content)) > max_chars:
+                # Create a new message with truncated content
+                truncated_content = str(content)[:max_chars] + f"... [truncated from {len(str(content)):,} chars]"
+                truncated_msg = ChatMessage(
+                    role=msg.role,
+                    content=truncated_content
+                )
+                # Copy other attributes if they exist
+                if hasattr(msg, 'tool_call_id'):
+                    truncated_msg.tool_call_id = msg.tool_call_id
+                if hasattr(msg, 'name'):
+                    truncated_msg.name = msg.name
+                    
+                truncated_messages.append(truncated_msg)
+                logger.debug("🔧 Truncated tool result: %s chars → %s chars", 
+                           len(str(content)), len(truncated_content))
+            else:
+                # Keep message as-is
+                truncated_messages.append(msg)
+        
+        return truncated_messages
     
     async def _create_summary(self, messages: List[ChatMessage], config: ContextConfig) -> str:
         """Create a concise summary of the conversation messages."""

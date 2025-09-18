@@ -176,6 +176,17 @@ class Agent(MCPServer):
             # Initialize optimizer
             self.token_optimizer = TokenOptimizer()
 
+            # Optimizer run guard: avoid repeated optimizer runs when token usage
+            # hasn't increased significantly since the last run.
+            self._last_optimizer_tokens_snapshot = 0
+            self._last_optimizer_run_time = 0.0
+            # Cooldown in seconds between optimizer attempts when insufficient growth
+            self._optimizer_cooldown_seconds = 10.0  # Increased from 1.0 to 10.0 seconds
+            # Minimum token increase required to trigger optimizer again
+            self._optimizer_min_increase_tokens = max(200, int(self.context_config.context_window * 0.05))  # Increased threshold
+            # Skip optimizer for N steps after context management
+            self._skip_optimizer_steps_after_context_mgmt = 0
+
             logger.info("Context management initialized - window: %d, summarization threshold: %d, prediction threshold: %.1f%%",
                        context_window, self.context_config.summarization_threshold, self.context_config.prediction_threshold * 100)
 
@@ -186,6 +197,13 @@ class Agent(MCPServer):
             self.context_config = ContextConfig()
             self.context_manager = None
             self.token_optimizer = None
+
+            # Ensure optimizer-related attributes exist even on fallback
+            self._last_optimizer_tokens_snapshot = 0
+            self._last_optimizer_run_time = 0.0
+            self._optimizer_cooldown_seconds = 10.0  # Increased from 1.0 to 10.0 seconds
+            self._optimizer_min_increase_tokens = 200  # Increased threshold
+            self._skip_optimizer_steps_after_context_mgmt = 0
 
     @property
     def description(self) -> str:
@@ -307,9 +325,40 @@ class Agent(MCPServer):
             for step in range(max_steps):
                 # Enhanced context management and token tracking
                 if self.context_manager:
-                    # Apply token optimization
+                    # Apply token optimization with centralized guard to avoid repeated runs
                     if self.token_optimizer:
-                        messages = await self.token_optimizer.optimize_messages(messages)
+                        # Skip optimizer for a few steps after context management
+                        if getattr(self, '_skip_optimizer_steps_after_context_mgmt', 0) > 0:
+                            self._skip_optimizer_steps_after_context_mgmt -= 1
+                            logger.debug("Skipping token optimizer: %d steps remaining after context mgmt", 
+                                       self._skip_optimizer_steps_after_context_mgmt)
+                        else:
+                            try:
+                                import time
+                                now = time.time()
+                                # Estimate current tokens
+                                estimated_tokens_now = self.context_manager.estimate_token_count(messages)
+
+                                tokens_growth = estimated_tokens_now - getattr(self, '_last_optimizer_tokens_snapshot', 0)
+                                time_since_last = now - getattr(self, '_last_optimizer_run_time', 0.0)
+
+                                should_run_optimizer = False
+                                # Run if tokens grew sufficiently since last run
+                                if tokens_growth >= getattr(self, '_optimizer_min_increase_tokens', 200):
+                                    should_run_optimizer = True
+                                # Or if enough time passed since last run (cooldown)
+                                elif time_since_last >= getattr(self, '_optimizer_cooldown_seconds', 10.0):
+                                    should_run_optimizer = True
+
+                                if should_run_optimizer:
+                                    messages = await self.token_optimizer.optimize_messages(messages)
+                                    # update snapshot
+                                    self._last_optimizer_tokens_snapshot = self.context_manager.estimate_token_count(messages)
+                                    self._last_optimizer_run_time = now
+                                else:
+                                    logger.debug("Skipping token optimizer: growth=%d, time_since_last=%.2fs", tokens_growth, time_since_last)
+                            except Exception as e:
+                                logger.debug("Token optimizer guard check failed: %s", e)
 
                     # Check token count and issue appropriate warnings
                     estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
@@ -318,6 +367,8 @@ class Agent(MCPServer):
                     if self.context_manager.should_manage_context(estimated_tokens, warning_level):
                         logger.info("Applying context management at step %d", step + 1)
                         messages = await self.context_manager.manage_context(messages)
+                        # Skip optimizer for next 2 steps after context management
+                        self._skip_optimizer_steps_after_context_mgmt = 2
                         # Re-check after management
                         estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
                 else:
@@ -658,9 +709,36 @@ class Agent(MCPServer):
             for step in range(max_steps):
                 # Enhanced context management and token tracking
                 if self.context_manager:
-                    # Apply token optimization
+                    # Apply token optimization with centralized guard to avoid repeated runs (events loop)
                     if self.token_optimizer:
-                        messages = await self.token_optimizer.optimize_messages(messages)
+                        # Skip optimizer for a few steps after context management
+                        if getattr(self, '_skip_optimizer_steps_after_context_mgmt', 0) > 0:
+                            self._skip_optimizer_steps_after_context_mgmt -= 1
+                            logger.debug("Skipping token optimizer (events): %d steps remaining after context mgmt", 
+                                       self._skip_optimizer_steps_after_context_mgmt)
+                        else:
+                            try:
+                                import time
+                                now = time.time()
+                                estimated_tokens_now = self.context_manager.estimate_token_count(messages)
+
+                                tokens_growth = estimated_tokens_now - getattr(self, '_last_optimizer_tokens_snapshot', 0)
+                                time_since_last = now - getattr(self, '_last_optimizer_run_time', 0.0)
+
+                                should_run_optimizer = False
+                                if tokens_growth >= getattr(self, '_optimizer_min_increase_tokens', 200):
+                                    should_run_optimizer = True
+                                elif time_since_last >= getattr(self, '_optimizer_cooldown_seconds', 10.0):
+                                    should_run_optimizer = True
+
+                                if should_run_optimizer:
+                                    messages = await self.token_optimizer.optimize_messages(messages)
+                                    self._last_optimizer_tokens_snapshot = self.context_manager.estimate_token_count(messages)
+                                    self._last_optimizer_run_time = now
+                                else:
+                                    logger.debug("Skipping token optimizer (events): growth=%d, time_since_last=%.2fs", tokens_growth, time_since_last)
+                            except Exception as e:
+                                logger.debug("Token optimizer guard check failed (events): %s", e)
 
                     # Check token count and issue appropriate warnings
                     estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
@@ -669,6 +747,8 @@ class Agent(MCPServer):
                     if self.context_manager.should_manage_context(estimated_tokens, warning_level):
                         logger.info("Applying context management at step %d", step + 1)
                         messages = await self.context_manager.manage_context(messages)
+                        # Skip optimizer for next 2 steps after context management
+                        self._skip_optimizer_steps_after_context_mgmt = 2
                         # Re-check after management
                         estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
                 else:
