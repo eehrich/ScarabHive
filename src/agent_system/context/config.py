@@ -6,7 +6,21 @@ from enum import Enum
 
 
 class ContextStrategy(Enum):
-    """Strategy for handling context window limits."""
+    """Strategy for handling context window limits.
+    
+    TRUNCATE_OLDEST: Simply removes oldest messages when limit is reached.
+                     Fast but may lose important context.
+                     
+    SUMMARIZE_OLDEST: Uses LLM to create intelligent summaries of older messages.
+                      Preserves semantic meaning while reducing token count.
+                      Recommended for most use cases.
+                      
+    SLIDING_WINDOW: Maintains fixed-size window of recent messages.
+                    Good for real-time applications with continuous flow.
+                    
+    SMART_COMPRESSION: Advanced compression using semantic analysis.
+                       Maximum context retention but higher computational cost.
+    """
     TRUNCATE_OLDEST = "TRUNCATE_OLDEST"
     SUMMARIZE_OLDEST = "SUMMARIZE_OLDEST"
     SLIDING_WINDOW = "SLIDING_WINDOW"
@@ -22,17 +36,21 @@ class WarningLevel(Enum):
 
 @dataclass
 class ContextConfig:
-    """Configuration for context window management."""
+    """Configuration for context window management.
+    
+    This class defines all parameters for intelligent context window management,
+    including warning thresholds, summarization settings, and optimization options.
+    """
     
     # Context window settings
-    context_window: int = 32768
+    context_window: int = 32768  # Total available context window in tokens
     summarization_threshold: int = 25600  # Start summarizing at ~80% of context_window by default
     
     # Warning levels (as percentage of context window)
     warning_thresholds: Dict[WarningLevel, float] = field(default_factory=lambda: {
-        WarningLevel.YELLOW: 0.7,
-        WarningLevel.ORANGE: 0.85,
-        WarningLevel.RED: 0.95
+        WarningLevel.YELLOW: 0.7,   # 70% - First warning, informational
+        WarningLevel.ORANGE: 0.85,  # 85% - More urgent warning, action recommended
+        WarningLevel.RED: 0.95      # 95% - Critical warning, immediate action needed
     })
     
     # Context management strategy
@@ -40,14 +58,14 @@ class ContextConfig:
     
     # Summarization settings
     summarization_ratio: float = 0.5  # Reduce to 50% of original size
-    preserve_recent_messages: int = 10  # Always keep last N messages
-    max_summary_words: int = 500  # Maximum words in generated summary
-    tool_result_preview_chars: int = 200  # Characters to show in tool result preview
+    preserve_recent_messages: int = 10  # Always keep last N messages intact
+    max_summary_words: int = 500  # Maximum words in generated summary (prevents overly long summaries)
+    tool_result_preview_chars: int = 200  # Characters to show in tool result preview (balances detail vs brevity)
     
     # Token optimization settings
-    enable_compression: bool = True
-    compress_tool_results: bool = True
-    max_tool_result_tokens: int = 1000
+    enable_compression: bool = True  # Enable general token compression techniques
+    compress_tool_results: bool = True  # Compress verbose tool outputs to save tokens
+    max_tool_result_tokens: int = 1000  # Maximum tokens to preserve from tool results
     
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "ContextConfig":

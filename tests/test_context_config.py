@@ -108,7 +108,7 @@ class TestContextConfigEdgeCases:
         """Test creating config from dictionary."""
         config_dict = {
             "context_window": 50000,
-            "strategy": "truncate_oldest",
+            "strategy": "TRUNCATE_OLDEST",
             "warning_thresholds": {
                 "yellow": 0.6,
                 "orange": 0.8,

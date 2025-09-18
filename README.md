@@ -134,7 +134,28 @@ prompts:
   system_template: config/prompts/system_prompt.yaml
 
 max_steps: 50
+
+# Context window management (optional)
+context_management:
+  context_window: 128000
+  summarization_threshold: 102400
+  strategy: "SUMMARIZE_OLDEST"
+  max_summary_words: 500
+  tool_result_preview_chars: 200
 ```
+
+### Context Window Management
+
+AgentSystem includes an intelligent context window management system that automatically handles token limits, provides warnings, and implements smart summarization strategies. This prevents context overflow and maintains conversation continuity.
+
+Key features:
+- **Multi-level warnings** at 70%, 85%, and 95% of context window
+- **Four management strategies**: TRUNCATE_OLDEST, SUMMARIZE_OLDEST, SLIDING_WINDOW, SMART_COMPRESSION
+- **Intelligent summarization** using LLM to preserve important context
+- **Configurable parameters** for summarization length and tool result previews
+- **Real-time status events** for monitoring and feedback
+
+For detailed configuration options, strategy explanations, and tuning guidance, see `docs/context_management.md`.
 
 ### Include Pattern and Managed Files
 
