@@ -312,18 +312,23 @@ async function updateDebugInfo() {
             const needsTruncate = fullContent.length > maxPreview;
             const preview = needsTruncate ? fullContent.substring(0, maxPreview) + '...' : fullContent;
             const msgId = `debug-msg-${index}`;
+            const initiallyExpanded = debugExpandedSet.has(msgId);
 
             return `
               <div class="debug-message" id="${msgId}">
                 <div class="debug-message-header">
-                  <span class="debug-message-role">${msg.role || 'unknown'}</span>
-                  <span class="debug-message-index">#${index + 1}</span>
-                  <span class="debug-message-tokens">${msg.estimated_tokens || '?'} tokens</span>
-                  ${needsTruncate ? `<button class="debug-toggle" data-target="${msgId}" aria-expanded="false">Show more</button>` : ''}
+                  <div class="debug-header-left">
+                    <span class="debug-message-role ${needsTruncate ? 'clickable' : ''}" data-target="${needsTruncate ? msgId : ''}">${msg.role || 'unknown'}</span>
+                    <span class="debug-message-index">#${index + 1}</span>
+                  </div>
+                  <div class="debug-header-right">
+                    <span class="debug-message-tokens">${msg.estimated_tokens || '?'} tokens</span>
+                    ${needsTruncate ? `<button class="debug-toggle" data-target="${msgId}" aria-expanded="${initiallyExpanded ? 'true' : 'false'}">${initiallyExpanded ? '⤡' : '⤢'}</button>` : `<span class="debug-toggle-placeholder" aria-hidden="true"></span>`}
+                  </div>
                 </div>
                 <div class="debug-message-content">
-                  <div class="debug-preview">${escapeHtml(preview)}</div>
-                  <div class="debug-full" style="display:none">${escapeHtml(fullContent)}</div>
+                  <div class="debug-preview" style="display: ${initiallyExpanded ? 'none' : ''}">${escapeHtml(preview)}</div>
+                  <div class="debug-full" style="display:${initiallyExpanded ? 'block' : 'none'}">${escapeHtml(fullContent)}</div>
                 </div>
               </div>
             `;
@@ -340,28 +345,47 @@ async function updateDebugInfo() {
 
           // Attach toggle handlers for expandable debug messages
           if (debugMessages) {
-            const toggles = debugMessages.querySelectorAll('.debug-toggle');
-            toggles.forEach(btn => {
-              btn.addEventListener('click', (ev) => {
-                const targetId = btn.getAttribute('data-target');
+            // Handle both button clicks and role label clicks
+            const toggles = debugMessages.querySelectorAll('.debug-toggle, .debug-message-role.clickable');
+            toggles.forEach(elem => {
+              elem.addEventListener('click', (ev) => {
+                const targetId = elem.getAttribute('data-target');
+                if (!targetId) return;
+
                 const container = document.getElementById(targetId);
                 if (!container) return;
+
                 const preview = container.querySelector('.debug-preview');
                 const full = container.querySelector('.debug-full');
-                const expanded = btn.getAttribute('aria-expanded') === 'true';
-                if (expanded) {
+                const button = container.querySelector('.debug-toggle');
+                const roleLabel = container.querySelector('.debug-message-role.clickable');
+
+                const currentlyExpanded = debugExpandedSet.has(targetId);
+
+                if (currentlyExpanded) {
                   // collapse
                   if (full) full.style.display = 'none';
                   if (preview) preview.style.display = '';
-                  btn.textContent = 'Show more';
-                  btn.setAttribute('aria-expanded', 'false');
+                  if (button) {
+                    button.textContent = '⤢';
+                    button.setAttribute('aria-expanded', 'false');
+                  }
+                  if (roleLabel) roleLabel.classList.remove('expanded');
+                  debugExpandedSet.delete(targetId);
                 } else {
                   // expand
                   if (preview) preview.style.display = 'none';
                   if (full) full.style.display = 'block';
-                  btn.textContent = 'Show less';
-                  btn.setAttribute('aria-expanded', 'true');
+                  if (button) {
+                    button.textContent = '⤡';
+                    button.setAttribute('aria-expanded', 'true');
+                  }
+                  if (roleLabel) roleLabel.classList.add('expanded');
+                  debugExpandedSet.add(targetId);
                 }
+
+                // persist expansion state
+                saveDebugExpanded(debugExpandedSet);
               });
             });
           }
@@ -407,13 +431,29 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
-}// Floating status panel
+}
+
+// Persist expanded debug messages across auto-refreshes
+const DEBUG_EXPANDED_KEY = 'debugExpandedMessages';
+function loadDebugExpanded() {
+  try {
+    const raw = localStorage.getItem(DEBUG_EXPANDED_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch (e) { return new Set(); }
+}
+function saveDebugExpanded(set) {
+  try { localStorage.setItem(DEBUG_EXPANDED_KEY, JSON.stringify(Array.from(set))); } catch (e) {}
+}
+let debugExpandedSet = loadDebugExpanded();
+
+// Floating status panel
 const statusPanel = document.createElement('div');
 statusPanel.id = 'floatingStatusPanel';
 statusPanel.className = 'floating-panel';
 statusPanel.style.display = 'none';
 // Position status panel on the right side with smaller size
 statusPanel.style.top = '80px';
+statusPanel.style.position = 'fixed';
 statusPanel.style.right = '24px';
 statusPanel.style.left = 'auto';
 statusPanel.style.width = '400px';
@@ -438,6 +478,7 @@ const mcpPanel = document.createElement('div');
 mcpPanel.id = 'floatingMCPPanel';
 mcpPanel.className = 'floating-panel';
 mcpPanel.style.display = 'none';
+mcpPanel.style.position = 'fixed';
 mcpPanel.innerHTML = `
   <div class="floating-panel-header" id="floatingMCPHeader">
     <span>MCP Servers & Tools</span>
@@ -475,6 +516,7 @@ debugPanel.className = 'floating-panel';
 debugPanel.style.display = 'none';
 // Position debug panel in the center-left
 debugPanel.style.top = '80px';
+debugPanel.style.position = 'fixed';
 debugPanel.style.left = '24px';
 debugPanel.style.width = '600px';
 debugPanel.style.height = '700px';
@@ -550,26 +592,15 @@ function savePanelState(id, state) {
 function applyPanelState(panel, state) {
   if (!panel || !state) return;
 
-  // For status panel, preserve right-side positioning
-  if (panel.id === 'floatingStatusPanel') {
-    if (state.right !== undefined) {
-      panel.style.right = state.right + 'px';
-      panel.style.left = 'auto';
-    } else if (state.left !== undefined) {
-      // If old state had left positioning, convert to right
-      const viewport = window.innerWidth;
-      const width = state.width || 400;
-      panel.style.right = (viewport - state.left - width) + 'px';
-      panel.style.left = 'auto';
-    }
-  } else {
-    // For other panels, use left positioning
-    if (state.left !== undefined) panel.style.left = state.left + 'px';
-  }
-
+  // Use consistent left positioning for all panels
+  if (state.left !== undefined) panel.style.left = state.left + 'px';
   if (state.top !== undefined) panel.style.top = state.top + 'px';
   if (state.width !== undefined) panel.style.width = state.width + 'px';
   if (state.height !== undefined) panel.style.height = state.height + 'px';
+  
+  // Always use left positioning, remove any right positioning
+  panel.style.right = 'auto';
+  
   if (state.visible) panel.style.display = 'block';
 }
 
@@ -582,22 +613,27 @@ const savedStatus = loadPanelState('floatingStatusPanel');
 if (savedStatus) {
   applyPanelState(statusPanel, savedStatus);
 } else {
-  // Ensure default right positioning if no saved state
-  statusPanel.style.right = '24px';
-  statusPanel.style.left = 'auto';
+  // Default positioning for status panel
+  statusPanel.style.left = (window.innerWidth - 424) + 'px'; // 400px width + 24px margin
+  statusPanel.style.right = 'auto';
   statusPanel.style.top = '80px';
   statusPanel.style.width = '400px';
   statusPanel.style.height = '500px';
 }
 
+// Restore debug panel state if present  
+const savedDebug = loadPanelState('floatingDebugPanel');
+if (savedDebug) applyPanelState(debugPanel, savedDebug);
+
 // DEBUG: Add a global function to reset panel positions
 window.resetPanelPositions = function() {
   localStorage.removeItem('panelState:floatingStatusPanel');
   localStorage.removeItem('panelState:floatingMCPPanel');
+  localStorage.removeItem('panelState:floatingDebugPanel');
 
-  // Reset status panel to right side
-  statusPanel.style.right = '24px';
-  statusPanel.style.left = 'auto';
+  // Reset status panel to right side with left positioning
+  statusPanel.style.left = (window.innerWidth - 424) + 'px';
+  statusPanel.style.right = 'auto';
   statusPanel.style.top = '80px';
   statusPanel.style.width = '400px';
   statusPanel.style.height = '500px';
@@ -609,7 +645,14 @@ window.resetPanelPositions = function() {
   mcpPanel.style.width = '640px';
   mcpPanel.style.height = '800px';
 
-  // positions reset
+  // Reset debug panel to center-left
+  debugPanel.style.left = '24px';
+  debugPanel.style.right = 'auto';
+  debugPanel.style.top = '80px';
+  debugPanel.style.width = '600px';
+  debugPanel.style.height = '700px';
+
+  console.log('Panel positions reset');
 };
 
 // Auto-refresh control
@@ -701,14 +744,23 @@ if (statusToggleBtn) {
   statusToggleBtn.addEventListener('click', () => {
     const shown = statusPanel.style.display !== 'none';
     statusPanel.style.display = shown ? 'none' : 'block';
-    // Force right positioning every time we open it
+    
+    // Ensure proper positioning when opening
     if (!shown) {
-      statusPanel.style.right = '24px';
-      statusPanel.style.left = 'auto';
-      statusPanel.style.top = '80px';
+      // Check if we have saved position, otherwise use default
+      const savedState = loadPanelState('floatingStatusPanel');
+      if (!savedState || (!savedState.left && !savedState.right)) {
+        // Position on right side using left coordinate
+        statusPanel.style.left = (window.innerWidth - 424) + 'px';
+        statusPanel.style.right = 'auto';
+        statusPanel.style.top = '80px';
+      }
+      // Keep panel in bounds
+      handleWindowResize();
+      updateStatusMetrics().catch(() => {});
     }
+    
     statusToggleBtn.setAttribute('aria-expanded', String(!shown));
-    if (!shown) updateStatusMetrics().catch(() => {});
   });
 } else {
   // Status toggle not present in DOM
@@ -772,154 +824,193 @@ if (debugRefreshBtn) {
   });
 }
 
-// Make panel draggable
-(function makeDraggable(headerId, panel) {
-  const header = document.getElementById(headerId);
-  let isDragging = false;
-  let startX = 0, startY = 0, origX = 0, origY = 0;
-  header.addEventListener('pointerdown', (ev) => {
-    try {
-      // If the pointerdown originated on an interactive control, ignore so clicks work
-      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
-      if (interactive) return;
-      // Also ignore custom toggle elements
-      if (ev.target && ev.target.closest && (ev.target.closest('#floatingCloseBtn') || ev.target.closest('.custom-toggle'))) return;
-    } catch (e) {}
-    isDragging = true;
-    startX = ev.clientX; startY = ev.clientY;
-    const rect = panel.getBoundingClientRect();
-    origX = rect.left; origY = rect.top;
-    header.setPointerCapture(ev.pointerId);
-  });
-  window.addEventListener('pointermove', (ev) => {
-    if (!isDragging) return;
-    const dx = ev.clientX - startX;
-    const dy = ev.clientY - startY;
-
-    // For status panel, maintain right positioning logic during drag
-    if (panel.id === 'floatingStatusPanel') {
-      const newLeft = origX + dx;
-      panel.style.left = newLeft + 'px';
-      panel.style.right = 'auto';  // Temporarily use left during drag for smoother movement
-    } else {
-      panel.style.left = (origX + dx) + 'px';
-      panel.style.right = 'auto';
-    }
-    panel.style.top = (origY + dy) + 'px';
-  });
-  window.addEventListener('pointerup', (ev) => {
-    isDragging = false;
-
-    // After drag ends, convert status panel back to right positioning
-    if (panel.id === 'floatingStatusPanel') {
-      const rect = panel.getBoundingClientRect();
-      const viewport = window.innerWidth;
-      const rightPos = viewport - rect.right;
-      panel.style.right = rightPos + 'px';
-      panel.style.left = 'auto';
-    }
-  });
-})('floatingStatusHeader', statusPanel);
-
-// Make MCP panel draggable
-(function makeDraggable(headerId, panel) {
-  const header = document.getElementById(headerId);
-  let isDragging = false;
-  let startX = 0, startY = 0, origX = 0, origY = 0;
-  header.addEventListener('pointerdown', (ev) => {
-    try {
-      // Ignore pointerdown if user clicked on interactive controls so they receive the event
-      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
-      if (interactive) return;
-      if (ev.target && ev.target.closest && (
-        ev.target.closest('#floatingMCPCloseBtn') ||
-        ev.target.closest('#mcpRefreshBtn') ||
-        ev.target.closest('#mcpFilterInput') ||
-        ev.target.closest('.custom-toggle') ||
-        ev.target.closest('#mcpAutoRefreshInterval')
-      )) return;
-    } catch (e) {}
-    isDragging = true;
-    startX = ev.clientX; startY = ev.clientY;
-    const rect = panel.getBoundingClientRect();
-    origX = rect.left; origY = rect.top;
-    header.setPointerCapture(ev.pointerId);
-  });
-  window.addEventListener('pointermove', (ev) => {
-    if (!isDragging) return;
-    const dx = ev.clientX - startX;
-    const dy = ev.clientY - startY;
-    panel.style.left = (origX + dx) + 'px';
-    panel.style.top = (origY + dy) + 'px';
-    panel.style.right = 'auto';
-  });
-  window.addEventListener('pointerup', (ev) => { isDragging = false; });
-})('floatingMCPHeader', mcpPanel);
-
-// Make Debug panel draggable
-(function makeDraggable(headerId, panel) {
-  const header = document.getElementById(headerId);
-  let isDragging = false;
-  let startX = 0, startY = 0, origX = 0, origY = 0;
-  header.addEventListener('pointerdown', (ev) => {
-    try {
-      // Ignore pointerdown if user clicked on interactive controls so they receive the event
-      const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
-      if (interactive) return;
-      if (ev.target && ev.target.closest && (
-        ev.target.closest('#floatingDebugCloseBtn') ||
-        ev.target.closest('#debugRefreshBtn') ||
-        ev.target.closest('.custom-toggle')
-      )) return;
-    } catch (e) {}
-    isDragging = true;
-    startX = ev.clientX; startY = ev.clientY;
-    const rect = panel.getBoundingClientRect();
-    origX = rect.left; origY = rect.top;
-    header.setPointerCapture(ev.pointerId);
-  });
-  window.addEventListener('pointermove', (ev) => {
-    if (!isDragging) return;
-    const dx = ev.clientX - startX;
-    const dy = ev.clientY - startY;
-    panel.style.left = (origX + dx) + 'px';
-    panel.style.top = (origY + dy) + 'px';
-    panel.style.right = 'auto';
-  });
-  window.addEventListener('pointerup', (ev) => { isDragging = false; });
-})('floatingDebugHeader', debugPanel);
-
-// Persist position when dragging ends for both panels
-function attachDragPersist(headerId, panel, stateKey) {
+// Make panel draggable with improved positioning logic
+function makeDraggable(headerId, panel) {
   const header = document.getElementById(headerId);
   if (!header || !panel) return;
-  header.addEventListener('pointerup', () => {
-    try {
-      const rect = panel.getBoundingClientRect();
-      const state = loadPanelState(stateKey) || {};
+  
+  let isDragging = false;
+  let startX = 0, startY = 0, origX = 0, origY = 0;
+  let activePointerId = null;
 
-      // For status panel, save right position instead of left
-      if (panel.id === 'floatingStatusPanel') {
-        const viewport = window.innerWidth;
-        state.right = Math.round(viewport - rect.right);
-        state.top = Math.round(rect.top);
-        // Remove old left positioning if it exists
-        delete state.left;
-      } else {
-        // For other panels, use left positioning
-        state.left = Math.round(rect.left);
-        state.top = Math.round(rect.top);
-      }
+  // Improve touch/pen behavior
+  try { header.style.touchAction = 'none'; header.style.userSelect = 'none'; header.style.cursor = 'move'; } catch (e) {}
+  
+  // Direct drag handler on the header
+  header.addEventListener('pointerdown', (ev) => {
+    // If the pointerdown originated on an interactive control, ignore so clicks work
+    const interactive = ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'LABEL');
+    if (interactive) return;
 
-      savePanelState(stateKey, state);
-    } catch (e) {}
+    // Also ignore specific interactive elements
+    if (ev.target && ev.target.closest && (
+      ev.target.closest('#floatingCloseBtn') || 
+      ev.target.closest('#floatingMCPCloseBtn') || 
+      ev.target.closest('#floatingDebugCloseBtn') ||
+      ev.target.closest('#mcpRefreshBtn') ||
+      ev.target.closest('#debugRefreshBtn') ||
+      ev.target.closest('#mcpFilterInput') ||
+      ev.target.closest('.custom-toggle') ||
+      ev.target.closest('#mcpAutoRefreshInterval')
+    )) return;
+
+    isDragging = true;
+    activePointerId = ev.pointerId;
+    startX = ev.clientX; 
+    startY = ev.clientY;
+    const rect = panel.getBoundingClientRect();
+    origX = rect.left; 
+    origY = rect.top;
+
+    try { header.setPointerCapture(ev.pointerId); } catch (e) {}
+    ev.preventDefault();
+  });
+  
+  window.addEventListener('pointermove', (ev) => {
+    if (!isDragging) return;
+    if (activePointerId !== null && ev.pointerId !== activePointerId) return;
+
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+
+    let newLeft = origX + dx;
+    let newTop = origY + dy;
+
+    // Keep panel within viewport bounds
+    const rect = panel.getBoundingClientRect();
+    const maxLeft = window.innerWidth - rect.width;
+    const maxTop = window.innerHeight - rect.height;
+
+    newLeft = Math.max(0, Math.min(maxLeft, newLeft));
+    newTop = Math.max(0, Math.min(maxTop, newTop));
+
+    panel.style.left = newLeft + 'px';
+    panel.style.top = newTop + 'px';
+    panel.style.right = 'auto'; // Always use left positioning during drag
+  });
+  
+  window.addEventListener('pointerup', (ev) => {
+    if (!isDragging) return;
+    isDragging = false;
+    if (activePointerId !== null) {
+      try { header.releasePointerCapture(activePointerId); } catch (e) {}
+      activePointerId = null;
+    }
+
+    // Save position
+    savePanelPosition(panel);
   });
 }
-attachDragPersist('floatingStatusHeader', statusPanel, 'floatingStatusPanel');
-attachDragPersist('floatingMCPHeader', mcpPanel, 'floatingMCPPanel');
-attachDragPersist('floatingDebugHeader', debugPanel, 'floatingDebugPanel');
 
-// Auto-refresh disabled by default. Use manual refresh via button to update MCP panel.
+// Make panel resizable via the .resize-handle element
+function makeResizable(panel) {
+  if (!panel) return;
+  const handle = panel.querySelector('.resize-handle');
+  if (!handle) return;
+
+  let isResizing = false;
+  let startX = 0, startY = 0, startWidth = 0, startHeight = 0;
+
+  handle.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    isResizing = true;
+    startX = ev.clientX; startY = ev.clientY;
+    const rect = panel.getBoundingClientRect();
+    startWidth = rect.width; startHeight = rect.height;
+    handle.setPointerCapture(ev.pointerId);
+  });
+
+  window.addEventListener('pointermove', (ev) => {
+    if (!isResizing) return;
+    const dx = ev.clientX - startX; const dy = ev.clientY - startY;
+    const newWidth = Math.max(200, Math.round(startWidth + dx));
+    const newHeight = Math.max(120, Math.round(startHeight + dy));
+    panel.style.width = newWidth + 'px';
+    panel.style.height = newHeight + 'px';
+    // Keep panel anchored by left/top
+    panel.style.right = 'auto';
+  });
+
+  window.addEventListener('pointerup', (ev) => {
+    if (!isResizing) return;
+    isResizing = false;
+    // Save size/position
+    savePanelPosition(panel);
+  });
+}
+
+// Improved panel state management
+function savePanelPosition(panel) {
+  try {
+    const rect = panel.getBoundingClientRect();
+    const state = loadPanelState(panel.id) || {};
+    
+    // Always save as left positioning for consistency
+    state.left = Math.round(rect.left);
+    state.top = Math.round(rect.top);
+    state.width = Math.round(rect.width);
+    state.height = Math.round(rect.height);
+    
+    // Remove any old right positioning
+    delete state.right;
+    
+    savePanelState(panel.id, state);
+  } catch (e) {
+    console.warn('Failed to save panel position:', e);
+  }
+}
+
+// Window resize handler to keep panels in bounds
+function handleWindowResize() {
+  [statusPanel, mcpPanel, debugPanel].forEach(panel => {
+    if (!panel || panel.style.display === 'none') return;
+    
+    const rect = panel.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    
+    let needsUpdate = false;
+    let newLeft = rect.left;
+    let newTop = rect.top;
+    
+    // Keep panel within viewport
+    if (rect.right > viewportWidth) {
+      newLeft = viewportWidth - rect.width;
+      needsUpdate = true;
+    }
+    if (rect.bottom > viewportHeight) {
+      newTop = viewportHeight - rect.height;
+      needsUpdate = true;
+    }
+    if (rect.left < 0) {
+      newLeft = 0;
+      needsUpdate = true;
+    }
+    if (rect.top < 0) {
+      newTop = 0;
+      needsUpdate = true;
+    }
+    
+    if (needsUpdate) {
+      panel.style.left = newLeft + 'px';
+      panel.style.top = newTop + 'px';
+      panel.style.right = 'auto';
+      savePanelPosition(panel);
+    }
+  });
+}
+
+// Add window resize listener
+window.addEventListener('resize', handleWindowResize);
+
+// Apply dragging to all panels
+makeDraggable('floatingStatusHeader', statusPanel);
+makeDraggable('floatingMCPHeader', mcpPanel);
+makeDraggable('floatingDebugHeader', debugPanel);
+// Apply resizing to all panels
+makeResizable(statusPanel);
+makeResizable(mcpPanel);
+makeResizable(debugPanel);
 
 // Initialize immediately, but ensure DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -1248,7 +1339,7 @@ async function run() {
   }
 })();
 
-// Make floating panels resizable
+// Make floating panels resizable with improved event handling
 function makeResizable(panel) {
   const resizeHandle = panel.querySelector('.resize-handle');
   if (!resizeHandle) return;
@@ -1256,7 +1347,7 @@ function makeResizable(panel) {
   let isResizing = false;
   let startX, startY, startWidth, startHeight;
 
-  resizeHandle.addEventListener('mousedown', (e) => {
+  resizeHandle.addEventListener('pointerdown', (e) => {
     isResizing = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -1265,9 +1356,10 @@ function makeResizable(panel) {
 
     e.preventDefault();
     e.stopPropagation();
+    resizeHandle.setPointerCapture(e.pointerId);
 
-    document.addEventListener('mousemove', doResize);
-    document.addEventListener('mouseup', stopResize);
+    document.addEventListener('pointermove', doResize);
+    document.addEventListener('pointerup', stopResize);
   });
 
   function doResize(e) {
@@ -1276,30 +1368,24 @@ function makeResizable(panel) {
     const newWidth = Math.max(250, startWidth + e.clientX - startX);
     const newHeight = Math.max(150, startHeight + e.clientY - startY);
 
-    panel.style.width = newWidth + 'px';
-    panel.style.height = newHeight + 'px';
+    // Keep panel within viewport bounds
+    const rect = panel.getBoundingClientRect();
+    const maxWidth = window.innerWidth - rect.left;
+    const maxHeight = window.innerHeight - rect.top;
+
+    panel.style.width = Math.min(newWidth, maxWidth) + 'px';
+    panel.style.height = Math.min(newHeight, maxHeight) + 'px';
   }
 
-  function stopResize() {
+  function stopResize(e) {
+    if (!isResizing) return;
     isResizing = false;
-    document.removeEventListener('mousemove', doResize);
-    document.removeEventListener('mouseup', stopResize);
-    // Persist size change
-    try {
-      const rect = panel.getBoundingClientRect();
-      const state = loadPanelState(panel.id) || {};
-      state.width = Math.round(rect.width);
-      state.height = Math.round(rect.height);
-
-      // For status panel, also update right position since resizing can affect it
-      if (panel.id === 'floatingStatusPanel') {
-        const viewport = window.innerWidth;
-        state.right = Math.round(viewport - rect.right);
-        delete state.left;  // Remove any old left positioning
-      }
-
-      savePanelState(panel.id, state);
-    } catch (e) {}
+    
+    document.removeEventListener('pointermove', doResize);
+    document.removeEventListener('pointerup', stopResize);
+    
+    // Save the new size and position
+    savePanelPosition(panel);
   }
 }
 
