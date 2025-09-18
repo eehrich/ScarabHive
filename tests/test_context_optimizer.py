@@ -25,6 +25,56 @@ class TestTokenOptimizer:
         assert self.optimizer.compression_stats["tokens_saved"] == 0
         assert self.optimizer.compression_stats["compression_ratio"] == 0.0
     
+    def test_improved_token_estimation(self):
+        """Test the improved token estimation method."""
+        # Test simple text
+        tokens = self.optimizer._estimate_text_tokens("Hello world")
+        assert tokens > 0
+        assert tokens < 10  # Should be reasonable
+        
+        # Test JSON content (should have higher token count due to structure)
+        json_tokens = self.optimizer._estimate_text_tokens('{"key": "value", "number": 123}')
+        plain_tokens = self.optimizer._estimate_text_tokens("key value number 123")
+        assert json_tokens > plain_tokens  # JSON should cost more tokens
+        
+        # Test empty content
+        assert self.optimizer._estimate_text_tokens("") == 0
+        assert self.optimizer._estimate_text_tokens(None) == 0
+    
+    def test_content_optimization_detection(self):
+        """Test detection of already-optimized content."""
+        # Already optimized content should be detected
+        compact_json = '{"id":"abc123","type":"response","data":[1,2,3]}'
+        assert self.optimizer._is_content_already_optimized(compact_json)
+        
+        # Verbose content should not be detected as optimized
+        verbose_text = "I understand that you want me to help with this task. Let me think about this carefully and provide you with a comprehensive response that addresses all your needs and concerns."
+        assert not self.optimizer._is_content_already_optimized(verbose_text)
+        
+        # Short content should be considered optimized
+        short_text = "OK"
+        assert self.optimizer._is_content_already_optimized(short_text)
+        
+        # Base64-like content should be considered optimized
+        base64_like = "SGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgc3RyaW5nIGZvciB0ZXN0aW5n"
+        assert self.optimizer._is_content_already_optimized(base64_like)
+    
+    def test_negative_savings_prevention(self):
+        """Test that optimization doesn't make things worse."""
+        # Create a message with already-compact content
+        compact_message = ChatMessage(
+            role="tool", 
+            content='{"results":[{"id":"1","name":"test"}]}'
+        )
+        
+        # Optimization should not make this worse
+        original_tokens = self.optimizer._estimate_message_tokens(compact_message)
+        optimized_message = self.optimizer._optimize_message(compact_message)
+        optimized_tokens = self.optimizer._estimate_message_tokens(optimized_message)
+        
+        # Should not increase token count
+        assert optimized_tokens <= original_tokens
+    
     @pytest.mark.asyncio
     async def test_optimize_messages_empty_list(self):
         """Test optimization with empty message list."""
@@ -48,18 +98,35 @@ class TestTokenOptimizer:
         assert len(result) == len(messages)
         assert all(isinstance(msg, ChatMessage) for msg in result)
         
-        # Should publish start and end status events
-        assert mock_publish.call_count >= 2
+    @pytest.mark.asyncio
+    async def test_no_negative_savings_in_optimization(self):
+        """Test that optimize_messages never reports negative savings."""
+        # Create messages with mixed content types
+        messages = [
+            ChatMessage(role="user", content="Hello world!"),
+            ChatMessage(role="tool", content='{"compact": true, "data": [1,2,3]}'),
+            ChatMessage(role="assistant", content="I understand that you want help.")
+        ]
         
-        # Check for start event
-        start_calls = [call for call in mock_publish.call_args_list 
-                      if len(call[1]) > 0 and call[1].get('phase') == 'start']
-        assert len(start_calls) >= 1
-        
-        # Check for end event  
-        end_calls = [call for call in mock_publish.call_args_list 
-                    if len(call[1]) > 0 and call[1].get('phase') == 'end']
-        assert len(end_calls) >= 1
+        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
+            await self.optimizer.optimize_messages(messages)
+            
+            # Check that tokens_saved in stats is not negative
+            stats = self.optimizer.get_compression_stats()
+            assert stats["tokens_saved"] >= 0  # Should never be negative
+            
+            # Should publish start and end status events
+            assert mock_publish.call_count >= 2
+            
+            # Check for start event
+            start_calls = [call for call in mock_publish.call_args_list 
+                          if len(call[1]) > 0 and call[1].get('phase') == 'start']
+            assert len(start_calls) >= 1
+            
+            # Check for end event  
+            end_calls = [call for call in mock_publish.call_args_list 
+                        if len(call[1]) > 0 and call[1].get('phase') == 'end']
+            assert len(end_calls) >= 1
     
     @pytest.mark.asyncio
     async def test_optimize_messages_large_batch_progress(self):

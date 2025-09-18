@@ -106,6 +106,9 @@ class TokenOptimizer:
     
     def _optimize_message(self, msg: ChatMessage) -> ChatMessage:
         """Optimize a single message for token efficiency."""
+        # Estimate original tokens
+        original_tokens = self._estimate_message_tokens(msg)
+        
         # Create a copy to avoid modifying the original
         optimized_content = self._optimize_content(str(msg.content or ""))
         
@@ -114,7 +117,7 @@ class TokenOptimizer:
         if hasattr(msg, 'tool_calls') and msg.tool_calls:
             optimized_tool_calls = self._optimize_tool_calls(msg.tool_calls)
         
-        # Create optimized message
+        # Create potential optimized message
         optimized_msg = ChatMessage(
             role=msg.role,
             content=optimized_content if optimized_content else None,
@@ -123,11 +126,27 @@ class TokenOptimizer:
             name=getattr(msg, 'name', None)
         )
         
-        return optimized_msg
+        # Check if optimization actually helps
+        optimized_tokens = self._estimate_message_tokens(optimized_msg)
+        
+        # Only return optimized version if it's actually better
+        if optimized_tokens < original_tokens:
+            logger.debug("✅ Message optimization successful: %d → %d tokens", 
+                        original_tokens, optimized_tokens)
+            return optimized_msg
+        else:
+            logger.debug("⚠️  Message optimization skipped: would increase tokens %d → %d", 
+                        original_tokens, optimized_tokens)
+            return msg
     
     def _optimize_content(self, content: str) -> str:
         """Optimize text content for token efficiency."""
         if not content:
+            return content
+        
+        # Check if content is already well-optimized
+        if self._is_content_already_optimized(content):
+            logger.debug("📋 Content appears already optimized, skipping aggressive optimization")
             return content
         
         # Remove excessive whitespace
@@ -143,6 +162,48 @@ class TokenOptimizer:
         content = self._optimize_json_in_text(content)
         
         return content
+    
+    def _is_content_already_optimized(self, content: str) -> bool:
+        """Detect if content is already well-optimized and should be left alone."""
+        if len(content) < 100:
+            # Short content doesn't benefit much from optimization
+            return True
+        
+        # Check for signs of already-optimized content
+        signs_of_optimization = [
+            # Very compact JSON (high ratio of structural chars)
+            (content.count('{') + content.count('}') + content.count('[') + content.count(']')) / len(content) > 0.1,
+            # Already minimal whitespace (very few consecutive spaces)
+            content.count('  ') < 3,  # Very few double spaces
+            # Compact data formats (like base64, hex, etc.)
+            bool(re.search(r'[a-zA-Z0-9+/]{20,}=*$', content, re.MULTILINE)),  # Base64-like
+            bool(re.search(r'^[0-9a-fA-F]{32,}$', content, re.MULTILINE)),     # Hex-like
+            # API response patterns (often already optimized)
+            '"id":' in content and '"type":' in content,
+            # Log entries that are already timestamped compactly
+            bool(re.search(r'\[\d{2}:\d{2}:\d{2}\]', content)),
+        ]
+        
+        # Check for signs of verbose content that should be optimized
+        signs_of_verbosity = [
+            # Repeated articles that can be compressed
+            bool(re.search(r'\b(the|a)\s+(the|a)\b', content)),
+            # Excessive dots
+            bool(re.search(r'\.{4,}', content)),
+            # Common verbose phrases
+            'I understand that' in content,
+            'Let me think about' in content,
+            'I want to help' in content,
+            # Multiple consecutive spaces (poor formatting)
+            '   ' in content,
+        ]
+        
+        # If we see clear signs of verbosity, don't skip optimization
+        if sum(signs_of_verbosity) >= 2:
+            return False
+        
+        # If multiple signs suggest already optimized, skip aggressive processing
+        return sum(signs_of_optimization) >= 3  # Increased threshold
     
     def _compress_verbose_patterns(self, content: str) -> str:
         """Compress common verbose patterns in text."""
@@ -168,7 +229,7 @@ class TokenOptimizer:
         return content
     
     def _optimize_json_in_text(self, content: str) -> str:
-        """Optimize JSON formatting within text content."""
+        """Optimize JSON formatting within text content, only if it actually helps."""
         # Find JSON-like structures and compress them
         json_pattern = r'\{[^{}]*\}'
         
@@ -177,7 +238,13 @@ class TokenOptimizer:
             try:
                 # Parse and reformat JSON compactly
                 json_obj = json.loads(json_str)
-                return json.dumps(json_obj, separators=(',', ':'))
+                compressed = json.dumps(json_obj, separators=(',', ':'))
+                
+                # Only use compressed version if it's actually shorter
+                if len(compressed) < len(json_str):
+                    return compressed
+                else:
+                    return json_str
             except json.JSONDecodeError:
                 # Not valid JSON, return as-is
                 return json_str
@@ -237,23 +304,62 @@ class TokenOptimizer:
         return optimized
     
     def _estimate_message_tokens(self, msg: ChatMessage) -> int:
-        """Estimate token count for a single message."""
-        total_chars = 0
+        """Estimate token count for a single message using improved methodology."""
+        total_tokens = 0
         
-        # Count content
+        # Count content tokens
         if msg.content:
-            total_chars += len(str(msg.content))
+            total_tokens += self._estimate_text_tokens(str(msg.content))
         
-        # Count tool calls
+        # Count tool calls tokens
         if hasattr(msg, 'tool_calls') and msg.tool_calls:
             for tc in msg.tool_calls:
-                total_chars += len(str(tc))
+                total_tokens += self._estimate_text_tokens(str(tc))
         
-        # Add overhead for message structure
-        total_chars += 50  # Role, metadata, etc.
+        # Add overhead for message structure (role, metadata, JSON formatting)
+        # This is more realistic than the fixed 50 chars
+        overhead_tokens = 10  # Reduced from ~14 tokens (50/3.5) to more realistic 10
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            overhead_tokens += 5  # Additional overhead for tool calls
+        if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+            overhead_tokens += 3  # Additional overhead for tool responses
+            
+        return total_tokens + overhead_tokens
+    
+    def _estimate_text_tokens(self, text: str) -> int:
+        """Improved token estimation that considers word boundaries and patterns."""
+        if not text:
+            return 0
         
-        # Convert to tokens (conservative estimate)
-        return int(total_chars / 3.5)
+        # Basic tokenization patterns
+        import re
+        
+        # Split on word boundaries, keeping punctuation separate
+        tokens = re.findall(r'\w+|[^\w\s]', text)
+        
+        # Apply more realistic token counting rules
+        token_count = 0
+        for token in tokens:
+            if len(token) <= 2:
+                # Short tokens (punctuation, short words) = 1 token
+                token_count += 1
+            elif len(token) <= 6:
+                # Medium words = 1 token
+                token_count += 1
+            else:
+                # Long words often split into multiple tokens
+                # Estimate based on common subword patterns
+                token_count += max(1, len(token) // 4)
+        
+        # Add tokens for whitespace and formatting
+        whitespace_tokens = text.count(' ') + text.count('\n') * 0.5
+        
+        # JSON/structured data has additional overhead
+        if '{' in text and '}' in text:
+            json_overhead = text.count('{') + text.count('}') + text.count('"') * 0.3
+            token_count += int(json_overhead)
+        
+        return int(token_count + whitespace_tokens)
     
     def get_compression_stats(self) -> Dict[str, Any]:
         """Get current compression statistics."""
