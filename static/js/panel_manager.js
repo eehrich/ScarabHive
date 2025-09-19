@@ -50,10 +50,10 @@ window.AgentSystem.PanelManager = {
       panel.style.top = (80 + offset) + 'px';
     } else {
       // MCP panel
-      panel.style.width = '640px';
-      panel.style.height = '800px';
-  panel.style.minWidth = '380px';
-  panel.style.minHeight = '320px';
+      panel.style.width = '760px';
+      panel.style.height = '880px';
+      panel.style.minWidth = String(this.MIN_WIDTH) + 'px';
+      panel.style.minHeight = String(this.MIN_HEIGHT) + 'px';
       panel.style.left = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
     }
@@ -61,10 +61,12 @@ window.AgentSystem.PanelManager = {
     // Apply saved state (position/size) if present
     try {
       const raw = localStorage.getItem('panelState:' + id);
-    if (raw) {
-      const state = JSON.parse(raw);
-      if (state.width) panel.style.width = Math.max(state.width, this.MIN_WIDTH) + 'px';
-      if (state.height) panel.style.height = Math.max(state.height, this.MIN_HEIGHT) + 'px';
+      if (raw) {
+        const state = JSON.parse(raw);
+        const w = parseInt(state.width, 10);
+        const h = parseInt(state.height, 10);
+        if (!isNaN(w)) panel.style.width = Math.max(w, this.MIN_WIDTH) + 'px';
+        if (!isNaN(h)) panel.style.height = Math.max(h, this.MIN_HEIGHT) + 'px';
         if (typeof state.left !== 'undefined') panel.style.left = state.left + 'px';
         if (typeof state.top !== 'undefined') panel.style.top = state.top + 'px';
         if (typeof state.right !== 'undefined') panel.style.right = state.right + 'px';
@@ -136,6 +138,18 @@ window.AgentSystem.PanelManager = {
       // Close specific panel
       const panel = this.activePanels.get(id);
       if (panel) {
+        // Persist current size/position on close so reopening restores layout
+        try {
+          const rect = panel.getBoundingClientRect();
+          const state = JSON.parse(localStorage.getItem('panelState:' + panel.id) || '{}');
+          state.width = Math.round(Math.max(rect.width, this.MIN_WIDTH));
+          state.height = Math.round(Math.max(rect.height, this.MIN_HEIGHT));
+          state.left = Math.round(rect.left);
+          state.top = Math.round(rect.top);
+          localStorage.setItem('panelState:' + panel.id, JSON.stringify(state));
+        } catch (err) {
+          console.warn('Failed to save panel state on close', panel.id, err);
+        }
         panel.remove();
         this.activePanels.delete(id);
       }
