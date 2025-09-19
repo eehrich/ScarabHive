@@ -147,6 +147,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             suffix = "".join(p.suffixes) or ".log"
             return str(p.with_name(f"{stem}-{role}{suffix}"))
         except Exception:
+            # If path construction fails, fall back to default
             return str(Path("logs") / f"agent-{role}.log")
 
     # Determine logfile for API: prefer explicit per-role setting if provided.
@@ -497,6 +498,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def debug_context_usage_clear():
         """Clear context usage history (for testing/debugging)."""
         try:
+            import logging
+            logger = logging.getLogger(__name__)
             from ..context.tracker import get_tracker
             from ..context.accumulator import get_token_accumulator
             from ..context.agent_tracker import get_agent_tracker
@@ -508,9 +511,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             try:
                 acc = get_token_accumulator()
                 acc.reset_all_stats()
-            except Exception:
+            except Exception as e:
                 # If accumulator reset fails, continue clearing in-memory history
-                pass
+                logger.warning("Failed to reset accumulator stats during context clear: %s", e)
 
             # Reset per-agent in-memory counters (keep registrations)
             try:
@@ -530,8 +533,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     now = __import__('time').time()
                     stats.session_start = now
                     stats.last_activity = now
-            except Exception:
-                pass
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.warning("Failed to reset per-agent in-memory counters during context clear: %s", e)
 
             return {"result": "Context usage history and accumulated stats cleared"}
         except Exception as e:
@@ -542,7 +546,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     def _check_server_connection(server_info):
         """Check if a server is actually responding with real-time connectivity test"""
         import socket
+        import logging
         from urllib.parse import urlparse
+        
+        logger = logging.getLogger(__name__)
 
         try:
             if server_info.get("type") == "plugin":
@@ -555,7 +562,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             # Test if we can call a basic method
                             server_obj.get_default_action()
                             return True
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Local server {server_name} basic method test failed: {e}")
                             return False
                 return False
 
@@ -592,6 +600,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger = logging.getLogger(__name__)
                 logger.debug(f"Connection check failed for {server_info.get('name', 'unknown')}: {e}")
             except Exception:
+                # If even logging fails, truly ignore (e.g., during shutdown)
                 pass
             return False
 
@@ -601,6 +610,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def mcp_status():
         """Get MCP server status including plugins and external servers."""
         try:
+            import logging
+            logger = logging.getLogger(__name__)
             # Use the global MCP integration instance that was initialized during startup
             global _mcp_integration
 
@@ -643,9 +654,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                         'description': description,
                                         'parameters': parameters
                                     })
-                        except Exception:
+                        except Exception as e:
                             # If get_tools() fails, fall back to get_schema()
-                            pass
+                            logger.debug(f"get_tools() failed for server {server_id}, falling back to get_schema(): {e}")
 
                     # Fall back to get_schema() if get_tools() didn't work or doesn't exist
                     if not tools and hasattr(server_obj, 'get_schema'):
@@ -663,9 +674,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                         'description': description,
                                         'parameters': schema['function'].get('parameters', {})
                                     }]
-                        except Exception:
+                        except Exception as e:
                             # If schema loading fails, treat as no tools
-                            pass
+                            logger.debug(f"get_schema() failed for server {server_id}: {e}")
 
                     # Check connection using real-time verification
                     server_info = {
@@ -730,8 +741,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                     description = server_config['description']
                                 if server_config.get('url'):
                                     url = server_config['url']
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Failed to get server config for {server_name}: {e}")
 
                         # Get tools (may be empty if server is down)
                         tools = servers_with_tools.get(server_name, [])
