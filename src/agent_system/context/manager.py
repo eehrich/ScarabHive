@@ -26,6 +26,11 @@ class ContextManager:
             'completion_tokens': 0,
             'last_call_tokens': 0
         }
+        # Precompute warning levels in absolute tokens for UI consumption
+        try:
+            self.warning_levels = {level.value: self.config.get_warning_threshold_tokens(level) for level in self.config.warning_thresholds}
+        except Exception:
+            self.warning_levels = {}
 
     def set_summarizer(self, summarizer):
         """Set the conversation summarizer."""
@@ -34,12 +39,16 @@ class ContextManager:
     def update_token_usage(self, usage_data: dict) -> None:
         """Update actual token usage from LLM response."""
         if usage_data:
-            self._actual_usage_stats.update({
-                'total_tokens': usage_data.get('total_tokens', 0),
-                'prompt_tokens': usage_data.get('prompt_tokens', 0),
-                'completion_tokens': usage_data.get('completion_tokens', 0),
-                'last_call_tokens': usage_data.get('total_tokens', 0)
-            })
+            # Accumulate totals across calls so the manager reflects cumulative session usage
+            total = usage_data.get('total_tokens', 0) or 0
+            prompt = usage_data.get('prompt_tokens', 0) or 0
+            completion = usage_data.get('completion_tokens', 0) or 0
+
+            self._actual_usage_stats['total_tokens'] = self._actual_usage_stats.get('total_tokens', 0) + total
+            self._actual_usage_stats['prompt_tokens'] = self._actual_usage_stats.get('prompt_tokens', 0) + prompt
+            self._actual_usage_stats['completion_tokens'] = self._actual_usage_stats.get('completion_tokens', 0) + completion
+            self._actual_usage_stats['last_call_tokens'] = total
+            logger.debug("Accumulated token usage updated by %d tokens", total)
             logger.debug("Updated token usage: %s", self._actual_usage_stats)
 
     def get_usage_stats(self) -> dict:
@@ -214,8 +223,14 @@ class ContextManager:
         # Trigger 1: Prediction-based (90% of context window)
         prediction_trigger = self.config.should_manage_context_prediction(current_tokens)
 
+        # Trigger 1b: Early summarization based on absolute summarization threshold
+        early_summarization_trigger = current_tokens >= self.config.get_summarization_threshold_tokens()
+
         # Trigger 2: Actual usage-based (after LLM call, based on actual token usage)
         actual_trigger = self.config.should_manage_context_actual(self._actual_usage_stats.get('total_tokens', 0))
+
+        # Also trigger if the current warning level is ORANGE or RED (escalation)
+        level_trigger = current_level in (WarningLevel.ORANGE, WarningLevel.RED)
 
         # Log trigger reasons for debugging (clearer logging)
         triggers_fired = []
@@ -236,7 +251,7 @@ class ContextManager:
             logger.debug("✅ No context management triggers fired (current: %d tokens, actual: %d tokens)",
                         current_tokens, self._actual_usage_stats.get('total_tokens', 0))
 
-        return prediction_trigger or actual_trigger
+        return prediction_trigger or actual_trigger or level_trigger or early_summarization_trigger
 
     async def manage_context(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Apply context management strategy to reduce token count."""

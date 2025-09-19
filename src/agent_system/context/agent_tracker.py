@@ -60,8 +60,10 @@ class AgentContextStats:
             "usage_percent": round(self.get_context_usage_percent(), 2),
             "summarization_count": self.summarization_count,
             "last_activity": self.last_activity,
+            "session_start": self.session_start,
             "session_duration": round(self.get_session_duration(), 2),
             "peak_tokens": self.peak_tokens,
+            # Prefer accumulated totals when current-session counters are zero
             "total_llm_calls": self.total_llm_calls,
             "total_tokens_processed": self.total_tokens_processed,
             "efficiency_ratio": round(
@@ -77,6 +79,14 @@ class AgentContextStats:
                 "first_seen": accumulated_stats.get("first_seen", 0),
                 "sessions": accumulated_stats.get("sessions", 0)
             }
+            # If current session hasn't recorded calls/tokens, surface accumulated values
+            try:
+                if not result.get("total_llm_calls") and accumulated_stats.get("total_calls", 0):
+                    result["total_llm_calls"] = accumulated_stats.get("total_calls", 0)
+                if not result.get("total_tokens_processed") and accumulated_stats.get("total_tokens", 0):
+                    result["total_tokens_processed"] = accumulated_stats.get("total_tokens", 0)
+            except Exception:
+                pass
         else:
             result["accumulated"] = {
                 "total_tokens": 0,
@@ -103,6 +113,11 @@ class AgentContextTracker:
                 agent_name=agent_name,
                 context_window=context_window
             )
+            # Ensure session_start is set to now for new registrations
+            try:
+                self._agents[agent_id].session_start = time.time()
+            except Exception:
+                pass
             logger.info(f"Registered agent {agent_id} ({agent_name}) for context tracking")
 
     def update_agent_context(

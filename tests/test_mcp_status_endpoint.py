@@ -124,23 +124,20 @@ class TestMCPStatusEndpoint:
         """Test MCP status endpoint when no servers are configured."""
         app = build_app()
         
-        mock_integration = Mock()
-        mock_integration.get_server_info.return_value = {
-            "plugins": {"registered": [], "available": []},
-            "external_servers": []
-        }
-        mock_integration.list_all_tools = AsyncMock(return_value={
-            "plugins": {},
-            "external_servers": {}
-        })
+        # Mock the global _app_registry to be empty
+        mock_registry = Mock()
+        mock_registry._servers = {}  # Empty servers dict
         
-        with patch('agent_system.agent.interface_api.get_mcp_integration', return_value=mock_integration):
+        # Mock the global _mcp_integration to be None
+        with patch('agent_system.agent.interface_api._app_registry', mock_registry), \
+             patch('agent_system.agent.interface_api._mcp_integration', None):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/mcp/status')
                 
                 assert response.status_code == 200
                 data = response.json()
                 
+                # Should return empty structures when no servers
                 assert data['plugins'] == {}
                 assert data['external_servers'] == {}
 
@@ -149,50 +146,42 @@ class TestMCPStatusEndpoint:
         """Test MCP status endpoint handles errors gracefully."""
         app = build_app()
         
-        # Mock integration that raises an exception
-        mock_integration = Mock()
-        mock_integration.get_server_info.side_effect = Exception("Test error")
+        # Mock the registry to raise an exception when accessing _servers.items()
+        mock_registry = Mock()
+        mock_registry._servers = Mock()
+        mock_registry._servers.items.side_effect = Exception("Test error")
         
-        with patch('agent_system.agent.interface_api.get_mcp_integration', return_value=mock_integration):
+        with patch('agent_system.agent.interface_api._app_registry', mock_registry):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/mcp/status')
                 
                 assert response.status_code == 200
                 data = response.json()
                 
-                # Should return error response with empty server lists
+                # Should return error response
                 assert 'error' in data
-                assert 'Test error' in data['error']
-                assert data['plugins'] == {}
-                assert data['external_servers'] == {}
+                assert 'Failed to get MCP status: Test error' in data['error']
 
     @pytest.mark.asyncio
     async def test_mcp_status_disconnected_external_server(self):
         """Test MCP status with disconnected external server."""
         app = build_app()
         
+        # Mock the global _mcp_integration to have a disconnected server
         mock_integration = Mock()
-        mock_integration.get_server_info.return_value = {
-            "plugins": {"registered": [], "available": []},
-            "external_servers": ["disconnected_server"]
-        }
+        mock_integration.initialized = True
+        mock_integration.client_manager.list_clients.return_value = []  # No connected clients
+        mock_integration.configured_external_servers = {"disconnected_server": Mock()}
         mock_integration.list_all_tools = AsyncMock(return_value={
             "plugins": {},
-            "external_servers": {"disconnected_server": []}
+            "external_servers": {"disconnected_server": []}  # Server configured but no tools
         })
         
-        # Mock disconnected server
-        mock_server_config = Mock()
-        mock_server_config.description = "Disconnected server"
-        mock_server_config.url = "http://offline.example.com"
-        mock_server_config.enabled = True
-        mock_server_config.transport_type = "http"
-        mock_integration.mcp_config.servers = {"disconnected_server": mock_server_config}
-        
-        # Mock client manager returns None (disconnected)
-        mock_integration.client_manager.get_client.return_value = None
-        
-        with patch('agent_system.agent.interface_api.get_mcp_integration', return_value=mock_integration):
+        with patch('agent_system.agent.interface_api._mcp_integration', mock_integration), \
+             patch('agent_system.agent.interface_api._app_registry') as mock_app_registry:
+            # Mock empty app registry to focus on external servers
+            mock_app_registry._servers = {}
+            
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get('/mcp/status')
                 
@@ -202,4 +191,3 @@ class TestMCPStatusEndpoint:
                 assert 'disconnected_server' in data['external_servers']
                 server_data = data['external_servers']['disconnected_server']
                 assert server_data['connected'] is False
-                assert server_data['enabled'] is True

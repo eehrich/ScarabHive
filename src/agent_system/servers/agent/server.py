@@ -414,18 +414,27 @@ class Agent(MCPServer):
                     self.context_manager.update_token_usage(usage_data)
                     logger.debug("Updated token usage from LLM response: %s", usage_data)
 
-                    # Update agent context tracker with actual LLM tokens
+                    # Update agent context tracker with actual LLM tokens.
+                    # Always call the tracker so that LLM call counts are incremented
+                    # even when the token count is zero or missing.
                     try:
-                        # Extract total tokens from LLM response
-                        actual_tokens = usage_data.get('total_tokens', 0)
-                        if actual_tokens > 0:
-                            update_agent_context_usage(
-                                self.name,
-                                current_tokens=estimated_tokens,
-                                predicted_tokens=estimated_tokens,
-                                message_count=len(messages),
-                                actual_tokens=actual_tokens
-                            )
+                        # Extract total tokens from LLM response and coerce to int safely
+                        raw_total = usage_data.get('total_tokens', 0)
+                        try:
+                            actual_tokens = int(raw_total or 0)
+                        except Exception:
+                            try:
+                                actual_tokens = int(float(str(raw_total)))
+                            except Exception:
+                                actual_tokens = 0
+
+                        update_agent_context_usage(
+                            self.name,
+                            current_tokens=estimated_tokens,
+                            predicted_tokens=estimated_tokens,
+                            message_count=len(messages),
+                            actual_tokens=actual_tokens
+                        )
                     except Exception as e:
                         logger.debug("Failed to update agent context with LLM tokens: %s", e)
 
@@ -805,6 +814,36 @@ class Agent(MCPServer):
                 llm_out = await self.llm.chat_tools(messages, tools_schema)
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
+
+                # Track actual token usage for streamed events if available
+                if self.context_manager and isinstance(llm_out, dict) and 'usage' in llm_out:
+                    try:
+                        usage_data = llm_out['usage']
+                        self.context_manager.update_token_usage(usage_data)
+                        logger.debug("Updated token usage from LLM response (events): %s", usage_data)
+
+                        # Coerce token count to int safely and always update tracker
+                        raw_total = usage_data.get('total_tokens', 0)
+                        try:
+                            actual_tokens = int(raw_total or 0)
+                        except Exception:
+                            try:
+                                actual_tokens = int(float(str(raw_total)))
+                            except Exception:
+                                actual_tokens = 0
+
+                        try:
+                            update_agent_context_usage(
+                                self.name,
+                                current_tokens=estimated_tokens,
+                                predicted_tokens=estimated_tokens,
+                                message_count=len(messages),
+                                actual_tokens=actual_tokens
+                            )
+                        except Exception as e:
+                            logger.debug("Failed to update agent context (events) with LLM tokens: %s", e)
+                    except Exception as e:
+                        logger.debug("Failed to handle LLM usage in run_events: %s", e)
 
                 # Emit thinking event with LLM response content
                 yield {"type": "thinking", "step": step + 1, "assistant": assistant}

@@ -498,9 +498,36 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Clear context usage history (for testing/debugging)."""
         try:
             from ..context.tracker import get_tracker
+            from ..context.accumulator import get_token_accumulator
+            from ..context.agent_tracker import get_agent_tracker
+
             tracker = get_tracker()
             tracker.clear_history()
-            return {"result": "Context usage history cleared"}
+
+            # Reset persistent accumulated stats
+            try:
+                acc = get_token_accumulator()
+                acc.reset_all_stats()
+            except Exception:
+                # If accumulator reset fails, continue clearing in-memory history
+                pass
+
+            # Reset per-agent in-memory counters (keep registrations)
+            try:
+                agent_tracker = get_agent_tracker()
+                all_agents = agent_tracker.get_all_agents()
+                for aid, stats in all_agents.items():
+                    stats.total_llm_calls = 0
+                    stats.total_tokens_processed = 0
+                    # reset session_start to now
+                    try:
+                        stats.session_start = __import__('time').time()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            return {"result": "Context usage history and accumulated stats cleared"}
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.exception("Context usage clear endpoint failed: %s", e)

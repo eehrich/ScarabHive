@@ -84,26 +84,6 @@ header .header-buttons {
   min-width: 0;
 }
 
-.sidebar {
-  flex: 0 0 300px;
-  background: #0a1420;
-  border: 1px solid #243244;
-  border-radius: 8px;
-  padding: 16px;
-  height: fit-content;
-  position: sticky;
-  top: 80px;
-}
-
-.sidebar-header {
-  font-weight: 600;
-  color: #cbd5e1;
-  margin-bottom: 12px;
-  font-size: 14px;
-  border-bottom: 1px solid #243244;
-  padding-bottom: 8px;
-}
-
 .status-metrics {
   display: flex;
   flex-direction: column;
@@ -197,11 +177,6 @@ header .header-buttons {
 @media (max-width: 768px) {
   .main-container {
     flex-direction: column;
-  }
-  .sidebar {
-    flex: none;
-    position: static;
-    order: -1;
   }
 }
 
