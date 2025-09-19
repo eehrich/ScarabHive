@@ -41,17 +41,18 @@
       else tableContent += '</tbody>';
       return `<table class="markdown-table">${tableContent}</table>`;
     });
-    // Lists: create list items, then wrap consecutive <li> into <ul> or <ol>
-    html = html.replace(/^[\t ]*[-*+]\s+(.+)$/gm, '<li>$1</li>');
-    // Ordered lists
-    html = html.replace(/^[\t ]*\d+\.\s+(.+)$/gm, '<li>$1</li>');
-    // Wrap consecutive li into ul
-    html = html.replace(/(?:<li>.*?<\/li>\s*){1,}/gs, function(match) {
-      // If the match contains any leading digits followed by '.', treat as ordered
-      if (/^\s*<li>\d+\./m.test(match)) {
-        return `<ol>${match}</ol>`;
-      }
-      return `<ul>${match}</ul>`;
+    // Process ordered list blocks first (preserve numbering)
+    html = html.replace(/(^|\n)((?:[ \t]*\d+\.\s+.+(?:\n|$))+)/gm, function(_, pre, block) {
+      const lines = block.trim().split(/\r?\n/).filter(Boolean);
+      const items = lines.map(l => l.replace(/^[ \t]*\d+\.\s+/, '').trim());
+      return pre + '<ol>' + items.map(i => `<li>${i}</li>`).join('') + '</ol>';
+    });
+
+    // Then process unordered list blocks
+    html = html.replace(/(^|\n)((?:[ \t]*[-*+]\s+.+(?:\n|$))+)/gm, function(_, pre, block) {
+      const lines = block.trim().split(/\r?\n/).filter(Boolean);
+      const items = lines.map(l => l.replace(/^[ \t]*[-*+]\s+/, '').trim());
+      return pre + '<ul>' + items.map(i => `<li>${i}</li>`).join('') + '</ul>';
     });
 
     // Collapse multiple blank lines to paragraph separators and convert remaining newlines to <br>
@@ -61,12 +62,12 @@
     // Ensure top-level block wrappers; avoid wrapping lists/tables/pre headers
     if (!html.match(/^<(h[1-6]|table|ul|ol|pre|div)/)) html = `<p>${html}</p>`;
 
-    // Clean up common unwanted patterns inside lists (e.g., <p> or <br> within <li>)
-    html = html.replace(/<li>\s*<p>(.*?)<\/p>\s*<\/li>/gs, '<li>$1</li>');
-    html = html.replace(/<li>([\s\S]*?)<br>\s*<\/li>/g, '<li>$1</li>');
-    html = html.replace(/<ul>\s*<br>\s*<li>/g, '<ul><li>');
-    html = html.replace(/<li>\s*<br>\s*/g, '<li>');
-    html = html.replace(/<\/li>\s*<br>\s*(<li>|<\/ul>|<\/ol>)/g, '</li>$1');
+  // Clean up common unwanted patterns inside lists (e.g., <p> or <br> within <li>)
+  html = html.replace(/<li>\s*<p>(.*?)<\/p>\s*<\/li>/gs, '<li>$1</li>');
+  html = html.replace(/<li>([\s\S]*?)<br>\s*<\/li>/g, '<li>$1</li>');
+  html = html.replace(/<ul>\s*<br>\s*<li>/g, '<ul><li>');
+  html = html.replace(/<li>\s*<br>\s*/g, '<li>');
+  html = html.replace(/<\/li>\s*<br>\s*(<li>|<\/ul>|<\/ol>)/g, '</li>$1');
     return html;
   }
 
