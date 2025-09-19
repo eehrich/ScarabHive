@@ -7,6 +7,7 @@ window.AgentSystem.PanelManager = {
   zIndexCounter: 1000,
   MIN_WIDTH: 380,
   MIN_HEIGHT: 320,
+  ORDER_KEY: 'panelOrder',
   
   createPanel: function(id, title, content = '', additionalClasses = '', headerContent = '') {
     console.log(`Creating panel: ${id}`);
@@ -126,6 +127,8 @@ window.AgentSystem.PanelManager = {
     
     document.body.appendChild(panel);
     this.activePanels.set(id, panel);
+  // Register panel order and bring to front for new panel
+  this.updateOrderOnFront(id);
     
     // Add close button event listener
     const closeBtn = panel.querySelector(`#${id}CloseBtn`);
@@ -145,10 +148,73 @@ window.AgentSystem.PanelManager = {
   bringToFront: function(panel) {
     try {
       if (!panel) return;
-      this.zIndexCounter += 1;
-      panel.style.zIndex = this.zIndexCounter;
+      // update stored order and re-apply z-indexes
+      this.updateOrderOnFront(panel.id);
     } catch (err) {
       console.warn('bringToFront failed for', panel && panel.id, err);
+    }
+  },
+
+  // Load saved panel order from localStorage
+  loadOrder: function() {
+    try {
+      const raw = localStorage.getItem(this.ORDER_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (err) {
+      // ignore
+    }
+    return [];
+  },
+
+  // Save panel order array to localStorage
+  saveOrder: function(order) {
+    try {
+      localStorage.setItem(this.ORDER_KEY, JSON.stringify(order));
+    } catch (err) {
+      console.warn('Failed to save panel order', err);
+    }
+  },
+
+  // Move id to top (end) of order and persist, then apply ordering
+  updateOrderOnFront: function(id) {
+    try {
+      const order = this.loadOrder().filter(x => x !== id);
+      order.push(id);
+      this.saveOrder(order);
+      this.applyOrderToActivePanels(order);
+    } catch (err) {
+      console.warn('Failed to update panel order for', id, err);
+    }
+  },
+
+  // Apply saved order to currently active panels (assign z-indexes)
+  applyOrderToActivePanels: function(order) {
+    try {
+      const ord = Array.isArray(order) ? order : this.loadOrder();
+      // start from current counter to avoid collisions
+      let z = this.zIndexCounter || 1000;
+      const assigned = new Set();
+      // assign z-index to panels in stored order
+      ord.forEach(id => {
+        const panel = this.activePanels.get(id);
+        if (panel) {
+          z += 1;
+          panel.style.zIndex = z;
+          assigned.add(id);
+        }
+      });
+      // assign z-index to panels not in order (older/new ones)
+      this.activePanels.forEach((panel, id) => {
+        if (!assigned.has(id)) {
+          z += 1;
+          panel.style.zIndex = z;
+        }
+      });
+      this.zIndexCounter = z;
+    } catch (err) {
+      console.warn('Failed to apply panel order', err);
     }
   },
 
@@ -186,6 +252,13 @@ window.AgentSystem.PanelManager = {
         }
         panel.remove();
         this.activePanels.delete(id);
+        // remove from saved order
+        try {
+          const order = this.loadOrder().filter(x => x !== id);
+          this.saveOrder(order);
+        } catch (err) {
+          // ignore
+        }
       }
     } else {
       // Close all panels (legacy support)
