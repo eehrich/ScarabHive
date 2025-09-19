@@ -14,6 +14,7 @@ from ...llm.clients import ChatMessage
 from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
+from ...context.agent_tracker import register_agent_for_tracking, update_agent_context_usage
 from .planner import Planner
 from .executor import Executor
 
@@ -100,6 +101,13 @@ class Agent(MCPServer):
 
         # Initialize context management system
         self._init_context_management()
+
+        # Register agent with context tracker
+        if hasattr(self, 'context_manager') and self.context_manager:
+            register_agent_for_tracking(name, name, self.context_manager.config.context_window)
+        else:
+            # Use default context window if no context manager
+            register_agent_for_tracking(name, name, 32768)
 
         # Track current conversation messages for debugging
         self._current_messages: List[ChatMessage] = []
@@ -370,6 +378,17 @@ class Agent(MCPServer):
                         self._skip_optimizer_steps_after_context_mgmt = 2
                         # Re-check after management
                         estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
+                    
+                    # Update context stats for this agent
+                    try:
+                        update_agent_context_usage(
+                            self.name,
+                            current_tokens=estimated_tokens,
+                            predicted_tokens=estimated_tokens,
+                            message_count=len(messages)
+                        )
+                    except Exception as e:
+                        logger.debug("Failed to update agent context stats: %s", e)
                 else:
                     # Fallback to legacy token warning
                     message_count = len(messages)

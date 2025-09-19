@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from ..servers.agent.server import Agent
 from ..config.loader import load_config
 from ..config.models import AgentConfig
+from api.endpoints import router as api_router
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
@@ -185,6 +186,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     global _app_registry, _app_config
     _app_registry = registry
     _app_config = config
+
+    # Include API router for debug endpoints
+    app.include_router(api_router)
 
     # Define route handlers
     @app.get("/health")

@@ -54,37 +54,130 @@ class ContextManager:
         }
 
     def estimate_token_count(self, messages: List[ChatMessage]) -> int:
-        """Enhanced token count estimation."""
-        total_chars = 0
+        """Enhanced token count estimation with improved accuracy for different content types."""
+        total_tokens = 0
 
         for msg in messages:
-            # Count content characters
+            msg_tokens = 0
+            
+            # Base overhead for message structure (role, formatting, etc.)
+            msg_tokens += 4  # Base message overhead
+            
+            # Count content tokens with content-type aware ratios
             if msg.content:
-                total_chars += len(str(msg.content))
+                content = str(msg.content)
+                msg_tokens += self._estimate_content_tokens(content)
 
             # Count tool calls with detailed breakdown
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 for tc in msg.tool_calls:
+                    # Tool call overhead (id, type, function wrapper)
+                    msg_tokens += 10
+                    
                     func = tc.get("function", {})
-                    total_chars += len(str(func.get("name", "")))
-
-                    # Tool arguments can be very large
+                    func_name = func.get("name", "")
+                    msg_tokens += len(func_name) // 4  # Function names are typically short
+                    
+                    # Tool arguments - often JSON, handle differently
                     args_str = str(func.get("arguments", ""))
-                    total_chars += len(args_str)
+                    if args_str:
+                        msg_tokens += self._estimate_json_tokens(args_str)
 
             # Count tool results (these can be the biggest consumers)
             if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                # This is a tool result message
-                content_len = len(str(msg.content or ""))
-                total_chars += content_len
+                # Tool call ID overhead
+                msg_tokens += 8
+                # Tool result content
+                content = str(msg.content or "")
+                if content:
+                    msg_tokens += self._estimate_tool_result_tokens(content)
 
-            # Add role and structure overhead
-            total_chars += 100  # More realistic overhead per message
+            total_tokens += msg_tokens
 
-        # Conservative token estimation: ~3.5 chars per token
-        # This accounts for different languages and formatting
-        estimated_tokens = int(total_chars / 3.5)
-        return estimated_tokens
+        return total_tokens
+
+    def _estimate_content_tokens(self, content: str) -> int:
+        """Estimate tokens for message content with type-aware ratios."""
+        if not content:
+            return 0
+            
+        # Detect content type for better estimation
+        if self._is_code_content(content):
+            # Code typically has more tokens per character due to symbols
+            return int(len(content) / 2.8)
+        elif self._is_structured_data(content):
+            # JSON/XML/structured data
+            return int(len(content) / 3.2)
+        else:
+            # Natural language (most common)
+            return int(len(content) / 4.0)
+
+    def _estimate_json_tokens(self, json_str: str) -> int:
+        """Estimate tokens for JSON content with consideration for structure."""
+        if not json_str:
+            return 0
+            
+        # JSON has overhead from braces, quotes, colons, commas
+        # Count structural characters
+        structural_chars = json_str.count('{') + json_str.count('}') + \
+                          json_str.count('[') + json_str.count(']') + \
+                          json_str.count('"') + json_str.count(':') + \
+                          json_str.count(',')
+        
+        # Each structural character typically becomes its own token
+        structural_tokens = structural_chars
+        
+        # Remaining characters use a tighter ratio due to JSON compactness
+        content_chars = len(json_str) - structural_chars
+        content_tokens = int(content_chars / 3.0)
+        
+        return structural_tokens + content_tokens
+
+    def _estimate_tool_result_tokens(self, content: str) -> int:
+        """Estimate tokens for tool results which can vary widely in format."""
+        if not content:
+            return 0
+            
+        # Tool results can be JSON, plain text, HTML, etc.
+        if content.strip().startswith('{') or content.strip().startswith('['):
+            # Likely JSON response
+            return self._estimate_json_tokens(content)
+        elif '<' in content and '>' in content:
+            # Likely HTML/XML
+            return int(len(content) / 3.0)  # HTML is dense with tokens
+        elif self._is_code_content(content):
+            # Code output
+            return int(len(content) / 2.8)
+        else:
+            # Natural language or plain text
+            return int(len(content) / 4.0)
+
+    def _is_code_content(self, content: str) -> bool:
+        """Detect if content is likely code."""
+        code_indicators = [
+            'def ', 'function ', 'class ', 'import ', 'from ',
+            '=>', '&&', '||', '{}', '[]', '()', 'const ', 'let ', 'var ',
+            'if (', 'for (', 'while (', 'switch (', 'catch (', 'try {'
+        ]
+        
+        # Count code-like patterns
+        code_score = sum(1 for indicator in code_indicators if indicator in content)
+        
+        # Also check character density of symbols common in code
+        symbol_chars = sum(1 for c in content if c in '{}[]();=+-*/<>!')
+        symbol_ratio = symbol_chars / len(content) if content else 0
+        
+        return code_score >= 2 or symbol_ratio > 0.15
+
+    def _is_structured_data(self, content: str) -> bool:
+        """Detect if content is structured data like JSON, XML, YAML."""
+        content = content.strip()
+        return (
+            (content.startswith('{') and content.endswith('}')) or
+            (content.startswith('[') and content.endswith(']')) or
+            content.startswith('<') and content.endswith('>') or
+            '\n- ' in content  # YAML-like lists
+        )
 
     def check_and_warn(self, messages: List[ChatMessage], step: int = 0) -> Tuple[int, Optional[WarningLevel]]:
         """Check token count and issue appropriate warnings."""
