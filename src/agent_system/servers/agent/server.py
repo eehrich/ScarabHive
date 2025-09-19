@@ -4,6 +4,7 @@ Supports multiple tool calls per conversation turn for better efficiency
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List
@@ -441,13 +442,13 @@ class Agent(MCPServer):
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
 
-                # SIMPLE RULE: Execute only the FIRST tool call per turn
+                # Execute ALL tool calls in parallel for better performance
                 if tool_calls:
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
 
-                    # Execute ALL tool calls
-                    for i, tc in enumerate(tool_calls):
+                    async def execute_single_tool_call(tc: Dict[str, Any], index: int) -> Dict[str, Any]:
+                        """Execute a single tool call and return structured result."""
                         func = tc.get("function", {})
                         openai_tool_name = func.get("name")  # This is the OpenAI-compatible name
                         raw_args = func.get("arguments")
@@ -468,18 +469,22 @@ class Agent(MCPServer):
 
                         if not tool_name or tool_name not in available_tools:
                             logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
-                            # Add error message for this specific tool call
-                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                            # Return error result
+                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}-{index}"
                             error_content = json.dumps({"error": f"Tool '{tool_name}' is not available."})
-                            messages.append(ChatMessage(
-                                role="tool",
-                                tool_call_id=tool_call_id,
-                                name=sanitize_for_llm(openai_tool_name or "unknown"),
-                                content=sanitize_json_content(error_content)
-                            ))
-                            continue
+                            return {
+                                "success": False,
+                                "message": ChatMessage(
+                                    role="tool",
+                                    tool_call_id=tool_call_id,
+                                    name=sanitize_for_llm(openai_tool_name or "unknown"),
+                                    content=sanitize_json_content(error_content)
+                                ),
+                                "call_info": None,
+                                "error": f"Tool '{tool_name}' is not available."
+                            }
 
-                        # Get action name and validate
+                        # Execute tool call
                         if "." in tool_name:
                             # External tool - call via MCP integration
                             server_name, actual_tool_name = tool_name.split(".", 1)
@@ -490,34 +495,44 @@ class Agent(MCPServer):
                                 tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, params, "external")
                                 logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
 
-                                results["calls"].append({
+                                call_info = {
                                     "server": tool_name,
                                     "action": actual_tool_name,
                                     "params": params,
                                     "result": tool_result
-                                })
+                                }
 
-                                # Add tool result to conversation
+                                # Create tool result message
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                                 tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-                                # Sanitize tool result content before adding to messages
                                 tool_msg_content = sanitize_json_content(tool_msg_content)
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=sanitize_for_llm(openai_tool_name),
-                                    content=tool_msg_content
-                                ))
+                                
+                                return {
+                                    "success": True,
+                                    "message": ChatMessage(
+                                        role="tool",
+                                        tool_call_id=tool_call_id,
+                                        name=sanitize_for_llm(openai_tool_name),
+                                        content=tool_msg_content
+                                    ),
+                                    "call_info": call_info,
+                                    "error": None
+                                }
                             except Exception as e:
                                 logger.exception("External tool %s invocation failed: %s", tool_name, e)
                                 tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
                                 error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=sanitize_for_llm(openai_tool_name),
-                                    content=sanitize_json_content(error_content)
-                                ))
+                                return {
+                                    "success": False,
+                                    "message": ChatMessage(
+                                        role="tool",
+                                        tool_call_id=tool_call_id,
+                                        name=sanitize_for_llm(openai_tool_name),
+                                        content=sanitize_json_content(error_content)
+                                    ),
+                                    "call_info": None,
+                                    "error": str(e)
+                                }
                         else:
                             # Plugin tool - use existing logic
                             server = self.registry.get(tool_name)
@@ -541,37 +556,83 @@ class Agent(MCPServer):
                                 tool_result = await executor.invoke(tool_name, params)
                                 logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
-                                results["calls"].append({
+                                call_info = {
                                     "server": tool_name,
                                     "action": action_name,
                                     "params": params,
                                     "result": tool_result
-                                })
+                                }
 
-                                # Add tool result to conversation
+                                # Create tool result message
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
                                 tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-                                # Sanitize tool result content before adding to messages
                                 tool_msg_content = sanitize_json_content(tool_msg_content)
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=openai_tool_name,
-                                    content=tool_msg_content
-                                ))
+                                
+                                return {
+                                    "success": True,
+                                    "message": ChatMessage(
+                                        role="tool",
+                                        tool_call_id=tool_call_id,
+                                        name=openai_tool_name,
+                                        content=tool_msg_content
+                                    ),
+                                    "call_info": call_info,
+                                    "error": None
+                                }
 
                             except Exception as e:
                                 logger.exception("Tool %s invocation failed: %s", tool_name, e)
-                                results.setdefault("errors", []).append(str(e))
-                                # Add error result for this specific tool call
                                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                                 error_content = json.dumps({"error": sanitize_for_llm(str(e))})
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=sanitize_for_llm(openai_tool_name),
-                                    content=sanitize_json_content(error_content)
-                                ))
+                                return {
+                                    "success": False,
+                                    "message": ChatMessage(
+                                        role="tool",
+                                        tool_call_id=tool_call_id,
+                                        name=sanitize_for_llm(openai_tool_name),
+                                        content=sanitize_json_content(error_content)
+                                    ),
+                                    "call_info": None,
+                                    "error": str(e)
+                                }
+
+                    # Execute all tool calls in parallel using asyncio.gather()
+                    import time
+                    start_time = time.time()
+                    logger.info("Executing %d tool calls in parallel", len(tool_calls))
+                    
+                    tool_results = await asyncio.gather(
+                        *[execute_single_tool_call(tc, i) for i, tc in enumerate(tool_calls)],
+                        return_exceptions=True
+                    )
+                    
+                    execution_time = time.time() - start_time
+                    logger.info("Parallel tool execution completed in %.2f seconds", execution_time)
+
+                    # Process results and add messages to conversation
+                    for i, result in enumerate(tool_results):
+                        if isinstance(result, Exception):
+                            logger.exception("Tool call %d failed with exception: %s", i, result)
+                            results.setdefault("errors", []).append(f"Tool call {i} failed: {str(result)}")
+                            # Create error message for failed tool call
+                            tc = tool_calls[i]
+                            tool_call_id = tc.get("id") or f"exception-call-{int(time.time()*1000)}-{i}"
+                            error_content = json.dumps({"error": f"Tool execution failed: {str(result)}"})
+                            messages.append(ChatMessage(
+                                role="tool",
+                                tool_call_id=tool_call_id,
+                                name=sanitize_for_llm(tc.get("function", {}).get("name", "unknown")),
+                                content=sanitize_json_content(error_content)
+                            ))
+                        else:
+                            # Add successful result message to conversation
+                            messages.append(result["message"])
+                            
+                            # Add call info to results if successful
+                            if result["success"] and result["call_info"]:
+                                results["calls"].append(result["call_info"])
+                            elif result["error"]:
+                                results.setdefault("errors", []).append(result["error"])
 
                 # Check for final content
                 elif content:
