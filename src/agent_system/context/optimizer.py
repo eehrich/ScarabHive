@@ -5,7 +5,7 @@ import re
 import json
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
-from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
+from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -123,11 +123,11 @@ class TokenOptimizer:
             else:
                 logger.debug("   📊 No optimization opportunities found")
             
-            # Publish completion status event
+            # Publish completion status event as a progress update (avoid UI completion checkmark for internal optimizer)
             await publish_status(
                 server="token-optimizer",
-                message=f"✅ Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-                phase=PHASE_END,
+                message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
+                phase=PHASE_PROGRESS,
                 meta={
                     "original_tokens": total_original_tokens,
                     "optimized_tokens": total_optimized_tokens,
