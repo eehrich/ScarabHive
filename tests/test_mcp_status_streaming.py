@@ -9,7 +9,7 @@ import pytest
 import asyncio
 import json
 from datetime import datetime
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock, Mock
 
 from agent_system.mcp.status_streaming import MCPStatusStreamingTransport, MCPStatusNotificationHandler
 from agent_system.mcp.status import StatusEvent, status_bus, publish_status
@@ -188,7 +188,10 @@ class TestMCPStatusStreaming:
             "result": {"capabilities": {}}
         }
         
-        mock_session.post.return_value.__aenter__.return_value = mock_response
+        # Create an async context manager that yields mock_response
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__.return_value = mock_response
+        mock_session.post = Mock(return_value=mock_cm)
         
         # Start transport first, then replace session with mock
         await transport.connect()

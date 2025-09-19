@@ -376,6 +376,36 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    @app.post("/debug/toggle")
+    async def debug_toggle():
+        """Toggle application debug logging and return current debug state.
+
+        This endpoint is used by the status toolbar integration tests to flip
+        debug mode on/off for the running FastAPI app instance. It does not
+        modify global logging configuration permanently; instead it stores a
+        simple flag on `app.state.debug_enabled` for the lifetime of this app.
+        """
+        try:
+            # Initialize flag if missing
+            if not hasattr(app.state, 'debug_enabled'):
+                app.state.debug_enabled = False
+
+            # Toggle flag
+            app.state.debug_enabled = not app.state.debug_enabled
+
+            # Attempt to adjust root logger level for convenience (non-fatal)
+            try:
+                root_logger = logging.getLogger()
+                root_logger.setLevel(logging.DEBUG if app.state.debug_enabled else logging.INFO)
+            except Exception:
+                logging.getLogger(__name__).debug("Failed to set root logger level during debug toggle")
+
+            return {"debug": bool(app.state.debug_enabled)}
+        except Exception as e:
+            logging.getLogger(__name__).exception("Debug toggle failed: %s", e)
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=str(e))
+
     @app.get("/debug/context")
     async def debug_context():
         """Diagnostic endpoint to get current context management state and conversation messages."""

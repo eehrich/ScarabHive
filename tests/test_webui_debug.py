@@ -1,12 +1,12 @@
 import pytest
-from fastapi.testclient import TestClient
+import httpx
 from agent_system.agent.interface_api import build_app
 
 class TestDebugEndpoints:
     @pytest.fixture
     def client(self):
         app = build_app()
-        return TestClient(app)
+        return httpx.Client(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
     @pytest.fixture
     def app(self):

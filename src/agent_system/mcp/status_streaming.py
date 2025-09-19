@@ -124,12 +124,8 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
                     else:
                         logger.debug("Status notification sent successfully")
                         
-        except Exception as e:
-            logger.error(f"Failed to send status notification: {e}")
-            # to any connected MCP clients
-            
-        except Exception as e:
-            logger.error(f"Failed to send status notification: {e}")
+        except Exception:
+            logger.exception("Failed to send status notification")
 
 
 class MCPStatusNotificationHandler:

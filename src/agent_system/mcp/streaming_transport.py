@@ -36,7 +36,9 @@ class HTTPStreamingTransport(MCPTransport):
     async def connect(self) -> None:
         """Establish HTTP session"""
         if self.session is None:
-            connector = aiohttp.TCPConnector(verify_ssl=self.ssl_verify)
+            # Newer aiohttp versions prefer `ssl=` instead of `verify_ssl`.
+            # `self.ssl_verify` may be a bool or an SSLContext; pass it through as `ssl`.
+            connector = aiohttp.TCPConnector(ssl=self.ssl_verify)
             # For proxy environments, separate connection and total timeouts
             # Connection timeout is for initial TCP connection (important for proxies)
             # Total timeout is for the entire request including data transfer
@@ -66,8 +68,10 @@ class HTTPStreamingTransport(MCPTransport):
             if http_proxy or https_proxy:
                 logger.debug("HTTPStreamingTransport.connect(): detected proxy settings http=%s https=%s", http_proxy, https_proxy)
 
-            logger.debug("HTTPStreamingTransport.connect(): created session %s with timeout total=%s connect=%s",
-                        id(self.session), self.timeout, timeout.connect)
+            logger.debug(
+                "HTTPStreamingTransport.connect(): created session %s with timeout total=%s connect=%s",
+                id(self.session), self.timeout, timeout.connect
+            )
 
     async def disconnect(self) -> None:
         """Close HTTP session"""

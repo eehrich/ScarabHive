@@ -58,7 +58,6 @@ class OldStyleServer(MCPServer):
         return {"legacy": True, "data": params["data"]}
 
 
-@pytest.mark.asyncio
 class TestEnhancedMCPServer:
     """Test the enhanced MCPServer interface."""
     
