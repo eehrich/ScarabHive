@@ -31,11 +31,19 @@ class LLMClient:
     async def _make_chat_request(self, messages: List[Dict], **kwargs) -> Dict:
         # ...existing code...
         response = {}  # This should be the actual response from the chat request
+        result: Dict[str, Any] = {}
         # Ensure usage information is captured from response
-        if hasattr(response, 'usage'):
+        if isinstance(response, dict) and response.get('usage'):
+            # response already provides usage as a dict
+            result['usage'] = response['usage']
+        elif hasattr(response, 'usage'):
+            # response is an object with usage attributes
             result['usage'] = {
-                'total_tokens': response.usage.total_tokens,
-                'prompt_tokens': response.usage.prompt_tokens,
-                'completion_tokens': response.usage.completion_tokens
+                'total_tokens': getattr(response.usage, 'total_tokens', None),
+                'prompt_tokens': getattr(response.usage, 'prompt_tokens', None),
+                'completion_tokens': getattr(response.usage, 'completion_tokens', None)
             }
+
         # ...existing code...
+        # Return result if populated, otherwise return the raw response
+        return result or response
