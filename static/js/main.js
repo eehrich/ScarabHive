@@ -134,7 +134,11 @@ document.addEventListener('DOMContentLoaded', function() {
     box.innerHTML = `
       <div class="container-section">
         <div class="container-header" data-toggle="thinking">
-          <span class="toggle-arrow">▶</span>
+          <span class="toggle-arrow">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
           <span class="type-icon">🤔</span>
           <span class="container-label">Thinking...</span>
         </div>
@@ -144,7 +148,11 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
       <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="status">
-          <span class="toggle-arrow">▼</span>
+          <span class="toggle-arrow">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
           <span class="type-icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">     
               <rect x="3" y="4" width="18" height="16" rx="2" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
@@ -157,7 +165,11 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
       <div class="container-section" style="display: none;">
         <div class="container-header" data-toggle="response">
-          <span class="toggle-arrow">▼</span>
+          <span class="toggle-arrow">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
           <span class="type-icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"> 
               <rect x="2" y="3" width="20" height="14" rx="3" fill="#0f172a" stroke="#58a6ff" stroke-width="0.8" />
@@ -179,11 +191,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add click handlers for toggling containers
     const headers = box.querySelectorAll('.container-header');
     headers.forEach(header => {
-      // ensure initial arrow matches default body display
+      // ensure initial arrow rotation matches default body display
       const body = header.nextElementSibling;
-      const arrow = header.querySelector('.toggle-arrow');
+      const arrow = header.querySelector('.toggle-arrow svg');
       if (body && arrow) {
-        arrow.textContent = (body.style.display === 'none') ? '▶' : '▼';
+        arrow.style.transform = (body.style.display === 'none') ? 'rotate(0deg)' : 'rotate(90deg)';
       }
 
       header.addEventListener('click', () => {
@@ -192,10 +204,10 @@ document.addEventListener('DOMContentLoaded', function() {
           const isHidden = body.style.display === 'none';
           body.style.display = isHidden ? 'block' : 'none';
 
-          // Update only the collapse/expand arrow, keep type-icon intact
-          const arrow = header.querySelector('.toggle-arrow');
+          // Update arrow rotation instead of text content
+          const arrow = header.querySelector('.toggle-arrow svg');
           if (arrow) {
-            arrow.textContent = isHidden ? '▼' : '▶';
+            arrow.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
           }
         }
       });
@@ -362,17 +374,14 @@ document.addEventListener('DOMContentLoaded', function() {
               } else {
                 blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
               }
-              // Show thinking container when content is added
-              const thinkingBody = blk.thinkingSection.querySelector('.container-body');
-              if (thinkingBody) thinkingBody.style.display = 'block';
+              // Keep thinking container collapsed - don't auto-expand
+              // The user can manually click to expand if they want to see the thinking
               break;
             case 'final':
               const content = data.summary || data.content || '';
               showSection(blk.t);
               blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
-              // Hide thinking container when response is ready
-              const thinkingBodyFinal = blk.thinkingSection.querySelector('.container-body');
-              if (thinkingBodyFinal) thinkingBodyFinal.style.display = 'none';
+              // Keep thinking container state as-is (don't auto-hide)
               break;
             case 'end':
               es.close();

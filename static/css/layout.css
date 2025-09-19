@@ -184,3 +184,43 @@ header .header-buttons {
   from { opacity: 0; transform: translateY(-2px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Toggle arrow styling for SVG icons */
+.toggle-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background-color 0.2s ease;
+}
+
+.toggle-arrow:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.toggle-arrow svg {
+  color: #58a6ff;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.toggle-arrow:hover svg {
+  color: #79c0ff;
+}
+
+/* Container header styling */
+.container-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color 0.2s ease;
+}
+
+.container-header:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
