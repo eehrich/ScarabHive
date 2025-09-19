@@ -157,17 +157,179 @@
     flex-direction: column;
     gap: 10px;
   }
-  
+
   .context-metrics-summary .metric {
     min-width: auto;
   }
-  
+
   .context-chart-container {
     min-height: 300px;
   }
-  
+
   .context-chart-container canvas {
     width: 100%;
     max-width: 400px;
   }
+}
+
+/* Agent Statistics Styles */
+.agent-statistics {
+  background: #1a1a1a;
+  border-radius: 8px;
+  border: 1px solid #333;
+  padding: 15px;
+  margin-top: 15px;
+}
+
+.agent-statistics h4 {
+  margin: 0 0 15px 0;
+  color: #fff;
+  font-size: 16px;
+}
+
+.agent-summary {
+  color: #888;
+  font-size: 12px;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #333;
+}
+
+.agent-stat-group {
+  margin-bottom: 20px;
+  padding: 12px;
+  background: #242424;
+  border-radius: 6px;
+  border-left: 3px solid #4ade80;
+}
+
+.agent-stat-group h6 {
+  margin: 0 0 10px 0;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.agent-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.agent-stats-grid .stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.agent-stats-grid .stat-row span:first-child {
+  color: #888;
+}
+
+.agent-stats-grid .stat-row span:last-child {
+  color: #fff;
+  font-weight: 500;
+}
+
+/* Usage level color coding */
+.usage-normal {
+  color: #4ade80 !important;
+}
+
+.usage-moderate {
+  color: #fbbf24 !important;
+}
+
+.usage-warning {
+  color: #f97316 !important;
+}
+
+.usage-critical {
+  color: #ef4444 !important;
+}
+
+.no-data {
+  color: #666;
+  font-style: italic;
+  text-align: center;
+  padding: 20px;
+}
+
+/* Enhanced responsive adjustments */
+@media (max-width: 768px) {
+  .context-metrics-summary {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .context-metrics-summary .metric {
+    min-width: auto;
+  }
+
+  .context-chart-container {
+    min-height: 300px;
+  }
+
+  .context-chart-container canvas {
+    width: 100%;
+    max-width: 400px;
+  }
+
+  .agent-stats-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Accumulated Statistics Styles */
+.accumulated-stats {
+  margin-top: 15px;
+  padding: 12px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border-radius: 8px;
+  border: 1px solid #2a4a6b;
+  box-shadow: 0 2px 8px rgba(42, 74, 107, 0.2);
+}
+
+.accumulated-stats h7 {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64b5f6;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #2a4a6b;
+  padding-bottom: 5px;
+}
+
+.accumulated-stats .agent-stats-grid {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.stat-row.accumulated {
+  background: rgba(100, 181, 246, 0.05);
+  border-left: 3px solid #64b5f6;
+  padding: 6px 10px;
+  margin: 2px 0;
+  border-radius: 4px;
+}
+
+.stat-row.accumulated span:first-child {
+  color: #90caf9;
+  font-weight: 500;
+}
+
+.accumulated-value {
+  color: #e3f2fd !important;
+  font-weight: 600 !important;
+  font-size: 13px;
+}
+
+/* Highlight high accumulated usage */
+.accumulated-stats .stat-row:first-child .accumulated-value {
+  color: #81c784 !important;
+  text-shadow: 0 0 2px rgba(129, 199, 132, 0.3);
 }

@@ -39,7 +39,7 @@ class TestAPIDebugEndpoints:
             Mock(role="user", content="Hello", tool_calls=None, tool_call_id=None),
             Mock(role="assistant", content="Hi there!", tool_calls=None, tool_call_id=None)
         ]
-        
+
         # Mock context manager with usage stats
         mock_context_manager = Mock(spec=ContextManager)
         mock_context_manager.get_usage_stats.return_value = {
@@ -49,18 +49,18 @@ class TestAPIDebugEndpoints:
         }
         mock_context_manager.estimate_token_count.return_value = 150
         mock_agent.context_manager = mock_context_manager
-        
+
         with patch('api.endpoints.get_agent', return_value=mock_agent):
             response = client.get("/api/debug/messages")
             assert response.status_code == 200
             data = response.json()
-            
+
             assert len(data["messages"]) == 2
             assert data["messages"][0]["role"] == "user"
             assert data["messages"][0]["content"] == "Hello"
             assert data["messages"][1]["role"] == "assistant"
             assert data["messages"][1]["content"] == "Hi there!"
-            
+
             assert data["usage_stats"]["context_window"] == 4096
             assert data["usage_stats"]["predicted_tokens"] == 150
             assert data["message_count"] == 2
@@ -86,12 +86,12 @@ class TestAPIDebugEndpoints:
             "warning_levels": ["low"]
         }
         mock_agent.context_manager = mock_context_manager
-        
+
         with patch('api.endpoints.get_agent', return_value=mock_agent):
             response = client.get("/api/debug/context-stats")
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["context_window"] == 8192
             assert data["prediction_threshold"] == 7372
             assert data["summarization_threshold"] == 6144
@@ -115,7 +115,7 @@ class TestAPIDebugEndpoints:
                 "total_tokens_processed": 2048
             },
             "agent_2": {
-                "agent_id": "agent_2", 
+                "agent_id": "agent_2",
                 "agent_name": "Test Agent 2",
                 "context_window": 8192,
                 "current_tokens": 2048,
@@ -127,23 +127,23 @@ class TestAPIDebugEndpoints:
                 "total_tokens_processed": 4096
             }
         }
-        
+
         with patch('agent_system.context.agent_tracker.get_all_agent_stats', return_value=mock_stats):
             response = client.get("/api/agents/stats")
             assert response.status_code == 200
             data = response.json()
-            
+
             assert data["agent_count"] == 2
             assert "agents" in data
             assert "agent_1" in data["agents"]
             assert "agent_2" in data["agents"]
-            
+
             agent1_stats = data["agents"]["agent_1"]
             assert agent1_stats["agent_name"] == "Test Agent 1"
             assert agent1_stats["context_window"] == 4096
             assert agent1_stats["current_tokens"] == 1024
             assert agent1_stats["peak_tokens"] == 1200
-            
+
             agent2_stats = data["agents"]["agent_2"]
             assert agent2_stats["agent_name"] == "Test Agent 2"
             assert agent2_stats["summarization_count"] == 1

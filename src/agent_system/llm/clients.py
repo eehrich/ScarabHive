@@ -311,12 +311,20 @@ class OpenAIAsyncClient(LLMClient):
 
             # Include usage data if available
             result = {"assistant": out}
-            if hasattr(resp, 'usage') and resp.usage:
-                result["usage"] = {
-                    "prompt_tokens": resp.usage.prompt_tokens,
-                    "completion_tokens": resp.usage.completion_tokens,
-                    "total_tokens": resp.usage.total_tokens
-                }
+            logger.debug("OpenAI response has usage attr: %s", hasattr(resp, 'usage'))
+            if hasattr(resp, 'usage'):
+                logger.debug("OpenAI response usage value: %s", resp.usage)
+                if resp.usage:
+                    result["usage"] = {
+                        "prompt_tokens": resp.usage.prompt_tokens,
+                        "completion_tokens": resp.usage.completion_tokens,
+                        "total_tokens": resp.usage.total_tokens
+                    }
+                    logger.debug("Added usage to result: %s", result["usage"])
+                else:
+                    logger.debug("OpenAI response usage is None")
+            else:
+                logger.debug("OpenAI response has no usage attribute")
 
             return result
         except Exception as e:

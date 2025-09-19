@@ -41,7 +41,7 @@ async def get_debug_messages():
                 "usage_stats": {},
                 "message_count": 0
             }
-        
+
         # Get current conversation messages
         messages = []
         if hasattr(agent, 'conversation') and agent.conversation:
@@ -54,7 +54,7 @@ async def get_debug_messages():
                 }
                 for msg in agent.conversation
             ]
-        
+
         # Get context usage stats
         usage_stats = {}
         if hasattr(agent, 'context_manager') and agent.context_manager:
@@ -63,7 +63,7 @@ async def get_debug_messages():
             if agent.conversation:
                 predicted_tokens = agent.context_manager.estimate_token_count(agent.conversation)
                 usage_stats['predicted_tokens'] = predicted_tokens
-        
+
         return {
             "messages": messages,
             "usage_stats": usage_stats,
@@ -87,7 +87,7 @@ async def get_context_stats():
                 "actual_usage": None,
                 "warning_levels": None
             }
-        
+
         # Get context stats from agent's context manager
         if hasattr(agent, 'context_manager') and agent.context_manager:
             stats = agent.context_manager.get_usage_stats()

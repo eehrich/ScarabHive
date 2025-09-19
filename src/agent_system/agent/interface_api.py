@@ -447,16 +447,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Get context usage tracking data for monitoring and debugging."""
         try:
             from ..context.tracker import get_tracker
+            from agent_system.context.agent_tracker import get_all_agent_stats
             tracker = get_tracker()
-            
+
             # Get latest snapshot and recent history
             latest = tracker.get_latest()
             recent_history = tracker.get_history(last_n=100)  # Last 100 data points
-            
+
             # Get statistics for different time windows
             stats_1h = tracker.get_statistics(time_window_seconds=3600)  # Last hour
             stats_24h = tracker.get_statistics(time_window_seconds=86400)  # Last 24 hours
-            
+
+            # Get per-agent statistics
+            agent_stats = get_all_agent_stats()
+
             return {
                 "latest": latest,
                 "recent_history": recent_history,
@@ -464,6 +468,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "last_hour": stats_1h,
                     "last_24_hours": stats_24h,
                     "all_time": tracker.get_statistics()
+                },
+                "agents": {
+                    "count": len(agent_stats),
+                    "details": agent_stats
                 }
             }
         except Exception as e:
@@ -477,7 +485,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             from ..context.tracker import get_tracker
             tracker = get_tracker()
-            
+
             history = tracker.get_history(last_n=last_n)
             return {"history": history, "count": len(history)}
         except Exception as e:

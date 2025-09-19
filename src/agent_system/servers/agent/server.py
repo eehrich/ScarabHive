@@ -337,7 +337,7 @@ class Agent(MCPServer):
                         # Skip optimizer for a few steps after context management
                         if getattr(self, '_skip_optimizer_steps_after_context_mgmt', 0) > 0:
                             self._skip_optimizer_steps_after_context_mgmt -= 1
-                            logger.debug("Skipping token optimizer: %d steps remaining after context mgmt", 
+                            logger.debug("Skipping token optimizer: %d steps remaining after context mgmt",
                                        self._skip_optimizer_steps_after_context_mgmt)
                         else:
                             try:
@@ -378,7 +378,7 @@ class Agent(MCPServer):
                         self._skip_optimizer_steps_after_context_mgmt = 2
                         # Re-check after management
                         estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
-                    
+
                     # Update context stats for this agent
                     try:
                         update_agent_context_usage(
@@ -413,6 +413,21 @@ class Agent(MCPServer):
                     usage_data = llm_out['usage']
                     self.context_manager.update_token_usage(usage_data)
                     logger.debug("Updated token usage from LLM response: %s", usage_data)
+
+                    # Update agent context tracker with actual LLM tokens
+                    try:
+                        # Extract total tokens from LLM response
+                        actual_tokens = usage_data.get('total_tokens', 0)
+                        if actual_tokens > 0:
+                            update_agent_context_usage(
+                                self.name,
+                                current_tokens=estimated_tokens,
+                                predicted_tokens=estimated_tokens,
+                                message_count=len(messages),
+                                actual_tokens=actual_tokens
+                            )
+                    except Exception as e:
+                        logger.debug("Failed to update agent context with LLM tokens: %s", e)
 
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
@@ -732,7 +747,7 @@ class Agent(MCPServer):
                         # Skip optimizer for a few steps after context management
                         if getattr(self, '_skip_optimizer_steps_after_context_mgmt', 0) > 0:
                             self._skip_optimizer_steps_after_context_mgmt -= 1
-                            logger.debug("Skipping token optimizer (events): %d steps remaining after context mgmt", 
+                            logger.debug("Skipping token optimizer (events): %d steps remaining after context mgmt",
                                        self._skip_optimizer_steps_after_context_mgmt)
                         else:
                             try:

@@ -24,24 +24,32 @@ class AgentContextStats:
     peak_tokens: int = 0
     total_llm_calls: int = 0
     total_tokens_processed: int = 0
-    
+
     def update_activity(self) -> None:
         """Update last activity timestamp."""
         self.last_activity = time.time()
-    
+
     def get_context_usage_percent(self) -> float:
         """Get current context usage as percentage."""
         if self.context_window <= 0:
             return 0.0
         return (self.current_tokens / self.context_window) * 100
-    
+
     def get_session_duration(self) -> float:
         """Get session duration in seconds."""
         return time.time() - self.session_start
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API responses."""
-        return {
+        # Get accumulated stats for this agent
+        accumulated_stats = {}
+        try:
+            from .accumulator import get_agent_accumulated_stats
+            accumulated_stats = get_agent_accumulated_stats(self.agent_id)
+        except Exception as e:
+            logger.debug(f"Failed to get accumulated stats for {self.agent_id}: {e}")
+
+        result = {
             "agent_id": self.agent_id,
             "agent_name": self.agent_name,
             "context_window": self.context_window,
@@ -61,14 +69,32 @@ class AgentContextStats:
             ) if self.predicted_tokens > 0 else 0
         }
 
+        # Add accumulated statistics if available
+        if accumulated_stats:
+            result["accumulated"] = {
+                "total_tokens": accumulated_stats.get("total_tokens", 0),
+                "total_calls": accumulated_stats.get("total_calls", 0),
+                "first_seen": accumulated_stats.get("first_seen", 0),
+                "sessions": accumulated_stats.get("sessions", 0)
+            }
+        else:
+            result["accumulated"] = {
+                "total_tokens": 0,
+                "total_calls": 0,
+                "first_seen": 0,
+                "sessions": 0
+            }
+
+        return result
+
 
 class AgentContextTracker:
     """Global tracker for per-agent context usage."""
-    
+
     def __init__(self):
         self._agents: Dict[str, AgentContextStats] = {}
         self._start_time = time.time()
-    
+
     def register_agent(self, agent_id: str, agent_name: str, context_window: int) -> None:
         """Register a new agent for tracking."""
         if agent_id not in self._agents:
@@ -78,7 +104,7 @@ class AgentContextTracker:
                 context_window=context_window
             )
             logger.info(f"Registered agent {agent_id} ({agent_name}) for context tracking")
-    
+
     def update_agent_context(
         self,
         agent_id: str,
@@ -91,44 +117,51 @@ class AgentContextTracker:
         if agent_id not in self._agents:
             logger.warning(f"Agent {agent_id} not registered, cannot update context")
             return
-        
+
         stats = self._agents[agent_id]
         stats.current_tokens = current_tokens
         stats.predicted_tokens = predicted_tokens
         stats.message_count = message_count
-        
+
         if actual_tokens is not None:
             stats.actual_tokens = actual_tokens
             stats.total_tokens_processed += actual_tokens
             stats.total_llm_calls += 1
-        
+
+            # Record in cross-session accumulator
+            try:
+                from .accumulator import record_agent_llm_usage
+                record_agent_llm_usage(agent_id, stats.agent_name, actual_tokens)
+            except Exception as e:
+                logger.debug(f"Failed to record accumulated usage for {agent_id}: {e}")
+
         # Track peak usage
         if current_tokens > stats.peak_tokens:
             stats.peak_tokens = current_tokens
-        
+
         stats.update_activity()
-        
+
         logger.debug(
             f"Updated context for agent {agent_id}: "
             f"{current_tokens}/{stats.context_window} tokens "
             f"({stats.get_context_usage_percent():.1f}%)"
         )
-    
+
     def record_summarization(self, agent_id: str) -> None:
         """Record that summarization occurred for an agent."""
         if agent_id in self._agents:
             self._agents[agent_id].summarization_count += 1
             self._agents[agent_id].update_activity()
             logger.debug(f"Recorded summarization for agent {agent_id}")
-    
+
     def get_agent_stats(self, agent_id: str) -> Optional[AgentContextStats]:
         """Get stats for a specific agent."""
         return self._agents.get(agent_id)
-    
+
     def get_all_agents(self) -> Dict[str, AgentContextStats]:
         """Get stats for all agents."""
         return self._agents.copy()
-    
+
     def get_active_agents(self, inactive_threshold: float = 300) -> Dict[str, AgentContextStats]:
         """Get agents that were active within the threshold (seconds)."""
         current_time = time.time()
@@ -137,7 +170,7 @@ class AgentContextTracker:
             for agent_id, stats in self._agents.items()
             if (current_time - stats.last_activity) < inactive_threshold
         }
-    
+
     def remove_agent(self, agent_id: str) -> bool:
         """Remove an agent from tracking."""
         if agent_id in self._agents:
@@ -145,7 +178,7 @@ class AgentContextTracker:
             logger.info(f"Removed agent {agent_id} from context tracking")
             return True
         return False
-    
+
     def cleanup_inactive_agents(self, inactive_threshold: float = 3600) -> int:
         """Remove agents that have been inactive for too long."""
         current_time = time.time()
@@ -153,15 +186,15 @@ class AgentContextTracker:
             agent_id for agent_id, stats in self._agents.items()
             if (current_time - stats.last_activity) > inactive_threshold
         ]
-        
+
         for agent_id in inactive_agents:
             self.remove_agent(agent_id)
-        
+
         if inactive_agents:
             logger.info(f"Cleaned up {len(inactive_agents)} inactive agents")
-        
+
         return len(inactive_agents)
-    
+
     def get_global_stats(self) -> Dict[str, Any]:
         """Get aggregated stats across all agents."""
         if not self._agents:
@@ -174,18 +207,26 @@ class AgentContextTracker:
                 "average_usage_percent": 0,
                 "uptime": round(time.time() - self._start_time, 2)
             }
-        
+
         active_agents = self.get_active_agents()
-        
+
         total_tokens = sum(stats.current_tokens for stats in self._agents.values())
         total_messages = sum(stats.message_count for stats in self._agents.values())
         total_summarizations = sum(stats.summarization_count for stats in self._agents.values())
-        
+
         # Calculate average usage percentage
         usage_percentages = [stats.get_context_usage_percent() for stats in self._agents.values()]
         avg_usage = sum(usage_percentages) / len(usage_percentages) if usage_percentages else 0
-        
-        return {
+
+        # Get global accumulated stats
+        global_accumulated = {}
+        try:
+            from .accumulator import get_global_accumulated_stats
+            global_accumulated = get_global_accumulated_stats()
+        except Exception as e:
+            logger.debug(f"Failed to get global accumulated stats: {e}")
+
+        result = {
             "total_agents": len(self._agents),
             "active_agents": len(active_agents),
             "total_tokens": total_tokens,
@@ -194,10 +235,16 @@ class AgentContextTracker:
             "average_usage_percent": round(avg_usage, 2),
             "uptime": round(time.time() - self._start_time, 2),
             "peak_concurrent_tokens": max(
-                (stats.peak_tokens for stats in self._agents.values()), 
+                (stats.peak_tokens for stats in self._agents.values()),
                 default=0
             )
         }
+
+        # Add accumulated statistics
+        if global_accumulated:
+            result["accumulated"] = global_accumulated
+
+        return result
 
 
 # Global instance for application-wide agent tracking

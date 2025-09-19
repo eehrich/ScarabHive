@@ -59,10 +59,10 @@ class ContextManager:
 
         for msg in messages:
             msg_tokens = 0
-            
+
             # Base overhead for message structure (role, formatting, etc.)
             msg_tokens += 4  # Base message overhead
-            
+
             # Count content tokens with content-type aware ratios
             if msg.content:
                 content = str(msg.content)
@@ -73,11 +73,11 @@ class ContextManager:
                 for tc in msg.tool_calls:
                     # Tool call overhead (id, type, function wrapper)
                     msg_tokens += 10
-                    
+
                     func = tc.get("function", {})
                     func_name = func.get("name", "")
                     msg_tokens += len(func_name) // 4  # Function names are typically short
-                    
+
                     # Tool arguments - often JSON, handle differently
                     args_str = str(func.get("arguments", ""))
                     if args_str:
@@ -97,60 +97,68 @@ class ContextManager:
         return total_tokens
 
     def _estimate_content_tokens(self, content: str) -> int:
-        """Estimate tokens for message content with type-aware ratios."""
+        """Estimate tokens for message content using word-based ratios."""
         if not content:
             return 0
-            
+
+        # Word-based estimation (more accurate than character-based)
+        words = len(content.split())
+
         # Detect content type for better estimation
         if self._is_code_content(content):
-            # Code typically has more tokens per character due to symbols
-            return int(len(content) / 2.8)
+            # Code: higher token density due to symbols, operators, keywords
+            # Ratio: ~1.2 tokens per word
+            return int(words * 1.2)
         elif self._is_structured_data(content):
-            # JSON/XML/structured data
-            return int(len(content) / 3.2)
+            # JSON/XML: compact structure, many punctuation tokens
+            # Ratio: ~1.1 tokens per word
+            return int(words * 1.1)
         else:
-            # Natural language (most common)
-            return int(len(content) / 4.0)
+            # Natural language: standard ratio
+            # Ratio: ~0.75 tokens per word (standard for English)
+            return int(words * 0.75)
 
     def _estimate_json_tokens(self, json_str: str) -> int:
-        """Estimate tokens for JSON content with consideration for structure."""
+        """Estimate tokens for JSON content using word and structure analysis."""
         if not json_str:
             return 0
-            
-        # JSON has overhead from braces, quotes, colons, commas
-        # Count structural characters
+
+        # Count words in JSON (excluding structural characters)
+        import re
+        # Remove JSON structural characters to count actual content words
+        content_only = re.sub(r'[{}\[\]":,]', ' ', json_str)
+        words = len(content_only.split())
+
+        # Count structural tokens (each structural char is usually a token)
         structural_chars = json_str.count('{') + json_str.count('}') + \
                           json_str.count('[') + json_str.count(']') + \
                           json_str.count('"') + json_str.count(':') + \
                           json_str.count(',')
-        
-        # Each structural character typically becomes its own token
-        structural_tokens = structural_chars
-        
-        # Remaining characters use a tighter ratio due to JSON compactness
-        content_chars = len(json_str) - structural_chars
-        content_tokens = int(content_chars / 3.0)
-        
-        return structural_tokens + content_tokens
+
+        # JSON tokens = structural tokens + content words * ratio
+        return structural_chars + int(words * 0.8)
 
     def _estimate_tool_result_tokens(self, content: str) -> int:
-        """Estimate tokens for tool results which can vary widely in format."""
+        """Estimate tokens for tool results using content-aware word counting."""
         if not content:
             return 0
-            
+
         # Tool results can be JSON, plain text, HTML, etc.
         if content.strip().startswith('{') or content.strip().startswith('['):
             # Likely JSON response
             return self._estimate_json_tokens(content)
         elif '<' in content and '>' in content:
-            # Likely HTML/XML
-            return int(len(content) / 3.0)  # HTML is dense with tokens
+            # Likely HTML/XML - high token density due to tags
+            words = len(content.split())
+            return int(words * 1.4)  # HTML has many tag tokens
         elif self._is_code_content(content):
             # Code output
-            return int(len(content) / 2.8)
+            words = len(content.split())
+            return int(words * 1.2)
         else:
-            # Natural language or plain text
-            return int(len(content) / 4.0)
+            # Plain text tool results
+            words = len(content.split())
+            return int(words * 0.75)
 
     def _is_code_content(self, content: str) -> bool:
         """Detect if content is likely code."""
@@ -159,14 +167,14 @@ class ContextManager:
             '=>', '&&', '||', '{}', '[]', '()', 'const ', 'let ', 'var ',
             'if (', 'for (', 'while (', 'switch (', 'catch (', 'try {'
         ]
-        
+
         # Count code-like patterns
         code_score = sum(1 for indicator in code_indicators if indicator in content)
-        
+
         # Also check character density of symbols common in code
         symbol_chars = sum(1 for c in content if c in '{}[]();=+-*/<>!')
         symbol_ratio = symbol_chars / len(content) if content else 0
-        
+
         return code_score >= 2 or symbol_ratio > 0.15
 
     def _is_structured_data(self, content: str) -> bool:
@@ -357,7 +365,7 @@ class ContextManager:
             step, total_tokens, breakdown["user_messages"], breakdown["assistant_messages"],
             breakdown["tool_calls"], breakdown["tool_results"], breakdown["system_messages"]
         )
-        
+
         # Record context usage for tracking and monitoring
         record_context_usage(
             total_tokens=total_tokens,
@@ -390,7 +398,7 @@ class ContextManager:
                 "🔴 Context usage WARNING (red): %d/%d tokens (%.1f%%, threshold: %d tokens, %d messages) - Critical level reached!",
                 tokens, self.config.context_window, percentage, threshold_tokens, message_count
             )
-        
+
         # Record warning in usage tracker
         record_context_usage(
             total_tokens=tokens,

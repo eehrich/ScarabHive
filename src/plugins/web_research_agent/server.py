@@ -19,6 +19,7 @@ from agent_system.mcp.status import (
     PHASE_END,
     PHASE_ERROR,
 )
+from agent_system.context.agent_tracker import update_agent_context_usage
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,17 @@ def create_web_research_agent(
         llm_kwargs["ollama_mode"] = server_cfg.get("ollama_mode")
     if server_cfg.get("request_timeout") is not None:
         llm_kwargs["request_timeout"] = server_cfg.get("request_timeout")
+    if server_cfg.get("context_window") is not None:
+        llm_kwargs["context_window"] = server_cfg.get("context_window")
+
+    # Inherit missing LLM fields from a provided parent/global config dict (if caller
+    # passed a reference containing top-level llm info under 'parent_llm'). This avoids
+    # forcing duplication of openai_api_key or model in server-specific config.
+    parent_llm = server_cfg.get("parent_llm") if isinstance(server_cfg, dict) else None
+    if isinstance(parent_llm, dict):  # expected shape: {'provider':..., 'model':..., 'openai_api_key':...}
+        for field in ("provider", "model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout", "context_window"):
+            if field not in llm_kwargs and parent_llm.get(field) is not None:
+                llm_kwargs[field] = parent_llm[field]
 
     research_llm = LLMConfig(**llm_kwargs) if llm_kwargs else LLMConfig()
 
@@ -112,7 +124,7 @@ class WebResearchAgent(Agent):
         provider = server_cfg.get("default_provider") or server_cfg.get("provider")
         if provider:
             llm_kwargs["provider"] = provider
-        for key in ("model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout"):
+        for key in ("model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout", "context_window"):
             if server_cfg.get(key) is not None:
                 llm_kwargs[key] = server_cfg.get(key)
 
@@ -121,7 +133,7 @@ class WebResearchAgent(Agent):
         # forcing duplication of openai_api_key or model in server-specific config.
         parent_llm = server_cfg.get("parent_llm") if isinstance(server_cfg, dict) else None
         if isinstance(parent_llm, dict):  # expected shape: {'provider':..., 'model':..., 'openai_api_key':...}
-            for field in ("provider", "model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout"):
+            for field in ("provider", "model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout", "context_window"):
                 if field not in llm_kwargs and parent_llm.get(field) is not None:
                     llm_kwargs[field] = parent_llm[field]
 
@@ -154,99 +166,140 @@ class WebResearchAgent(Agent):
         """Run agent task with progress updates published as status events."""
         results = {"task": task_prompt, "calls": []}
         step_count = 0
-        
+        total_messages = 0
+
         try:
             async for event in self.run_events(task_prompt):
                 event_type = event.get("type")
-                
+
                 if event_type == "start":
                     step_count += 1
                     try:
                         await publish_status(
-                            self.name, 
-                            f"{operation_name}: Starting analysis...", 
-                            request_id=request_id, 
+                            self.name,
+                            f"{operation_name}: Starting analysis...",
+                            request_id=request_id,
                             phase=PHASE_PROGRESS
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish start status: {e}")
-                
+
+                elif event_type == "thinking":
+                    # Track LLM conversation activity
+                    total_messages += 1
+                    try:
+                        # Get conversation context for tracking
+                        if hasattr(self, '_current_messages'):
+                            message_count = len(self._current_messages)
+                            # Estimate tokens from current conversation
+                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
+
+                            # Update agent context tracker
+                            update_agent_context_usage(
+                                self.name,
+                                current_tokens=estimated_tokens,
+                                predicted_tokens=estimated_tokens,
+                                message_count=message_count
+                            )
+                    except Exception as e:
+                        logger.debug("Failed to update agent context stats: %s", e)
+
                 elif event_type == "mcp_call":
                     step_count += 1
                     tool_name = event.get("server", "unknown")
                     action = event.get("action", "unknown")
                     try:
                         await publish_status(
-                            self.name, 
-                            f"{operation_name}: Step {step_count} - Using {tool_name} ({action})", 
-                            request_id=request_id, 
+                            self.name,
+                            f"{operation_name}: Step {step_count} - Using {tool_name} ({action})",
+                            request_id=request_id,
                             phase=PHASE_PROGRESS
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish mcp_call status: {e}")
-                    
+
                     # Store tool calls in results - convert to expected format
                     if "calls" not in results:
                         results["calls"] = []
                     results["calls"].append({
-                        "function": {"name": tool_name}, 
+                        "function": {"name": tool_name},
                         "server": tool_name,
                         "action": action,
                         "params": event.get("params", {})
                     })
-                
+
                 elif event_type == "mcp_result":
                     tool_name = event.get("server", "unknown")
                     try:
                         await publish_status(
-                            self.name, 
-                            f"{operation_name}: Processing results from {tool_name}...", 
-                            request_id=request_id, 
+                            self.name,
+                            f"{operation_name}: Processing results from {tool_name}...",
+                            request_id=request_id,
                             phase=PHASE_PROGRESS
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish mcp_result status: {e}")
-                
+
                 elif event_type == "final":
                     results["summary"] = event.get("summary", "")
                     try:
                         await publish_status(
-                            self.name, 
-                            f"{operation_name}: Finalizing results...", 
-                            request_id=request_id, 
+                            self.name,
+                            f"{operation_name}: Finalizing results...",
+                            request_id=request_id,
                             phase=PHASE_PROGRESS
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish final status: {e}")
+
+                    # Final agent tracking update
+                    try:
+                        if hasattr(self, '_current_messages'):
+                            message_count = len(self._current_messages)
+                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
+
+                            # Check if LLM usage data is available in the event
+                            actual_tokens = event.get("usage", {}).get("total_tokens", 0) if event.get("usage") else 0
+
+                            update_agent_context_usage(
+                                self.name,
+                                current_tokens=estimated_tokens,
+                                predicted_tokens=estimated_tokens,
+                                message_count=message_count,
+                                actual_tokens=actual_tokens if actual_tokens > 0 else None
+                            )
+                    except Exception as e:
+                        logger.debug("Failed to update final agent context stats: %s", e)
+
                     break
-                
+
                 elif event_type == "error":
                     error_msg = event.get("message", "Unknown error")
                     results.setdefault("errors", []).append(error_msg)
                     try:
                         await publish_status(
-                            self.name, 
-                            f"{operation_name}: Error - {error_msg}", 
-                            request_id=request_id, 
+                            self.name,
+                            f"{operation_name}: Error - {error_msg}",
+                            request_id=request_id,
                             level="error",
                             phase=PHASE_ERROR
                         )
                     except Exception:
                         pass
                     raise Exception(error_msg)
-                
+
                 elif event_type == "end":
                     break
-            
+
             return results
-            
+
         except Exception as e:
             results.setdefault("errors", []).append(str(e))
             try:
                 await publish_status(
-                    self.name, 
-                    f"{operation_name}: Failed - {str(e)}", 
-                    request_id=request_id, 
+                    self.name,
+                    f"{operation_name}: Failed - {str(e)}",
+                    request_id=request_id,
                     level="error",
                     phase=PHASE_ERROR
                 )
@@ -276,7 +329,7 @@ class WebResearchAgent(Agent):
             logger.info(f"Published research start status for request_id={request_id}")
         except Exception as e:
             logger.error(f"Failed to publish research start status: {e}")
-        
+
         try:
             res = await self._run_with_progress(research_prompt, f"Researching '{topic}'", request_id)
             # Add status and agent info to match expected format
@@ -315,7 +368,7 @@ class WebResearchAgent(Agent):
             await publish_status(self.name, f"Fact-check started: {claim[:50]}...", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
-        
+
         try:
             res = await self._run_with_progress(fact_check_prompt, "Fact-checking claim", request_id)
             # Add status and agent info to match expected format
@@ -357,7 +410,7 @@ class WebResearchAgent(Agent):
             await publish_status(self.name, f"Compare sources started: {topic}", request_id=request_id, phase=PHASE_START)
         except Exception:
             pass
-        
+
         try:
             res = await self._run_with_progress(compare_prompt, f"Comparing sources for '{topic}'", request_id)
             # Add status and agent info to match expected format
@@ -385,7 +438,7 @@ class WebResearchAgent(Agent):
     async def call(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
         # Extract request_id for status correlation
         request_id = params.get("request_id") or params.get("requestId")
-        
+
         if action == "research":
             topic = params.get("topic")
             if not topic:
@@ -410,7 +463,7 @@ class WebResearchAgent(Agent):
                 return {"status": "error", "error": f"Missing required parameter 'task' for {action} action"}
             # Route general tasks to research method with progress tracking
             return await self.research(task, params.get("max_results", 5), request_id)
-        
+
         return await super().call(action, params)
 
     def get_default_action(self) -> str:
