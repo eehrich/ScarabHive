@@ -109,11 +109,16 @@ class TokenOptimizer:
         except Exception:
             pass
         self.compression_stats["tokens_saved"] += tokens_saved
-        
+
+        # Compute a safe compression ratio (avoid division by zero)
         if total_original_tokens > 0:
             ratio = (total_optimized_tokens / total_original_tokens) * 100
-            self.compression_stats["compression_ratio"] = ratio
-            
+        else:
+            ratio = 0.0
+        self.compression_stats["compression_ratio"] = ratio
+
+        # Log summary information
+        if total_original_tokens > 0:
             logger.debug("✅ Token optimization complete:")
             logger.debug("   🪙 Tokens: %d → %d (saved %d tokens)", 
                        total_original_tokens, total_optimized_tokens, tokens_saved)
@@ -122,26 +127,29 @@ class TokenOptimizer:
                            ratio, 100 - ratio)
             else:
                 logger.debug("   📊 No optimization opportunities found")
-            
-            # Publish completion status event using PHASE_END but include a meta flag
-            # so the UI can suppress the completion checkmark for internal helpers.
-            meta = {
-                "original_tokens": total_original_tokens,
-                "optimized_tokens": total_optimized_tokens,
-                "tokens_saved": tokens_saved,
-                "compression_ratio": ratio,
-                "messages_processed": len(messages),
-            }
-            # Only suppress the completion icon when no tokens were saved
-            if int(tokens_saved) == 0:
-                meta["suppress_completion_icon"] = True
+        else:
+            logger.debug("⚪ Token optimization complete: no tokenized content found to analyze")
 
-            await publish_status(
-                server="token-optimizer",
-                message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-                phase=PHASE_END,
-                meta=meta
-            )
+        # Publish completion status event using PHASE_END so the UI always receives an end event.
+        # Include a meta flag to allow the UI to suppress the completion checkmark for internal helpers
+        # only when no tokens were saved.
+        meta = {
+            "original_tokens": total_original_tokens,
+            "optimized_tokens": total_optimized_tokens,
+            "tokens_saved": tokens_saved,
+            "compression_ratio": ratio,
+            "messages_processed": len(messages),
+        }
+        # Only suppress the completion icon when no tokens were saved
+        if int(tokens_saved) == 0:
+            meta["suppress_completion_icon"] = True
+
+        await publish_status(
+            server="token-optimizer",
+            message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
+            phase=PHASE_END,
+            meta=meta
+        )
         
         return optimized
     
