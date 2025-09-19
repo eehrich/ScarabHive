@@ -7,9 +7,15 @@ window.AgentSystem.PanelManager = {
   
   createPanel: function(id, title, content = '', additionalClasses = '', headerContent = '') {
     console.log(`Creating panel: ${id}`);
-    
-    // Remove existing panel with same ID
-    this.closePanel(id);
+
+    // If panel already exists return it and update content
+    if (this.activePanels.has(id)) {
+      const existing = this.activePanels.get(id);
+      const body = existing.querySelector('.floating-panel-body');
+      const contentDiv = body ? body.querySelector('.panel-content') || body : existing.querySelector('.panel-content') || existing;
+      contentDiv.innerHTML = content;
+      return existing;
+    }
     
     // Create panel with proper structure
     const panel = document.createElement('div');
@@ -18,7 +24,7 @@ window.AgentSystem.PanelManager = {
     panel.style.display = 'block';
     panel.style.position = 'fixed';
     
-    // Set default positioning based on panel type with staggering
+  // Set default positioning based on panel type with staggering
     const panelCount = this.activePanels.size;
     const offset = panelCount * 30; // Stagger panels
     
@@ -38,6 +44,21 @@ window.AgentSystem.PanelManager = {
       panel.style.height = '800px';
       panel.style.left = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
+    }
+
+    // Apply saved state (position/size) if present
+    try {
+      const raw = localStorage.getItem('panelState:' + id);
+      if (raw) {
+        const state = JSON.parse(raw);
+        if (state.width) panel.style.width = state.width + 'px';
+        if (state.height) panel.style.height = state.height + 'px';
+        if (typeof state.left !== 'undefined') panel.style.left = state.left + 'px';
+        if (typeof state.top !== 'undefined') panel.style.top = state.top + 'px';
+        if (typeof state.right !== 'undefined') panel.style.right = state.right + 'px';
+      }
+    } catch (err) {
+      console.warn('Failed to apply saved panel state for', id, err);
     }
     
     panel.innerHTML = `
@@ -71,6 +92,21 @@ window.AgentSystem.PanelManager = {
     console.log(`Panel ${id} created and added to DOM`);
     
     return panel;
+  },
+
+  togglePanel: function(id, createCallback) {
+    if (this.activePanels.has(id)) {
+      this.closePanel(id);
+      return null;
+    }
+
+    if (typeof createCallback === 'function') {
+      // createCallback should call createPanel or otherwise add the panel
+      createCallback();
+      return this.activePanels.get(id) || null;
+    }
+
+    return null;
   },
   
   closePanel: function(id) {
@@ -135,6 +171,16 @@ window.AgentSystem.PanelManager = {
         isDragging = false;
         header.style.cursor = 'grab';
         document.body.style.userSelect = '';
+        // Persist panel position
+        try {
+          const rect = panel.getBoundingClientRect();
+          const state = JSON.parse(localStorage.getItem('panelState:' + panel.id) || '{}');
+          state.left = Math.round(rect.left);
+          state.top = Math.round(rect.top);
+          localStorage.setItem('panelState:' + panel.id, JSON.stringify(state));
+        } catch (err) {
+          console.warn('Failed to save panel position', panel.id, err);
+        }
       }
     });
   },
@@ -183,6 +229,16 @@ window.AgentSystem.PanelManager = {
       if (isResizing) {
         isResizing = false;
         document.body.style.userSelect = '';
+        // Persist panel size
+        try {
+          const rect = panel.getBoundingClientRect();
+          const state = JSON.parse(localStorage.getItem('panelState:' + panel.id) || '{}');
+          state.width = Math.round(rect.width);
+          state.height = Math.round(rect.height);
+          localStorage.setItem('panelState:' + panel.id, JSON.stringify(state));
+        } catch (err) {
+          console.warn('Failed to save panel size', panel.id, err);
+        }
       }
     });
   }

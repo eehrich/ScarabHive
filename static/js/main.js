@@ -25,25 +25,25 @@ document.addEventListener('DOMContentLoaded', function() {
   
   if (statusBtn) {
     statusBtn.addEventListener('click', function() {
-      window.AgentSystem.Status.showPanel();
+      window.AgentSystem.PanelManager.togglePanel('floatingStatusPanel', () => window.AgentSystem.Status.showPanel());
     });
   }
   
   if (mcpBtn) {
     mcpBtn.addEventListener('click', function() {
-      window.AgentSystem.MCP.showPanel();
+      window.AgentSystem.PanelManager.togglePanel('floatingMCPPanel', () => window.AgentSystem.MCP.showPanel());
     });
   }
   
   if (debugBtn) {
     debugBtn.addEventListener('click', function() {
-      window.AgentSystem.Debug.showPanel();
+      window.AgentSystem.PanelManager.togglePanel('floatingDebugPanel', () => window.AgentSystem.Debug.showPanel());
     });
   }
   
   if (contextDebugBtn) {
     contextDebugBtn.addEventListener('click', function() {
-      window.AgentSystem.ContextDebug.showPanel();
+      window.AgentSystem.PanelManager.togglePanel('floatingContextDebugPanel', () => window.AgentSystem.ContextDebug.showPanel());
     });
   }
   
