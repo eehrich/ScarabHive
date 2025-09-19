@@ -636,6 +636,8 @@ class Agent(MCPServer):
 
                 # Check for final content
                 elif content:
+                    # Append assistant final message to conversation history
+                    messages.append(ChatMessage(role="assistant", content=content or ""))
                     results["summary"] = content
                     # Update tracked messages with final response
                     self._current_messages = messages.copy()
@@ -653,6 +655,8 @@ class Agent(MCPServer):
                     final_assistant = final_llm_out.get("assistant", {})
                     final_content = final_assistant.get("content")
                     if final_content:
+                        # Append final assistant message to conversation history
+                        messages.append(ChatMessage(role="assistant", content=final_content or ""))
                         results["summary"] = final_content
                     else:
                         results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
@@ -1061,6 +1065,8 @@ class Agent(MCPServer):
 
                 # Check for final content
                 elif content:
+                    # Append assistant final message to conversation history
+                    messages.append(ChatMessage(role="assistant", content=content or ""))
                     results["summary"] = content
                     # Update tracked messages with final response
                     self._current_messages = messages.copy()
@@ -1079,7 +1085,11 @@ class Agent(MCPServer):
                     final_assistant = final_llm_out.get("assistant", {})
                     final_content = final_assistant.get("content")
                     if final_content:
+                        # Append final assistant message to conversation history
+                        messages.append(ChatMessage(role="assistant", content=final_content or ""))
                         results["summary"] = final_content
+                        # Update tracked messages and emit final event
+                        self._current_messages = messages.copy()
                         yield {"type": "final", "summary": final_content}
                     else:
                         results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
