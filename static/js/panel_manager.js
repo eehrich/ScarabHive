@@ -35,23 +35,23 @@ window.AgentSystem.PanelManager = {
     if (id.includes('status')) {
       panel.style.width = '400px';
       panel.style.height = '700px';
-      panel.style.minWidth = '360px';
-      panel.style.minHeight = '300px';
+  panel.style.minWidth = '380px';
+  panel.style.minHeight = '320px';
       panel.style.right = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
     } else if (id.includes('debug')) {
       panel.style.width = '600px';
       panel.style.height = '700px';
-      panel.style.minWidth = '360px';
-      panel.style.minHeight = '300px';
+  panel.style.minWidth = '380px';
+  panel.style.minHeight = '320px';
       panel.style.left = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
     } else {
       // MCP panel
       panel.style.width = '640px';
       panel.style.height = '800px';
-      panel.style.minWidth = '360px';
-      panel.style.minHeight = '300px';
+  panel.style.minWidth = '380px';
+  panel.style.minHeight = '320px';
       panel.style.left = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
     }
@@ -240,8 +240,8 @@ window.AgentSystem.PanelManager = {
       const newHeight = panelStart.height + deltaY;
       
       // Enforce minimum and maximum sizes
-  const minWidth = 360;
-  const minHeight = 300;
+  const minWidth = 380;
+  const minHeight = 320;
       const maxWidth = window.innerWidth - 20;
       const maxHeight = window.innerHeight - 100;
       
