@@ -74,6 +74,40 @@ window.AgentSystem.PanelManager = {
     } catch (err) {
       console.warn('Failed to apply saved panel state for', id, err);
     }
+
+    // Ensure panel is inside the viewport (handle changed screen resolution)
+    try {
+      const parsedWidth = parseInt(panel.style.width, 10) || this.MIN_WIDTH;
+      const parsedHeight = parseInt(panel.style.height, 10) || this.MIN_HEIGHT;
+
+      // compute left/top if set; allow fallback to defaults
+      let left = null;
+      let top = null;
+      if (panel.style.left && panel.style.left !== 'auto') {
+        const lp = parseInt(panel.style.left, 10);
+        if (!isNaN(lp)) left = lp;
+      }
+      if (panel.style.top && panel.style.top !== 'auto') {
+        const tp = parseInt(panel.style.top, 10);
+        if (!isNaN(tp)) top = tp;
+      }
+
+      const maxLeft = Math.max(0, window.innerWidth - parsedWidth - 20);
+      const maxTop = Math.max(0, window.innerHeight - parsedHeight - 40);
+
+      if (left === null) left = Math.min(24, maxLeft);
+      if (top === null) top = Math.min(80, maxTop);
+
+      // clamp into viewport
+      left = Math.max(0, Math.min(left, maxLeft));
+      top = Math.max(0, Math.min(top, maxTop));
+
+      panel.style.left = left + 'px';
+      panel.style.top = top + 'px';
+      panel.style.right = 'auto';
+    } catch (err) {
+      // silently ignore viewport clamp failures
+    }
     
     panel.innerHTML = `
       <div class="floating-panel-header" id="${id}Header">
