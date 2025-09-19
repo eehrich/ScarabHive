@@ -28,7 +28,7 @@ class HTTPTransport(MCPTransport):
     async def connect(self) -> None:
         """Establish HTTP session"""
         if self.session is None:
-            connector = aiohttp.TCPConnector(verify_ssl=self.ssl_verify)
+            connector = aiohttp.TCPConnector(ssl=self.ssl_verify)
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             self.session = aiohttp.ClientSession(
                 connector=connector,

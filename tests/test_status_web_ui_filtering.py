@@ -19,7 +19,7 @@ async def test_main_page_contains_filtering_logic():
         assert 'aria-expanded="false"' in r.text
         
         # Check that JavaScript is included
-        assert '/static/js/index.js' in r.text
+        assert '/static/js/main.js' in r.text
         
         # Ensure old MCP calls functionality is removed
         assert 'MCP Calls' not in r.text
@@ -46,4 +46,4 @@ async def test_main_page_status_structure():
         assert 'Show status & metrics' in content
         
         # Should have JavaScript inclusion
-        assert '/static/js/index.js' in content
+        assert '/static/js/main.js' in content

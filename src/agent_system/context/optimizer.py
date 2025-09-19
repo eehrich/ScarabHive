@@ -159,6 +159,7 @@ class TokenOptimizer:
             tool_calls=optimized_tool_calls,
             tool_call_id=getattr(msg, 'tool_call_id', None),
             name=getattr(msg, 'name', None)
+            ,function_call=getattr(msg, 'function_call', None)
         )
         
         # Check if optimization actually helps
@@ -178,29 +179,42 @@ class TokenOptimizer:
         """Optimize text content for token efficiency."""
         if not content:
             return content
-        
-        # Check if content is already well-optimized
+        # If content is only whitespace, return empty string
+        if not content.strip():
+            return ""
+
+        # Normalize newlines and line endings
+        text = content.replace('\r\n', '\n').replace('\r', '\n')
+
+        # Split into lines, trim each line, remove leading/trailing empty lines
+        lines = [ln.strip() for ln in text.split('\n')]
+        # Remove leading/trailing empty lines
+        while lines and lines[0] == "":
+            lines.pop(0)
+        while lines and lines[-1] == "":
+            lines.pop()
+
+        # Remove empty lines entirely to produce compact paragraphs
+        normalized_lines = [re.sub(r"\s+", " ", ln) for ln in lines if ln != ""]
+        content = "\n".join(normalized_lines)
+
+        # If content is short, skip heavy optimization
         if self._is_content_already_optimized(content):
-            logger.debug("📋 Content appears already optimized, skipping aggressive optimization")
             return content
-        
-        # Remove excessive whitespace
-        content = re.sub(r'\s+', ' ', content.strip())
-        
-        # Remove redundant line breaks in code blocks
-        content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
-        
-        # Compress common verbose patterns
+
+        # Remove verbose assistant phrases and compress common patterns
+        content = self._remove_verbose_patterns(content)
         content = self._compress_verbose_patterns(content)
-        
-        # Optimize JSON formatting in content
+
+        # Optimize any JSON fragments embedded within the text
         content = self._optimize_json_in_text(content)
-        
+
         return content
     
     def _is_content_already_optimized(self, content: str) -> bool:
         """Detect if content is already well-optimized and should be left alone."""
-        if len(content) < 100:
+        # Short content should still be considered optimized for tiny values
+        if len(content) < 10:
             # Short content doesn't benefit much from optimization
             return True
         
@@ -211,7 +225,7 @@ class TokenOptimizer:
             # Already minimal whitespace (very few consecutive spaces)
             content.count('  ') < 3,  # Very few double spaces
             # Compact data formats (like base64, hex, etc.)
-            bool(re.search(r'[a-zA-Z0-9+/]{20,}=*$', content, re.MULTILINE)),  # Base64-like
+            bool(re.search(r'[a-zA-Z0-9+/]{20,}=*$', content, re.MULTILINE)),  # Base64-like (loose)
             bool(re.search(r'^[0-9a-fA-F]{32,}$', content, re.MULTILINE)),     # Hex-like
             # API response patterns (often already optimized)
             '"id":' in content and '"type":' in content,
@@ -233,10 +247,23 @@ class TokenOptimizer:
             '   ' in content,
         ]
         
+        # Quick checks: compact JSON-like content and base64/full-data blocks
+        stripped = content.strip()
+        if (stripped.startswith('{') and stripped.endswith('}')) or (stripped.startswith('[') and stripped.endswith(']')):
+            if '"id":' in content or '"type":' in content:
+                return True
+
+        # If the content looks like a single base64 block (possibly padded/newlines), treat as optimized
+        # Remove whitespace/newlines to test for continuous base64 sequence
+        compact = re.sub(r'\s+', '', content)
+        # Full-match base64 (allow padding = or == at the end)
+        if len(compact) >= 24 and re.fullmatch(r'[A-Za-z0-9+/]+={0,2}', compact):
+            return True
+
         # If we see clear signs of verbosity, don't skip optimization
         if sum(signs_of_verbosity) >= 2:
             return False
-        
+
         # If multiple signs suggest already optimized, skip aggressive processing
         return sum(signs_of_optimization) >= 3  # Increased threshold
     
@@ -262,6 +289,41 @@ class TokenOptimizer:
             content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
         
         return content
+
+    # Backwards-compatible helper methods expected by tests
+    def _compress_json(self, json_text: str) -> str:
+        """Compress JSON string to its most compact representation if valid."""
+        if not json_text or not isinstance(json_text, str):
+            return json_text
+        try:
+            obj = json.loads(json_text)
+            return json.dumps(obj, separators=(',', ':'))
+        except Exception:
+            return json_text
+
+    def _remove_verbose_patterns(self, content: str) -> str:
+        """Wrapper that removes very verbose assistant-style phrases."""
+        if not content:
+            return content
+        # Remove common assistant filler phrases
+        patterns = [
+            r'I understand that you want me to\s*',
+            r'Let me think about this carefully\.?\s*',
+            r'I need to be very careful here\.?\s*',
+            r'As an AI assistant,?\s*',
+        ]
+        result = content
+        for p in patterns:
+            result = re.sub(p, '', result, flags=re.IGNORECASE)
+        return result.strip()
+
+    def _truncate_large_content(self, content: str, max_length: int = 1000) -> str:
+        """Truncate large text content with an informative suffix."""
+        if not content or len(content) <= max_length:
+            return content
+        suffix = f"...\n[TRUNCATED: original {len(content)} chars]"
+        return content[:max_length - len(suffix)] + suffix
+
     
     def _optimize_json_in_text(self, content: str) -> str:
         """Optimize JSON formatting within text content, only if it actually helps."""
@@ -408,7 +470,7 @@ class TokenOptimizer:
             "compression_ratio": 0.0
         }
     
-    def compress_tool_results(self, messages: List[ChatMessage], max_result_length: int = 2000) -> List[ChatMessage]:
+    def compress_tool_results(self, messages: List[ChatMessage], max_result_length: int = 600) -> List[ChatMessage]:
         """Specifically compress long tool results that often cause token bloat."""
         tool_results_found = 0
         tool_results_compressed = 0
@@ -421,10 +483,10 @@ class TokenOptimizer:
                 tool_results_found += 1
                 content = str(msg.content)
                 if len(content) > max_result_length:
-                    # Truncate with summary
-                    truncated = content[:max_result_length]
-                    summary = f"\n\n[TRUNCATED: Original length {len(content)} chars, showing first {max_result_length} chars]"
-                    compressed_content = truncated + summary
+                    # Truncate with summary; ensure compressed content is shorter than original
+                    suffix = f"\n\n[TRUNCATED: Original length {len(content)} chars, showing first {max_result_length} chars]"
+                    truncated = content[: max_result_length - len(suffix)]
+                    compressed_content = truncated + suffix
                     
                     compressed_msg = ChatMessage(
                         role=msg.role,

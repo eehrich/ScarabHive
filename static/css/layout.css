@@ -84,26 +84,6 @@ header .header-buttons {
   min-width: 0;
 }
 
-.sidebar {
-  flex: 0 0 300px;
-  background: #0a1420;
-  border: 1px solid #243244;
-  border-radius: 8px;
-  padding: 16px;
-  height: fit-content;
-  position: sticky;
-  top: 80px;
-}
-
-.sidebar-header {
-  font-weight: 600;
-  color: #cbd5e1;
-  margin-bottom: 12px;
-  font-size: 14px;
-  border-bottom: 1px solid #243244;
-  padding-bottom: 8px;
-}
-
 .status-metrics {
   display: flex;
   flex-direction: column;
@@ -198,14 +178,49 @@ header .header-buttons {
   .main-container {
     flex-direction: column;
   }
-  .sidebar {
-    flex: none;
-    position: static;
-    order: -1;
-  }
 }
 
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(-2px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Toggle arrow styling for SVG icons */
+.toggle-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background-color 0.2s ease;
+}
+
+.toggle-arrow:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.toggle-arrow svg {
+  color: #58a6ff;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.toggle-arrow:hover svg {
+  color: #79c0ff;
+}
+
+/* Container header styling */
+.container-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color 0.2s ease;
+}
+
+.container-header:hover {
+  background-color: rgba(255, 255, 255, 0.05);
 }

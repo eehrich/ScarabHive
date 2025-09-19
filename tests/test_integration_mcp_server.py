@@ -250,7 +250,7 @@ async def test_mcp_tools_call_and_auth():
         from agent_system.mcp.client import StandardMCPClient
 
         session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(verify_ssl=True),
+            connector=aiohttp.TCPConnector(ssl=True),
             timeout=aiohttp.ClientTimeout(total=5),
             headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"}
         )

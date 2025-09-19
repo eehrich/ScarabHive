@@ -27,7 +27,10 @@ def sanitize_for_llm(text: Optional[str]) -> str:
         if isinstance(text, bytes):
             try:
                 text = text.decode('utf-8', errors='ignore')
-            except Exception:
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning("Failed to decode bytes to UTF-8, returning empty string: %s", e)
                 return ""
         else:
             text = str(text)
@@ -74,8 +77,11 @@ def sanitize_for_llm(text: Optional[str]) -> str:
         
         return text
         
-    except Exception:
+    except Exception as e:
         # Fallback: return empty string if sanitization fails completely
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("Text sanitization failed completely, returning empty string: %s", e)
         return ""
 
 

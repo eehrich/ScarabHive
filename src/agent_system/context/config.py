@@ -44,7 +44,7 @@ class ContextConfig:
 
     # Context window settings
     context_window: int = 32768  # Total available context window in tokens
-    summarization_threshold: float = 0.80  # Start summarizing at 80% of context_window (can be float 0-1 for %, or int for absolute tokens)
+    summarization_threshold: float = 25600  # Start summarizing at this absolute token count (backwards-compatible default)
     prediction_threshold: float = 0.90  # Trigger context management at 90% predicted token usage
 
     # Warning levels (as percentage of context window)
@@ -84,7 +84,27 @@ class ContextConfig:
                 thresholds[level] = float(threshold)
             config_dict["warning_thresholds"] = thresholds
 
-        return cls(**config_dict)
+        # If summarization_threshold provided as percentage, keep as-is and let __post_init__ normalize
+        inst = cls(**config_dict)
+        return inst
+
+    def __post_init__(self):
+        """Normalize summarization_threshold to absolute token value on initialization.
+
+        Many parts of the codebase and tests expect `summarization_threshold` to
+        be an absolute token count. Accept either a 0-1 float (percentage) or an
+        absolute int and normalize to an int token value here so the attribute
+        is always an int after construction.
+        """
+        try:
+            if isinstance(self.summarization_threshold, float) and 0 <= self.summarization_threshold <= 1:
+                self.summarization_threshold = int(self.context_window * self.summarization_threshold)
+            else:
+                # Ensure it's an int (handles string/numeric inputs)
+                self.summarization_threshold = int(self.summarization_threshold)
+        except Exception:
+            # Keep original if conversion fails
+            pass
 
     def get_warning_threshold_tokens(self, level: WarningLevel) -> int:
         """Get warning threshold in tokens for a specific level."""

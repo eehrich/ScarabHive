@@ -325,8 +325,7 @@ mcp_integration: Optional[MCPIntegration] = None
 def get_mcp_integration(app: Optional[FastAPI] = None) -> MCPIntegration:
     """Get or create the global MCP integration instance"""
     global mcp_integration
-
-    # First check if the API has an initialized instance
+    # First check if the API has an initialized instance and prefer it
     try:
         from agent_system.agent.interface_api import _mcp_integration as api_integration
         if api_integration is not None and api_integration.initialized:
@@ -334,7 +333,14 @@ def get_mcp_integration(app: Optional[FastAPI] = None) -> MCPIntegration:
     except (ImportError, AttributeError):
         pass  # API module not available or not initialized
 
-    # Fall back to module-level global instance
+    # If an app is provided, create a fresh app-bound integration so tests
+    # that build an ASGI app get a dedicated integration instance and do not
+    # accidentally reuse a previously initialized global instance.
+    if app is not None:
+        mcp_integration = MCPIntegration(app)
+        return mcp_integration
+
+    # Fall back to module-level global instance (create if needed)
     if mcp_integration is None:
         mcp_integration = MCPIntegration(app)
     return mcp_integration
