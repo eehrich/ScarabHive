@@ -4,6 +4,7 @@ window.AgentSystem = window.AgentSystem || {};
 // Panel Management Module
 window.AgentSystem.PanelManager = {
   activePanels: new Map(), // Track multiple panels
+  zIndexCounter: 1000,
   
   createPanel: function(id, title, content = '', additionalClasses = '', headerContent = '') {
     console.log(`Creating panel: ${id}`);
@@ -14,6 +15,8 @@ window.AgentSystem.PanelManager = {
       const body = existing.querySelector('.floating-panel-body');
       const contentDiv = body ? body.querySelector('.panel-content') || body : existing.querySelector('.panel-content') || existing;
       contentDiv.innerHTML = content;
+      // bring existing panel to front
+      this.bringToFront(existing);
       return existing;
     }
     
@@ -22,7 +25,8 @@ window.AgentSystem.PanelManager = {
     panel.className = `floating-panel ${additionalClasses}`;
     panel.id = id;
     panel.style.display = 'block';
-    panel.style.position = 'fixed';
+  panel.style.position = 'fixed';
+  panel.style.zIndex = ++this.zIndexCounter;
     
   // Set default positioning based on panel type with staggering
     const panelCount = this.activePanels.size;
@@ -94,6 +98,16 @@ window.AgentSystem.PanelManager = {
     return panel;
   },
 
+  bringToFront: function(panel) {
+    try {
+      if (!panel) return;
+      this.zIndexCounter += 1;
+      panel.style.zIndex = this.zIndexCounter;
+    } catch (err) {
+      console.warn('bringToFront failed for', panel && panel.id, err);
+    }
+  },
+
   togglePanel: function(id, createCallback) {
     if (this.activePanels.has(id)) {
       this.closePanel(id);
@@ -131,6 +145,8 @@ window.AgentSystem.PanelManager = {
     let panelStart = { x: 0, y: 0 };
     
     header.addEventListener('mousedown', (e) => {
+      // bring panel to front when interacting with header
+      this.bringToFront(panel);
       // Don't start dragging if clicking on buttons or inputs
       if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.closest('button') || e.target.closest('input')) {
         return;
@@ -194,6 +210,8 @@ window.AgentSystem.PanelManager = {
     let panelStart = { width: 0, height: 0 };
     
     resizeHandle.addEventListener('mousedown', (e) => {
+      // bring panel to front when starting resize
+      this.bringToFront(panel);
       isResizing = true;
       resizeStart.x = e.clientX;
       resizeStart.y = e.clientY;
