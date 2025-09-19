@@ -16,6 +16,7 @@ from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
 from ...context.agent_tracker import register_agent_for_tracking, update_agent_context_usage
+from ...mcp.status import publish_status, PHASE_START, PHASE_END
 from .planner import Planner
 from .executor import Executor
 
@@ -404,8 +405,20 @@ class Agent(MCPServer):
 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
+                # Emit status: calling LLM (planner)
+                try:
+                    await publish_status(server=self.name, message="Calling LLM (planner)", phase=PHASE_START, meta={"step": step + 1})
+                except Exception:
+                    logger.debug("Failed to publish LLM start status (planner)")
+
                 # Get LLM response via Planner
                 llm_out = await planner.chat(messages, tools_schema)
+
+                # Emit status: LLM call complete
+                try:
+                    await publish_status(server=self.name, message="LLM (planner) response received", phase=PHASE_END, meta={"step": step + 1})
+                except Exception:
+                    logger.debug("Failed to publish LLM end status (planner)")
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
 
@@ -875,8 +888,20 @@ class Agent(MCPServer):
                 # Emit thinking event before LLM call
                 yield {"type": "thinking", "step": step + 1}
 
+                # Emit status: calling LLM (chat_tools)
+                try:
+                    await publish_status(server=self.name, message="Calling LLM (chat)", phase=PHASE_START, meta={"step": step + 1})
+                except Exception:
+                    logger.debug("Failed to publish LLM start status (chat_tools)")
+
                 # Get LLM response
                 llm_out = await self.llm.chat_tools(messages, tools_schema)
+
+                # Emit status: LLM call complete
+                try:
+                    await publish_status(server=self.name, message="LLM (chat) response received", phase=PHASE_END, meta={"step": step + 1})
+                except Exception:
+                    logger.debug("Failed to publish LLM end status (chat_tools)")
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
 
