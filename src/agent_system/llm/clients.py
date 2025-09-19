@@ -56,7 +56,10 @@ class OpenAIAsyncClient(LLMClient):
             try:
                 import httpx as _httpx
                 httpx_client = _httpx.AsyncClient(verify=verify, timeout=timeout)
-            except Exception:
+            except Exception as e:
+                # Log failure to create custom httpx client
+                logger = logging.getLogger(__name__)
+                logger.warning("Failed to create custom httpx client, will use SDK default: %s", e)
                 httpx_client = None
 
         # Try the known parameter names for a custom httpx client; fall back to letting the SDK create its own client
@@ -68,7 +71,10 @@ class OpenAIAsyncClient(LLMClient):
                     _kwargs[param] = httpx_client
                     self._client = AsyncOpenAI(**_kwargs)
                     break
-                except Exception:
+                except Exception as e:
+                    # Log failure to set httpx client parameter
+                    logger = logging.getLogger(__name__)
+                    logger.debug("Failed to set %s parameter for OpenAI client: %s", param, e)
                     self._client = None
             if self._client is None:
                 # Last attempt: pass kwargs without client and let SDK handle network behavior

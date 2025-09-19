@@ -47,6 +47,8 @@ class AgentContextStats:
             from .accumulator import get_agent_accumulated_stats
             accumulated_stats = get_agent_accumulated_stats(self.agent_id)
         except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
             logger.debug(f"Failed to get accumulated stats for {self.agent_id}: {e}")
 
         result = {
@@ -85,8 +87,10 @@ class AgentContextStats:
                     result["total_llm_calls"] = accumulated_stats.get("total_calls", 0)
                 if not result.get("total_tokens_processed") and accumulated_stats.get("total_tokens", 0):
                     result["total_tokens_processed"] = accumulated_stats.get("total_tokens", 0)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug("Failed to get accumulated stats for agent %s: %s", self.agent_id, e)
         else:
             result["accumulated"] = {
                 "total_tokens": 0,

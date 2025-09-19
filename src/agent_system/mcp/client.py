@@ -36,37 +36,28 @@ class StandardMCPClient(MCPClient):
                 await publish_status(self.name, "Transport connecting to MCP server", phase=PHASE_START)
                 # Also publish under logical server id (e.g., strip AgentSystem- prefix)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
-                    try:
-                        logical = self.name.split("AgentSystem-", 1)[1]
-                        await publish_status(logical, "Transport connecting to MCP server", phase=PHASE_START)
-                    except Exception:
-                        pass
-            except Exception:
-                logger.debug("publish_status failed for transport connect start")
+                    logical = self.name.split("AgentSystem-", 1)[1]
+                    await publish_status(logical, "Transport connecting to MCP server", phase=PHASE_START)
+            except Exception as e:
+                logger.debug("publish_status failed for transport connect start: %s", e)
 
             await self.transport.connect()
 
             try:
                 await publish_status(self.name, "Transport connected to MCP server", phase=PHASE_END)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
-                    try:
-                        logical = self.name.split("AgentSystem-", 1)[1]
-                        await publish_status(logical, "Transport connected to MCP server", phase=PHASE_END)
-                    except Exception:
-                        pass
-            except Exception:
-                logger.debug("publish_status failed for transport connected")
+                    logical = self.name.split("AgentSystem-", 1)[1]
+                    await publish_status(logical, "Transport connected to MCP server", phase=PHASE_END)
+            except Exception as e:
+                logger.debug("publish_status failed for transport connected: %s", e)
         except Exception as e:
             try:
                 await publish_status(self.name, f"Transport connection failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
-                    try:
-                        logical = self.name.split("AgentSystem-", 1)[1]
-                        await publish_status(logical, f"Transport connection failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
-                    except Exception:
-                        pass
-            except Exception:
-                logger.debug("publish_status failed for transport connect error")
+                    logical = self.name.split("AgentSystem-", 1)[1]
+                    await publish_status(logical, f"Transport connection failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
+            except Exception as pub_e:
+                logger.debug("publish_status failed for transport connect error: %s", pub_e)
             raise
 
     async def disconnect(self) -> None:
@@ -76,37 +67,28 @@ class StandardMCPClient(MCPClient):
             try:
                 await publish_status(self.name, "Transport disconnecting from MCP server", phase=PHASE_START)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
-                    try:
-                        logical = self.name.split("AgentSystem-", 1)[1]
-                        await publish_status(logical, "Transport disconnecting from MCP server", phase=PHASE_START)
-                    except Exception:
-                        pass
-            except Exception:
-                logger.debug("publish_status failed for transport disconnect start")
+                    logical = self.name.split("AgentSystem-", 1)[1]
+                    await publish_status(logical, "Transport disconnecting from MCP server", phase=PHASE_START)
+            except Exception as e:
+                logger.debug("publish_status failed for transport disconnect start: %s", e)
 
             await self.transport.disconnect()
 
             try:
                 await publish_status(self.name, "Transport disconnected from MCP server", phase=PHASE_END)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
-                    try:
-                        logical = self.name.split("AgentSystem-", 1)[1]
-                        await publish_status(logical, "Transport disconnected from MCP server", phase=PHASE_END)
-                    except Exception:
-                        pass
-            except Exception:
-                logger.debug("publish_status failed for transport disconnect end")
+                    logical = self.name.split("AgentSystem-", 1)[1]
+                    await publish_status(logical, "Transport disconnected from MCP server", phase=PHASE_END)
+            except Exception as e:
+                logger.debug("publish_status failed for transport disconnect end: %s", e)
         except Exception as e:
             try:
                 await publish_status(self.name, f"Transport disconnect failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
-                    try:
-                        logical = self.name.split("AgentSystem-", 1)[1]
-                        await publish_status(logical, f"Transport disconnect failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
-                    except Exception:
-                        pass
-            except Exception:
-                logger.debug("publish_status failed for transport disconnect error")
+                    logical = self.name.split("AgentSystem-", 1)[1]
+                    await publish_status(logical, f"Transport disconnect failed: {e}", phase=PHASE_ERROR, meta={"error": str(e)})
+            except Exception as pub_e:
+                logger.debug("publish_status failed for transport disconnect error: %s", pub_e)
             raise
 
     async def initialize(self) -> Dict[str, Any]:
