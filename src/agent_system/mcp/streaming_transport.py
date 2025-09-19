@@ -49,11 +49,23 @@ class HTTPStreamingTransport(MCPTransport):
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream"
             }
+            # Allow aiohttp to pick up HTTP(S)_PROXY and other env vars in corporate networks
+            # by enabling trust_env. This is a low-risk change that helps with Zscaler/proxy setups.
+            trust_env = True
             self.session = aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
-                headers=headers
+                headers=headers,
+                trust_env=trust_env,
             )
+
+            # Log detected proxy environment variables to help debugging in corporate networks
+            import os
+            http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+            https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
+            if http_proxy or https_proxy:
+                logger.debug("HTTPStreamingTransport.connect(): detected proxy settings http=%s https=%s", http_proxy, https_proxy)
+
             logger.debug("HTTPStreamingTransport.connect(): created session %s with timeout total=%s connect=%s",
                         id(self.session), self.timeout, timeout.connect)
 
