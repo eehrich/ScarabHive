@@ -5,6 +5,8 @@ window.AgentSystem = window.AgentSystem || {};
 window.AgentSystem.PanelManager = {
   activePanels: new Map(), // Track multiple panels
   zIndexCounter: 1000,
+  MIN_WIDTH: 380,
+  MIN_HEIGHT: 320,
   
   createPanel: function(id, title, content = '', additionalClasses = '', headerContent = '') {
     console.log(`Creating panel: ${id}`);
@@ -59,10 +61,10 @@ window.AgentSystem.PanelManager = {
     // Apply saved state (position/size) if present
     try {
       const raw = localStorage.getItem('panelState:' + id);
-      if (raw) {
-        const state = JSON.parse(raw);
-        if (state.width) panel.style.width = state.width + 'px';
-        if (state.height) panel.style.height = state.height + 'px';
+    if (raw) {
+      const state = JSON.parse(raw);
+      if (state.width) panel.style.width = Math.max(state.width, this.MIN_WIDTH) + 'px';
+      if (state.height) panel.style.height = Math.max(state.height, this.MIN_HEIGHT) + 'px';
         if (typeof state.left !== 'undefined') panel.style.left = state.left + 'px';
         if (typeof state.top !== 'undefined') panel.style.top = state.top + 'px';
         if (typeof state.right !== 'undefined') panel.style.right = state.right + 'px';
@@ -240,8 +242,8 @@ window.AgentSystem.PanelManager = {
       const newHeight = panelStart.height + deltaY;
       
       // Enforce minimum and maximum sizes
-  const minWidth = 380;
-  const minHeight = 320;
+  const minWidth = this.MIN_WIDTH;
+  const minHeight = this.MIN_HEIGHT;
       const maxWidth = window.innerWidth - 20;
       const maxHeight = window.innerHeight - 100;
       

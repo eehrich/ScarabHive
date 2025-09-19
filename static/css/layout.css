@@ -224,3 +224,54 @@ header .header-buttons {
 .container-header:hover {
   background-color: rgba(255, 255, 255, 0.05);
 }
+
+/* Floating panel layout and content overflow handling */
+.floating-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* Prevent content from spilling out of the panel */
+  border-radius: 8px;
+  background: linear-gradient(180deg,#071019,#071019cc);
+  border: 1px solid rgba(255,255,255,0.04);
+}
+
+.floating-panel .floating-panel-body {
+  flex: 1 1 auto;
+  min-height: 0; /* allow flex children to shrink and enable scrolling */
+  overflow: auto; /* enable scroll when content is larger than panel */
+  padding: 12px;
+}
+
+.floating-panel .panel-content {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+/* Ensure metric and server cards wrap and truncate instead of overflowing */
+.mcp-metrics, .status-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.metric-item, .server-card {
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-card .server-title, .metric-item .metric-label {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* For small panels allow server cards to wrap their internal lines */
+.server-card .server-meta, .server-card .server-desc {
+  white-space: normal;
+  word-break: break-word;
+}
