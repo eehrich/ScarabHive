@@ -5,7 +5,7 @@ import re
 import json
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
-from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_ERROR
+from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -123,18 +123,24 @@ class TokenOptimizer:
             else:
                 logger.debug("   📊 No optimization opportunities found")
             
-            # Publish completion status event as a progress update (avoid UI completion checkmark for internal optimizer)
+            # Publish completion status event using PHASE_END but include a meta flag
+            # so the UI can suppress the completion checkmark for internal helpers.
+            meta = {
+                "original_tokens": total_original_tokens,
+                "optimized_tokens": total_optimized_tokens,
+                "tokens_saved": tokens_saved,
+                "compression_ratio": ratio,
+                "messages_processed": len(messages),
+            }
+            # Only suppress the completion icon when no tokens were saved
+            if int(tokens_saved) == 0:
+                meta["suppress_completion_icon"] = True
+
             await publish_status(
                 server="token-optimizer",
                 message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-                phase=PHASE_PROGRESS,
-                meta={
-                    "original_tokens": total_original_tokens,
-                    "optimized_tokens": total_optimized_tokens,
-                    "tokens_saved": tokens_saved,
-                    "compression_ratio": ratio,
-                    "messages_processed": len(messages)
-                }
+                phase=PHASE_END,
+                meta=meta
             )
         
         return optimized
