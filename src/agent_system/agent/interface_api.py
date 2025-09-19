@@ -517,13 +517,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 agent_tracker = get_agent_tracker()
                 all_agents = agent_tracker.get_all_agents()
                 for aid, stats in all_agents.items():
+                    # Clear all relevant in-memory counters for the agent
+                    stats.current_tokens = 0
+                    stats.predicted_tokens = 0
+                    stats.actual_tokens = 0
+                    stats.message_count = 0
+                    stats.summarization_count = 0
+                    stats.peak_tokens = 0
                     stats.total_llm_calls = 0
                     stats.total_tokens_processed = 0
-                    # reset session_start to now
-                    try:
-                        stats.session_start = __import__('time').time()
-                    except Exception:
-                        pass
+                    # reset session_start and last_activity to now
+                    now = __import__('time').time()
+                    stats.session_start = now
+                    stats.last_activity = now
             except Exception:
                 pass
 
