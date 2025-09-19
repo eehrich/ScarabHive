@@ -211,7 +211,9 @@
         const iconSpan = operationDiv.querySelector('.progress-icon');
         const messageSpan = operationDiv.querySelector('.progress-message');
         const timeSpan = operationDiv.querySelector('.progress-time');
-        if (iconSpan) iconSpan.innerHTML = '<div class="checkmark">✓</div>';
+        // Respect backend hint to suppress the completion icon for internal helpers
+        const suppressIcon = ev.meta && ev.meta.suppress_completion_icon;
+        if (iconSpan) iconSpan.innerHTML = suppressIcon ? '' : '<div class="checkmark">✓</div>';
         if (messageSpan) messageSpan.textContent = ev.message || 'Completed';
         if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
         operationDiv.classList.add('completed');
