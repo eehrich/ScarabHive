@@ -37,7 +37,13 @@ class HTTPStreamingTransport(MCPTransport):
         """Establish HTTP session"""
         if self.session is None:
             connector = aiohttp.TCPConnector(verify_ssl=self.ssl_verify)
-            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            # For proxy environments, separate connection and total timeouts
+            # Connection timeout is for initial TCP connection (important for proxies)
+            # Total timeout is for the entire request including data transfer
+            timeout = aiohttp.ClientTimeout(
+                total=self.timeout,  # Total request timeout
+                connect=min(self.timeout * 0.5, 10.0)  # Connection timeout: 50% of total, max 10s
+            )
             # Streaming HTTP servers often require headers that accept SSE
             headers = {
                 "Content-Type": "application/json",
@@ -48,10 +54,8 @@ class HTTPStreamingTransport(MCPTransport):
                 timeout=timeout,
                 headers=headers
             )
-            try:
-                logger.debug("HTTPStreamingTransport.connect(): created session %s", id(self.session))
-            except Exception:
-                pass
+            logger.debug("HTTPStreamingTransport.connect(): created session %s with timeout total=%s connect=%s",
+                        id(self.session), self.timeout, timeout.connect)
 
     async def disconnect(self) -> None:
         """Close HTTP session"""
@@ -112,7 +116,7 @@ class HTTPStreamingTransport(MCPTransport):
             "jsonrpc": notification.jsonrpc,
             "method": notification.method
         }
-        
+
         if notification.params:
             payload["params"] = notification.params
 
@@ -279,7 +283,9 @@ class HTTPStreamingTransport(MCPTransport):
                     # If no session in headers, mark as connection-based
                     if not self.session_id:
                         self.session_id = "connection-based"
-                        logger.info("Using connection-based session for streaming")                # Parse JSON-RPC response
+                        logger.info("Using connection-based session for streaming")
+
+                # Parse JSON-RPC response
                 error = None
                 if "error" in response_data:
                     error_data = response_data["error"]

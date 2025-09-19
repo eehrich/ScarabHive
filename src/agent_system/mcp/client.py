@@ -202,7 +202,7 @@ class StandardMCPClient(MCPClient):
 
         self.available_tools = tools
         logger.debug(f"Found {len(tools)} tools from MCP server")
-        
+
         return tools
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
@@ -217,11 +217,11 @@ class StandardMCPClient(MCPClient):
         # Publish status for tool call start
         try:
             await publish_status(
-                logical_server, 
-                f"Starting tool call: {name}", 
-                phase=PHASE_START, 
+                logical_server,
+                f"Starting tool call: {name}",
+                phase=PHASE_START,
                 meta={
-                    "tool": name, 
+                    "tool": name,
                     "server": logical_server,
                     "arguments": {k: str(v)[:50] + "..." if len(str(v)) > 50 else str(v) for k, v in arguments.items()} if arguments else {}
                 }
@@ -249,11 +249,11 @@ class StandardMCPClient(MCPClient):
             # Publish status for tool call error
             try:
                 await publish_status(
-                    logical_server, 
-                    f"Tool call failed: {name}", 
-                    phase=PHASE_ERROR, 
+                    logical_server,
+                    f"Tool call failed: {name}",
+                    phase=PHASE_ERROR,
                     meta={
-                        "tool": name, 
+                        "tool": name,
                         "server": logical_server,
                         "error": response.error.message,
                         "error_code": getattr(response.error, 'code', None)
@@ -274,11 +274,11 @@ class StandardMCPClient(MCPClient):
                     # Publish status for successful tool call
                     try:
                         await publish_status(
-                            logical_server, 
-                            f"Tool call completed: {name}", 
-                            phase=PHASE_END, 
+                            logical_server,
+                            f"Tool call completed: {name}",
+                            phase=PHASE_END,
                             meta={
-                                "tool": name, 
+                                "tool": name,
                                 "server": logical_server,
                                 "result_length": len(text_result),
                                 "result_preview": text_result[:100] + "..." if len(text_result) > 100 else text_result
@@ -291,11 +291,11 @@ class StandardMCPClient(MCPClient):
         # Publish status for successful tool call
         try:
             await publish_status(
-                logical_server, 
-                f"Tool call completed: {name}", 
-                phase=PHASE_END, 
+                logical_server,
+                f"Tool call completed: {name}",
+                phase=PHASE_END,
                 meta={
-                    "tool": name, 
+                    "tool": name,
                     "server": logical_server,
                     "result_type": type(result).__name__
                 }
@@ -481,7 +481,7 @@ class MCPClientFactory:
     async def create_client_from_config(config: Dict[str, Any]) -> StandardMCPClient:
         """Create an MCP client from configuration"""
         transport_type = config.get("transport", "http")
-        
+
         # Handle deprecated transport type names
         if transport_type == "smithery":
             transport_type = "streaming"
@@ -587,16 +587,16 @@ class MCPClientManager:
     async def list_all_tools(self) -> Dict[str, List[MCPTool]]:
         """List tools from all clients"""
         import time
-        
+
         # Check cache validity
         now = time.time()
-        if (self._tools_cache is not None and 
+        if (self._tools_cache is not None and
             (now - self._tools_cache_time) < self._tools_cache_ttl):
             logger.debug("Returning cached MCP tools list (age: %.1fs)", now - self._tools_cache_time)
             return self._tools_cache
-        
+
         logger.debug("Refreshing MCP tools cache...")
-        
+
         all_tools = {}
         for name, client in self.clients.items():
             try:
@@ -605,14 +605,14 @@ class MCPClientManager:
             except Exception as e:
                 logger.error(f"Failed to list tools from client {name}: {e}")
                 all_tools[name] = []
-        
+
         # Update cache
         self._tools_cache = all_tools
         self._tools_cache_time = now
         logger.debug("MCP tools cache updated")
-        
+
         return all_tools
-    
+
     def invalidate_tools_cache(self) -> None:
         """Invalidate the tools cache"""
         self._tools_cache = None
