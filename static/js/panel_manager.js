@@ -35,17 +35,23 @@ window.AgentSystem.PanelManager = {
     if (id.includes('status')) {
       panel.style.width = '400px';
       panel.style.height = '700px';
+      panel.style.minWidth = '360px';
+      panel.style.minHeight = '300px';
       panel.style.right = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
     } else if (id.includes('debug')) {
       panel.style.width = '600px';
       panel.style.height = '700px';
+      panel.style.minWidth = '360px';
+      panel.style.minHeight = '300px';
       panel.style.left = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
     } else {
       // MCP panel
       panel.style.width = '640px';
       panel.style.height = '800px';
+      panel.style.minWidth = '360px';
+      panel.style.minHeight = '300px';
       panel.style.left = (24 + offset) + 'px';
       panel.style.top = (80 + offset) + 'px';
     }
@@ -234,8 +240,8 @@ window.AgentSystem.PanelManager = {
       const newHeight = panelStart.height + deltaY;
       
       // Enforce minimum and maximum sizes
-      const minWidth = 300;
-      const minHeight = 200;
+  const minWidth = 360;
+  const minHeight = 300;
       const maxWidth = window.innerWidth - 20;
       const maxHeight = window.innerHeight - 100;
       
@@ -251,8 +257,9 @@ window.AgentSystem.PanelManager = {
         try {
           const rect = panel.getBoundingClientRect();
           const state = JSON.parse(localStorage.getItem('panelState:' + panel.id) || '{}');
-          state.width = Math.round(rect.width);
-          state.height = Math.round(rect.height);
+          // enforce minimum when persisting
+          state.width = Math.round(Math.max(rect.width, minWidth));
+          state.height = Math.round(Math.max(rect.height, minHeight));
           localStorage.setItem('panelState:' + panel.id, JSON.stringify(state));
         } catch (err) {
           console.warn('Failed to save panel size', panel.id, err);
