@@ -41,14 +41,32 @@
       else tableContent += '</tbody>';
       return `<table class="markdown-table">${tableContent}</table>`;
     });
-    html = html.replace(/^[\s]*[-*] (.+)$/gm, '<li>$1</li>');
-    html = html.replace(/(<li>.*<\/li>[\n\r]*)+/g, '<ul>$&</ul>');
-    html = html.replace(/^[\s]*\d+\. (.+)$/gm, '<li>$1</li>');
-    html = html.replace(/\n\n+/g, '</p><p>');
+    // Lists: create list items, then wrap consecutive <li> into <ul> or <ol>
+    html = html.replace(/^[\t ]*[-*+]\s+(.+)$/gm, '<li>$1</li>');
+    // Ordered lists
+    html = html.replace(/^[\t ]*\d+\.\s+(.+)$/gm, '<li>$1</li>');
+    // Wrap consecutive li into ul
+    html = html.replace(/(?:<li>.*?<\/li>\s*){1,}/gs, function(match) {
+      // If the match contains any leading digits followed by '.', treat as ordered
+      if (/^\s*<li>\d+\./m.test(match)) {
+        return `<ol>${match}</ol>`;
+      }
+      return `<ul>${match}</ul>`;
+    });
+
+    // Collapse multiple blank lines to paragraph separators and convert remaining newlines to <br>
+    html = html.replace(/\n{2,}/g, '</p><p>');
     html = html.replace(/\n/g, '<br>');
+
+    // Ensure top-level block wrappers; avoid wrapping lists/tables/pre headers
     if (!html.match(/^<(h[1-6]|table|ul|ol|pre|div)/)) html = `<p>${html}</p>`;
-    html = html.replace(/<p><\/p>/g, '');
-    html = html.replace(/<p><br><\/p>/g, '');
+
+    // Clean up common unwanted patterns inside lists (e.g., <p> or <br> within <li>)
+    html = html.replace(/<li>\s*<p>(.*?)<\/p>\s*<\/li>/gs, '<li>$1</li>');
+    html = html.replace(/<li>([\s\S]*?)<br>\s*<\/li>/g, '<li>$1</li>');
+    html = html.replace(/<ul>\s*<br>\s*<li>/g, '<ul><li>');
+    html = html.replace(/<li>\s*<br>\s*/g, '<li>');
+    html = html.replace(/<\/li>\s*<br>\s*(<li>|<\/ul>|<\/ol>)/g, '</li>$1');
     return html;
   }
 
