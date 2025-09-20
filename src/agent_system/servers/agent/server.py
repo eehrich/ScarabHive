@@ -115,6 +115,15 @@ class Agent(MCPServer):
         # Track current conversation messages for debugging
         self._current_messages: List[ChatMessage] = []
 
+        # Initialize request tracking for cancellation and per-request state
+        # _active_requests maps request_id -> { 'cancel': Event(), 'message_event': Event(), 'appended': List[ChatMessage] }
+        self._active_requests: Dict[str, Dict[str, Any]] = {}
+        self._request_lock = asyncio.Lock()
+        # Persisted sessions (conversation history) keyed by session_id
+        self._sessions: Dict[str, List[ChatMessage]] = {}
+        # Map active request_id -> session_id for runs
+        self._request_to_session: Dict[str, str] = {}
+
     def _init_context_management(self):
         """Initialize the context management system."""
         try:
@@ -207,9 +216,6 @@ class Agent(MCPServer):
             self.context_manager = None
             self.token_optimizer = None
 
-        # Initialize request tracking for cancellation support
-        self._active_requests: Dict[str, asyncio.Event] = {}
-        self._request_lock = asyncio.Lock()
 
     @property
     def description(self) -> str:
@@ -229,7 +235,12 @@ class Agent(MCPServer):
         async with self._request_lock:
             if request_id in self._active_requests:
                 logger.info("Cancelling request %s", request_id)
-                self._active_requests[request_id].set()  # Set the event to signal cancellation
+                try:
+                    self._active_requests[request_id]["cancel"].set()
+                except Exception:
+                    # Defensive: if structure unexpected, try old-style event
+                    if isinstance(self._active_requests[request_id], asyncio.Event):
+                        self._active_requests[request_id].set()
                 return True
             else:
                 logger.warning("Request %s not found for cancellation", request_id)
@@ -246,8 +257,77 @@ class Agent(MCPServer):
             True if the request has been cancelled, False otherwise
         """
         if request_id and request_id in self._active_requests:
-            return self._active_requests[request_id].is_set()
+            entry = self._active_requests[request_id]
+            if isinstance(entry, dict) and 'cancel' in entry:
+                return bool(entry['cancel'].is_set())
+            if isinstance(entry, asyncio.Event):
+                return entry.is_set()
         return False
+
+    async def append_user_message(self, request_id: str, content: str) -> bool:
+        """
+        Append a user message to an active request's conversation.
+        Returns True if appended, False if request not found.
+        """
+        logger.debug("Append request received for request_id=%s: %s", request_id, content[:50])
+        async with self._request_lock:
+            if request_id in self._active_requests:
+                entry = self._active_requests[request_id]
+                if isinstance(entry, dict):
+                    try:
+                        msg = ChatMessage(role="user", content=sanitize_for_llm(content))
+                        entry.setdefault('appended', []).append(msg)
+                        # notify run_events if it's waiting
+                        try:
+                            entry['message_event'].set()
+                        except Exception:
+                            pass
+                        logger.debug("Message appended to active request %s", request_id)
+                        return True
+                    except Exception as e:
+                        logger.debug("Failed to append message to request %s: %s", request_id, e)
+                        return False
+        logger.debug("Request %s not found for append", request_id)
+        return False
+
+    async def append_to_session(self, session_id: str, content: str) -> bool:
+        """
+        Append a user message directly to a persisted session.
+        Returns True if appended, False if session not found.
+        """
+        logger.debug("Session append request for session_id=%s: %s", session_id, content[:50])
+        async with self._request_lock:
+            if session_id in self._sessions:
+                try:
+                    msg = ChatMessage(role="user", content=sanitize_for_llm(content))
+                    self._sessions[session_id].append(msg)
+                    logger.debug("Message appended to session %s", session_id)
+                    return True
+                except Exception as e:
+                    logger.debug("Failed to append message to session %s: %s", session_id, e)
+                    return False
+        logger.debug("Session %s not found for append", session_id)
+        return False
+
+    async def _drain_appended_messages(self, request_id: str, messages: List[ChatMessage]) -> List[ChatMessage]:
+        """
+        Drain any appended messages for a request and add them to the conversation.
+        Returns the updated messages list.
+        """
+        async with self._request_lock:
+            entry = self._active_requests.get(request_id)
+            if isinstance(entry, dict):
+                appended = entry.get('appended', [])
+                if appended:
+                    messages.extend(appended)
+                    entry['appended'] = []
+                    logger.debug("Drained %d appended messages for request %s", len(appended), request_id)
+                    # clear message_event
+                    try:
+                        entry['message_event'].clear()
+                    except Exception:
+                        pass
+        return messages
 
     async def run(self, task: str) -> Dict[str, Any]:
         """
@@ -744,18 +824,31 @@ class Agent(MCPServer):
         estimated_tokens = total_chars // 4
         return estimated_tokens
 
-    async def run_events(self, task: str, request_id: Optional[str] = None):
+    async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None):
         """Run the agent and yield structured events for UI streaming."""
         # Generate request ID if not provided
         if request_id is None:
             request_id = str(uuid.uuid4())
 
-        # Register this request for potential cancellation
+        # Register this request for potential cancellation and appended messages
         async with self._request_lock:
-            self._active_requests[request_id] = asyncio.Event()
+            self._active_requests[request_id] = {
+                "cancel": asyncio.Event(),
+                "message_event": asyncio.Event(),
+                "appended": []
+            }
 
         try:
-            yield {"type": "start", "task": task, "request_id": request_id}
+            # If no session_id provided, generate one and persist empty history
+            if not session_id:
+                session_id = str(uuid.uuid4())
+            async with self._request_lock:
+                # ensure session exists
+                self._sessions.setdefault(session_id, [])
+                # map request to session
+                self._request_to_session[request_id] = session_id
+
+            yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
             logger = logging.getLogger(__name__)
 
@@ -802,11 +895,27 @@ class Agent(MCPServer):
             system_msg = rendered.get("system_prompt") or "You are an assistant agent."
             tools_msg = rendered.get("tools_prompt")
 
-            # Initialize conversation
+            # Initialize conversation from persisted session history
+            async with self._request_lock:
+                session_msgs = list(self._sessions.get(session_id, []))
+
             messages = [ChatMessage(role="system", content=system_msg)]
             if tools_msg:
                 messages.append(ChatMessage(role="system", content=tools_msg))
+            # include persisted session messages
+            if session_msgs:
+                messages.extend(session_msgs)
+            # add the new user input as last message
             messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
+
+            # Also include any appended messages already queued for this request
+            async with self._request_lock:
+                entry = self._active_requests.get(request_id)
+                if isinstance(entry, dict):
+                    appended = entry.get('appended', [])
+                    if appended:
+                        messages.extend(appended)
+                        entry['appended'] = []
 
             # Track messages for debugging
             self._current_messages = messages.copy()
@@ -860,6 +969,9 @@ class Agent(MCPServer):
             executor = Executor(self.registry)
 
             for step in range(max_steps):
+                # Drain any appended user messages before each step
+                messages = await self._drain_appended_messages(request_id, messages)
+                
                 # Check for cancellation at the start of each step
                 if self._is_cancelled(request_id):
                     logger.info("Request %s cancelled at step %d", request_id, step + 1)
@@ -936,6 +1048,9 @@ class Agent(MCPServer):
 
                 # Get LLM response
                 llm_out = await self.llm.chat_tools(messages, tools_schema)
+                
+                # Drain any messages that arrived during LLM call
+                messages = await self._drain_appended_messages(request_id, messages)
 
                 # Emit status: LLM call complete
                 try:
@@ -1142,6 +1257,9 @@ class Agent(MCPServer):
 
                 # Update tracked messages at end of each step
                 self._current_messages = messages.copy()
+                
+                # Drain any final appended messages before next step  
+                messages = await self._drain_appended_messages(request_id, messages)
 
             else:
                 # Max steps reached - get final answer
@@ -1167,11 +1285,25 @@ class Agent(MCPServer):
         except Exception as e:
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
         finally:
-            # Clean up request tracking
+            # Clean up request tracking but preserve session data
             async with self._request_lock:
                 if request_id in self._active_requests:
                     del self._active_requests[request_id]
                     logger.debug("Cleaned up request tracking for %s", request_id)
+                
+                # Persist session messages and keep the request->session mapping for a while
+                sid = self._request_to_session.get(request_id)
+                if sid and messages:
+                    try:
+                        # Filter out system messages - only persist conversation history
+                        conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                        # Update the persistent session with conversation state (no system messages)
+                        self._sessions[sid] = conversation_msgs.copy()
+                        logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
+                        # Keep the request->session mapping (don't pop it immediately)
+                        # This allows append requests that arrive shortly after completion to find the session
+                    except Exception as e:
+                        logger.debug("Failed to persist session %s: %s", sid, e)
 
             # Clean up MCP integration if we initialized it locally
             if 'mcp_initialized_locally' in locals() and mcp_initialized_locally and 'mcp_integration' in locals() and mcp_integration:

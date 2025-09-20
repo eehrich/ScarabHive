@@ -207,15 +207,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         return await agent.run(task)
 
     @app.get("/events")
-    async def events(task: str):
+    async def events(task: str, session_id: Optional[str] = Query(default=None)):
         logger = logging.getLogger(__name__)
         request_id = str(uuid.uuid4())
-        logger.info("SSE /events connected, task=%s, request_id=%s", task, request_id)
+        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s", task, request_id, session_id)
 
         async def event_stream():
             # Initial keep-alive line
             yield ":ok\n\n"
-            async for ev in agent.run_events(task, request_id):
+            async for ev in agent.run_events(task, request_id, session_id):
                 logger.debug("SSE event: %s", ev.get("type"))
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
@@ -236,6 +236,91 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return {"status": "cancelled", "request_id": request_id}
         else:
             return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}
+
+    @app.post("/events/{request_id}/append")
+    async def append_event(request_id: str, request: Request, session_id: Optional[str] = Query(default=None)):
+        """Append a user message to an existing active request or session.
+
+        If `session_id` query parameter is provided, append directly to session.
+        Body: { "content": "the user message" }
+        """
+        logger = logging.getLogger(__name__)
+        from fastapi import HTTPException
+        try:
+            body = await request.json()
+        except Exception as e:
+            logger.debug("Invalid JSON body for append to %s: %s", request_id, e)
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+        content = body.get('content')
+        if not content:
+            raise HTTPException(status_code=400, detail="Missing 'content' in body")
+
+        if session_id:
+            # Append directly to persisted session using agent method
+            logger.debug("Appending to session %s: %.120s", session_id, content)
+            success = await agent.append_to_session(session_id, content)
+            if not success:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return {"status": "appended", "session_id": session_id}
+
+        logger.debug("Append request received for request_id=%s: %.120s", request_id, content)
+        try:
+            appended = await agent.append_user_message(request_id, content)
+        except HTTPException:
+            # Let agent-level HTTPExceptions bubble up
+            raise
+        except Exception as e:
+            logger.exception("Unexpected error in append_user_message for %s: %s", request_id, e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+        if appended:
+            return {"status": "appended", "request_id": request_id}
+
+        # If request not found/finished, try to append into the persisted session for this request
+        async with agent._request_lock:
+            sid = agent._request_to_session.get(request_id)
+        if sid:
+            logger.debug("Request %s already finished; appending to session %s", request_id, sid)
+            success = await agent.append_to_session(sid, content)
+            if success:
+                return {"status": "appended", "session_id": sid}
+
+        raise HTTPException(status_code=404, detail="Request not found or already completed")
+
+    @app.post("/sessions")
+    async def create_session():
+        """Create a new session id for multi-turn conversations."""
+        sid = str(uuid.uuid4())
+        # Pre-create empty session in agent
+        async def _create():
+            async with agent._request_lock:
+                agent._sessions.setdefault(sid, [])
+        await _create()
+        return {"session_id": sid}
+
+    @app.post("/sessions/{session_id}/append")
+    async def append_to_session_endpoint(session_id: str, request: Request):
+        """Append a user message directly to a session (no active request required)."""
+        logger = logging.getLogger(__name__)
+        try:
+            body = await request.json()
+            content = body.get('content')
+            if not content:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=400, detail="Missing 'content' in body")
+
+            logger.debug("Session append request for session_id=%s: %.120s", session_id, content)
+            success = await agent.append_to_session(session_id, content)
+            if not success:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            return {"status": "appended", "session_id": session_id}
+        except Exception as e:
+            logger.exception("Failed to append to session %s: %s", session_id, e)
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/status/stream")
     async def status_stream(

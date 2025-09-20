@@ -269,8 +269,9 @@
     const stopBtn = document.getElementById('stopBtn');
     const chatContainer = document.getElementById('chat');
 
-    // Track current request
+    // Track current request and session
     let currentRequestId = null;
+    let currentSessionId = null;
     let currentEventSource = null;
 
     if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {
@@ -328,13 +329,49 @@
       if (!task) return;
       addUser(chatContainer, task);
       taskInput.value = '';
+
+      // If there's an active request, append the user message to it
+      if (currentRequestId && currentEventSource) {
+        try {
+          // immediate UX feedback: show thinking block if none
+          const blk = addAssistantBlock(chatContainer);
+          runBtn.style.display = 'none';
+          stopBtn.style.display = 'block';
+
+          const resp = await fetch(`/events/${encodeURIComponent(currentRequestId)}/append`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: task })
+          });
+
+          if (!resp.ok) {
+            const txt = await resp.text();
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text error">Failed to append message: ${escapeHtml(txt)}</div>`;
+            // don't change current request state
+            return;
+          }
+
+          // appended successfully; the running agent will pick it up and continue
+          return;
+
+        } catch (err) {
+          console.error('Failed to append to active request:', err);
+          // fall through to starting a new request
+        }
+      }
+
+      // No active request: start a new SSE-based request
       const blk = addAssistantBlock(chatContainer);
       runBtn.style.display = 'none'; // Hide run button
       stopBtn.style.display = 'block'; // Show stop button
       currentRequestId = null; // Reset request ID
 
       let sseOk = false;
-      const es = new EventSource(`/events?task=${encodeURIComponent(task)}`);
+      const eventUrl = currentSessionId 
+        ? `/events?task=${encodeURIComponent(task)}&session_id=${encodeURIComponent(currentSessionId)}`
+        : `/events?task=${encodeURIComponent(task)}`;
+      const es = new EventSource(eventUrl);
       currentEventSource = es; // Track current event source
       let statusEs = null;
 
@@ -364,7 +401,8 @@
           switch (data.type) {
             case 'start':
               currentRequestId = data.request_id;
-              console.log('Request started with ID:', currentRequestId);
+              currentSessionId = data.session_id;
+              console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
               break;
             case 'cancelled':
               showSection(blk.t);

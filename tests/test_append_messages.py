@@ -1,0 +1,62 @@
+import pytest
+import uuid
+
+from agent_system.servers.agent.server import Agent
+from agent_system.mcp.base import MCPRegistry
+from agent_system.config.loader import load_config
+
+
+class DummyLLM:
+    async def chat(self, messages, tools_schema=None):
+        # Simulate LLM generating a plan and then a simple assistant response
+        # Return a planner-like response format
+        return {"assistant": {"content": "planner response", "tool_calls": []}, "usage": {"total_tokens": 10}}
+
+    async def chat_tools(self, messages, tools):
+        # Final answer
+        return {"assistant": {"content": "final response"}, "usage": {"total_tokens": 5}}
+
+
+@pytest.mark.asyncio
+async def test_append_message_consumed(tmp_path):
+    # Load default config
+    cfg = load_config("config/agent.yaml")
+    registry = MCPRegistry()
+    agent = Agent("test_agent", cfg, registry)
+    # Inject dummy LLM
+    agent.llm = DummyLLM()
+
+    task = "Initial task"
+    request_id = str(uuid.uuid4())
+
+    # Start run_events generator
+    gen = agent.run_events(task, request_id=request_id)
+
+    # Prime generator until start event
+    start_ev = await gen.__anext__()
+    assert start_ev["type"] == "start"
+    assert start_ev["request_id"] == request_id
+
+    # Append a user message
+    appended = await agent.append_user_message(request_id, "Follow-up question")
+    assert appended is True
+
+    # Let the generator run a few steps and capture events
+    found_appended = False
+    try:
+        async for ev in gen:
+            if ev.get("type") == "cancelled":
+                break
+            # after the planner run, agent._current_messages should include appended user message
+            if hasattr(agent, '_current_messages'):
+                msgs = agent._current_messages
+                for m in msgs:
+                    if getattr(m, 'content', None) and 'Follow-up question' in str(m.content):
+                        found_appended = True
+                        break
+            if ev.get("type") == "end":
+                break
+    except StopAsyncIteration:
+        pass
+
+    assert found_appended, "Appended message was not consumed by run_events"
