@@ -441,6 +441,12 @@ class Agent(MCPServer):
 
             executor = Executor(self.registry)
 
+            # Add safeguards against infinite loops
+            consecutive_no_tool_calls = 0
+            consecutive_empty_responses = 0
+            max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
+            max_consecutive_empty = 2    # Break after 2 consecutive empty responses
+
             for step in range(max_steps):
                 # Enhanced context management and token tracking
                 if self.context_manager:
@@ -564,6 +570,38 @@ class Agent(MCPServer):
 
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
+
+                # Track consecutive responses without progress to prevent infinite loops
+                if not tool_calls and not content:
+                    consecutive_empty_responses += 1
+                    consecutive_no_tool_calls += 1
+                    logger.warning("LLM returned empty response (step %d), consecutive empty: %d", 
+                                 step + 1, consecutive_empty_responses)
+                elif not tool_calls:
+                    consecutive_no_tool_calls += 1
+                    consecutive_empty_responses = 0  # Reset empty counter if we have content
+                    logger.debug("LLM returned content without tool calls (step %d), consecutive no-tools: %d", 
+                               step + 1, consecutive_no_tool_calls)
+                else:
+                    # Reset counters when we get tool calls (making progress)
+                    consecutive_no_tool_calls = 0
+                    consecutive_empty_responses = 0
+
+                # Emergency break conditions to prevent infinite loops
+                if consecutive_empty_responses >= max_consecutive_empty:
+                    logger.warning("Breaking agent loop: %d consecutive empty responses", consecutive_empty_responses)
+                    results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses")
+                    break
+                
+                if consecutive_no_tool_calls >= max_consecutive_no_tools:
+                    logger.warning("Breaking agent loop: %d consecutive responses without tool calls", consecutive_no_tool_calls)
+                    # If we have content in the last response, treat it as final
+                    if content:
+                        messages.append(ChatMessage(role="assistant", content=content or ""))
+                        results["summary"] = content
+                    else:
+                        results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls")
+                    break
 
                 # Execute ALL tool calls in parallel for better performance
                 if tool_calls:
@@ -974,6 +1012,12 @@ class Agent(MCPServer):
             results: Dict[str, Any] = {"task": task, "calls": []}
             executor = Executor(self.registry)
 
+            # Add safeguards against infinite loops
+            consecutive_no_tool_calls = 0
+            consecutive_empty_responses = 0
+            max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
+            max_consecutive_empty = 2    # Break after 2 consecutive empty responses
+
             for step in range(max_steps):
                 # Drain any appended user messages before each step
                 messages = await self._drain_appended_messages(request_id, messages)
@@ -1101,6 +1145,42 @@ class Agent(MCPServer):
 
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
+
+                # Track consecutive responses without progress to prevent infinite loops
+                if not tool_calls and not content:
+                    consecutive_empty_responses += 1
+                    consecutive_no_tool_calls += 1
+                    logger.warning("LLM returned empty response (step %d), consecutive empty: %d", 
+                                 step + 1, consecutive_empty_responses)
+                elif not tool_calls:
+                    consecutive_no_tool_calls += 1
+                    consecutive_empty_responses = 0  # Reset empty counter if we have content
+                    logger.debug("LLM returned content without tool calls (step %d), consecutive no-tools: %d", 
+                               step + 1, consecutive_no_tool_calls)
+                else:
+                    # Reset counters when we get tool calls (making progress)
+                    consecutive_no_tool_calls = 0
+                    consecutive_empty_responses = 0
+
+                # Emergency break conditions to prevent infinite loops
+                if consecutive_empty_responses >= max_consecutive_empty:
+                    logger.warning("Breaking agent loop: %d consecutive empty responses", consecutive_empty_responses)
+                    results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses")
+                    yield {"type": "error", "message": f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses"}
+                    break
+                
+                if consecutive_no_tool_calls >= max_consecutive_no_tools:
+                    logger.warning("Breaking agent loop: %d consecutive responses without tool calls", consecutive_no_tool_calls)
+                    # If we have content in the last response, treat it as final
+                    if content:
+                        messages.append(ChatMessage(role="assistant", content=content or ""))
+                        results["summary"] = content
+                        self._current_messages = messages.copy()
+                        yield {"type": "final", "summary": content}
+                    else:
+                        results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls")
+                        yield {"type": "error", "message": f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls"}
+                    break
 
                 # Execute ALL tool calls with immediate streaming
                 if tool_calls:
