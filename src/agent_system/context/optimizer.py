@@ -101,10 +101,10 @@ class TokenOptimizer:
         # Compute token delta and decide whether to accept the optimized batch.
         tokens_saved = total_original_tokens - total_optimized_tokens
 
-        # If there is no net savings across the whole batch, avoid applying
-        # this optimization (it may improve some messages while worsening others
-        # due to estimator variation). Return originals to avoid growing token counts.
-        if tokens_saved <= 0:
+        # If the optimization resulted in negative savings (worse overall), avoid
+        # applying and emit a suppressed completion icon. Zero savings is neutral
+        # and should be treated as a completed run (show success).
+        if tokens_saved < 0:
             # Record last run metadata (no savings)
             try:
                 self._last_run_time = time.time()
@@ -124,29 +124,30 @@ class TokenOptimizer:
             logger.debug("⚠️  Token optimization produced no net savings: %d → %d (saved %d)",
                          total_original_tokens, total_optimized_tokens, tokens_saved)
 
-            # Publish an end event indicating no savings and suppress completion icon
+            # Publish an error-level event to indicate negative savings so UI marks it as failed
             meta = {
                 "original_tokens": total_original_tokens,
                 "optimized_tokens": total_optimized_tokens,
                 "tokens_saved": tokens_saved,
                 "compression_ratio": ratio,
                 "messages_processed": len(messages),
-                "suppress_completion_icon": True,
             }
             await publish_status(
                 server="token-optimizer",
-                message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-                phase=PHASE_END,
+                message=f"Optimization degraded token usage: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
+                phase=PHASE_ERROR,
+                level="error",
                 meta=meta
             )
 
             # Return original messages to keep behavior safe and non-regressive
             return messages
 
-        # Otherwise we have net positive savings; update stats and accept optimized batch
+        # Otherwise we have net zero or positive savings; update stats and accept optimized batch
         self.compression_stats["messages_processed"] += len(messages)
-        # Only accumulate positive tokens saved
-        self.compression_stats["tokens_saved"] += int(tokens_saved)
+        # Only accumulate positive tokens_saved into aggregate stats
+        if tokens_saved > 0:
+            self.compression_stats["tokens_saved"] += int(tokens_saved)
 
         # Record last run metadata
         try:
@@ -186,9 +187,8 @@ class TokenOptimizer:
             "compression_ratio": ratio,
             "messages_processed": len(messages),
         }
-        # Only suppress the completion icon when no tokens were saved
-        if int(tokens_saved) == 0:
-            meta["suppress_completion_icon"] = True
+        # Do not suppress the completion icon for zero-savings runs; only negative
+        # savings should suppress the completion indicator.
 
         await publish_status(
             server="token-optimizer",
