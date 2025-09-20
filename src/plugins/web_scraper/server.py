@@ -137,23 +137,51 @@ class WebScraperServer(MCPServer):
             content_type: str = ""
             try:
                 import httpx  # type: ignore
+                from httpx import ReadTimeout, RequestError
                 async with httpx.AsyncClient(
                     follow_redirects=True,
                     verify=self.ssl_verify,
                     headers={"User-Agent": user_agent},
                     timeout=timeout,
                 ) as client:
-                    resp = await client.get(target_url)
-                    status_code = resp.status_code
-                    final_url = str(resp.url)
-                    content_type = resp.headers.get("content-type", "").lower()
-                    
-                    # Check if content is actually HTML/text before processing
-                    if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]):
-                        html = resp.text or ""
-                    else:
-                        # Non-HTML content detected
-                        html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
+                    try:
+                        resp = await client.get(target_url)
+                        status_code = resp.status_code
+                        final_url = str(resp.url)
+                        content_type = resp.headers.get("content-type", "").lower()
+
+                        # Check if content is actually HTML/text before processing
+                        if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]):
+                            html = resp.text or ""
+                        else:
+                            # Non-HTML content detected
+                            html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
+                    except ReadTimeout:
+                        try:
+                            await publish_status(
+                                self.name,
+                                f"Timeout fetching {target_url}",
+                                request_id=request_id,
+                                level="error",
+                                phase=PHASE_ERROR,
+                                meta={"error": "read_timeout", "timeout": timeout},
+                            )
+                        except Exception:
+                            pass
+                        return "", 0, target_url, ""
+                    except RequestError as err:
+                        try:
+                            await publish_status(
+                                self.name,
+                                f"Request error fetching {target_url}: {err}",
+                                request_id=request_id,
+                                level="error",
+                                phase=PHASE_ERROR,
+                                meta={"error": str(err)},
+                            )
+                        except Exception:
+                            pass
+                        return "", 0, target_url, ""
             except Exception:
                 # Fallback sync approach
                 import ssl
