@@ -5,6 +5,7 @@ Combines DuckDuckGo search with web scraping capabilities.
 from __future__ import annotations
 
 import logging
+import asyncio
 from typing import Any, Dict
 from pathlib import Path
 
@@ -183,6 +184,8 @@ class WebResearchAgent(Agent):
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish start status: {e}")
+                    # Yield to the event loop so subscribers can receive the start event
+                    await asyncio.sleep(0)
 
                 elif event_type == "thinking":
                     # Track LLM conversation activity
@@ -217,6 +220,7 @@ class WebResearchAgent(Agent):
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish mcp_call status: {e}")
+                    await asyncio.sleep(0)
 
                     # Store tool calls in results - convert to expected format
                     if "calls" not in results:
@@ -239,6 +243,7 @@ class WebResearchAgent(Agent):
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish mcp_result status: {e}")
+                    await asyncio.sleep(0)
 
                 elif event_type == "final":
                     results["summary"] = event.get("summary", "")
@@ -251,6 +256,7 @@ class WebResearchAgent(Agent):
                         )
                     except Exception as e:
                         logger.warning(f"Failed to publish final status: {e}")
+                    await asyncio.sleep(0)
 
                     # Final agent tracking update
                     try:
@@ -286,9 +292,11 @@ class WebResearchAgent(Agent):
                         )
                     except Exception:
                         pass
+                    await asyncio.sleep(0)
                     raise Exception(error_msg)
 
                 elif event_type == "end":
+                    await asyncio.sleep(0)
                     break
 
             return results

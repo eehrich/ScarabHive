@@ -3,6 +3,7 @@
 import logging
 import re
 import json
+import asyncio
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
 from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
@@ -60,6 +61,8 @@ class TokenOptimizer:
             phase=PHASE_START,
             meta={"message_count": len(messages)}
         )
+        # Yield control to the event loop so async subscribers can receive the start event
+        await asyncio.sleep(0)
             
         logger.debug("🔧 Starting token optimization for %d messages...", len(messages))
         
@@ -86,6 +89,12 @@ class TokenOptimizer:
                         phase=PHASE_PROGRESS,
                         meta={"processed": i + 1, "total": len(messages)}
                     )
+                    # Allow the event loop a chance to process status subscribers
+                    await asyncio.sleep(0)
+                else:
+                    # For smaller batches, yield occasionally to avoid starving the loop
+                    if (i % 5) == 0:
+                        await asyncio.sleep(0)
         except Exception as e:
             await publish_status(
                 server="token-optimizer",
