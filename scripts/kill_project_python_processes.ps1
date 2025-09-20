@@ -16,7 +16,7 @@ param(
     [switch]$Force
 )
 
-function Get-ProjectPythonPids($repoRoot) {
+function Get-ProjectPythonProcessIds($repoRoot) {
     $candidates = @()
     try {
         $procs = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match 'python(\.exe|w\.exe)?' }
@@ -36,7 +36,7 @@ function Get-ProjectPythonPids($repoRoot) {
     return $candidates
 }
 
-$candidates = Get-ProjectPythonPids $RepoRoot
+$candidates = Get-ProjectPythonProcessIds $RepoRoot
 if (-not $candidates -or $candidates.Count -eq 0) {
     Write-Host "No project-related python processes found." -ForegroundColor Green
     exit 0
