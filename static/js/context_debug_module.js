@@ -16,6 +16,15 @@ window.AgentSystem.ContextDebug = {
       <label>
         <input type="checkbox" id="contextAutoRefresh" checked> Auto-refresh (5s)
       </label>
+      <label style="margin-left:12px; display:inline-flex; align-items:center; gap:6px;">
+        <input type="text" id="forceSessionId" placeholder="session id (optional)" style="width:220px;" />
+        <button id="forceOptimizeBtn" class="icon-btn" title="Force optimize/summarize now">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="18" height="18">
+            <path d="M12 6v6l4 2" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </label>
       <button id="contextRefreshBtn" class="icon-btn" title="Refresh now">
         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -101,6 +110,15 @@ window.AgentSystem.ContextDebug = {
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => {
         this.loadContextData();
+      });
+    }
+
+    const forceBtn = this.panel.querySelector('#forceOptimizeBtn');
+    const forceInput = this.panel.querySelector('#forceSessionId');
+    if (forceBtn) {
+      forceBtn.addEventListener('click', async () => {
+        const sid = forceInput && forceInput.value ? forceInput.value.trim() : null;
+        await this._forceOptimize(sid);
       });
     }
 
@@ -377,6 +395,31 @@ window.AgentSystem.ContextDebug = {
     } catch (error) {
       console.error('Failed to clear history:', error);
       alert('Failed to clear history: ' + error.message);
+    }
+  },
+
+  async _forceOptimize(session_id) {
+    // Removed interactive confirmation for force-optimize to save space and
+    // avoid accidental prompt dialogs. Caller can provide an optional
+    // session_id; when omitted the call will run globally across sessions.
+
+    try {
+  const url = session_id ? `/sessions/${encodeURIComponent(session_id)}/force_optimize` : '/sessions/force_optimize';
+      const resp = await fetch(url, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) {
+        alert('Force optimize failed: ' + (data.detail || data.error || JSON.stringify(data)));
+        return;
+      }
+
+      // Show a brief success message in the panel
+      const statsEl = this.panel.querySelector('#statsContent');
+      const prev = statsEl.innerHTML;
+      statsEl.innerHTML = `<div class="stat-group"><strong>Force optimize triggered</strong><div>Actions: ${JSON.stringify(data.actions || {})}</div></div>`;
+      setTimeout(() => { statsEl.innerHTML = prev; this.loadContextData(); }, 3000);
+    } catch (err) {
+      console.error('Force optimize failed:', err);
+      alert('Force optimize failed: ' + err.message);
     }
   },
 

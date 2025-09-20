@@ -322,6 +322,92 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post("/sessions/{session_id}/force_optimize")
+    async def force_optimize_session(session_id: str):
+        """Trigger the token optimizer / summarizer for a persisted session immediately."""
+        logger = logging.getLogger(__name__)
+        try:
+            # Ensure session exists
+            async with agent._request_lock:
+                if session_id not in agent._sessions:
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+            # Run optimizer and summarizer synchronously within event loop context
+            # Use agent.context_manager and agent.token_optimizer if available
+            # Return a summary of actions taken
+            actions = {"optimizer": False, "summarizer": False}
+
+            if getattr(agent, 'token_optimizer', None):
+                try:
+                    # token_optimizer.optimize_messages expects messages list; retrieve session messages
+                    async with agent._request_lock:
+                        msgs = list(agent._sessions.get(session_id, []))
+                    # Run optimizer
+                    new_msgs = await agent.token_optimizer.optimize_messages(msgs)
+                    # Persist optimized messages
+                    async with agent._request_lock:
+                        agent._sessions[session_id] = new_msgs
+                    actions['optimizer'] = True
+                except Exception as e:
+                    logger.exception("Failed to run token optimizer for session %s: %s", session_id, e)
+
+            if getattr(agent, 'context_manager', None):
+                try:
+                    async with agent._request_lock:
+                        msgs = list(agent._sessions.get(session_id, []))
+                    new_msgs = await agent.context_manager.manage_context(msgs)
+                    async with agent._request_lock:
+                        agent._sessions[session_id] = new_msgs
+                    actions['summarizer'] = True
+                except Exception as e:
+                    logger.exception("Failed to run summarizer for session %s: %s", session_id, e)
+
+            return {"status": "ok", "session_id": session_id, "actions": actions}
+        except Exception as e:
+            logger.exception("force_optimize_session failed for %s: %s", session_id, e)
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/sessions/force_optimize")
+    async def force_optimize_all_sessions():
+        """Trigger optimizer/summarizer for all persisted sessions."""
+        logger = logging.getLogger(__name__)
+        try:
+            results = {}
+            async with agent._request_lock:
+                sids = list(agent._sessions.keys())
+
+            for sid in sids:
+                actions = {"optimizer": False, "summarizer": False}
+                try:
+                    if getattr(agent, 'token_optimizer', None):
+                        msgs = list(agent._sessions.get(sid, []))
+                        new_msgs = await agent.token_optimizer.optimize_messages(msgs)
+                        async with agent._request_lock:
+                            agent._sessions[sid] = new_msgs
+                        actions['optimizer'] = True
+                except Exception as e:
+                    logger.debug("Optimizer failed for session %s: %s", sid, e)
+
+                try:
+                    if getattr(agent, 'context_manager', None):
+                        msgs = list(agent._sessions.get(sid, []))
+                        new_msgs = await agent.context_manager.manage_context(msgs)
+                        async with agent._request_lock:
+                            agent._sessions[sid] = new_msgs
+                        actions['summarizer'] = True
+                except Exception as e:
+                    logger.debug("Summarizer failed for session %s: %s", sid, e)
+
+                results[sid] = actions
+
+            return {"status": "ok", "results": results}
+        except Exception as e:
+            logger.exception("force_optimize_all_sessions failed: %s", e)
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=str(e))
+
     @app.get("/status/stream")
     async def status_stream(
         request: Request,

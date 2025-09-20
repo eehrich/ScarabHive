@@ -141,6 +141,28 @@
   margin-right: 8px;
 }
 
+/* Small icon-only button style used in header controls */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.icon-btn:hover {
+  background: rgba(255,255,255,0.02);
+  border-color: #2f3d4f;
+}
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
 #contextRefreshBtn svg,
 #contextClearBtn svg {
   width: 16px;
