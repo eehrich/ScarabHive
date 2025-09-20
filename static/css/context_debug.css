@@ -173,6 +173,26 @@
   stroke: #ef4444;
 }
 
+/* Compact session id display in header */
+.session-id-display {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid transparent;
+  color: #9ab;
+  font-size: 12px;
+  border-radius: 6px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+.session-id-display:hover {
+  border-color: #2f3d4f;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
   .context-metrics-summary {

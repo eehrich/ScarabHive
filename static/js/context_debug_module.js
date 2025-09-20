@@ -16,6 +16,7 @@ window.AgentSystem.ContextDebug = {
       <label>
         <input type="checkbox" id="contextAutoRefresh" checked> Auto-refresh (5s)
       </label>
+      <span id="currentSessionId" class="session-id-display" title="Current session id">--</span>
       <label style="margin-left:12px; display:inline-flex; align-items:center; gap:6px;">
         <input type="text" id="forceSessionId" placeholder="session id (optional)" style="width:220px;" />
         <button id="forceOptimizeBtn" class="icon-btn" title="Force optimize/summarize now">
@@ -156,6 +157,15 @@ window.AgentSystem.ContextDebug = {
       }
 
       this._updateMetrics(data.latest);
+      // Update the session id display if available
+      try {
+        const sidEl = this.panel.querySelector('#currentSessionId');
+        if (sidEl) {
+          sidEl.textContent = (data.latest && data.latest.session_id) ? data.latest.session_id : '--';
+        }
+      } catch (e) {
+        console.debug('Failed to update session id display', e);
+      }
       this._updateChart(data.recent_history);
       this._updateStatistics(data.statistics);
       this._updateAgentStats(data.agents);
