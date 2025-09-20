@@ -13,9 +13,16 @@ window.AgentSystem.ContextDebug = {
 
     // Create header with refresh controls
     const headerContent = `
-      <label>
-        <input type="checkbox" id="contextAutoRefresh" checked> Auto-refresh (5s)
-      </label>
+      <div style="display:inline-flex; align-items:center; gap:8px;">
+        <button id="contextAutoRefreshToggle" class="icon-btn" title="Toggle auto-refresh" aria-pressed="true" style="padding:6px;">
+          <!-- New icon: a play/pause circle to indicate on/off -->
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="10" stroke="#9ab" stroke-width="1.4" />
+            <path id="autoToggleIcon" d="M10 8v8l6-4-6-4z" fill="#9ab" />
+          </svg>
+        </button>
+        <input type="checkbox" id="contextAutoRefresh" checked style="display:none;" />
+      </div>
       <span id="currentSessionId" class="session-id-display" title="Current session id">--</span>
       <label style="margin-left:12px; display:inline-flex; align-items:center; gap:6px;">
         <input type="text" id="forceSessionId" placeholder="session id (optional)" style="width:220px;" />
@@ -86,7 +93,22 @@ window.AgentSystem.ContextDebug = {
     this.loadContextData();
 
     // Start auto-refresh if enabled
-    this._startAutoRefresh();
+    // sync toggle to checkbox state
+    try {
+      const cb = this.panel.querySelector('#contextAutoRefresh');
+        if (cb) {
+        const enabled = !!cb.checked;
+        const toggle = this.panel.querySelector('#contextAutoRefreshToggle');
+        if (toggle) toggle.classList.toggle('active', enabled);
+        // set aria-pressed and icon
+        try { if (toggle) toggle.setAttribute('aria-pressed', enabled ? 'true' : 'false'); } catch(e){}
+        const iconPath = this.panel.querySelector('#autoToggleIcon');
+        try { if (iconPath) iconPath.setAttribute('d', enabled ? 'M9 8h2v8H9V8zm4 0h2v8h-2V8z' : 'M10 8v8l6-4-6-4z'); } catch(e){}
+        if (enabled) this._startAutoRefresh();
+      } else {
+        this._startAutoRefresh();
+      }
+    } catch (e) { this._startAutoRefresh(); }
 
     this.isVisible = true;
   },
@@ -94,17 +116,40 @@ window.AgentSystem.ContextDebug = {
   _setupEventListeners: function() {
     if (!this.panel) return;
 
-    const autoRefreshCheckbox = this.panel.querySelector('#contextAutoRefresh');
+  const autoRefreshCheckbox = this.panel.querySelector('#contextAutoRefresh');
     const refreshBtn = this.panel.querySelector('#contextRefreshBtn');
     const clearBtn = this.panel.querySelector('#contextClearBtn');
+  const autoToggleBtn = this.panel.querySelector('#contextAutoRefreshToggle');
+  const autoLabel = this.panel.querySelector('#contextAutoRefreshLabel');
+
+    const setAutoState = (enabled) => {
+      try {
+        if (autoToggleBtn) {
+          autoToggleBtn.classList.toggle('active', enabled);
+          autoToggleBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+          // swap the icon to a pause (two bars) when enabled
+          const iconPath = this.panel.querySelector('#autoToggleIcon');
+          if (iconPath) {
+            if (enabled) {
+              iconPath.setAttribute('d', 'M9 8h2v8H9V8zm4 0h2v8h-2V8z');
+            } else {
+              iconPath.setAttribute('d', 'M10 8v8l6-4-6-4z');
+            }
+          }
+        }
+      } catch (e) {}
+      if (enabled) this._startAutoRefresh(); else this._stopAutoRefresh();
+    };
 
     if (autoRefreshCheckbox) {
-      autoRefreshCheckbox.addEventListener('change', (e) => {
-        if (e.target.checked) {
-          this._startAutoRefresh();
-        } else {
-          this._stopAutoRefresh();
-        }
+      autoRefreshCheckbox.addEventListener('change', (e) => setAutoState(e.target.checked));
+    }
+
+    if (autoToggleBtn) {
+      autoToggleBtn.addEventListener('click', () => {
+        const current = !!(autoRefreshCheckbox && autoRefreshCheckbox.checked);
+        if (autoRefreshCheckbox) autoRefreshCheckbox.checked = !current;
+        setAutoState(!current);
       });
     }
 

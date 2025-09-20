@@ -141,18 +141,10 @@
   margin-right: 8px;
 }
 
-/* Small icon-only button style used in header controls */
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-
-/* Auto-refresh toggle active state */
-.icon-btn.active {
-  background-color: #ef4444; /* red */
-  border-radius: 6px;
-  color: #fff;
-}
   width: 34px;
   height: 34px;
   padding: 4px;
@@ -160,6 +152,18 @@
   border: 1px solid transparent;
   border-radius: 6px;
   cursor: pointer;
+}
+/* Auto-refresh toggle active state */
+.icon-btn.active {
+  background-color: #ef4444 !important; /* red */
+  border-color: #b91c1c !important;
+  color: #fff !important;
+}
+.icon-btn.active svg,
+.icon-btn.active svg path,
+.icon-btn.active svg circle {
+  stroke: #fff !important;
+  fill: #fff !important;
 }
 .icon-btn:hover {
   background: rgba(255,255,255,0.02);
