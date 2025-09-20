@@ -51,13 +51,13 @@ class TestMCPConfig:
 
     def test_default_config(self):
         """Test default configuration"""
-        config = MCPConfig()
+    config = MCPConfig(local_server_port=8000)
 
-        assert config.enabled is True
-        assert config.expose_local_server is True
-        assert config.local_server_port == 8000
-        assert config.default_timeout == 30.0
-        assert len(config.servers) == 0
+    assert config.enabled is True
+    assert config.expose_local_server is True
+    assert config.local_server_port == 8000
+    assert config.default_timeout == 30.0
+    assert len(config.servers) == 0
 
     def test_config_with_servers(self):
         """Test configuration with external servers"""

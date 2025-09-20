@@ -852,6 +852,12 @@ class Agent(MCPServer):
 
             logger = logging.getLogger(__name__)
 
+            # If no LLM is configured, emit an immediate error event and end the stream
+            if self.llm is None:
+                yield {"type": "error", "message": "No LLM available; agent requires an LLM to run", "request_id": request_id}
+                yield {"type": "end"}
+                return
+
             # Initialize MCP integration tracking
             mcp_integration = None
             mcp_initialized_locally = False
@@ -1293,7 +1299,7 @@ class Agent(MCPServer):
                 
                 # Persist session messages and keep the request->session mapping for a while
                 sid = self._request_to_session.get(request_id)
-                if sid and messages:
+                if sid and 'messages' in locals() and messages:
                     try:
                         # Filter out system messages - only persist conversation history
                         conversation_msgs = [msg for msg in messages if msg.role != "system"]

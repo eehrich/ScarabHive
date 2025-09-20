@@ -22,7 +22,7 @@ def mock_comprehensive_config():
         'config_file': 'config/mcp.yaml',
         'enabled': True,
         'expose_local_server': True,
-        'local_server_port': 8000,
+    'local_server_port': 8000,
         'local_server_host': 'localhost',
         'default_timeout': 30.0,
         'max_concurrent_requests': 10,

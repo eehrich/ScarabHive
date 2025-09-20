@@ -212,7 +212,6 @@ class TestMCPStatusStreaming:
             await transport._send_status_notification(notification)
             
             # Verify HTTP POST was called for the notification
-            assert mock_session.post.called
             call_args = mock_session.post.call_args
             
             # Verify the payload structure

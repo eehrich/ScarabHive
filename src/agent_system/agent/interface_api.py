@@ -24,7 +24,7 @@ from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 from ..llm.clients import ChatMessage
-from ..mcp.status import status_bus, StatusEvent, get_status_metrics, publish_status
+from ..mcp.status import status_bus, StatusEvent, get_status_metrics, publish_status, PHASE_START, PHASE_END
 from ..mcp.integration import initialize_mcp, shutdown_mcp
 
 
@@ -79,7 +79,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Do NOT read separate mcp.yaml files; all configuration should be
             # included via agent.yaml.
             try:
-                mcp_block = config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {})
+                # Accept either a pydantic model or a plain dict from load_config
+                if hasattr(config.mcp, "model_dump"):
+                    mcp_block = config.mcp.model_dump()
+                elif isinstance(config.mcp, dict):
+                    mcp_block = dict(config.mcp)
+                else:
+                    mcp_block = getattr(config.mcp, "__dict__", {})
 
                 # Add global network settings to MCP config
                 if not mcp_block.get('connection'):
@@ -95,8 +101,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 mcp_block = getattr(config.mcp, "__dict__", {})
                 logger.warning("Failed to get MCP config with model_dump, using __dict__")
 
-            mcp_integration = await initialize_mcp({"mcp": mcp_block}, app)
+            # Ensure we pass a top-level dict that contains 'mcp' key as expected
+            payload = mcp_block if (isinstance(mcp_block, dict) and 'mcp' in mcp_block) else {"mcp": mcp_block}
+            mcp_integration = await initialize_mcp(payload, app)
+            # Ensure configured_external_servers includes any entries provided by the
+            # app-level config. Merge and override existing entries so per-app
+            # configuration takes precedence during TestClient lifespan.
+            try:
+                if isinstance(mcp_block, dict):
+                    ext = mcp_block.get('external_servers') or mcp_block.get('mcp', {}).get('external_servers', {})
+                    if ext:
+                        try:
+                            merged = dict(getattr(mcp_integration, 'configured_external_servers', {}) or {})
+                            # provided app config should override existing entries
+                            merged.update(ext)
+                            mcp_integration.configured_external_servers = merged
+                        except Exception:
+                            mcp_integration.configured_external_servers = dict(ext)
+            except Exception:
+                # Non-fatal; proceed without raising to keep startup resilient
+                pass
             _mcp_integration = mcp_integration  # Store the initialized instance globally
+            try:
+                # Mirror the app-bound instance into the mcp.integration module
+                from ..mcp import integration as _mcp_mod
+                _mcp_mod.mcp_integration = mcp_integration
+            except Exception:
+                # Non-fatal if this can't be done (tests will still work via returned instance)
+                pass
             logger.info("MCP integration initialized for API")
         except Exception as e:
             logger.exception("Failed to initialize MCP integration for API: %s", e)
@@ -356,7 +388,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 try:
                     async with agent._request_lock:
                         msgs = list(agent._sessions.get(session_id, []))
-                    new_msgs = await agent.context_manager.manage_context(msgs)
+                    cm = agent.context_manager
+                    # If a dedicated summarizer is available, run a forced summarization
+                    if getattr(cm, '_summarizer', None):
+                        try:
+                            await publish_status(server="context-manager", message="🔧 Force summarization requested", phase=PHASE_START, meta={"session_id": session_id})
+                        except Exception:
+                            pass
+                        new_msgs = await cm._summarize_conversation(msgs)
+                        try:
+                            await publish_status(server="context-manager", message="🔧 Force summarization complete", phase=PHASE_END, meta={"session_id": session_id})
+                        except Exception:
+                            pass
+                    else:
+                        # No dedicated summarizer; fall back to normal management which may or may not summarize
+                        new_msgs = await cm.manage_context(msgs)
+
                     async with agent._request_lock:
                         agent._sessions[session_id] = new_msgs
                     actions['summarizer'] = True
@@ -392,8 +439,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 try:
                     if getattr(agent, 'context_manager', None):
+                        cm = agent.context_manager
                         msgs = list(agent._sessions.get(sid, []))
-                        new_msgs = await agent.context_manager.manage_context(msgs)
+                        if getattr(cm, '_summarizer', None):
+                            try:
+                                await publish_status(server="context-manager", message=f"🔧 Force summarization requested (session {sid})", phase=PHASE_START, meta={"session_id": sid})
+                            except Exception:
+                                pass
+                            new_msgs = await cm._summarize_conversation(msgs)
+                            try:
+                                await publish_status(server="context-manager", message=f"🔧 Force summarization complete (session {sid})", phase=PHASE_END, meta={"session_id": sid})
+                            except Exception:
+                                pass
+                        else:
+                            new_msgs = await cm.manage_context(msgs)
+
                         async with agent._request_lock:
                             agent._sessions[sid] = new_msgs
                         actions['summarizer'] = True
@@ -670,12 +730,49 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             latest = tracker.get_latest()
             recent_history = tracker.get_history(last_n=100)  # Last 100 data points
 
+            
+
             # Get statistics for different time windows
             stats_1h = tracker.get_statistics(time_window_seconds=3600)  # Last hour
             stats_24h = tracker.get_statistics(time_window_seconds=86400)  # Last 24 hours
 
             # Get per-agent statistics
             agent_stats = get_all_agent_stats()
+
+            # If tracker has no snapshots yet, synthesize a 'latest' view from per-agent stats
+            if not latest:
+                try:
+                    total_tokens = 0
+                    total_messages = 0
+                    context_window = 0
+                    warning_level = None
+
+                    # agent_stats is expected to be a dict of agent_id -> stats dict
+                    for aid, a in (agent_stats or {}).items():
+                        try:
+                            total_tokens += int(a.get('current_tokens', 0) or 0)
+                            total_messages += int(a.get('message_count', 0) or 0)
+                            context_window = max(context_window, int(a.get('context_window', 0) or 0))
+                        except Exception:
+                            continue
+
+                    usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
+                    latest = {
+                        'timestamp': __import__('time').time(),
+                        'total_tokens': total_tokens,
+                        'user_tokens': 0,
+                        'assistant_tokens': 0,
+                        'tool_call_tokens': 0,
+                        'tool_result_tokens': 0,
+                        'system_tokens': 0,
+                        'message_count': total_messages,
+                        'context_window': context_window,
+                        'usage_percentage': usage_percentage,
+                        'warning_level': warning_level,
+                        'session_id': None
+                    }
+                except Exception:
+                    latest = None
 
             return {
                 "latest": latest,
@@ -1080,8 +1177,15 @@ def run() -> None:
 
     # Get server configuration
     host = os.getenv("HOST") or config.network.host or "127.0.0.1"
+    # Allow tests to override the server port explicitly via TEST_SERVER_PORT
+    # so they don't accidentally collide with a locally running production
+    # instance on the default port (8000).
+    test_port_env = os.getenv("TEST_SERVER_PORT")
     port_env = os.getenv("PORT")
-    port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
+    if test_port_env:
+        port = int(test_port_env)
+    else:
+        port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
 
     # Configure log level. Allow AGENT_LOG_LEVEL to override for the running
     # uvicorn process as well so console logging can be forced without editing
