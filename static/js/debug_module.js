@@ -68,7 +68,7 @@ window.AgentSystem.Debug = {
         
         <div class="debug-section">
           <h3>Current Messages</h3>
-          <div class="debug-messages" id="debugMessages" style="max-height: 400px; overflow-y: auto;">
+          <div class="debug-messages" id="debugMessages">
             <div class="metric-item">
               <span class="metric-label">Loading...</span>
             </div>

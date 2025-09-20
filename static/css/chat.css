@@ -56,6 +56,13 @@ form {
   gap: 8px;
   max-width: 980px;
   margin: 0 auto;
+  align-items: center;
+  position: relative;
+}
+
+/* Button Container - REMOVED, using direct positioning instead */
+.button-container {
+  display: none; /* Hide the container, position buttons directly */
 }
 
 /* Text Input */
@@ -73,19 +80,65 @@ input::placeholder {
   color: #64748b;
 }
 
-/* Submit Button */
-button {
+/* Submit Button (scoped to input bar) */
+.inputBar form button {
+  position: relative;
   background: #2563eb;
   color: white;
   border: none;
   padding: 10px 14px;
   border-radius: 10px;
   cursor: pointer;
+  transition: opacity 0.2s ease;
+  width: 80px;
+  height: 44px;
 }
 
-button:disabled {
+.inputBar form button:disabled {
   opacity: .6;
   cursor: not-allowed;
+}
+
+/* Stop Button */
+#stopBtn {
+  position: relative;
+  background: #dc2626;
+  color: white;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+  width: 80px;
+  height: 44px;
+}
+
+#stopBtn:hover {
+  background: #b91c1c;
+}
+
+#stopBtn:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Stop Button States */
+#stopBtn.cancelling {
+  background: #ea580c !important; /* Orange für "Cancelling..." */
+}
+
+#stopBtn.cancelled {
+  background: #16a34a !important; /* Grün für erfolgreiches Cancel */
+}
+
+#stopBtn.cancel-failed {
+  background: #dc2626 !important; /* Rot für fehlgeschlagenes Cancel */
+}
+
+/* Cancelled Response */
+.response-text.cancelled {
+  color: #f59e0b;
+  font-style: italic;
 }
 
 /* Typography in Response Content */
@@ -544,6 +597,39 @@ div .container-section .container-header .toggle-arrow {
   font-size: 15px;
   padding: 12px;
   background: #1a2332;
+}
+
+/* Debug messages area: allow it to grow inside the panel and scroll when needed */
+.debug-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+}
+
+.debug-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.debug-messages {
+  display: block;
+  overflow-y: auto;
+  max-height: none; /* remove fixed limit */
+  padding: 8px;
+  background: #0d141a;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+}
+
+.debug-message {
+  padding: 8px 10px;
+  border-bottom: 1px solid #16202b;
+}
+
+.debug-message:last-child {
+  border-bottom: none;
 }
 
 .container-section .response-text.error {

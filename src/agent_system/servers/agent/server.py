@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List
+import uuid
+from typing import Any, Dict, List, Optional
 
 from ...config.models import AgentConfig
 from ...mcp.base import MCPRegistry, MCPServer
@@ -197,27 +198,56 @@ class Agent(MCPServer):
             self._skip_optimizer_steps_after_context_mgmt = 0
 
             logger.info("Context management initialized - window: %d, summarization threshold: %d, prediction threshold: %.1f%%",
-                       context_window, self.context_config.summarization_threshold, self.context_config.prediction_threshold * 100)
+                      self.context_config.context_window,
+                      int(self.context_config.context_window * self.context_config.summarization_threshold),
+                      self.context_config.prediction_threshold * 100)
 
         except Exception as e:
-            logger.error("Failed to initialize context management: %s", e)
-            # Fallback to default configuration
-            from ...context.config import ContextConfig
-            self.context_config = ContextConfig()
+            logger.warning("Context management initialization failed: %s", e)
             self.context_manager = None
             self.token_optimizer = None
 
-            # Ensure optimizer-related attributes exist even on fallback
-            self._last_optimizer_tokens_snapshot = 0
-            self._last_optimizer_run_time = 0.0
-            self._optimizer_cooldown_seconds = 10.0  # Increased from 1.0 to 10.0 seconds
-            self._optimizer_min_increase_tokens = 200  # Increased threshold
-            self._skip_optimizer_steps_after_context_mgmt = 0
+        # Initialize request tracking for cancellation support
+        self._active_requests: Dict[str, asyncio.Event] = {}
+        self._request_lock = asyncio.Lock()
 
     @property
     def description(self) -> str:
         """Get the agent description."""
         return self.config.get("description", f"Agent: {self.name}")
+
+    async def cancel_request(self, request_id: str) -> bool:
+        """
+        Cancel an active request by setting its cancellation event.
+
+        Args:
+            request_id: The unique ID of the request to cancel
+
+        Returns:
+            True if the request was found and cancelled, False otherwise
+        """
+        async with self._request_lock:
+            if request_id in self._active_requests:
+                logger.info("Cancelling request %s", request_id)
+                self._active_requests[request_id].set()  # Set the event to signal cancellation
+                return True
+            else:
+                logger.warning("Request %s not found for cancellation", request_id)
+                return False
+
+    def _is_cancelled(self, request_id: Optional[str]) -> bool:
+        """
+        Check if a request has been cancelled.
+
+        Args:
+            request_id: The unique ID of the request to check
+
+        Returns:
+            True if the request has been cancelled, False otherwise
+        """
+        if request_id and request_id in self._active_requests:
+            return self._active_requests[request_id].is_set()
+        return False
 
     async def run(self, task: str) -> Dict[str, Any]:
         """
@@ -330,7 +360,7 @@ class Agent(MCPServer):
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
             executor = Executor(self.registry)
-            executor = Executor(self.registry)
+
             for step in range(max_steps):
                 # Enhanced context management and token tracking
                 if self.context_manager:
@@ -714,16 +744,19 @@ class Agent(MCPServer):
         estimated_tokens = total_chars // 4
         return estimated_tokens
 
-    async def run_events(self, task: str):
+    async def run_events(self, task: str, request_id: Optional[str] = None):
         """Run the agent and yield structured events for UI streaming."""
-        yield {"type": "start", "task": task}
+        # Generate request ID if not provided
+        if request_id is None:
+            request_id = str(uuid.uuid4())
 
-        if self.llm is None:
-            yield {"type": "error", "message": "No LLM available; agent requires an LLM to plan tool usage."}
-            yield {"type": "end"}
-            return
+        # Register this request for potential cancellation
+        async with self._request_lock:
+            self._active_requests[request_id] = asyncio.Event()
 
         try:
+            yield {"type": "start", "task": task, "request_id": request_id}
+
             logger = logging.getLogger(__name__)
 
             # Initialize MCP integration tracking
@@ -827,6 +860,13 @@ class Agent(MCPServer):
             executor = Executor(self.registry)
 
             for step in range(max_steps):
+                # Check for cancellation at the start of each step
+                if self._is_cancelled(request_id):
+                    logger.info("Request %s cancelled at step %d", request_id, step + 1)
+                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                    yield {"type": "end"}
+                    return
+
                 # Enhanced context management and token tracking
                 if self.context_manager:
                     # Apply token optimization with centralized guard to avoid repeated runs (events loop)
@@ -1127,6 +1167,12 @@ class Agent(MCPServer):
         except Exception as e:
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
         finally:
+            # Clean up request tracking
+            async with self._request_lock:
+                if request_id in self._active_requests:
+                    del self._active_requests[request_id]
+                    logger.debug("Cleaned up request tracking for %s", request_id)
+
             # Clean up MCP integration if we initialized it locally
             if 'mcp_initialized_locally' in locals() and mcp_initialized_locally and 'mcp_integration' in locals() and mcp_integration:
                 try:

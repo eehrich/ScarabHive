@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Callable
@@ -208,12 +209,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/events")
     async def events(task: str):
         logger = logging.getLogger(__name__)
-        logger.info("SSE /events connected, task=%s", task)
+        request_id = str(uuid.uuid4())
+        logger.info("SSE /events connected, task=%s, request_id=%s", task, request_id)
 
         async def event_stream():
             # Initial keep-alive line
             yield ":ok\n\n"
-            async for ev in agent.run_events(task):
+            async for ev in agent.run_events(task, request_id):
                 logger.debug("SSE event: %s", ev.get("type"))
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
@@ -222,6 +224,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/cancel/{request_id}")
+    async def cancel_request(request_id: str):
+        """Cancel an active request by its ID."""
+        logger = logging.getLogger(__name__)
+        logger.info("Cancel request received for request_id=%s", request_id)
+
+        success = await agent.cancel_request(request_id)
+        if success:
+            return {"status": "cancelled", "request_id": request_id}
+        else:
+            return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}
 
     @app.get("/status/stream")
     async def status_stream(

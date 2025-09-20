@@ -266,12 +266,61 @@
     const chatForm = document.getElementById('f');
     const taskInput = document.getElementById('task');
     const runBtn = document.getElementById('runBtn');
+    const stopBtn = document.getElementById('stopBtn');
     const chatContainer = document.getElementById('chat');
 
-    if (!chatForm || !taskInput || !runBtn || !chatContainer) {
+    // Track current request
+    let currentRequestId = null;
+    let currentEventSource = null;
+
+    if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {
       console.warn('Chat form elements not found');
       return;
     }
+
+    // Stop button event listener
+    stopBtn.addEventListener('click', async function() {
+      if (currentRequestId) {
+        // Sofortiges Feedback geben
+        stopBtn.textContent = 'Canceling';
+        stopBtn.disabled = true;
+        stopBtn.classList.add('cancelling');
+
+        try {
+          const response = await fetch(`/cancel/${currentRequestId}`, { method: 'POST' });
+          const result = await response.json();
+          console.log('Cancel request result:', result);
+
+          // Kurze Verzögerung für besseres UX-Feedback
+          setTimeout(() => {
+            if (result.status === 'cancelled') {
+              stopBtn.textContent = 'Done';
+              stopBtn.classList.remove('cancelling');
+              stopBtn.classList.add('cancelled');
+            } else {
+              stopBtn.textContent = 'Failed';
+              stopBtn.classList.remove('cancelling');
+              stopBtn.classList.add('cancel-failed');
+            }
+          }, 500);
+
+        } catch (error) {
+          console.error('Failed to cancel request:', error);
+          stopBtn.textContent = 'Failed';
+          stopBtn.classList.remove('cancelling');
+          stopBtn.classList.add('cancel-failed');
+        }
+
+        // Nach 2 Sekunden wieder zurücksetzen (falls Anfrage noch läuft)
+        setTimeout(() => {
+          if (stopBtn.style.display !== 'none') { // Nur zurücksetzen wenn Button noch sichtbar
+            stopBtn.textContent = 'Stop';
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+          }
+        }, 2000);
+      }
+    });
 
     chatForm.addEventListener('submit', async function(e) {
       e.preventDefault();
@@ -280,11 +329,18 @@
       addUser(chatContainer, task);
       taskInput.value = '';
       const blk = addAssistantBlock(chatContainer);
-      runBtn.disabled = true;
+      runBtn.style.display = 'none'; // Hide run button
+      stopBtn.style.display = 'block'; // Show stop button
+      currentRequestId = null; // Reset request ID
 
       let sseOk = false;
       const es = new EventSource(`/events?task=${encodeURIComponent(task)}`);
+      currentEventSource = es; // Track current event source
       let statusEs = null;
+
+      // Store current request ID and event source
+      currentRequestId = task;
+      currentEventSource = es;
 
       try {
         statusEs = new EventSource('/status/stream');
@@ -306,6 +362,14 @@
         try {
           const data = JSON.parse(ev.data);
           switch (data.type) {
+            case 'start':
+              currentRequestId = data.request_id;
+              console.log('Request started with ID:', currentRequestId);
+              break;
+            case 'cancelled':
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
+              break;
             case 'thinking':
               if (data.assistant) {
                 if (data.assistant.content) {
@@ -331,11 +395,28 @@
             case 'end':
               es.close();
               if (statusEs) statusEs.close();
-              runBtn.disabled = false;
+              runBtn.style.display = 'block'; // Show run button
+              stopBtn.style.display = 'none'; // Hide stop button
+              // Reset stop button state
+              stopBtn.textContent = 'Stop';
+              stopBtn.disabled = false;
+              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+              currentRequestId = null; // Reset request tracking
+              currentEventSource = null;
               break;
             case 'error':
               showSection(blk.t);
               blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
+              es.close();
+              if (statusEs) statusEs.close();
+              runBtn.style.display = 'block'; // Show run button
+              stopBtn.style.display = 'none'; // Hide stop button
+              // Reset stop button state
+              stopBtn.textContent = 'Stop';
+              stopBtn.disabled = false;
+              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+              currentRequestId = null; // Reset request tracking
+              currentEventSource = null;
               break;
           }
           scrollBottom();
@@ -357,7 +438,14 @@
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(e))}</div>`;
           }
-          runBtn.disabled = false;
+          runBtn.style.display = 'block'; // Show run button
+          stopBtn.style.display = 'none'; // Hide stop button
+          // Reset stop button state
+          stopBtn.textContent = 'Stop';
+          stopBtn.disabled = false;
+          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+          currentRequestId = null; // Reset request tracking
+          currentEventSource = null;
           es.close();
           if (statusEs) statusEs.close();
         }
@@ -366,7 +454,14 @@
       es.onerror = () => {
         es.close();
         if (statusEs) statusEs.close();
-        runBtn.disabled = false;
+        runBtn.style.display = 'block'; // Show run button
+        stopBtn.style.display = 'none'; // Hide stop button
+        // Reset stop button state
+        stopBtn.textContent = 'Stop';
+        stopBtn.disabled = false;
+        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+        currentRequestId = null; // Reset request tracking
+        currentEventSource = null;
       };
     });
   };
