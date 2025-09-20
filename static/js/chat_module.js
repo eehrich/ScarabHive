@@ -113,7 +113,7 @@
         <div class="container-header" data-toggle="status">
           <span class="toggle-arrow">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
           <span class="type-icon">
@@ -130,7 +130,7 @@
         <div class="container-header" data-toggle="response">
           <span class="toggle-arrow">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
           <span class="type-icon">
@@ -156,6 +156,7 @@
       const body = header.nextElementSibling;
       const arrow = header.querySelector('.toggle-arrow svg');
       if (body && arrow) {
+        // Right (0deg) when collapsed, down (90deg) when expanded
         arrow.style.transform = (body.style.display === 'none') ? 'rotate(0deg)' : 'rotate(90deg)';
       }
 
@@ -166,6 +167,7 @@
           body.style.display = isHidden ? 'block' : 'none';
           const arrow = header.querySelector('.toggle-arrow svg');
           if (arrow) {
+            // rotate to down when expanded
             arrow.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
           }
         }
