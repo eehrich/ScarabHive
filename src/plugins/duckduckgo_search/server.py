@@ -9,6 +9,7 @@ from agent_system.mcp.status import (
     publish_status,
     PHASE_START,
     PHASE_END,
+    PHASE_ERROR,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,18 +36,44 @@ class DuckDuckGoSearchServer(MCPServer):
                 raise RuntimeError("Install `ddgs` (preferred) or `duckduckgo-search` for duckduckgo_search server.") from e
 
             # Try search with error handling
+            # Publish start; ensure terminal event is sent regardless of failures
             try:
-                # publish start
                 try:
                     await publish_status(self.name, f"Searching: {query}", request_id=request_id, phase=PHASE_START)
                 except Exception:
                     pass
 
                 logger.debug("DuckDuckGo search: %s (max_results=%d)", query, max_results)
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=max_results))
-                logger.debug("DuckDuckGo search returned %d results", len(results))
-                # publish end
+                results = []
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(query, max_results=max_results))
+                    logger.debug("DuckDuckGo search returned %d results", len(results))
+                    return {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
+                except Exception as e:
+                    logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
+                    # publish error status
+                    try:
+                        await publish_status(
+                            self.name,
+                            f"Search failed: {str(e)}",
+                            request_id=request_id,
+                            phase=PHASE_ERROR,
+                            level="error",
+                            meta={"error": str(e)},
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "engine": "duckduckgo",
+                        "query": query,
+                        "results": [],
+                        "package": pkg,
+                        "error": f"Search failed: {str(e)}",
+                        "suggestion": "Try a different search query or use broader terms",
+                    }
+            finally:
+                # Always attempt to publish an END event to signal completion to subscribers.
                 try:
                     await publish_status(
                         self.name,
@@ -57,17 +84,6 @@ class DuckDuckGoSearchServer(MCPServer):
                     )
                 except Exception:
                     pass
-                return {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
-            except Exception as e:
-                logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
-                return {
-                    "engine": "duckduckgo",
-                    "query": query,
-                    "results": [],
-                    "package": pkg,
-                    "error": f"Search failed: {str(e)}",
-                    "suggestion": "Try a different search query or use broader terms",
-                }
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_schema(self) -> dict[str, Any]:

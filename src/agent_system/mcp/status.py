@@ -200,7 +200,9 @@ def _redact_meta(meta: Optional[dict], patterns: Iterable[re.Pattern], replaceme
 
 def _should_suppress(server: str, request_id: Optional[str], message: str) -> bool:
     """Return True if this event should be suppressed by rate limit or debounce."""
-    _metrics["publish_attempted"] += 1
+    # NOTE: publish_attempted is incremented by publish_status to ensure terminal
+    # events (PHASE_END/PHASE_ERROR) are accounted for even when suppression
+    # checks are bypassed.
 
     max_rps = _config_int("AGENT_STATUS_MAX_RPS", 0)
     if max_rps > 0:
@@ -292,8 +294,13 @@ async def publish_status(
             _metrics["redacted"] += c_msg + c_meta
 
     # Suppression checks (rate limit & debounce) AFTER redaction so matching doesn't leak originals
-    if _should_suppress(server, request_id, message):  # metrics updated inside
-        return
+    # Always allow terminal events (end/error) through so subscribers receive completion notices.
+    # Count this publish attempt for metrics
+    _metrics["publish_attempted"] += 1
+
+    if phase not in (PHASE_END, PHASE_ERROR):
+        if _should_suppress(server, request_id, message):
+            return
 
     event = StatusEvent(
         server=server,
