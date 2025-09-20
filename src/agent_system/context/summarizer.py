@@ -21,23 +21,58 @@ class ConversationSummarizer:
         self.llm_client = llm_client
     
     async def summarize_conversation(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
-        """Summarize older conversation while preserving recent messages."""
+        """Summarize older conversation while preserving recent messages.
+        
+        Smart summarization that:
+        1. Preserves existing summaries (doesn't re-summarize summaries)
+        2. Only summarizes actual conversation content
+        3. Maintains tool call/result integrity
+        """
         if len(messages) <= config.preserve_recent_messages:
             return messages
         
-        # Split messages into parts to summarize and parts to keep
-        preserve_count = config.preserve_recent_messages
-        to_preserve = messages[-preserve_count:]
-        to_summarize = messages[:-preserve_count]
+        # Find existing summaries and preserve them
+        existing_summaries = []
+        conversation_messages = []
         
-        # Always preserve system message if it exists
+        for msg in messages:
+            role = getattr(msg, 'role', None)
+            content = str(msg.content or '')
+            
+            if role == 'system' and '[CONVERSATION SUMMARY]' in content:
+                # This is an existing summary - preserve it
+                existing_summaries.append(msg)
+                logger.debug("🔒 Found existing summary to preserve (length: %d chars)", len(content))
+            else:
+                # This is actual conversation content
+                conversation_messages.append(msg)
+        
+        # If no new conversation content to summarize, return as-is
+        if len(conversation_messages) <= config.preserve_recent_messages:
+            logger.debug("📝 No new content to summarize after excluding existing summaries")
+            return messages
+        
+        # Split conversation messages into parts to summarize and parts to keep
+        preserve_count = config.preserve_recent_messages
+        to_preserve = conversation_messages[-preserve_count:]
+        to_summarize = conversation_messages[:-preserve_count]
+        
+        # Always preserve system message if it exists (but not summaries)
         system_msg = None
         if to_summarize and getattr(to_summarize[0], 'role', None) == 'system':
-            system_msg = to_summarize[0]
-            to_summarize = to_summarize[1:]
+            # Only preserve if it's not a summary
+            first_msg = to_summarize[0]
+            if '[CONVERSATION SUMMARY]' not in str(first_msg.content or ''):
+                system_msg = first_msg
+                to_summarize = to_summarize[1:]
         
         if not to_summarize:
-            result = [system_msg] + to_preserve if system_msg else to_preserve
+            # Build result: system + existing summaries + preserved conversation
+            result = []
+            if system_msg:
+                result.append(system_msg)
+            result.extend(existing_summaries)
+            result.extend(to_preserve)
             return result
 
         # Ensure we preserve assistant messages that triggered tool calls and their tool results
@@ -93,21 +128,24 @@ class ConversationSummarizer:
         # Create summary of older conversation
         summary_text = await self._create_summary(to_summarize, config)
         
-        # Build result with summary
+        # Build result with system message, existing summaries, new summary, and preserved messages
         result = []
         if system_msg:
             result.append(system_msg)
         
-        # Add summary as a system message
+        # Add existing summaries first (chronological order)
+        result.extend(existing_summaries)
+        
+        # Add new summary as a system message
         if summary_text:
             summary_msg = ChatMessage(
                 role="system",
                 content=f"[CONVERSATION SUMMARY] The following is a summary of earlier conversation:\n\n{summary_text}\n\n[END SUMMARY] Recent conversation continues below:"
             )
             result.append(summary_msg)
-            logger.debug("✅ Conversation summary created (length: %d characters)", len(summary_text))
+            logger.debug("✅ New conversation summary created (length: %d characters)", len(summary_text))
         else:
-            logger.warning("⚠️  Summary creation failed, proceeding without summary")
+            logger.warning("⚠️  Summary creation failed, proceeding without new summary")
         
         # Add preserved recent messages (with tool result truncation)
         truncated_preserved = self._truncate_tool_results(to_preserve, config)
@@ -115,18 +153,20 @@ class ConversationSummarizer:
         
         logger.debug("📊 Summarization complete:")
         logger.debug("   🗂️  Original messages: %d → Final messages: %d", 
-                   len(to_summarize) + len(to_preserve), len(result))
-        logger.debug("   📝 Summary included: %s", "Yes" if summary_text else "No")
+                   len(messages), len(result))
+        logger.debug("   📝 Existing summaries preserved: %d", len(existing_summaries))
+        logger.debug("   📝 New summary included: %s", "Yes" if summary_text else "No")
         
         # Publish completion status event
         await publish_status(
             server="conversation-summarizer",
-            message=f"✅ Summarization complete: {len(to_summarize) + len(to_preserve)}→{len(result)} messages",
+            message=f"✅ Summarization complete: {len(messages)}→{len(result)} messages",
             phase=PHASE_END,
             meta={
-                "original_messages": len(to_summarize) + len(to_preserve),
+                "original_messages": len(messages),
                 "final_messages": len(result),
-                "summary_included": bool(summary_text),
+                "existing_summaries": len(existing_summaries),
+                "new_summary_included": bool(summary_text),
                 "summary_length": len(summary_text) if summary_text else 0
             }
         )

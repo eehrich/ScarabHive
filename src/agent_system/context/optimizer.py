@@ -98,9 +98,56 @@ class TokenOptimizer:
             # Return original messages as fallback
             return messages
         
-        # Update stats
-        self.compression_stats["messages_processed"] += len(messages)
+        # Compute token delta and decide whether to accept the optimized batch.
         tokens_saved = total_original_tokens - total_optimized_tokens
+
+        # If there is no net savings across the whole batch, avoid applying
+        # this optimization (it may improve some messages while worsening others
+        # due to estimator variation). Return originals to avoid growing token counts.
+        if tokens_saved <= 0:
+            # Record last run metadata (no savings)
+            try:
+                self._last_run_time = time.time()
+                self._last_tokens_saved = int(tokens_saved)
+                self._last_input_fingerprint = input_fingerprint
+            except Exception:
+                pass
+
+            # Update message processed counter but do not add negative savings
+            self.compression_stats["messages_processed"] += len(messages)
+
+            # Compression ratio reflects no improvement (100% remaining)
+            ratio = 100.0 if total_original_tokens > 0 else 0.0
+            self.compression_stats["compression_ratio"] = ratio
+
+            # Log that optimization would not help overall
+            logger.debug("⚠️  Token optimization produced no net savings: %d → %d (saved %d)",
+                         total_original_tokens, total_optimized_tokens, tokens_saved)
+
+            # Publish an end event indicating no savings and suppress completion icon
+            meta = {
+                "original_tokens": total_original_tokens,
+                "optimized_tokens": total_optimized_tokens,
+                "tokens_saved": tokens_saved,
+                "compression_ratio": ratio,
+                "messages_processed": len(messages),
+                "suppress_completion_icon": True,
+            }
+            await publish_status(
+                server="token-optimizer",
+                message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
+                phase=PHASE_END,
+                meta=meta
+            )
+
+            # Return original messages to keep behavior safe and non-regressive
+            return messages
+
+        # Otherwise we have net positive savings; update stats and accept optimized batch
+        self.compression_stats["messages_processed"] += len(messages)
+        # Only accumulate positive tokens saved
+        self.compression_stats["tokens_saved"] += int(tokens_saved)
+
         # Record last run metadata
         try:
             self._last_run_time = time.time()
@@ -108,7 +155,6 @@ class TokenOptimizer:
             self._last_input_fingerprint = input_fingerprint
         except Exception:
             pass
-        self.compression_stats["tokens_saved"] += tokens_saved
 
         # Compute a safe compression ratio (avoid division by zero)
         if total_original_tokens > 0:

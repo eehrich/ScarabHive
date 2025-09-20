@@ -84,8 +84,12 @@ class TestContextStatusIntegration:
     async def test_summarizer_status_integration(self):
         """Test status events from summarizer integration."""
         
-        # Create manager with summarizer strategy
-        config = ContextConfig(strategy=ContextStrategy.SUMMARIZE_OLDEST)
+        # Create manager with summarizer strategy and low threshold for testing
+        config = ContextConfig(
+            context_window=1000,
+            strategy=ContextStrategy.SUMMARIZE_OLDEST,
+            summarization_threshold=800
+        )
         manager = ContextManager(config)
         
         # Mock summarizer

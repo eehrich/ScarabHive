@@ -37,19 +37,25 @@ class ContextManager:
         self._summarizer = summarizer
 
     def update_token_usage(self, usage_data: dict) -> None:
-        """Update actual token usage from LLM response."""
+        """Update current conversation token usage from LLM response.
+        
+        Note: This tracks the current conversation state, not session-wide accumulation.
+        Context management decisions should be based on the current conversation size,
+        not the total tokens used across all conversations in the session.
+        """
         if usage_data:
-            # Accumulate totals across calls so the manager reflects cumulative session usage
+            # Update with latest LLM call usage (represents current conversation state)
             total = usage_data.get('total_tokens', 0) or 0
             prompt = usage_data.get('prompt_tokens', 0) or 0
             completion = usage_data.get('completion_tokens', 0) or 0
 
-            self._actual_usage_stats['total_tokens'] = self._actual_usage_stats.get('total_tokens', 0) + total
-            self._actual_usage_stats['prompt_tokens'] = self._actual_usage_stats.get('prompt_tokens', 0) + prompt
-            self._actual_usage_stats['completion_tokens'] = self._actual_usage_stats.get('completion_tokens', 0) + completion
+            # Store current conversation token usage (not accumulated)
+            self._actual_usage_stats['total_tokens'] = total
+            self._actual_usage_stats['prompt_tokens'] = prompt
+            self._actual_usage_stats['completion_tokens'] = completion
             self._actual_usage_stats['last_call_tokens'] = total
-            logger.debug("Accumulated token usage updated by %d tokens", total)
-            logger.debug("Updated token usage: %s", self._actual_usage_stats)
+            logger.debug("Current conversation token usage: %d tokens", total)
+            logger.debug("Token usage breakdown: %s", self._actual_usage_stats)
 
     def get_usage_stats(self) -> dict:
         """Get current usage statistics for debugging."""
@@ -214,44 +220,57 @@ class ContextManager:
     def should_manage_context(self, current_tokens: int, current_level: Optional[WarningLevel]) -> bool:
         """Determine if context management action should be taken.
 
-        Cleaner dual-trigger strategy:
-        1. Prediction-based: trigger BEFORE LLM call if current + estimated_next > prediction_threshold
-        2. Actual usage-based: trigger AFTER LLM call if actual_total > summarization_threshold
-
-        Warning levels are for UI/logging only, not for triggering context management.
+        Primary trigger strategy: Use estimated token count of current messages.
+        Context management should trigger when the conversation (messages) gets too large,
+        not when session-wide accumulated tokens exceed thresholds.
+        
+        Triggers:
+        1. Current conversation tokens >= summarization threshold (primary trigger)
+        2. Prediction-based: estimated next tokens would exceed prediction threshold
+        3. Recent actual usage trigger: latest LLM call was expensive (proactive management)
+        4. Warning level escalation (ORANGE/RED levels)
         """
-        # Trigger 1: Prediction-based (90% of context window)
+        # Primary trigger: Current conversation size exceeds summarization threshold
+        summarization_threshold = self.config.get_summarization_threshold_tokens()
+        primary_trigger = current_tokens >= summarization_threshold
+
+        # Secondary trigger: Prediction-based (90% of context window)
         prediction_trigger = self.config.should_manage_context_prediction(current_tokens)
 
-        # Trigger 1b: Early summarization based on absolute summarization threshold
-        early_summarization_trigger = current_tokens >= self.config.get_summarization_threshold_tokens()
+        # Tertiary trigger: Recent actual usage exceeds threshold (proactive management)
+        # This handles cases where the last LLM call was expensive, indicating we should
+        # proactively manage context even if current estimated tokens are moderate
+        recent_usage = self._actual_usage_stats.get('last_call_tokens', 0)
+        actual_usage_trigger = self.config.should_manage_context_actual(recent_usage)
 
-        # Trigger 2: Actual usage-based (after LLM call, based on actual token usage)
-        actual_trigger = self.config.should_manage_context_actual(self._actual_usage_stats.get('total_tokens', 0))
-
-        # Also trigger if the current warning level is ORANGE or RED (escalation)
+        # Quaternary trigger: Warning level escalation (for UI responsiveness)
         level_trigger = current_level in (WarningLevel.ORANGE, WarningLevel.RED)
 
-        # Log trigger reasons for debugging (clearer logging)
+        # Log trigger reasons for debugging
         triggers_fired = []
+        if primary_trigger:
+            threshold_percent = (summarization_threshold / self.config.context_window) * 100
+            current_percent = (current_tokens / self.config.context_window) * 100
+            triggers_fired.append(f"CONVERSATION: {current_tokens:,} tokens ({current_percent:.1f}%) >= {summarization_threshold:,} threshold ({threshold_percent:.1f}%)")
+
         if prediction_trigger:
             pred_percent = (current_tokens / self.config.context_window) * 100
             pred_threshold_percent = self.config.prediction_threshold * 100
-            triggers_fired.append(f"PREDICTION: {current_tokens:,} tokens ({pred_percent:.1f}%) > {pred_threshold_percent:.1f}% threshold")
+            triggers_fired.append(f"PREDICTION: {current_tokens:,} tokens ({pred_percent:.1f}%) >= {pred_threshold_percent:.1f}% threshold")
 
-        if actual_trigger:
-            actual_tokens = self._actual_usage_stats.get('total_tokens', 0)
-            actual_threshold_tokens = self.config.get_summarization_threshold_tokens()
-            actual_threshold_percent = (actual_threshold_tokens / self.config.context_window) * 100
-            triggers_fired.append(f"ACTUAL: {actual_tokens:,} tokens > {actual_threshold_tokens:,} threshold ({actual_threshold_percent:.1f}%)")
+        if actual_usage_trigger:
+            triggers_fired.append(f"RECENT_USAGE: Last call used {recent_usage:,} tokens >= {summarization_threshold:,} threshold")
+
+        if level_trigger:
+            triggers_fired.append(f"WARNING_LEVEL: {current_level.value} level reached")
 
         if triggers_fired:
             logger.info("🔥 Context management triggered by: %s", " | ".join(triggers_fired))
         else:
-            logger.debug("✅ No context management triggers fired (current: %d tokens, actual: %d tokens)",
-                        current_tokens, self._actual_usage_stats.get('total_tokens', 0))
+            logger.debug("✅ No context management triggers fired (current: %d tokens, threshold: %d tokens)",
+                        current_tokens, summarization_threshold)
 
-        return prediction_trigger or actual_trigger or level_trigger or early_summarization_trigger
+        return primary_trigger or prediction_trigger or actual_usage_trigger or level_trigger
 
     async def manage_context(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Apply context management strategy to reduce token count."""
@@ -260,16 +279,23 @@ class ContextManager:
         # Determine current warning level for more informed trigger decisions
         current_level = self.config.get_current_warning_level(current_tokens)
 
-        # Use the combined trigger logic (prediction, actual usage, level, early summarization)
-        trigger = self.should_manage_context(current_tokens, current_level)
+        # Use the improved trigger logic (no forced triggers)
+        should_trigger = self.should_manage_context(current_tokens, current_level)
 
-        # If the configured strategy is summarization and a summarizer is attached,
-        # prefer running the summarizer path (integration tests expect this behavior).
-        if self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST and self._summarizer:
-            trigger = True
-
-        if not trigger:
+        if not should_trigger:
             return messages
+
+        # Check if we already have summaries to prevent re-summarizing summaries
+        has_existing_summary = any(
+            getattr(msg, 'role', None) == 'system' and 
+            msg.content and '[CONVERSATION SUMMARY]' in str(msg.content)
+            for msg in messages
+        )
+
+        if has_existing_summary and self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST:
+            logger.debug("🔄 Existing summary detected, skipping re-summarization to prevent loops")
+            # Use truncation as fallback to avoid infinite summarization loops
+            return self._truncate_oldest(messages)
 
         # Helper to safely publish status without letting failures bubble up
         async def _safe_publish(**kwargs):
