@@ -161,7 +161,13 @@ window.AgentSystem.ContextDebug = {
       try {
         const sidEl = this.panel.querySelector('#currentSessionId');
         if (sidEl) {
-          sidEl.textContent = (data.latest && data.latest.session_id) ? data.latest.session_id : '--';
+          // Prefer server-provided session id; fall back to the chat module's currentSessionId
+          let sid = (data.latest && data.latest.session_id) ? data.latest.session_id : null;
+          try {
+            if (!sid && window.chatModule && window.chatModule.currentSessionId) sid = window.chatModule.currentSessionId;
+          } catch(e) {}
+          try { if (!sid && window.currentSessionId) sid = window.currentSessionId; } catch(e) {}
+          sidEl.textContent = sid ? sid : '--';
         }
       } catch (e) {
         console.debug('Failed to update session id display', e);

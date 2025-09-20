@@ -272,6 +272,13 @@
     // Track current request and session
     let currentRequestId = null;
     let currentSessionId = null;
+    // Expose current session id for other modules (fallback for UI)
+    chatModule.getCurrentSessionId = function() { return currentSessionId; };
+    Object.defineProperty(chatModule, 'currentSessionId', {
+      get: function() { return currentSessionId; }
+    });
+    // Also export to global window for older modules
+    try { global.currentSessionId = currentSessionId; } catch (e) { /* ignore */ }
     let currentEventSource = null;
 
     if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {
@@ -402,6 +409,8 @@
             case 'start':
               currentRequestId = data.request_id;
               currentSessionId = data.session_id;
+              // update exported values
+              try { global.currentSessionId = currentSessionId; } catch (e) {}
               console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
               break;
             case 'cancelled':
