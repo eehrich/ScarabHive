@@ -23,7 +23,9 @@ async def test_server_with_connection():
         cwd=Path(__file__).parent.parent,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True
+        # Use bytes mode to avoid unicode decode errors in reader threads;
+        # decode with errors='replace' when reading output below.
+        text=False
     )
     
     # Wait for server to start with timeout and health check
@@ -32,7 +34,9 @@ async def test_server_with_connection():
     for i in range(start_timeout):
         if server_process.poll() is not None:
             logger.error(f"Server process exited early with code {server_process.returncode}")
-            stdout, stderr = server_process.communicate()
+            stdout_b, stderr_b = server_process.communicate()
+            stdout = stdout_b.decode(errors='replace') if isinstance(stdout_b, (bytes, bytearray)) else str(stdout_b)
+            stderr = stderr_b.decode(errors='replace') if isinstance(stderr_b, (bytes, bytearray)) else str(stderr_b)
             logger.error(f"Early exit stdout: {stdout}")
             logger.error(f"Early exit stderr: {stderr}")
             return False
@@ -110,7 +114,9 @@ async def test_server_with_connection():
         
         # Get the server output (only if process finished)
         try:
-            stdout, stderr = server_process.communicate(timeout=1)
+            stdout_b, stderr_b = server_process.communicate(timeout=1)
+            stdout = stdout_b.decode(errors='replace') if isinstance(stdout_b, (bytes, bytearray)) else str(stdout_b)
+            stderr = stderr_b.decode(errors='replace') if isinstance(stderr_b, (bytes, bytearray)) else str(stderr_b)
         except subprocess.TimeoutExpired:
             logger.warning("Timeout getting server output")
             stdout, stderr = "", ""

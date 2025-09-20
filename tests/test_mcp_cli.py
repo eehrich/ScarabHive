@@ -15,7 +15,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.weather",
             "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "Weather MCP Server" in result.stdout
@@ -28,7 +28,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.duckduckgo_search",
             "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "DuckDuckGo Search MCP Server" in result.stdout
@@ -40,7 +40,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.yahoo_finance",
             "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "Yahoo Finance MCP Server" in result.stdout
@@ -53,7 +53,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.twitter_search",
             "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "Twitter Search MCP Server" in result.stdout
@@ -66,7 +66,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.llm_router",
             "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "LLM Router MCP Server" in result.stdout
@@ -79,7 +79,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.google_search",
             "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "Google Search MCP Server" in result.stdout
@@ -93,7 +93,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.datetime",
             "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "DateTime MCP Server" in result.stdout
@@ -106,7 +106,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.weather",
             "--server", "--help"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+        ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
         assert "--server" in result.stdout
@@ -117,7 +117,7 @@ class TestMCPServerCLI:
         result = subprocess.run([
             sys.executable, "-m", "plugins.weather",
             "--invalid-argument"
-        ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+        ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode != 0
         assert "unrecognized arguments" in result.stderr or "error" in result.stderr.lower()
@@ -147,7 +147,7 @@ class TestMCPServerCLI:
 
             result = subprocess.run([
                 sys.executable, "-c", py
-            ], capture_output=True, text=True, timeout=30, cwd=Path(__file__).parent.parent)
+            ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
 
             assert result.returncode == 0, f"Failed to import {server} server"
             assert "OK" in result.stdout, f"Import test failed for {server}"

@@ -6,7 +6,7 @@ import yaml
 
 def run_cli(args):
     cmd = [sys.executable, "-m", "agent_system.cli"] + args
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
     return proc.returncode, proc.stdout, proc.stderr
 
 

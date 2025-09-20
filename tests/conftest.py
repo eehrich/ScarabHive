@@ -5,7 +5,38 @@ import subprocess
 import sys
 import time
 import signal
+import atexit
 from typing import List
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Hook that runs at the very end of pytest session."""
+    print("\n[conftest] pytest_sessionfinish: Final cleanup check...")
+    # Wait a bit longer for any processes to settle
+    time.sleep(2.0)
+    final_pids = _find_project_python_pids()
+    if final_pids:
+        print(f"[conftest] Final cleanup: found remaining processes {final_pids}")
+        _kill_pids(final_pids)
+        # Double-check after cleanup
+        time.sleep(1.0)
+        remaining = _find_project_python_pids()
+        if remaining:
+            print(f"[conftest] WARNING: Some processes still running after final cleanup: {remaining}")
+    else:
+        print("[conftest] Final cleanup: no remaining processes found")
+
+
+def _final_emergency_cleanup():
+    """Emergency cleanup function registered with atexit."""
+    emergency_pids = _find_project_python_pids()
+    if emergency_pids:
+        print(f"[conftest] Emergency cleanup: killing {emergency_pids}")
+        _kill_pids(emergency_pids)
+
+
+# Register emergency cleanup that runs when Python exits
+atexit.register(_final_emergency_cleanup)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -23,6 +54,9 @@ def set_test_server_port():
     s.close()
 
     os.environ.setdefault("TEST_SERVER_PORT", str(port))
+    # Ensure subprocesses and Python child processes use UTF-8 and replace undecodable bytes
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8:replace")
     # Expose to pytest (optional)
     yield port
 
@@ -42,37 +76,55 @@ def _find_project_python_pids() -> List[int]:
     matches: List[int] = []
 
     if _is_windows():
+        # Use PowerShell Get-CimInstance as primary method (more reliable than wmic)
         try:
+            repo_lower = repo_root.lower().replace('\\', '\\\\')
+            ps_script = f'''
+            Get-CimInstance Win32_Process | Where-Object {{ $_.Name -match "python(\\.exe|w\\.exe)?" }} | 
+            ForEach-Object {{ 
+                $cmd = $_.CommandLine; 
+                if ($cmd) {{ 
+                    $lc = $cmd.ToLower(); 
+                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.agent.interface_api*" -or $lc -like "*agent_system*") {{ 
+                        Write-Output $_.ProcessId 
+                    }} 
+                }} 
+            }}
+            '''
             out = subprocess.check_output([
-                "wmic",
-                "process",
-                "where",
-                "name like '%python%'",
-                "get",
-                "ProcessId,Name,CommandLine",
-                "/format:list",
-            ], stderr=subprocess.DEVNULL, text=True)
-        except Exception:
-            return matches
-
-        # wmic outputs blocks like "CommandLine=...\nName=python.exe\nProcessId=12345\n"
-        blocks = [b for b in out.split("\n\n") if b.strip()]
-        for b in blocks:
-            pid = None
-            cmd = ""
-            for line in b.splitlines():
-                if line.startswith("ProcessId="):
+                "powershell", "-NoProfile", "-Command", ps_script
+            ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+            
+            for line in out.strip().splitlines():
+                if line.strip():
                     try:
-                        pid = int(line.split("=", 1)[1].strip())
-                    except Exception:
-                        pid = None
-                elif line.startswith("CommandLine="):
-                    cmd = line.split("=", 1)[1].strip().strip('"')
-
-            if pid and cmd:
-                low = cmd.lower()
-                if repo_root.lower() in low or "-m agent_system.agent.interface_api" in low or ".venv\\" in low:
-                    matches.append(pid)
+                        matches.append(int(line.strip()))
+                    except ValueError:
+                        pass
+        except Exception:
+            # Fallback to simpler tasklist approach
+            try:
+                # Get all python processes and their command lines
+                out = subprocess.check_output([
+                    "powershell", "-NoProfile", "-Command",
+                    '''Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object { 
+                        try { 
+                            $cmdline = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine;
+                            if ($cmdline -and ($cmdline.ToLower() -like "*agent_system*" -or $cmdline.ToLower() -like "*interface_api*" -or $cmdline.ToLower() -like "*.venv\\*")) {
+                                Write-Output $_.Id
+                            }
+                        } catch { }
+                    }'''
+                ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+                
+                for line in out.strip().splitlines():
+                    if line.strip():
+                        try:
+                            matches.append(int(line.strip()))
+                        except ValueError:
+                            pass
+            except Exception:
+                pass
 
     else:
         # POSIX: use ps
@@ -97,23 +149,76 @@ def _find_project_python_pids() -> List[int]:
 
 
 def _kill_pids(pids: List[int]) -> None:
+    """Kill processes with retry logic and proper waiting."""
     if not pids:
         return
+    
+    print(f"[conftest] Attempting to kill PIDs: {pids}")
+    
     if _is_windows():
         for pid in pids:
             try:
-                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # Use taskkill with force and tree kill options
+                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"], 
+                             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 pass
     else:
+        # First try graceful SIGTERM
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGTERM)
             except Exception:
+                pass
+        
+        # Wait a bit for graceful shutdown
+        time.sleep(1.0)
+        
+        # Force kill any remaining processes
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+    
+    # Wait for processes to actually terminate
+    time.sleep(1.5)
+    
+    # Verify cleanup worked and retry if needed
+    remaining = []
+    for pid in pids:
+        try:
+            if _is_windows():
+                # Check if process still exists on Windows
+                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], 
+                                      capture_output=True, text=True)
+                if result.stdout and str(pid) in result.stdout:
+                    remaining.append(pid)
+            else:
+                # Check if process still exists on Unix
+                os.kill(pid, 0)  # This will raise OSError if process doesn't exist
+                remaining.append(pid)
+        except (OSError, subprocess.CalledProcessError):
+            # Process doesn't exist anymore, good
+            pass
+    
+    if remaining:
+        print(f"[conftest] Retrying cleanup for remaining PIDs: {remaining}")
+        # One more aggressive attempt
+        if _is_windows():
+            for pid in remaining:
+                try:
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"], 
+                                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+        else:
+            for pid in remaining:
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except Exception:
                     pass
+        time.sleep(1.0)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -130,13 +235,23 @@ def ensure_test_servers_terminated():
         print("[conftest] terminating pre-existing project python processes:", pre)
         _kill_pids(pre)
         # give OS a moment to settle
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     yield
 
-    # Post-test cleanup (best-effort)
-    post = _find_project_python_pids()
-    if post:
-        print("[conftest] terminating leftover project python processes:", post)
+    # Post-test cleanup (more aggressive)
+    print("[conftest] Starting post-test cleanup...")
+    for attempt in range(3):  # Multiple cleanup attempts
+        post = _find_project_python_pids()
+        if not post:
+            break
+        print(f"[conftest] Cleanup attempt {attempt + 1}: terminating leftover project python processes:", post)
         _kill_pids(post)
-        time.sleep(0.3)
+        time.sleep(1.0)
+    
+    # Final check
+    final = _find_project_python_pids()
+    if final:
+        print(f"[conftest] WARNING: Some processes may still be running after cleanup: {final}")
+    else:
+        print("[conftest] All project processes successfully terminated")

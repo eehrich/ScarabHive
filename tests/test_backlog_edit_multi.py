@@ -7,7 +7,7 @@ BACKLOG_TEMPLATE = """# Backlog\n\n## 1. Epics - open\n\n- Epic 0001: Sample Epi
 
 def run(args, cwd):
     cmd = [PY, '-m', MOD] + args
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace')
 
 
 def test_edit_multi_ids_updates_tasks(tmp_path: pathlib.Path):

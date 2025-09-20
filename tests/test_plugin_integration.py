@@ -100,15 +100,26 @@ def run_cli_command(workspace_path: Path, command: List[str], env: Dict[str, str
         command[0] = python_exe
 
     # Change to workspace directory
-    result = subprocess.run(
+    completed = subprocess.run(
         command,
         cwd=workspace_path,
         env=cmd_env,
         capture_output=True,
-        text=True,
+        text=False,
         timeout=30
     )
-    return result
+
+    # Decode outputs safely to preserve previous callers expecting text
+    stdout = completed.stdout.decode(errors='replace') if isinstance(completed.stdout, (bytes, bytearray)) else (completed.stdout or "")
+    stderr = completed.stderr.decode(errors='replace') if isinstance(completed.stderr, (bytes, bytearray)) else (completed.stderr or "")
+
+    # Build a CompletedProcess-like result with decoded text
+    return subprocess.CompletedProcess(
+        args=completed.args,
+        returncode=completed.returncode,
+        stdout=stdout,
+        stderr=stderr
+    )
 
 
 class TestPluginDiscoveryIntegration:
@@ -301,7 +312,9 @@ class TestIndividualPluginClis:
         # Check if it's still running
         if proc.poll() is not None:
             # Server exited, check stderr for error message
-            stdout, stderr = proc.communicate()
+            stdout_b, stderr_b = proc.communicate()
+            stdout = stdout_b.decode(errors='replace') if isinstance(stdout_b, (bytes, bytearray)) else str(stdout_b)
+            stderr = stderr_b.decode(errors='replace') if isinstance(stderr_b, (bytes, bytearray)) else str(stderr_b)
             pytest.fail(f"Server exited early with code {proc.returncode}. Stdout: {stdout}. Stderr: {stderr}")
 
         # Send SIGTERM to shut it down

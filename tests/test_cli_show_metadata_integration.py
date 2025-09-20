@@ -19,7 +19,7 @@ def test_cli_plugins_list_show_metadata(tmp_path, monkeypatch):
         "--show-metadata",
     ]
     # Use the repository root as cwd so discovery of filesystem plugins works
-    proc = subprocess.run(cmd, cwd=Path.cwd(), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=Path.cwd(), capture_output=True, text=True, encoding='utf-8', errors='replace')
     assert proc.returncode == 0, f"CLI failed: {proc.stderr}"
     out = proc.stdout.strip()
     data = json.loads(out)

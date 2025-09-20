@@ -16,7 +16,7 @@ def test_backlog_help_text_patterns_and_grouping(capfd):
     import subprocess
     # Use subprocess to capture help output without SystemExit
     result = subprocess.run([sys.executable, "-m", "scripts.backlog", "--help"], 
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding='utf-8', errors='replace')
     
     assert result.returncode == 0
     out = result.stdout
@@ -79,7 +79,7 @@ def test_backlog_help_text_patterns_and_grouping():
     """Test Task 9048: Enhanced Help Text Patterns and Task 9049: Command Grouping in Help"""
     # Use subprocess to capture help output without SystemExit
     result = subprocess.run([sys.executable, "-m", "scripts.backlog", "--help"], 
-                          capture_output=True, text=True, encoding='utf-8')
+                          capture_output=True, text=True, encoding='utf-8', errors='replace')
     
     assert result.returncode == 0
     out = result.stdout
@@ -134,7 +134,7 @@ def test_backlog_option_ordering_standardization():
     """Test Task 9047: Standardize Option Ordering"""
     # Use subprocess to capture help output without SystemExit
     result = subprocess.run([sys.executable, "-m", "scripts.backlog", "add-task", "--help"], 
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding='utf-8', errors='replace')
     
     assert result.returncode == 0
     out = result.stdout

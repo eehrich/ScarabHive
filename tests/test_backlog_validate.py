@@ -119,7 +119,7 @@ def test_cli_validate_success(tmp_path):
     result = subprocess.run([
         sys.executable, "-m", "scripts.backlog", "validate",
         "--file", str(backlog_file)
-    ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+  ], capture_output=True, text=True, encoding='utf-8', errors='replace', cwd=Path(__file__).parent.parent)
 
     assert result.returncode == 0
     assert "[SUCCESS] Backlog validation successful!" in result.stdout
@@ -160,7 +160,7 @@ def test_cli_validate_errors(tmp_path):
     result = subprocess.run([
         sys.executable, "-m", "scripts.backlog", "validate",
         "--file", str(backlog_file)
-    ], capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+  ], capture_output=True, text=True, encoding='utf-8', errors='replace', cwd=Path(__file__).parent.parent)
 
     assert result.returncode == 1
     assert "[ERROR] Validation failed" in result.stderr
