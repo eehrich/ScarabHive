@@ -7,7 +7,6 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent_system.servers.agent.server import Agent
-from agent_system.mcp.status import publish_status, PHASE_START, PHASE_PROGRESS
 
 logger = logging.getLogger(__name__)
 

@@ -24,11 +24,12 @@ from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 from ..llm.clients import ChatMessage
-from ..mcp.improved_status import improved_status_bus
-from ..mcp.status import StatusEvent, get_status_metrics
 from ..mcp.improved_status import (
+    improved_status_bus,
+    StatusEvent,
     publish_status_improved,
     StatusPhase,
+    get_status_metrics,
 )
 from ..mcp.integration import initialize_mcp, shutdown_mcp
 
@@ -256,7 +257,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             yield ":ok\n\n"
             async for ev in agent.run_events(task, request_id, session_id):
                 logger.debug("SSE event: %s", ev.get("type"))
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                try:
+                    # Ensure proper JSON serialization of any potential enum values
+                    if hasattr(ev, 'to_dict'):
+                        payload = ev.to_dict()
+                    else:
+                        payload = ev
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                except (TypeError, ValueError) as e:
+                    logger.error("Failed to serialize event %s: %s", ev, e)
+                    # Send an error event instead
+                    error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
+                    yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             event_stream(),

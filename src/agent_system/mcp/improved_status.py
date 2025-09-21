@@ -316,3 +316,17 @@ async def publish_status_improved(
     Drop-in replacement for the old publish_status() + asyncio.sleep(0) pattern.
     """
     await improved_status_bus.publish(server, message, request_id, phase, meta)
+
+
+def get_status_metrics() -> Dict[str, Any]:
+    """
+    Get metrics about the status system.
+    Returns basic information about active handlers and sequence numbers.
+    """
+    return {
+        "status_system": "improved",
+        "global_sequence": improved_status_bus._global_sequence,
+        "active_handlers": len(improved_status_bus.pipeline.handlers),
+        "active_subscribers": len(improved_status_bus._subscribers),
+        "version": "1.0"
+    }

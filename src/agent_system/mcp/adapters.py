@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 import asyncio
 
-from .status import StatusEvent, status_bus, PHASE_PROGRESS
+from .improved_status import StatusEvent, improved_status_bus, StatusPhase
 
 
 class MCPAdapter(ABC):
@@ -101,8 +101,14 @@ class BaseMCPAdapter(MCPAdapter):
         Ensures `phase` defaults for older callers constructing StatusEvent without phase.
         """
         if not getattr(event, "phase", None):  # backward safety
-            event.phase = PHASE_PROGRESS  # type: ignore[attr-defined]
-        await status_bus.publish(event)
+            event.phase = StatusPhase.PROGRESS  # type: ignore[attr-defined]
+        await improved_status_bus.publish(
+            server=event.server,
+            message=event.message,
+            request_id=event.request_id,
+            phase=event.phase,
+            meta=event.meta
+        )
 
     async def subscribe_status(
         self,
@@ -110,4 +116,4 @@ class BaseMCPAdapter(MCPAdapter):
         request_id: Optional[str] = None
     ) -> asyncio.Queue:
         """Subscribe to status events via the global status bus."""
-        return await status_bus.subscribe(server=server, request_id=request_id)
+        return await improved_status_bus.subscribe(server=server, request_id=request_id)

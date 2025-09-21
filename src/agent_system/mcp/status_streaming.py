@@ -15,7 +15,7 @@ from datetime import datetime
 
 from .core import MCPMessage
 from .streaming_transport import HTTPStreamingTransport
-from .status import status_bus, StatusEvent
+from .improved_status import improved_status_bus, StatusEvent
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
         await super().connect()
         
         # Subscribe to status events
-        self._status_subscription = await status_bus.subscribe(
+        self._status_subscription = await improved_status_bus.subscribe(
             server=self._server_filter,
             request_id=self._request_id_filter
         )
@@ -57,7 +57,7 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
 
         # Unsubscribe from status events
         if self._status_subscription:
-            status_bus.unsubscribe(self._status_subscription)
+            improved_status_bus.unsubscribe(self._status_subscription)
             self._status_subscription = None
 
         await super().disconnect()

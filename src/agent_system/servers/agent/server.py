@@ -945,8 +945,8 @@ class Agent(MCPServer):
 
             # Subscribe to status events for this request to forward them through SSE
             # Listen for ALL servers with this request_id, not just this agent's server name
-            from ...mcp.status import status_bus
-            status_queue = await status_bus.subscribe(request_id=request_id)
+            from ...mcp.improved_status import improved_status_bus
+            status_queue = await improved_status_bus.subscribe(request_id=request_id)
 
             # Set up status event forwarding task
             status_events_to_forward = []
@@ -981,7 +981,7 @@ class Agent(MCPServer):
                                 "server": status_event.server,
                                 "request_id": status_event.request_id,
                                 "message": status_event.message,
-                                "phase": status_event.phase,
+                                "phase": status_event.phase.value,  # Convert enum to string
                                 "level": status_event.level,
                                 "timestamp": status_event.timestamp.isoformat(),
                                 "meta": status_event.meta or {}
