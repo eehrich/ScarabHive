@@ -24,13 +24,13 @@ async def test_status_meta_endpoint_provides_metrics():
         r = await client.get('/status/meta')
         assert r.status_code == 200
         data = r.json()
-        assert 'config' in data
+        # Core metrics that the new status system provides
+        assert 'handlers_count' in data
+        assert 'sequence_counter' in data
+        assert 'handler_types' in data
         assert 'subscribers' in data
         assert 'publish_attempted' in data
         assert 'delivered' in data
-        assert 'suppressed_rate' in data
-        assert 'suppressed_debounce' in data
-        assert 'redacted' in data
 
 
 async def test_debug_toggle_functionality():

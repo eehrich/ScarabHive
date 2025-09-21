@@ -134,6 +134,10 @@ class StatusBus:
         self._lock = asyncio.Lock()
         # Track handlers by queue for unsubscribe support
         self._queue_handlers: Dict[asyncio.Queue, StatusHandler] = {}
+        
+        # Metrics tracking
+        self.publish_attempted = 0
+        self.delivered = 0
     
     def add_handler(self, handler: StatusHandler) -> None:
         """Add a status handler"""
@@ -147,6 +151,9 @@ class StatusBus:
     async def publish(self, event: StatusEvent) -> None:
         """Publish a status event with guaranteed delivery to all handlers"""
         async with self._lock:
+            # Track metrics
+            self.publish_attempted += 1
+            
             # Update sequence if not set
             if event.sequence == 0:
                 self.sequence_counter += 1
@@ -156,6 +163,7 @@ class StatusBus:
             for handler in self.handlers:
                 try:
                     await handler.process(event)
+                    self.delivered += 1
                 except Exception as e:
                     logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
     
@@ -164,7 +172,10 @@ class StatusBus:
         return {
             "handlers_count": len(self.handlers),
             "sequence_counter": self.sequence_counter,
-            "handler_types": [h.__class__.__name__ for h in self.handlers]
+            "handler_types": [h.__class__.__name__ for h in self.handlers],
+            "subscribers": len([h for h in self.handlers if isinstance(h, (QueueStatusHandler, FilteredQueueStatusHandler))]),
+            "publish_attempted": self.publish_attempted,
+            "delivered": self.delivered,
         }
     
     async def subscribe(self, server: Optional[str] = None, 

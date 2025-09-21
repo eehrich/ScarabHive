@@ -39,20 +39,16 @@ window.AgentSystem.Status = {
       
       console.log('Status data loaded:', { health: healthData, meta: metaData });
       
-      // Get system info
-      const startTime = performance.timeOrigin || Date.now();
-      const currentUptime = Date.now() - startTime;
-      
       // Combine data from available endpoints and system info
       const combinedData = {
         status: healthData.status || 'Unknown',
-        uptime: this.formatUptime(currentUptime),
-        version: 'AgentSystem v1.0', // Could be made dynamic if version endpoint exists
+        uptime: healthData.uptime_seconds ? this.formatUptime(healthData.uptime_seconds * 1000) : 'Unknown',
+        version: healthData.version ? `${healthData.name || 'AgentSystem'} v${healthData.version}` : 'Unknown',
         memory_usage: this.formatMemoryUsage(),
         subscribers: metaData.subscribers || 0,
         events_published: metaData.publish_attempted || 0,
         events_delivered: metaData.delivered || 0,
-        events_suppressed: (metaData.suppressed_rate || 0) + (metaData.suppressed_debounce || 0)
+        handlers_count: metaData.handlers_count || 0
       };
       
       // Update panel content directly (PanelManager already creates .panel-content wrapper)
@@ -122,8 +118,8 @@ window.AgentSystem.Status = {
           <span class="metric-value">${data.events_delivered}</span>
         </div>
         <div class="metric-item">
-          <span class="metric-label">Events Suppressed</span>
-          <span class="metric-value">${data.events_suppressed}</span>
+          <span class="metric-label">Handlers Count</span>
+          <span class="metric-value">${data.handlers_count}</span>
         </div>
       </div>
     `;

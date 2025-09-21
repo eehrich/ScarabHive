@@ -4,8 +4,11 @@ import json
 import asyncio
 import logging
 import os
+import time
 import uuid
+import yaml
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -67,6 +70,9 @@ async def lifespan(app: FastAPI):
 # Module level templates and static path setup
 templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates"))
 static_path = Path(__file__).parents[3] / "static"
+
+# Global application state
+_app_start_time = None
 
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
@@ -143,6 +149,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @asynccontextmanager
     async def custom_lifespan(app: FastAPI):
         # Startup
+        global _app_start_time
+        _app_start_time = time.time()
+        
         logger = logging.getLogger(__name__)
         logger.info("Lifespan startup: Initializing MCP integration...")
         await _init_mcp_for_app(app)
@@ -233,7 +242,27 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Define route handlers
     @app.get("/health")
     def health():
-        return {"status": "ok"}
+        global _app_start_time
+        
+        # Calculate uptime
+        uptime_seconds = time.time() - _app_start_time if _app_start_time else 0
+        
+        # Load agent config for version info
+        agent_config = {}
+        try:
+            agent_config_path = Path(__file__).parents[3] / "config" / "agent.yaml"
+            with open(agent_config_path, 'r', encoding='utf-8') as f:
+                agent_config = yaml.safe_load(f) or {}
+        except Exception:
+            pass  # Continue with empty config if loading fails
+        
+        return {
+            "status": "ok",
+            "version": agent_config.get("version", "unknown"),
+            "name": agent_config.get("name", "AgentSystem"),
+            "uptime_seconds": round(uptime_seconds, 2),
+            "timestamp": datetime.now().isoformat()
+        }
 
     @app.get("/config")
     def get_config():
