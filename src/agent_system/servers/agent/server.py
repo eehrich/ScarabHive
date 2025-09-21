@@ -17,7 +17,7 @@ from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
 from ...context.agent_tracker import register_agent_for_tracking, update_agent_context_usage
-from ...mcp.status import publish_status, PHASE_START, PHASE_END
+from ...mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
 from .planner import Planner
 from .executor import Executor
 
@@ -329,7 +329,7 @@ class Agent(MCPServer):
                         pass
         return messages
 
-    async def run(self, task: str) -> Dict[str, Any]:
+    async def run(self, task: str, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Run the agent task with enhanced tool calling logic.
         Executes ALL tool calls from LLM per turn for better efficiency.
@@ -340,8 +340,11 @@ class Agent(MCPServer):
             results["errors"] = ["No LLM available; agent requires an LLM to plan tool usage."]
             return results
 
+        # Use module-level logger instead of redefining it
         try:
-            logger = logging.getLogger(__name__)
+            # Generate a transient request_id for run() to correlate status messages
+            if request_id is None:
+                request_id = str(uuid.uuid4())
 
             # Initialize MCP integration tracking
             mcp_integration = None
@@ -521,20 +524,38 @@ class Agent(MCPServer):
 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
-                # Emit status: calling LLM (planner)
-                try:
-                    await publish_status(server=self.name, message="Calling LLM (planner)", phase=PHASE_START, meta={"step": step + 1})
-                except Exception:
-                    logger.debug("Failed to publish LLM start status (planner)")
+                # Best-effort: publish a PHASE_START for the whole run when first entering run()
+                if step == 0:
+                    # High-level operation status using PHASE_PROGRESS so it doesn't conflict with LLM PHASE_START
+                    await publish_status(
+                        server=f"{self.name}_coordinator",
+                        message=f"Processing: {task[:50]}{'...' if len(task) > 50 else ''}", 
+                        request_id=request_id, 
+                        phase=PHASE_PROGRESS
+                    )
+                    await asyncio.sleep(0)
+
+                # Emit status: calling LLM (planner) - technical detail level
+                await publish_status(
+                    server=self.name, 
+                    message="Calling LLM (planner)", 
+                    request_id=request_id, 
+                    phase=PHASE_PROGRESS, 
+                    meta={"step": step + 1}
+                )
+                await asyncio.sleep(0)
 
                 # Get LLM response via Planner
                 llm_out = await planner.chat(messages, tools_schema)
 
                 # Emit status: LLM call complete
-                try:
-                    await publish_status(server=self.name, message="LLM (planner) response received", phase=PHASE_END, meta={"step": step + 1})
-                except Exception:
-                    logger.debug("Failed to publish LLM end status (planner)")
+                await publish_status(
+                    erver=self.name, 
+                    message="LLM (planner) response received", 
+                    request_id=request_id, 
+                    phase=PHASE_PROGRESS, 
+                    meta={"step": step + 1}
+                )
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
 
@@ -591,6 +612,14 @@ class Agent(MCPServer):
                 if consecutive_empty_responses >= max_consecutive_empty:
                     logger.warning("Breaking agent loop: %d consecutive empty responses", consecutive_empty_responses)
                     results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses")
+                    # Best-effort publish terminal error status
+                    await publish_status(
+                        server=self.name,
+                        message=f"{self.name}: stopped due to {consecutive_empty_responses} empty responses",
+                        request_id=request_id,
+                        phase=PHASE_ERROR,
+                        meta={"consecutive_empty": consecutive_empty_responses}
+                    )
                     break
                 
                 if consecutive_no_tool_calls >= max_consecutive_no_tools:
@@ -601,6 +630,14 @@ class Agent(MCPServer):
                         results["summary"] = content
                     else:
                         results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls")
+                    # Best-effort: publish terminal status
+                    await publish_status(
+                        server=self.name,
+                        message=f"{self.name}: stopped after {consecutive_no_tool_calls} responses without tool calls",
+                        request_id=request_id,
+                        phase=PHASE_PROGRESS if content else PHASE_ERROR,
+                        meta={"consecutive_no_tool_calls": consecutive_no_tool_calls}
+                    )
                     break
 
                 # Execute ALL tool calls in parallel for better performance
@@ -837,6 +874,30 @@ class Agent(MCPServer):
                 except Exception as e:
                     logger.debug("Error shutting down MCP integration: %s", e)
 
+            # Best-effort: publish a terminal status event for CLI/run path so subscribers see completion
+            # Let exceptions surface here to reveal publish issues rather than silently hiding them.
+            final_phase = PHASE_ERROR if results.get('errors') else PHASE_END
+            
+            # Complete the high-level operation status first using PHASE_PROGRESS 
+            operation_final_msg = f"Completed: {task[:50]}..." if final_phase == PHASE_END else f"Failed: {task[:50]}..."
+            await publish_status(
+                server=self.name, 
+                message=operation_final_msg, 
+                request_id=request_id, 
+                phase=PHASE_PROGRESS
+            )
+            await asyncio.sleep(0)  # Yield to allow event loop to publish status
+            
+            # Then complete the technical status
+            final_msg = f"{self.name}: completed" if final_phase == PHASE_END else f"{self.name}: completed with errors"
+            await publish_status(
+                server=self.name, 
+                message=final_msg, 
+                request_id=request_id, 
+                phase=final_phase, 
+                meta={"summary": results.get('summary') if results else None}
+            )
+
         return results
 
     def _estimate_token_count(self, messages: List[ChatMessage]) -> int:
@@ -888,7 +949,70 @@ class Agent(MCPServer):
 
             yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
-            logger = logging.getLogger(__name__)
+            # Subscribe to status events for this request to forward them through SSE
+            from ...mcp.status import status_bus
+            status_queue = await status_bus.subscribe(server=self.name, request_id=request_id)
+
+            # Set up status event forwarding task
+            status_events_to_forward = []
+            forwarding_done = asyncio.Event()
+            forwarding_ready = asyncio.Event()
+            first_get_started = asyncio.Event()
+
+            async def forward_status_events():
+                """Forward status events from status_bus to SSE stream"""
+                try:
+                    logger.debug("Status forwarding task starting...")
+                    while not forwarding_done.is_set():
+                        try:
+                            # Signal that we're ready to receive events right before we start waiting
+                            if not forwarding_ready.is_set():
+                                forwarding_ready.set()
+                                logger.debug("Status forwarding task ready, waiting for events...")
+                            
+                            # Signal that the first get() call is about to start
+                            if not first_get_started.is_set():
+                                first_get_started.set()
+                            
+                            # Wait for status event with timeout
+                            status_event = await asyncio.wait_for(status_queue.get(), timeout=0.1)
+                            logger.debug("Forwarding received status event: %s [%s]: %s (seq: %s)", 
+                                       status_event.server, status_event.phase, status_event.message, 
+                                       status_event.meta.get('_seq') if status_event.meta else 'no-seq')
+                            logger.debug("Forwarding status event: %s [%s]: %s", status_event.server, status_event.phase, status_event.message)
+                            # Convert status event to SSE format
+                            status_sse_event = {
+                                "type": "status",
+                                "server": status_event.server,
+                                "request_id": status_event.request_id,
+                                "message": status_event.message,
+                                "phase": status_event.phase,
+                                "level": status_event.level,
+                                "timestamp": status_event.timestamp.isoformat(),
+                                "meta": status_event.meta or {}
+                            }
+                            status_events_to_forward.append(status_sse_event)
+                        except asyncio.TimeoutError:
+                            continue
+                        except asyncio.CancelledError:
+                            break
+                except Exception as e:
+                    logger.debug("Error in status event forwarding: %s", e)
+
+            # Start the status forwarding task
+            forwarding_task = asyncio.create_task(forward_status_events())
+
+            # Helper function to yield any pending status events
+            def yield_pending_status_events():
+                while status_events_to_forward:
+                    yield status_events_to_forward.pop(0)
+
+            # Wait for the forwarding task to be ready AND for the first get() to start
+            await forwarding_ready.wait()
+            await first_get_started.wait()
+            # Give the forwarding task a moment to actually reach the status_queue.get() call
+            await asyncio.sleep(0.01)
+            logger.debug("Status forwarding task is ready and listening")
 
             # If no LLM is configured, emit an immediate error event and end the stream
             if self.llm is None:
@@ -899,6 +1023,43 @@ class Agent(MCPServer):
             # Initialize MCP integration tracking
             mcp_integration = None
             mcp_initialized_locally = False
+
+            # Subscribe to status events for this request to forward them through SSE
+            from ...mcp.status import status_bus
+            status_queue = await status_bus.subscribe(server=self.name, request_id=request_id)
+
+            # Set up status event forwarding task
+            status_events_to_forward = []
+            forwarding_done = asyncio.Event()
+
+            async def forward_status_events():
+                """Forward status events from status_bus to SSE stream"""
+                try:
+                    while not forwarding_done.is_set():
+                        try:
+                            # Wait for status event with timeout
+                            status_event = await asyncio.wait_for(status_queue.get(), timeout=0.1)
+                            # Convert status event to SSE format
+                            status_sse_event = {
+                                "type": "status",
+                                "server": status_event.server,
+                                "request_id": status_event.request_id,
+                                "message": status_event.message,
+                                "phase": status_event.phase,
+                                "level": status_event.level,
+                                "timestamp": status_event.timestamp.isoformat(),
+                                "meta": status_event.meta or {}
+                            }
+                            status_events_to_forward.append(status_sse_event)
+                        except asyncio.TimeoutError:
+                            continue
+                        except asyncio.CancelledError:
+                            break
+                except Exception as e:
+                    logger.debug("Error in status event forwarding: %s", e)
+
+            # Start the status forwarding task
+            forwarding_task = asyncio.create_task(forward_status_events())
 
             # Get tools from the local registry (plugins)
             available_tools = self.registry.list()
@@ -1012,6 +1173,19 @@ class Agent(MCPServer):
             results: Dict[str, Any] = {"task": task, "calls": []}
             executor = Executor(self.registry)
 
+            # Now that everything is set up and the forwarding task is definitely running,
+            # publish the PHASE_START event so it gets captured
+            logger.debug("Publishing PHASE_START at execution start for server=%s request_id=%s", self.name, request_id)
+            await publish_status(
+                server=f"{self.name}_coordinator",
+                message=f"{self.name}: started",
+                request_id=request_id,
+                phase=PHASE_START,
+                meta={"session_id": session_id},
+            )
+            await asyncio.sleep(0)  # yield to event loop
+
+
             # Add safeguards against infinite loops
             consecutive_no_tool_calls = 0
             consecutive_empty_responses = 0
@@ -1026,8 +1200,51 @@ class Agent(MCPServer):
                 if self._is_cancelled(request_id):
                     logger.info("Request %s cancelled at step %d", request_id, step + 1)
                     yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                    # Best-effort: publish terminal status so clients see completion
+                    await publish_status(
+                        server=self.name,
+                        message=f"{self.name}: cancelled at step {step + 1}",
+                        request_id=request_id,
+                        phase=PHASE_END,
+                        meta={"step": step + 1, "reason": "cancelled"}
+                    )
+                    asyncio.sleep(0)
+                    await publish_status(
+                        server=f"{self.name}_coordinator",
+                        message=f"{self.name}: cancelled at step {step + 1}",
+                        request_id=request_id,
+                        phase=PHASE_END,
+                        meta={"step": step + 1, "reason": "cancelled"}
+                    )                    
+                    asyncio.sleep(0)
                     yield {"type": "end"}
                     return
+
+                # Publish heartbeat status for overall agent progress (best-effort)
+                await publish_status(
+                        server=f"{self.name}_coordinator",
+                        message=f"{self.name}: running step {step + 1}/{max_steps}",
+                        request_id=request_id,
+                        phase=PHASE_PROGRESS,
+                        meta={"step": step + 1, "max_steps": max_steps}
+                )
+                await asyncio.sleep(0)
+                # Also yield a heartbeat event in the run_events stream for direct consumers
+                try:
+                    yield {
+                        "type": "heartbeat",
+                        "message": f"{self.name}: running step {step + 1}/{max_steps}",
+                        "step": step + 1,
+                        "max_steps": max_steps,
+                        "request_id": request_id,
+                    }
+                except Exception:
+                    # If the consumer isn't expecting heartbeat, ignore
+                    pass
+
+                # Yield any pending status events
+                for status_event in yield_pending_status_events():
+                    yield status_event
 
                 # Enhanced context management and token tracking
                 if self.context_manager:
@@ -1091,10 +1308,14 @@ class Agent(MCPServer):
                 yield {"type": "thinking", "step": step + 1}
 
                 # Emit status: calling LLM (chat_tools)
-                try:
-                    await publish_status(server=self.name, message="Calling LLM (chat)", phase=PHASE_START, meta={"step": step + 1})
-                except Exception:
-                    logger.debug("Failed to publish LLM start status (chat_tools)")
+                await publish_status(
+                    server=self.name, 
+                    message="Calling LLM (chat)", 
+                    request_id=request_id, 
+                    phase=PHASE_PROGRESS, 
+                    meta={"step": step + 1}
+                )
+                await asyncio.sleep(0)
 
                 # Get LLM response
                 llm_out = await self.llm.chat_tools(messages, tools_schema)
@@ -1102,11 +1323,16 @@ class Agent(MCPServer):
                 # Drain any messages that arrived during LLM call
                 messages = await self._drain_appended_messages(request_id, messages)
 
-                # Emit status: LLM call complete
-                try:
-                    await publish_status(server=self.name, message="LLM (chat) response received", phase=PHASE_END, meta={"step": step + 1})
-                except Exception:
-                    logger.debug("Failed to publish LLM end status (chat_tools)")
+                # Emit status: LLM call complete            
+                await publish_status(
+                    server=self.name, 
+                    message="LLM (chat) response received", 
+                    request_id=request_id, 
+                    phase=PHASE_PROGRESS, 
+                    meta={"step": step + 1}
+                )
+                await asyncio.sleep(0)
+
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
 
@@ -1227,6 +1453,15 @@ class Agent(MCPServer):
 
                             # Emit MCP call event immediately
                             yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": params}
+                            # Best-effort: publish tool-level START so frontend shows per-tool slot
+                            await publish_status(
+                                server_name,
+                                f"{server_name}: Starting {actual_tool_name}",
+                                request_id=request_id,
+                                phase=PHASE_PROGRESS,
+                            )
+
+
 
                             try:
                                 logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name, params)
@@ -1244,6 +1479,13 @@ class Agent(MCPServer):
 
                                 # Emit MCP result event immediately
                                 yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result}
+                                # Best-effort: publish tool-level END to close per-tool slot
+                                await publish_status(
+                                    server_name,
+                                    f"{server_name}: Completed {actual_tool_name}",
+                                    request_id=request_id,
+                                    phase=PHASE_PROGRESS,
+                                )
 
                                 # Add tool result to conversation
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
@@ -1302,6 +1544,7 @@ class Agent(MCPServer):
 
                                 # Emit MCP result event immediately
                                 yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result}
+
 
                                 # Add tool result to conversation
                                 tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
@@ -1399,6 +1642,48 @@ class Agent(MCPServer):
                 except Exception as e:
                     logger.debug("Error shutting down MCP integration in run_events: %s", e)
 
+            # Clean up status forwarding task
+            if 'forwarding_task' in locals() and 'forwarding_done' in locals():
+                try:
+                    forwarding_done.set()
+                    forwarding_task.cancel()
+                    try:
+                        await forwarding_task
+                    except asyncio.CancelledError:
+                        pass
+                    logger.debug("Cleaned up status forwarding task")
+                except Exception as e:
+                    logger.debug("Error cleaning up status forwarding task: %s", e)
+
+        # Best-effort: publish a terminal status event so SSE subscribers see completion
+
+        # If results contains errors, publish PHASE_ERROR, else PHASE_END
+        final_phase = PHASE_ERROR if ('results' in locals() and results.get('errors')) else PHASE_END
+        
+        # Then complete the technical status
+        final_msg = f"{self.name}: completed" if final_phase == PHASE_END else f"{self.name}: completed with errors"
+        await publish_status(
+            server=self.name, 
+            message=final_msg, 
+            request_id=request_id, 
+            phase=final_phase, 
+            meta={"summary": results.get('summary') if 'results' in locals() else None}
+        )
+        await asyncio.sleep(0)       
+        await publish_status(
+            server= f"{self.name}_coordinator", 
+            message=f" {final_msg} ({step+1} steps)",
+            request_id=request_id, 
+            phase=final_phase, 
+            meta={"summary": results.get('summary') if 'results' in locals() else None}
+        )
+        await asyncio.sleep(0)
+
+        # Yield any final pending status events before ending
+        if 'yield_pending_status_events' in locals():
+            for status_event in yield_pending_status_events():
+                yield status_event
+        
         yield {"type": "end"}
 
     # MCPServer interface implementation

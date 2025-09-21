@@ -196,6 +196,8 @@
     }
     const opIdPart = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
     const operationKey = opIdPart ? `${ev.server}_${opIdPart}` : `${ev.server}`;
+    // Prefer server-provided sequence number for ordering when available
+    const seq = ev.meta && ev.meta._seq ? ev.meta._seq : null;
     if (ev.phase === 'start') {
       if (activeOperations.has(operationKey)) {
         const existing = activeOperations.get(operationKey);
@@ -219,8 +221,24 @@
         activeOperations.set(operationKey, operationDiv);
       }
     } else if (ev.phase === 'progress') {
-      const operationDiv = activeOperations.get(operationKey);
-      if (operationDiv) {
+      let operationDiv = activeOperations.get(operationKey);
+      // If progress arrives before start, create a row from this progress event
+      if (!operationDiv) {
+        const operationDivNew = document.createElement('div');
+        operationDivNew.className = 'operation-progress';
+        operationDivNew.setAttribute('data-operation', operationKey);
+        operationDivNew.innerHTML = `
+          <div class="progress-line">
+            <span class="progress-icon"><div class="spinner"></div></span>
+            <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
+            <span class="progress-message">${escapeHtml(ev.message || 'In progress...')}</span>
+            <span class="progress-time">${formatTime(ev.timestamp)}</span>
+          </div>
+        `;
+        container.appendChild(operationDivNew);
+        activeOperations.set(operationKey, operationDivNew);
+        operationDiv = operationDivNew;
+      } else {
         const messageSpan = operationDiv.querySelector('.progress-message');
         const timeSpan = operationDiv.querySelector('.progress-time');
         if (messageSpan) messageSpan.textContent = ev.message || 'In progress...';

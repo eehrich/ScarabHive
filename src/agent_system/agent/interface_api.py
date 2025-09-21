@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 # Response is not needed here; FastAPI/Starlette response classes are imported where required
 
-from ..servers.agent.server import Agent
+from ..servers.agent.main_agent import MainAgent
 from ..config.loader import load_config
 from ..config.models import AgentConfig
 from api.endpoints import router as api_router
@@ -213,7 +213,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Initialize agent and registry
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
-    agent = Agent("api_agent", config, registry)
+    agent = MainAgent("main_agent", config, registry)
     registry.register("agent", agent)
 
     # Store registry and config globally for MCP endpoint access
@@ -235,8 +235,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/run")
     async def run(task: str, traceparent: Optional[str] = Header(default=None)):
-        logging.getLogger(__name__).info("/run invoked, task=%s", task)
-        return await agent.run(task)
+        logger = logging.getLogger(__name__)
+        request_id = str(uuid.uuid4())
+        logger.info("/run invoked, task=%s, request_id=%s", task, request_id)
+        return await agent.run(task, request_id=request_id)
 
     @app.get("/events")
     async def events(task: str, session_id: Optional[str] = Query(default=None)):
@@ -497,31 +499,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=401, detail="Unauthorized status stream")
 
         logger.info("SSE /status/stream connected (server=%s request_id=%s)", server, request_id)
-
         queue = await status_bus.subscribe(server=server, request_id=request_id)
-
-        # Trigger immediate status update for newly connected subscriber
-        try:
-            from ..mcp.status import publish_status, PHASE_PROGRESS
-            # Only publish server summary, not connection noise
-            mcp_integration = getattr(app.state, 'mcp_integration', None)
-            if mcp_integration and hasattr(mcp_integration, 'client_manager'):
-                connected_servers = [name for name, client in mcp_integration.client_manager.clients.items()]
-                await publish_status(
-                    server="AgentSystem",
-                    message=f"Ready - Connected to {len(connected_servers)} MCP servers: {', '.join(connected_servers) if connected_servers else 'none'}",
-                    phase=PHASE_PROGRESS,
-                    meta={"connected_servers": connected_servers, "total_servers": len(connected_servers)}
-                )
-            else:
-                await publish_status(
-                    server="AgentSystem",
-                    message="Ready - Status monitoring active",
-                    phase=PHASE_PROGRESS,
-                    meta={"status": "ready"}
-                )
-        except Exception as e:
-            logger.debug("Failed to publish initial status for new subscriber: %s", e)
 
         async def event_gen():
             sent_events = 0
@@ -564,6 +542,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         logger.info("Client disconnected from /status/stream")
                         break
             finally:
+                # Drain any remaining queued events deterministically so that
+                # terminal PHASE_END/PHASE_ERROR messages are delivered to the
+                # client even if the generator is exiting due to client
+                # disconnect or server-initiated close. This avoids races that
+                # make clients miss final events.
+                try:
+                    while not queue.empty():
+                        try:
+                            ev: StatusEvent = queue.get_nowait()
+                        except Exception:
+                            break
+                        try:
+                            payload = ev.to_dict()
+                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        except Exception:
+                            logger.exception("Failed to serialize status event during drain")
+                except Exception:
+                    # Ignore issues while draining to ensure cleanup continues
+                    pass
                 try:
                     status_bus.unsubscribe(queue)
                 except Exception:  # pragma: no cover - defensive

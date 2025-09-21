@@ -77,6 +77,9 @@ def create_web_research_agent(
 
     research_llm = LLMConfig(**llm_kwargs) if llm_kwargs else LLMConfig()
 
+    # Allow server config to override max_steps (fall back to default 50)
+    resolved_max_steps = int(server_cfg.get("max_steps", 50)) if isinstance(server_cfg, dict) else 50
+
     research_config = AgentConfig(
         llm=research_llm,
         mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
@@ -88,7 +91,7 @@ def create_web_research_agent(
                 "type": "web_scraper"
             }
         },
-        max_steps=8,  # More steps for complex research tasks
+        max_steps=resolved_max_steps,  # More steps for complex research tasks
         network={"ssl_verify": ssl_verify}
     )
 
@@ -139,6 +142,9 @@ class WebResearchAgent(Agent):
                     llm_kwargs[field] = parent_llm[field]
 
         research_llm = LLMConfig(**llm_kwargs) if llm_kwargs else LLMConfig()
+        # Allow server config to override max_steps (fall back to default 50)
+        resolved_max_steps = int(server_cfg.get("max_steps", 50)) if isinstance(server_cfg, dict) else 50
+
         research_config = AgentConfig(
             llm=research_llm,
             mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
@@ -146,7 +152,7 @@ class WebResearchAgent(Agent):
                 "duckduckgo_search": {"type": "duckduckgo_search"},
                 "web_scraper": {"type": "web_scraper"},
             },
-            max_steps=8,
+            max_steps=resolved_max_steps,
             network={"ssl_verify": ssl_verify},
         )
 
@@ -212,12 +218,23 @@ class WebResearchAgent(Agent):
                     tool_name = event.get("server", "unknown")
                     action = event.get("action", "unknown")
                     try:
+                        # Publish agent-level progress
                         await publish_status(
                             self.name,
                             f"{operation_name}: Step {step_count} - Using {tool_name} ({action})",
                             request_id=request_id,
-                            phase=PHASE_PROGRESS
+                            phase=PHASE_PROGRESS,
                         )
+                        # Also publish a tool-specific START status so frontend can show per-tool slots
+                        try:
+                            await publish_status(
+                                f"{tool_name}",
+                                f"{tool_name}: Starting {action}",
+                                request_id=request_id,
+                                phase=PHASE_START,
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         logger.warning(f"Failed to publish mcp_call status: {e}")
                     await asyncio.sleep(0)
@@ -235,12 +252,23 @@ class WebResearchAgent(Agent):
                 elif event_type == "mcp_result":
                     tool_name = event.get("server", "unknown")
                     try:
+                        # Publish agent-level progress
                         await publish_status(
                             self.name,
                             f"{operation_name}: Processing results from {tool_name}...",
                             request_id=request_id,
-                            phase=PHASE_PROGRESS
+                            phase=PHASE_PROGRESS,
                         )
+                        # Also publish a tool-specific END status so frontend clears per-tool slot
+                        try:
+                            await publish_status(
+                                f"{tool_name}",
+                                f"{tool_name}: Completed {event.get('action', 'call')}",
+                                request_id=request_id,
+                                phase=PHASE_END,
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         logger.warning(f"Failed to publish mcp_result status: {e}")
                     await asyncio.sleep(0)

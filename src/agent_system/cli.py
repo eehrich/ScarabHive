@@ -25,6 +25,7 @@ from .mcp.integration import MCPIntegration
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
+from .servers.agent.main_agent import MainAgent
 
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
@@ -1272,7 +1273,7 @@ def main() -> None:
     bootstrap_servers(config, registry)
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
-    agent = Agent("cli_agent", config, registry=registry)
+    agent = MainAgent("cli_agent", config, registry=registry)
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
@@ -1425,6 +1426,42 @@ def main() -> None:
             return {"task": task, "errors": [str(e)]}
         finally:
             # Cleanup background tasks
+            # Drain any queued status events deterministically before cancelling
+            # the background status subscriber. This avoids a race where the
+            # final PHASE_END is published but the subscriber is cancelled
+            # before it can process the queued event.
+            if status_queue:
+                try:
+                    while not status_queue.empty():
+                        try:
+                            event = status_queue.get_nowait()
+                        except Exception:
+                            break
+                        # Reuse the same display logic as _status_subscriber
+                        phase = getattr(event, "phase", "progress")
+                        phase_disp = phase
+                        if _supports_color():
+                            phase_color_map = {
+                                "start": "36",
+                                "progress": "34",
+                                "end": "32",
+                                "error": "31",
+                            }
+                            c = phase_color_map.get(phase, "34")
+                            phase_disp = _colorize(phase, c)
+
+                        server_col = event.server
+                        txt = event.message
+                        status_line = f"[{phase_disp}] {server_col}: {txt}"
+
+                        if event.level == "error" and _supports_color():
+                            status_line = _colorize(status_line, "31")
+                        elif event.level == "warning" and _supports_color():
+                            status_line = _colorize(status_line, "33")
+                        print(status_line)
+                except Exception:
+                    # If anything goes wrong while draining, continue to cancel tasks
+                    pass
             if status_task and not status_task.done():
                 try:
                     status_task.cancel()

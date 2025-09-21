@@ -144,6 +144,7 @@ _metrics: dict[str, int] = {
 
 _server_rate: dict[str, tuple[float, int]] = {}
 _last_event_signature: dict[tuple[str, str | None, str], float] = {}
+_seq_counters: dict[tuple[str, str | None], int] = {}
 
 def _config_int(name: str, default: int) -> int:
     try:
@@ -301,6 +302,18 @@ async def publish_status(
     if phase not in (PHASE_END, PHASE_ERROR):
         if _should_suppress(server, request_id, message):
             return
+
+    # Assign a per-(server, request_id) monotonic sequence number to help
+    # consumers deterministically order events even if they arrive out-of-order
+    # due to network or multi-stream interleaving.
+    try:
+        key = (server, request_id)
+        seq = _seq_counters.get(key, 0) + 1
+        _seq_counters[key] = seq
+        meta = {**(meta or {}), "_seq": seq}
+    except Exception:
+        # Do not fail publishing if seq bookkeeping fails
+        pass
 
     event = StatusEvent(
         server=server,
