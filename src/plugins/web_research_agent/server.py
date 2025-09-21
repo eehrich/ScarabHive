@@ -24,6 +24,8 @@ from agent_system.context.agent_tracker import update_agent_context_usage
 
 logger = logging.getLogger(__name__)
 
+status_name = "WebResearchAgent"
+
 
 def create_web_research_agent(
     name: str = "web_researcher",
@@ -176,14 +178,17 @@ class WebResearchAgent(Agent):
         total_messages = 0
 
         try:
-            async for event in self.run_events(task_prompt):
+            # Pass the request_id to run_events so coordinator/worker messages have correct correlation
+            # Consume all events but don't break early to let base Agent.run_events complete
+            events_generator = self.run_events(task_prompt, request_id=request_id)
+            async for event in events_generator:
                 event_type = event.get("type")
 
                 if event_type == "start":
                     step_count += 1
                     try:
                         await publish_status(
-                            self.name,
+                            status_name,
                             f"{operation_name}: Starting analysis...",
                             request_id=request_id,
                             phase=PHASE_PROGRESS
@@ -220,21 +225,12 @@ class WebResearchAgent(Agent):
                     try:
                         # Publish agent-level progress
                         await publish_status(
-                            self.name,
+                            status_name,
                             f"{operation_name}: Step {step_count} - Using {tool_name} ({action})",
                             request_id=request_id,
                             phase=PHASE_PROGRESS,
                         )
-                        # Also publish a tool-specific START status so frontend can show per-tool slots
-                        try:
-                            await publish_status(
-                                f"{tool_name}",
-                                f"{tool_name}: Starting {action}",
-                                request_id=request_id,
-                                phase=PHASE_START,
-                            )
-                        except Exception:
-                            pass
+                        await asyncio.sleep(0)
                     except Exception as e:
                         logger.warning(f"Failed to publish mcp_call status: {e}")
                     await asyncio.sleep(0)
@@ -251,39 +247,24 @@ class WebResearchAgent(Agent):
 
                 elif event_type == "mcp_result":
                     tool_name = event.get("server", "unknown")
-                    try:
-                        # Publish agent-level progress
-                        await publish_status(
-                            self.name,
-                            f"{operation_name}: Processing results from {tool_name}...",
-                            request_id=request_id,
-                            phase=PHASE_PROGRESS,
-                        )
-                        # Also publish a tool-specific END status so frontend clears per-tool slot
-                        try:
-                            await publish_status(
-                                f"{tool_name}",
-                                f"{tool_name}: Completed {event.get('action', 'call')}",
-                                request_id=request_id,
-                                phase=PHASE_END,
-                            )
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        logger.warning(f"Failed to publish mcp_result status: {e}")
+
+                    # Publish agent-level progress
+                    await publish_status(
+                        status_name,
+                        f"{operation_name}: Processing results from {tool_name}...",
+                        request_id=request_id,
+                        phase=PHASE_PROGRESS,
+                    )
                     await asyncio.sleep(0)
 
                 elif event_type == "final":
                     results["summary"] = event.get("summary", "")
-                    try:
-                        await publish_status(
-                            self.name,
-                            f"{operation_name}: Finalizing results...",
-                            request_id=request_id,
-                            phase=PHASE_PROGRESS
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to publish final status: {e}")
+                    await publish_status(
+                        status_name,
+                        f"{operation_name}: Finalizing results...",
+                        request_id=request_id,
+                        phase=PHASE_PROGRESS
+                    )
                     await asyncio.sleep(0)
 
                     # Final agent tracking update
@@ -305,42 +286,43 @@ class WebResearchAgent(Agent):
                     except Exception as e:
                         logger.debug("Failed to update final agent context stats: %s", e)
 
-                    break
+                    # Continue consuming events to let base Agent.run_events complete 
+                    # and publish final coordinator/worker status messages
+                    await asyncio.sleep(0)
 
                 elif event_type == "error":
                     error_msg = event.get("message", "Unknown error")
                     results.setdefault("errors", []).append(error_msg)
-                    try:
-                        await publish_status(
-                            self.name,
-                            f"{operation_name}: Error - {error_msg}",
-                            request_id=request_id,
-                            level="error",
-                            phase=PHASE_ERROR
-                        )
-                    except Exception:
-                        pass
+                    await publish_status(
+                        status_name,
+                        f"{operation_name}: Error - {error_msg}",
+                        request_id=request_id,
+                        level="error",
+                        phase=PHASE_ERROR
+                    )
+
                     await asyncio.sleep(0)
                     raise Exception(error_msg)
 
                 elif event_type == "end":
+                    # Mark that we've seen the end event but continue consuming
+                    # to let base Agent.run_events complete and publish final status
                     await asyncio.sleep(0)
-                    break
+                    # Continue loop to let generator finish naturally
 
+            # Let the generator complete naturally to ensure final status publishing
+            # The async for loop will exit when the generator is exhausted
             return results
 
         except Exception as e:
             results.setdefault("errors", []).append(str(e))
-            try:
-                await publish_status(
-                    self.name,
-                    f"{operation_name}: Failed - {str(e)}",
-                    request_id=request_id,
-                    level="error",
-                    phase=PHASE_ERROR
-                )
-            except Exception:
-                pass
+            await publish_status(
+                status_name,
+                f"{operation_name}: Failed - {str(e)}",
+                request_id=request_id,
+                level="error",
+                phase=PHASE_ERROR
+            )
             raise
 
     async def research(self, topic: str, max_results: int = 5, request_id: str = None) -> Dict[str, Any]:
@@ -360,28 +342,39 @@ class WebResearchAgent(Agent):
         - Source URLs for verification
         """
         # publish research start
-        try:
-            await publish_status(self.name, f"Research started: {topic}", request_id=request_id, phase=PHASE_START)
-            logger.info(f"Published research start status for request_id={request_id}")
-        except Exception as e:
-            logger.error(f"Failed to publish research start status: {e}")
+        await publish_status(
+            status_name, 
+            f"Research started: {topic}", 
+            request_id=request_id, 
+            phase=PHASE_START
+        )
+        await asyncio.sleep(0)
 
         try:
             res = await self._run_with_progress(research_prompt, f"Researching '{topic}'", request_id)
             # Add status and agent info to match expected format
             res["status"] = "success"
             res["agent"] = self.name
-            try:
-                await publish_status(self.name, f"Research completed: {topic}", request_id=request_id, phase=PHASE_END)
-                logger.info(f"Published research end status for request_id={request_id}")
-            except Exception as e:
-                logger.error(f"Failed to publish research end status: {e}")
+
+            await publish_status(
+                status_name, 
+                f"Research completed: {topic}", 
+                request_id=request_id, 
+                phase=PHASE_END
+            )
+            await asyncio.sleep(0)
+
             return res
+        
         except Exception as e:
-            try:
-                await publish_status(self.name, f"Research failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
-            except Exception:
-                pass
+            await publish_status(
+                status_name, 
+                f"Research failed: {str(e)}", 
+                request_id=request_id, 
+                level="error", 
+                phase=PHASE_ERROR
+            )
+            await asyncio.sleep(0)
             return {"status": "error", "error": str(e), "agent": self.name}
 
     async def fact_check(self, claim: str, request_id: str = None) -> Dict[str, Any]:
@@ -400,26 +393,37 @@ class WebResearchAgent(Agent):
         - Contradicting evidence if any
         - Context and nuances
         """
-        try:
-            await publish_status(self.name, f"Fact-check started: {claim[:50]}...", request_id=request_id, phase=PHASE_START)
-        except Exception:
-            pass
+        await publish_status(
+            status_name, 
+            f"Fact-check started: {claim[:50]}...", 
+            request_id=request_id, 
+            phase=PHASE_START
+        )
+        await asyncio.sleep(0)
 
         try:
             res = await self._run_with_progress(fact_check_prompt, "Fact-checking claim", request_id)
             # Add status and agent info to match expected format
             res["status"] = "success"
             res["agent"] = self.name
-            try:
-                await publish_status(self.name, "Fact-check completed", request_id=request_id, phase=PHASE_END)
-            except Exception:
-                pass
+            await publish_status(
+                status_name, 
+                "Fact-check completed", 
+                request_id=request_id, 
+                phase=PHASE_END
+            )
+            await asyncio.sleep(0)
             return res
+        
         except Exception as e:
-            try:
-                await publish_status(self.name, f"Fact-check failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
-            except Exception:
-                pass
+            await publish_status(
+                status_name, 
+                f"Fact-check failed: {str(e)}", 
+                request_id=request_id, 
+                level="error", 
+                phase=PHASE_ERROR
+            )
+            await asyncio.sleep(0)
             return {"status": "error", "error": str(e), "agent": self.name}
 
     async def compare_sources(self, topic: str, source_urls: list[str], request_id: str = None) -> Dict[str, Any]:
@@ -442,26 +446,36 @@ class WebResearchAgent(Agent):
         - Bias or perspective analysis
         - Most comprehensive/reliable source assessment
         """
-        try:
-            await publish_status(self.name, f"Compare sources started: {topic}", request_id=request_id, phase=PHASE_START)
-        except Exception:
-            pass
+        await publish_status(
+            status_name, 
+            f"Compare sources started: {topic}", 
+            request_id=request_id, 
+            phase=PHASE_PROGRESS
+        )
+        await asyncio.sleep(0)
 
         try:
             res = await self._run_with_progress(compare_prompt, f"Comparing sources for '{topic}'", request_id)
             # Add status and agent info to match expected format
             res["status"] = "success"
             res["agent"] = self.name
-            try:
-                await publish_status(self.name, "Compare sources completed", request_id=request_id, phase=PHASE_END)
-            except Exception:
-                pass
+            await publish_status(
+                status_name, 
+                "Compare sources completed", 
+                request_id=request_id, 
+                phase=PHASE_PROGRESS
+            )
+            await asyncio.sleep(0)
             return res
         except Exception as e:
-            try:
-                await publish_status(self.name, f"Compare sources failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
-            except Exception:
-                pass
+            await publish_status(
+                status_name, 
+                f"Compare sources failed: {str(e)}", 
+                request_id=request_id, 
+                level="error", 
+                phase=PHASE_ERROR
+            )
+            await asyncio.sleep(0)
             return {"status": "error", "error": str(e), "agent": self.name}
 
     def get_schema(self) -> Dict[str, Any]:

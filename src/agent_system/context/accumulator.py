@@ -39,12 +39,12 @@ class TokenAccumulator:
                 with open(self.storage_file, 'r') as f:
                     data = json.load(f)
                     self._accumulated_stats = data.get("agents", {})
-                    logger.info(f"Loaded accumulated stats for {len(self._accumulated_stats)} agents")
+                    logger.debug(f"Loaded accumulated stats for {len(self._accumulated_stats)} agents")
             except Exception as e:
                 logger.warning(f"Failed to load accumulated stats from {self.storage_file}: {e}")
                 self._accumulated_stats = {}
         else:
-            logger.info(f"No existing accumulated stats file found at {self.storage_file}")
+            logger.debug(f"No existing accumulated stats file found at {self.storage_file}")
             self._accumulated_stats = {}
 
     def _save_accumulated_stats(self) -> None:
@@ -164,7 +164,7 @@ class TokenAccumulator:
         if agent_id in self._accumulated_stats:
             del self._accumulated_stats[agent_id]
             self._save_accumulated_stats()
-            logger.info(f"Reset accumulated stats for agent {agent_id}")
+            logger.debug(f"Reset accumulated stats for agent {agent_id}")
             return True
         return False
 
@@ -172,7 +172,7 @@ class TokenAccumulator:
         """Reset all accumulated statistics."""
         self._accumulated_stats = {}
         self._save_accumulated_stats()
-        logger.info("Reset all accumulated statistics")
+        logger.debug("Reset all accumulated statistics")
 
 
 # Global accumulator instance
