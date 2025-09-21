@@ -5,6 +5,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from agent_system.context.manager import ContextManager
 from agent_system.context.config import ContextConfig, ContextStrategy, WarningLevel
 from agent_system.llm.clients import ChatMessage
+from agent_system.mcp.improved_status import StatusPhase
 
 
 class TestContextManager:
@@ -239,7 +240,7 @@ class TestContextManagerAsync:
         messages = [ChatMessage(role="user", content="Short message")]
         
         with patch.object(self.manager, 'estimate_token_count', return_value=500):
-            with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock):
+            with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock):
                 result = await self.manager.manage_context(messages)
         
         # Should return original messages unchanged
@@ -257,7 +258,7 @@ class TestContextManagerAsync:
         
         with patch.object(self.manager, 'estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', mock_truncate):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
         
         # Should call truncation
@@ -273,7 +274,7 @@ class TestContextManagerAsync:
         
         with patch.object(self.manager, 'estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', side_effect=Exception("Test error")):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
         
         # Should return original messages on error
@@ -281,7 +282,7 @@ class TestContextManagerAsync:
         
         # Should publish error status event
         error_calls = [call for call in mock_publish.call_args_list 
-                      if len(call[1]) > 0 and call[1].get('phase') == 'error']
+                      if len(call[1]) > 0 and call[1].get('phase') == StatusPhase.ERROR]
         assert len(error_calls) > 0
 
 

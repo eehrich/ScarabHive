@@ -20,7 +20,7 @@ except Exception:
 from .config.settings import load_settings
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
-from .mcp.status import status_bus
+from .mcp.improved_status import improved_status_bus
 from .mcp.integration import MCPIntegration
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
@@ -1285,7 +1285,7 @@ def main() -> None:
         # Subscribe to status events if enabled
         status_queue = None
         if show_status:
-            status_queue = await status_bus.subscribe()
+            status_queue = await improved_status_bus.subscribe()
 
         # Optionally auto-subscribe to external SSE status stream
         sse_task = None
@@ -1298,8 +1298,8 @@ def main() -> None:
             try:
                 while True:
                     event = await status_queue.get()
-                    # Display status event in a clean format
-                    phase = getattr(event, "phase", "progress")
+                    # Display status event in a clean format using new StatusEvent format
+                    phase = event.phase.value if hasattr(event.phase, 'value') else str(event.phase)
                     phase_disp = phase
                     if _supports_color():
                         phase_color_map = {
@@ -1315,11 +1315,10 @@ def main() -> None:
                     txt = event.message
                     status_line = f"[{phase_disp}] {server_col}: {txt}"
 
-                    # Level coloring overrides overall line if error/warning
-                    if event.level == "error" and _supports_color():
+                    # Error phase should be red
+                    if phase == "error" and _supports_color():
                         status_line = _colorize(status_line, "31")
-                    elif event.level == "warning" and _supports_color():
-                        status_line = _colorize(status_line, "33")
+                    print(status_line)
                     print(status_line)
             except asyncio.CancelledError:
                 return

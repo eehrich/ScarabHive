@@ -5,7 +5,6 @@ Combines DuckDuckGo search with web scraping capabilities.
 from __future__ import annotations
 
 import logging
-import asyncio
 from typing import Any, Dict
 from pathlib import Path
 
@@ -13,12 +12,9 @@ from agent_system.config.models import AgentConfig, MCPConfig, LLMConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.servers.bootstrap import bootstrap_servers
-from agent_system.mcp.status import (
-    publish_status,
-    PHASE_START,
-    PHASE_PROGRESS,
-    PHASE_END,
-    PHASE_ERROR,
+from agent_system.mcp.improved_status import (
+    status_scope,
+    improved_status_bus,
 )
 from agent_system.context.agent_tracker import update_agent_context_usage
 
@@ -177,153 +173,121 @@ class WebResearchAgent(Agent):
         step_count = 0
         total_messages = 0
 
-        try:
-            # Pass the request_id to run_events so coordinator/worker messages have correct correlation
-            # Consume all events but don't break early to let base Agent.run_events complete
-            events_generator = self.run_events(task_prompt, request_id=request_id)
-            async for event in events_generator:
-                event_type = event.get("type")
+        # Use status_scope for automatic START/END coordinator/worker status management
+        async with status_scope(
+            improved_status_bus,
+            coordinator_name=f"{status_name}_coordinator",
+            worker_name=f"{status_name}_worker",
+            request_id=request_id,
+            operation_name=operation_name
+        ) as status:
+            
+            try:
+                # Pass the request_id to run_events so coordinator/worker messages have correct correlation
+                # Consume all events but don't break early to let base Agent.run_events complete
+                events_generator = self.run_events(task_prompt, request_id=request_id)
+                async for event in events_generator:
+                    event_type = event.get("type")
 
-                if event_type == "start":
-                    step_count += 1
-                    try:
-                        await publish_status(
-                            status_name,
-                            f"{operation_name}: Starting analysis...",
-                            request_id=request_id,
-                            phase=PHASE_PROGRESS
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to publish start status: {e}")
-                    # Yield to the event loop so subscribers can receive the start event
-                    await asyncio.sleep(0)
+                    if event_type == "start":
+                        step_count += 1
+                        await status.step("Starting analysis...")
 
-                elif event_type == "thinking":
-                    # Track LLM conversation activity
-                    total_messages += 1
-                    try:
-                        # Get conversation context for tracking
-                        if hasattr(self, '_current_messages'):
-                            message_count = len(self._current_messages)
-                            # Estimate tokens from current conversation
-                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
+                    elif event_type == "thinking":
+                        # Track LLM conversation activity
+                        total_messages += 1
+                        await status.progress("Processing...", is_coordinator=False)
+                        try:
+                            # Get conversation context for tracking
+                            if hasattr(self, '_current_messages'):
+                                message_count = len(self._current_messages)
+                                # Estimate tokens from current conversation
+                                estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
 
-                            # Update agent context tracker
-                            update_agent_context_usage(
-                                self.name,
-                                current_tokens=estimated_tokens,
-                                predicted_tokens=estimated_tokens,
-                                message_count=message_count
-                            )
-                    except Exception as e:
-                        logger.debug("Failed to update agent context stats: %s", e)
+                                # Update agent context tracker
+                                update_agent_context_usage(
+                                    self.name,
+                                    current_tokens=estimated_tokens,
+                                    predicted_tokens=estimated_tokens,
+                                    message_count=message_count
+                                )
+                        except Exception as e:
+                            logger.debug("Failed to update agent context stats: %s", e)
 
-                elif event_type == "mcp_call":
-                    step_count += 1
-                    tool_name = event.get("server", "unknown")
-                    action = event.get("action", "unknown")
-                    try:
-                        # Publish agent-level progress
-                        await publish_status(
-                            status_name,
-                            f"{operation_name}: Step {step_count} - Using {tool_name} ({action})",
-                            request_id=request_id,
-                            phase=PHASE_PROGRESS,
-                        )
-                        await asyncio.sleep(0)
-                    except Exception as e:
-                        logger.warning(f"Failed to publish mcp_call status: {e}")
-                    await asyncio.sleep(0)
+                    elif event_type == "mcp_call":
+                        step_count += 1
+                        tool_name = event.get("server", "unknown")
+                        action = event.get("action", "unknown")
+                        await status.step(f"Step {step_count} - Using {tool_name} ({action})")
+                        
+                        # Store tool calls in results - convert to expected format
+                        if "calls" not in results:
+                            results["calls"] = []
+                        results["calls"].append({
+                            "function": {"name": tool_name},
+                            "server": tool_name,
+                            "action": action,
+                            "params": event.get("params", {})
+                        })
 
-                    # Store tool calls in results - convert to expected format
-                    if "calls" not in results:
-                        results["calls"] = []
-                    results["calls"].append({
-                        "function": {"name": tool_name},
-                        "server": tool_name,
-                        "action": action,
-                        "params": event.get("params", {})
-                    })
+                    elif event_type == "mcp_result":
+                        tool_name = event.get("server", "unknown")
+                        await status.progress(f"Processing results from {tool_name}...", is_coordinator=False)
 
-                elif event_type == "mcp_result":
-                    tool_name = event.get("server", "unknown")
+                    elif event_type == "final":
+                        results["summary"] = event.get("summary", "")
+                        await status.step("Finalizing results...")
 
-                    # Publish agent-level progress
-                    await publish_status(
-                        status_name,
-                        f"{operation_name}: Processing results from {tool_name}...",
-                        request_id=request_id,
-                        phase=PHASE_PROGRESS,
-                    )
-                    await asyncio.sleep(0)
+                        # Final agent tracking update
+                        try:
+                            if hasattr(self, '_current_messages'):
+                                message_count = len(self._current_messages)
+                                estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
 
-                elif event_type == "final":
-                    results["summary"] = event.get("summary", "")
-                    await publish_status(
-                        status_name,
-                        f"{operation_name}: Finalizing results...",
-                        request_id=request_id,
-                        phase=PHASE_PROGRESS
-                    )
-                    await asyncio.sleep(0)
+                                # Check if LLM usage data is available in the event
+                                actual_tokens = event.get("usage", {}).get("total_tokens", 0) if event.get("usage") else 0
 
-                    # Final agent tracking update
-                    try:
-                        if hasattr(self, '_current_messages'):
-                            message_count = len(self._current_messages)
-                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
+                                update_agent_context_usage(
+                                    self.name,
+                                    current_tokens=estimated_tokens,
+                                    predicted_tokens=estimated_tokens,
+                                    message_count=message_count,
+                                    actual_tokens=actual_tokens if actual_tokens > 0 else None
+                                )
+                        except Exception as e:
+                            logger.debug("Failed to update final agent context stats: %s", e)
 
-                            # Check if LLM usage data is available in the event
-                            actual_tokens = event.get("usage", {}).get("total_tokens", 0) if event.get("usage") else 0
+                        # Continue consuming events to let base Agent.run_events complete 
+                        # and publish final coordinator/worker status messages
 
-                            update_agent_context_usage(
-                                self.name,
-                                current_tokens=estimated_tokens,
-                                predicted_tokens=estimated_tokens,
-                                message_count=message_count,
-                                actual_tokens=actual_tokens if actual_tokens > 0 else None
-                            )
-                    except Exception as e:
-                        logger.debug("Failed to update final agent context stats: %s", e)
+                    elif event_type == "error":
+                        error_msg = event.get("message", "Unknown error")
+                        results.setdefault("errors", []).append(error_msg)
+                        await status.error(f"Error - {error_msg}")
+                        raise Exception(error_msg)
 
-                    # Continue consuming events to let base Agent.run_events complete 
-                    # and publish final coordinator/worker status messages
-                    await asyncio.sleep(0)
+                    elif event_type == "end":
+                        # Mark that we've seen the end event but continue consuming
+                        # to let base Agent.run_events complete and publish final status
+                        # Continue loop to let generator finish naturally
+                        pass
 
-                elif event_type == "error":
-                    error_msg = event.get("message", "Unknown error")
-                    results.setdefault("errors", []).append(error_msg)
-                    await publish_status(
-                        status_name,
-                        f"{operation_name}: Error - {error_msg}",
-                        request_id=request_id,
-                        level="error",
-                        phase=PHASE_ERROR
-                    )
+                # Let the generator complete naturally to ensure final status publishing
+                # The async for loop will exit when the generator is exhausted
+                # status_scope will automatically publish coordinator/worker END messages
+                return results
 
-                    await asyncio.sleep(0)
-                    raise Exception(error_msg)
+            except Exception as e:
+                # Error handling - status_scope will still publish proper END status
+                logger.error(f"WebResearchAgent task failed: {e}")
+                results.setdefault("errors", []).append(str(e))
+                raise
 
-                elif event_type == "end":
-                    # Mark that we've seen the end event but continue consuming
-                    # to let base Agent.run_events complete and publish final status
-                    await asyncio.sleep(0)
-                    # Continue loop to let generator finish naturally
-
-            # Let the generator complete naturally to ensure final status publishing
-            # The async for loop will exit when the generator is exhausted
-            return results
-
-        except Exception as e:
-            results.setdefault("errors", []).append(str(e))
-            await publish_status(
-                status_name,
-                f"{operation_name}: Failed - {str(e)}",
-                request_id=request_id,
-                level="error",
-                phase=PHASE_ERROR
-            )
-            raise
+            except Exception as e:
+                # Error handling - status_scope will still publish proper END status
+                logger.error(f"WebResearchAgent task failed: {e}")
+                results.setdefault("errors", []).append(str(e))
+                raise
 
     async def research(self, topic: str, max_results: int = 5, request_id: str = None) -> Dict[str, Any]:
         research_prompt = f"""
@@ -341,40 +305,17 @@ class WebResearchAgent(Agent):
         - Different perspectives or viewpoints
         - Source URLs for verification
         """
-        # publish research start
-        await publish_status(
-            status_name, 
-            f"Research started: {topic}", 
-            request_id=request_id, 
-            phase=PHASE_START
-        )
-        await asyncio.sleep(0)
-
+        # Note: _run_with_progress already uses status_scope for coordinator/worker status
+        # So we don't need to wrap this method with status_scope again
         try:
             res = await self._run_with_progress(research_prompt, f"Researching '{topic}'", request_id)
             # Add status and agent info to match expected format
             res["status"] = "success"
             res["agent"] = self.name
-
-            await publish_status(
-                status_name, 
-                f"Research completed: {topic}", 
-                request_id=request_id, 
-                phase=PHASE_END
-            )
-            await asyncio.sleep(0)
-
+            # _run_with_progress handles all status publishing via status_scope
             return res
         
         except Exception as e:
-            await publish_status(
-                status_name, 
-                f"Research failed: {str(e)}", 
-                request_id=request_id, 
-                level="error", 
-                phase=PHASE_ERROR
-            )
-            await asyncio.sleep(0)
             return {"status": "error", "error": str(e), "agent": self.name}
 
     async def fact_check(self, claim: str, request_id: str = None) -> Dict[str, Any]:
@@ -393,37 +334,15 @@ class WebResearchAgent(Agent):
         - Contradicting evidence if any
         - Context and nuances
         """
-        await publish_status(
-            status_name, 
-            f"Fact-check started: {claim[:50]}...", 
-            request_id=request_id, 
-            phase=PHASE_START
-        )
-        await asyncio.sleep(0)
-
+        # Note: _run_with_progress already uses status_scope for coordinator/worker status
         try:
             res = await self._run_with_progress(fact_check_prompt, "Fact-checking claim", request_id)
             # Add status and agent info to match expected format
             res["status"] = "success"
             res["agent"] = self.name
-            await publish_status(
-                status_name, 
-                "Fact-check completed", 
-                request_id=request_id, 
-                phase=PHASE_END
-            )
-            await asyncio.sleep(0)
             return res
         
         except Exception as e:
-            await publish_status(
-                status_name, 
-                f"Fact-check failed: {str(e)}", 
-                request_id=request_id, 
-                level="error", 
-                phase=PHASE_ERROR
-            )
-            await asyncio.sleep(0)
             return {"status": "error", "error": str(e), "agent": self.name}
 
     async def compare_sources(self, topic: str, source_urls: list[str], request_id: str = None) -> Dict[str, Any]:
@@ -446,36 +365,14 @@ class WebResearchAgent(Agent):
         - Bias or perspective analysis
         - Most comprehensive/reliable source assessment
         """
-        await publish_status(
-            status_name, 
-            f"Compare sources started: {topic}", 
-            request_id=request_id, 
-            phase=PHASE_PROGRESS
-        )
-        await asyncio.sleep(0)
-
+        # Note: _run_with_progress already uses status_scope for coordinator/worker status
         try:
             res = await self._run_with_progress(compare_prompt, f"Comparing sources for '{topic}'", request_id)
             # Add status and agent info to match expected format
             res["status"] = "success"
             res["agent"] = self.name
-            await publish_status(
-                status_name, 
-                "Compare sources completed", 
-                request_id=request_id, 
-                phase=PHASE_PROGRESS
-            )
-            await asyncio.sleep(0)
             return res
         except Exception as e:
-            await publish_status(
-                status_name, 
-                f"Compare sources failed: {str(e)}", 
-                request_id=request_id, 
-                level="error", 
-                phase=PHASE_ERROR
-            )
-            await asyncio.sleep(0)
             return {"status": "error", "error": str(e), "agent": self.name}
 
     def get_schema(self) -> Dict[str, Any]:

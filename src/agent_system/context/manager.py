@@ -6,7 +6,10 @@ from typing import List, Optional, Tuple
 from ..llm.clients import ChatMessage
 from .config import ContextConfig, WarningLevel
 from .tracker import record_context_usage
-from ..mcp.status import publish_status, PHASE_START, PHASE_END, PHASE_ERROR
+from ..mcp.improved_status import (
+    publish_status_improved,
+    StatusPhase,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +303,7 @@ class ContextManager:
         # Helper to safely publish status without letting failures bubble up
         async def _safe_publish(**kwargs):
             try:
-                await publish_status(**kwargs)
+                await publish_status_improved(**kwargs)
             except Exception:
                 logger.exception("Status publish failed (non-fatal)")
 
@@ -308,7 +311,7 @@ class ContextManager:
         await _safe_publish(
             server="context-manager",
             message="🔄 Starting context management",
-            phase=PHASE_START,
+            phase=StatusPhase.START,
             meta={"tokens": current_tokens, "strategy": self.config.strategy.value}
         )
 
@@ -363,7 +366,7 @@ class ContextManager:
             await _safe_publish(
                 server="context-manager",
                 message=f"✅ Context management complete: {original_count}→{new_count} messages, saved {saved_tokens:,} tokens",
-                phase=PHASE_END,
+                phase=StatusPhase.END,
                 meta={
                     "original_messages": original_count,
                     "final_messages": new_count,
@@ -381,7 +384,7 @@ class ContextManager:
             await _safe_publish(
                 server="context-manager",
                 message=f"❌ Context management failed: {str(e)}",
-                phase=PHASE_ERROR,
+                phase=StatusPhase.ERROR,
                 level="error",
                 meta={"error": str(e), "strategy": self.config.strategy.value}
             )

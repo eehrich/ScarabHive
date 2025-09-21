@@ -5,11 +5,9 @@ from typing import Any
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer  # absolute import to work when executed with -m
-from agent_system.mcp.status import (
-    publish_status,
-    PHASE_START,
-    PHASE_END,
-    PHASE_ERROR,
+from agent_system.mcp.improved_status import (
+    publish_status_improved,
+    StatusPhase,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,7 +37,7 @@ class DuckDuckGoSearchServer(MCPServer):
             # Publish start; ensure terminal event is sent regardless of failures
             try:
                 try:
-                    await publish_status(self.name, f"Searching: {query}", request_id=request_id, phase=PHASE_START)
+                    await publish_status_improved(self.name, f"Searching: {query}", request_id=request_id, phase=StatusPhase.START)
                 except Exception:
                     pass
 
@@ -54,11 +52,11 @@ class DuckDuckGoSearchServer(MCPServer):
                     logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
                     # publish error status
                     try:
-                        await publish_status(
+                        await publish_status_improved(
                             self.name,
                             f"Search failed: {str(e)}",
                             request_id=request_id,
-                            phase=PHASE_ERROR,
+                            phase=StatusPhase.ERROR,
                             level="error",
                             meta={"error": str(e)},
                         )
@@ -75,11 +73,11 @@ class DuckDuckGoSearchServer(MCPServer):
             finally:
                 # Always attempt to publish an END event to signal completion to subscribers.
                 try:
-                    await publish_status(
+                    await publish_status_improved(
                         self.name,
                         f"Search completed: {query} ({len(results)} results)",
                         request_id=request_id,
-                        phase=PHASE_END,
+                        phase=StatusPhase.END,
                         meta={"results": len(results)},
                     )
                 except Exception:

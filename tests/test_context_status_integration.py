@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch, Mock
 from agent_system.context.manager import ContextManager
 from agent_system.context.config import ContextConfig, ContextStrategy
 from agent_system.llm.clients import ChatMessage
+from agent_system.mcp.improved_status import StatusPhase
 
 
 class TestContextStatusIntegration:
@@ -29,7 +30,7 @@ class TestContextStatusIntegration:
         
         with patch.object(self.manager, 'estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', return_value=messages[:5]):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                     await self.manager.manage_context(messages)
         
         # Verify status events were published
@@ -40,13 +41,13 @@ class TestContextStatusIntegration:
         
         # First call should be START
         start_call = calls[0]
-        assert start_call[1]['phase'] == 'start'
+        assert start_call[1]['phase'] == StatusPhase.START
         assert start_call[1]['server'] == 'context-manager'
         assert 'Starting context management' in start_call[1]['message']
         
         # Last call should be END (success)
         end_call = calls[-1]
-        assert end_call[1]['phase'] == 'end'
+        assert end_call[1]['phase'] == StatusPhase.END
         assert end_call[1]['server'] == 'context-manager'
         assert 'complete' in end_call[1]['message'].lower()
         
@@ -63,7 +64,7 @@ class TestContextStatusIntegration:
         
         with patch.object(self.manager, 'estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', side_effect=Exception("Truncation failed")):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
         
         # Should return original messages on error
@@ -71,7 +72,7 @@ class TestContextStatusIntegration:
         
         # Check for error status event
         error_calls = [call for call in mock_publish.call_args_list 
-                      if call[1]['phase'] == 'error']
+                      if call[1]['phase'] == StatusPhase.ERROR]
         assert len(error_calls) == 1
         
         error_call = error_calls[0]
@@ -107,7 +108,7 @@ class TestContextStatusIntegration:
         ]
         
         with patch.object(manager, 'estimate_token_count', return_value=900):
-            with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+            with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                 await manager.manage_context(messages)
         
         # Should call summarizer
@@ -115,8 +116,8 @@ class TestContextStatusIntegration:
         
         # Should publish status events
         assert mock_publish.call_count >= 2
-        start_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == 'start']
-        end_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == 'end']
+        start_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == StatusPhase.START]
+        end_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == StatusPhase.END]
         assert len(start_calls) >= 1
         assert len(end_calls) >= 1
     
@@ -131,14 +132,14 @@ class TestContextStatusIntegration:
             ChatMessage(role="assistant", content="  Response  with  formatting  issues  ")
         ]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
             await optimizer.optimize_messages(messages)
         
         # Should publish start and end events
         assert mock_publish.call_count >= 2
         
-        start_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == 'start']
-        end_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == 'end']
+        start_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == StatusPhase.START]
+        end_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == StatusPhase.END]
         
         assert len(start_calls) == 1
         assert len(end_calls) == 1
@@ -169,7 +170,7 @@ class TestStatusEventMetadata:
         
         with patch.object(manager, 'estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', return_value=messages):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                     await manager.manage_context(messages)
         
         # Check start event metadata
@@ -199,11 +200,11 @@ class TestStatusEventMetadata:
         optimizer = TokenOptimizer()
         messages = [ChatMessage(role="user", content="Test message")]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
             await optimizer.optimize_messages(messages)
         
         # Check end event metadata
-        end_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == 'end']
+        end_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == StatusPhase.END]
         assert len(end_calls) == 1
         
         end_meta = end_calls[0][1]['meta']
@@ -228,7 +229,7 @@ class TestStatusEventErrorHandling:
         
         with patch.object(manager, 'estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', return_value=messages):
-                with patch('agent_system.context.manager.publish_status', 
+                with patch('agent_system.context.manager.publish_status_improved', 
                           new_callable=AsyncMock, side_effect=Exception("Status publish failed")):
                     # Should not raise exception despite status publishing failure
                     await manager.manage_context(messages)
@@ -247,11 +248,11 @@ class TestStatusEventErrorHandling:
         
         with patch.object(manager, 'estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', side_effect=test_error):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                     await manager.manage_context(messages)
         
         # Find error event
-        error_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == 'error']
+        error_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == StatusPhase.ERROR]
         assert len(error_calls) == 1
         
         error_call = error_calls[0]
@@ -273,7 +274,7 @@ class TestStatusEventMessageContent:
         
         with patch.object(manager, 'estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', return_value=messages):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.context.manager.publish_status_improved', new_callable=AsyncMock) as mock_publish:
                     await manager.manage_context(messages)
         
         for call in mock_publish.call_args_list:
@@ -293,10 +294,10 @@ class TestStatusEventMessageContent:
         # Create enough messages to trigger progress events
         messages = [ChatMessage(role="user", content=f"Message {i}") for i in range(15)]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
             await optimizer.optimize_messages(messages)
         
-        progress_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == 'progress']
+        progress_calls = [call for call in mock_publish.call_args_list if call[1]['phase'] == StatusPhase.PROGRESS]
         
         for call in progress_calls:
             message = call[1]['message']

@@ -4,11 +4,9 @@ from typing import Any
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
-from agent_system.mcp.status import (
-    publish_status,
-    PHASE_START,
-    PHASE_END,
-    PHASE_ERROR,
+from agent_system.mcp.improved_status import (
+    publish_status_improved,
+    StatusPhase,
 )
 
 
@@ -37,7 +35,7 @@ class GoogleSearchServer(MCPServer):
 
             # publish start
             try:
-                await publish_status(self.name, f"Google search: {query}", request_id=request_id, phase=PHASE_START)
+                await publish_status_improved(self.name, f"Google search: {query}", request_id=request_id, phase=StatusPhase.START)
             except Exception:
                 pass
 
@@ -47,7 +45,7 @@ class GoogleSearchServer(MCPServer):
                 resp.raise_for_status()
             except Exception as e:
                 try:
-                    await publish_status(self.name, f"Google search failed: {str(e)}", request_id=request_id, level="error", phase=PHASE_ERROR)
+                    await publish_status_improved(self.name, f"Google search failed: {str(e)}", request_id=request_id, level="error", phase=StatusPhase.ERROR)
                 except Exception:
                     pass
                 raise
@@ -61,7 +59,7 @@ class GoogleSearchServer(MCPServer):
                     "body": it.get("snippet"),
                 })
             try:
-                await publish_status(self.name, f"Google search completed: {query} ({len(results)} results)", request_id=request_id, phase=PHASE_END, meta={"results": len(results)})
+                await publish_status_improved(self.name, f"Google search completed: {query} ({len(results)} results)", request_id=request_id, phase=StatusPhase.END, meta={"results": len(results)})
             except Exception:
                 pass
             return {"engine": "google", "query": query, "results": results}

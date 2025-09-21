@@ -17,7 +17,10 @@ from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
 from ...context.agent_tracker import register_agent_for_tracking, update_agent_context_usage
-from ...mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
+from ...mcp.improved_status import (
+    publish_status_improved,
+    StatusPhase,
+)
 from .planner import Planner
 from .executor import Executor
 
@@ -524,24 +527,24 @@ class Agent(MCPServer):
 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
-                # Best-effort: publish a PHASE_START for the whole run when first entering run()
+                # Best-effort: publish a StatusPhase.START for the whole run when first entering run()
                 if step == 0:
-                    # High-level operation status using PHASE_PROGRESS so it doesn't conflict with LLM PHASE_START
-                    await publish_status(
+                    # High-level operation status using StatusPhase.PROGRESS so it doesn't conflict with LLM StatusPhase.START
+                    await publish_status_improved(
                         server=f"{self.name}_worker",
                         message="started", 
                         request_id=request_id, 
-                        phase=PHASE_START,
+                        phase=StatusPhase.START,
                         meta={"step": step + 1}
                     )
                     await asyncio.sleep(0)
 
                 # Emit status: calling LLM (planner) - technical detail level
-                await publish_status(
+                await publish_status_improved(
                     server=f"{self.name}_worker", 
                     message="Calling LLM (planner)", 
                     request_id=request_id, 
-                    phase=PHASE_PROGRESS, 
+                    phase=StatusPhase.PROGRESS, 
                     meta={"step": step + 1}
                 )
                 await asyncio.sleep(0)
@@ -550,11 +553,11 @@ class Agent(MCPServer):
                 llm_out = await planner.chat(messages, tools_schema)
 
                 # Emit status: LLM call complete
-                await publish_status(
+                await publish_status_improved(
                     server=f"{self.name}_worker",
                     message="LLM (planner) response received", 
                     request_id=request_id, 
-                    phase=PHASE_PROGRESS, 
+                    phase=StatusPhase.PROGRESS, 
                     meta={"step": step + 1}
                 )
                 assistant = llm_out.get("assistant", {})
@@ -614,11 +617,11 @@ class Agent(MCPServer):
                     logger.warning("Breaking agent loop: %d consecutive empty responses", consecutive_empty_responses)
                     results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses")
                     # Best-effort publish terminal error status
-                    await publish_status(
+                    await publish_status_improved(
                         server=f"{self.name}_worker",
                         message=f"stopped due to {consecutive_empty_responses} empty responses",
                         request_id=request_id,
-                        phase=PHASE_ERROR,
+                        phase=StatusPhase.ERROR,
                         meta={"consecutive_empty": consecutive_empty_responses}
                     )
                     break
@@ -632,11 +635,11 @@ class Agent(MCPServer):
                     else:
                         results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls")
                     # Best-effort: publish terminal status
-                    await publish_status(
+                    await publish_status_improved(
                         server=f"{self.name}_worker",
                         message=f"stopped after {consecutive_no_tool_calls} responses without tool calls",
                         request_id=request_id,
-                        phase=PHASE_PROGRESS if content else PHASE_ERROR,
+                        phase=StatusPhase.PROGRESS if content else StatusPhase.ERROR,
                         meta={"consecutive_no_tool_calls": consecutive_no_tool_calls}
                     )
                     break
@@ -877,11 +880,11 @@ class Agent(MCPServer):
 
             # Best-effort: publish a terminal status event for CLI/run path so subscribers see completion
             # Let exceptions surface here to reveal publish issues rather than silently hiding them.
-            final_phase = PHASE_ERROR if results.get('errors') else PHASE_END
+            final_phase = StatusPhase.ERROR if results.get('errors') else StatusPhase.END
                         
             # Then complete the technical status
-            final_msg = f"{self.name}: completed" if final_phase == PHASE_END else f"{self.name}: completed with errors"
-            await publish_status(
+            final_msg = f"{self.name}: completed" if final_phase == StatusPhase.END else f"{self.name}: completed with errors"
+            await publish_status_improved(
                 server=f"{self.name}_worker",
                 message=final_msg, 
                 request_id=request_id, 
@@ -1129,13 +1132,13 @@ class Agent(MCPServer):
             executor = Executor(self.registry)
 
             # Now that everything is set up and the forwarding task is definitely running,
-            # publish the PHASE_START event so it gets captured
-            logger.debug("Publishing PHASE_START at execution start for server=%s request_id=%s", self.name, request_id)
-            await publish_status(
+            # publish the StatusPhase.START event so it gets captured
+            logger.debug("Publishing StatusPhase.START at execution start for server=%s request_id=%s", self.name, request_id)
+            await publish_status_improved(
                 server=f"{self.name}_coordinator",
                 message="started",
                 request_id=request_id,
-                phase=PHASE_START,
+                phase=StatusPhase.START,
                 meta={"session_id": session_id},
             )
             await asyncio.sleep(0)
@@ -1156,19 +1159,19 @@ class Agent(MCPServer):
                     logger.info("Request %s cancelled at step %d", request_id, step + 1)
                     yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
                     # Best-effort: publish terminal status so clients see completion
-                    await publish_status(
+                    await publish_status_improved(
                         server=f"{self.name}_worker",
                         message=f"cancelled at step {step + 1}",
                         request_id=request_id,
-                        phase=PHASE_END,
+                        phase=StatusPhase.END,
                         meta={"step": step + 1, "reason": "cancelled"}
                     )
                     await asyncio.sleep(0)
-                    await publish_status(
+                    await publish_status_improved(
                         server=f"{self.name}_coordinator",
                         message=f"cancelled at step {step + 1}",
                         request_id=request_id,
-                        phase=PHASE_END,
+                        phase=StatusPhase.END,
                         meta={"step": step + 1, "reason": "cancelled"}
                     )                    
                     await asyncio.sleep(0)
@@ -1176,11 +1179,11 @@ class Agent(MCPServer):
                     return
 
                 # Publish heartbeat status for overall agent progress (best-effort)
-                await publish_status(
+                await publish_status_improved(
                         server=f"{self.name}_coordinator",
                         message=f"running step {step + 1}/{max_steps}",
                         request_id=request_id,
-                        phase=PHASE_PROGRESS,
+                        phase=StatusPhase.PROGRESS,
                         meta={"step": step + 1, "max_steps": max_steps}
                 )
                 await asyncio.sleep(0)
@@ -1263,11 +1266,11 @@ class Agent(MCPServer):
                 yield {"type": "thinking", "step": step + 1}
 
                 # Emit status: calling LLM (chat_tools)
-                await publish_status(
+                await publish_status_improved(
                     server=f"{self.name}_worker",
                     message="Calling LLM (chat)", 
                     request_id=request_id, 
-                    phase=PHASE_PROGRESS, 
+                    phase=StatusPhase.PROGRESS, 
                     meta={"step": step + 1}
                 )
                 await asyncio.sleep(0)
@@ -1279,11 +1282,11 @@ class Agent(MCPServer):
                 messages = await self._drain_appended_messages(request_id, messages)
 
                 # Emit status: LLM call complete            
-                await publish_status(
+                await publish_status_improved(
                     server=f"{self.name}_worker",
                     message="LLM (chat) response received", 
                     request_id=request_id, 
-                    phase=PHASE_PROGRESS, 
+                    phase=StatusPhase.PROGRESS, 
                     meta={"step": step + 1}
                 )
                 await asyncio.sleep(0)
@@ -1366,11 +1369,11 @@ class Agent(MCPServer):
                 # Execute ALL tool calls with immediate streaming
                 if tool_calls:
 
-                    await publish_status(
+                    await publish_status_improved(
                         server=f"{self.name}_worker",
                         message="Executing Tools", 
                         request_id=request_id, 
-                        phase=PHASE_PROGRESS, 
+                        phase=StatusPhase.PROGRESS, 
                         meta={"step": step + 1}
                     )
                     await asyncio.sleep(0)
@@ -1593,13 +1596,13 @@ class Agent(MCPServer):
 
         # Best-effort: publish a terminal status event so SSE subscribers see completion
 
-        # If results contains errors, publish PHASE_ERROR, else PHASE_END
-        final_phase = PHASE_ERROR if ('results' in locals() and results.get('errors')) else PHASE_END
+        # If results contains errors, publish StatusPhase.ERROR, else StatusPhase.END
+        final_phase = StatusPhase.ERROR if ('results' in locals() and results.get('errors')) else StatusPhase.END
         
         # Then complete the technical status
-        final_msg = "completed" if final_phase == PHASE_END else "completed with errors"
+        final_msg = "completed" if final_phase == StatusPhase.END else "completed with errors"
 
-        await publish_status(
+        await publish_status_improved(
             server=f"{self.name}_worker",
             message=final_msg, 
             request_id=request_id, 
@@ -1607,7 +1610,7 @@ class Agent(MCPServer):
             meta={"summary": results.get('summary') if 'results' in locals() else None}
         )
         await asyncio.sleep(0)       
-        await publish_status(
+        await publish_status_improved(
             server= f"{self.name}_coordinator", 
             message=f"{final_msg} ({step+1} steps)",
             request_id=request_id, 

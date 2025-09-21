@@ -1,13 +1,5 @@
 import json
-import types
-import asyncio
-import sys
 
-import pytest
-
-from pathlib import Path
-
-# We'll run the CLI as a subprocess-like invocation by importing main
 from agent_system import cli
 
 
@@ -17,7 +9,7 @@ class DummyAgent:
 
     async def run_events(self, task):
         for e in self._events:
-            await asyncio.sleep(0)  # allow event loop to switch
+            # ✅ Removed asyncio.sleep(0) - not needed in test dummy
             yield e
     
     async def run(self, task):
@@ -45,15 +37,8 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
         {"type": "end"},
     ]
 
-    # Monkeypatch Agent creation in cli.main path: replace Agent instantiation with DummyAgent
-    class FakeAgentFactory:
-        def __init__(self, *args, **kwargs):
-            self._agent = DummyAgent(events)
-        def __call__(self, *a, **k):
-            return self._agent
-
-    # monkeypatch registry and Agent so cli.main constructs our dummy
-    monkeypatch.setattr(cli, "Agent", lambda *a, **k: DummyAgent(events))
+    # monkeypatch MainAgent (not Agent) since CLI uses MainAgent
+    monkeypatch.setattr(cli, "MainAgent", lambda *a, **k: DummyAgent(events))
 
     # Run with --raw via argv (which uses non-streaming mode)
     monkeypatch.setattr("sys.argv", ["agent-cli", "--raw", "run", "do it"])
@@ -74,7 +59,7 @@ def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
         {"type": "final", "summary": "done"},
         {"type": "end"},
     ]
-    monkeypatch.setattr(cli, "Agent", lambda *a, **k: DummyAgent(events))
+    monkeypatch.setattr(cli, "MainAgent", lambda *a, **k: DummyAgent(events))
     monkeypatch.setattr("sys.argv", ["agent-cli", "--show-mcp", "run", "do it"])
     cli.main()
     out = capsys.readouterr().out

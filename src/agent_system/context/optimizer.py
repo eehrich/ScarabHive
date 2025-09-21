@@ -3,10 +3,9 @@
 import logging
 import re
 import json
-import asyncio
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
-from ..mcp.status import publish_status, PHASE_START, PHASE_PROGRESS, PHASE_END, PHASE_ERROR
+from ..mcp.improved_status import publish_status_improved, StatusPhase
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +54,12 @@ class TokenOptimizer:
             return messages
         
         # Publish start status event
-        await publish_status(
+        await publish_status_improved(
             server="token-optimizer",
             message=f"🔧 Starting token optimization for {len(messages)} messages",
-            phase=PHASE_START,
+            phase=StatusPhase.START,
             meta={"message_count": len(messages)}
         )
-        # Yield control to the event loop so async subscribers can receive the start event
-        await asyncio.sleep(0)
             
         logger.debug("🔧 Starting token optimization for %d messages...", len(messages))
         
@@ -83,24 +80,17 @@ class TokenOptimizer:
                 # Log progress for large batches
                 if len(messages) > 10 and (i + 1) % 10 == 0:
                     logger.debug("   📊 Processed %d/%d messages...", i + 1, len(messages))
-                    await publish_status(
+                    await publish_status_improved(
                         server="token-optimizer",
                         message=f"📊 Processed {i + 1}/{len(messages)} messages",
-                        phase=PHASE_PROGRESS,
+                        phase=StatusPhase.PROGRESS,
                         meta={"processed": i + 1, "total": len(messages)}
                     )
-                    # Allow the event loop a chance to process status subscribers
-                    await asyncio.sleep(0)
-                else:
-                    # For smaller batches, yield occasionally to avoid starving the loop
-                    if (i % 5) == 0:
-                        await asyncio.sleep(0)
         except Exception as e:
-            await publish_status(
+            await publish_status_improved(
                 server="token-optimizer",
                 message=f"❌ Token optimization failed: {str(e)}",
-                phase=PHASE_ERROR,
-                level="error",
+                phase=StatusPhase.ERROR,
                 meta={"error": str(e), "processed": len(optimized)}
             )
             logger.error("Token optimization failed: %s", e)
@@ -141,11 +131,10 @@ class TokenOptimizer:
                 "compression_ratio": ratio,
                 "messages_processed": len(messages),
             }
-            await publish_status(
+            await publish_status_improved(
                 server="token-optimizer",
                 message=f"Optimization degraded token usage: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-                phase=PHASE_ERROR,
-                level="error",
+                phase=StatusPhase.ERROR,
                 meta=meta
             )
 
@@ -199,10 +188,10 @@ class TokenOptimizer:
         # Do not suppress the completion icon for zero-savings runs; only negative
         # savings should suppress the completion indicator.
 
-        await publish_status(
+        await publish_status_improved(
             server="token-optimizer",
             message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-            phase=PHASE_END,
+            phase=StatusPhase.END,
             meta=meta
         )
         
