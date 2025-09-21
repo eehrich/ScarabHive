@@ -6,7 +6,7 @@ from pathlib import Path
 # Add plugins to path for imports
 sys.path.append(str(Path(__file__).parent.parent / "src" / "plugins"))
 
-from agent_system.mcp.improved_status import StatusPhase
+from agent_system.mcp.status import StatusPhase, status_bus
 
 # Import DateTimeServer using explicit module path to avoid conflict with built-in datetime
 def _import_datetime_server():
@@ -21,13 +21,12 @@ DateTimeServer = _import_datetime_server()
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="Test uses old status_bus API that is being replaced by improved_status system")
 async def test_datetime_status_phases():
     """Test that datetime plugin sends correct status phases."""
     server = DateTimeServer("datetime_test")
 
     # Subscribe to status events
-    queue = await improved_status_bus.subscribe(server="datetime_test")
+    queue = await status_bus.subscribe(server="datetime_test")
 
     try:
         # Call datetime with valid action
@@ -68,17 +67,16 @@ async def test_datetime_status_phases():
         assert start_index < end_or_error_index, "START should come before END/ERROR"
 
     finally:
-        improved_status_bus.unsubscribe(queue)
+        status_bus.unsubscribe(queue)
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="Test uses old status_bus API that is being replaced by improved_status system")
 async def test_datetime_error_status_phases():
     """Test that datetime plugin sends ERROR phase for invalid input."""
     server = DateTimeServer("datetime_test_error")
 
     # Subscribe to status events
-    queue = await improved_status_bus.subscribe(server="datetime_test_error")
+    queue = await status_bus.subscribe(server="datetime_test_error")
 
     try:
         # Call datetime with invalid data that should trigger an error
@@ -106,4 +104,4 @@ async def test_datetime_error_status_phases():
             assert StatusPhase.END in phases, "DateTime should send END phase for successful parsing"
 
     finally:
-        improved_status_bus.unsubscribe(queue)
+        status_bus.unsubscribe(queue)

@@ -5,7 +5,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from agent_system.context.summarizer import ConversationSummarizer
 from agent_system.context.config import ContextConfig
 from agent_system.llm.clients import ChatMessage
-from agent_system.mcp.improved_status import StatusPhase
+from agent_system.mcp.status import StatusPhase
 
 
 class TestConversationSummarizer:
@@ -25,7 +25,7 @@ class TestConversationSummarizer:
             ChatMessage(role="assistant", content="Hi there!")
         ]
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             result = await self.summarizer.summarize_conversation(messages, self.config)
         
         # Should return messages unchanged when count <= preserve_recent_messages
@@ -49,7 +49,7 @@ class TestConversationSummarizer:
         mock_response.content = "This is a summary of the conversation about various topics."
         self.mock_llm.complete.return_value = mock_response
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             result = await self.summarizer.summarize_conversation(messages, self.config)
         
         # Should have system message + summary + recent messages
@@ -78,7 +78,7 @@ class TestConversationSummarizer:
         mock_response.content = "Conversation summary."
         self.mock_llm.complete.return_value = mock_response
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             result = await self.summarizer.summarize_conversation(messages, self.config)
         
         # Should have summary + recent messages
@@ -99,7 +99,7 @@ class TestConversationSummarizer:
         # Mock successful LLM response
         self.mock_llm.chat = AsyncMock(return_value="User asked about Python programming and loops.")
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             config = ContextConfig()  # Use default config
             summary = await self.summarizer._create_summary(messages, config)
         
@@ -117,7 +117,7 @@ class TestConversationSummarizer:
         # Mock LLM failure
         self.mock_llm.complete.side_effect = Exception("LLM error")
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             with patch.object(self.summarizer, '_create_fallback_summary', 
                             new_callable=AsyncMock, return_value="Fallback summary") as mock_fallback:
                 config = ContextConfig()  # Use default config
@@ -138,7 +138,7 @@ class TestConversationSummarizer:
         mock_response.content = None
         self.mock_llm.complete.return_value = mock_response
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             with patch.object(self.summarizer, '_create_fallback_summary',
                             new_callable=AsyncMock, return_value="Fallback summary") as mock_fallback:
                 config = ContextConfig()  # Use default config
@@ -219,7 +219,7 @@ class TestConversationSummarizerStatusEvents:
         mock_response.content = "Summary of conversation"
         self.mock_llm.complete.return_value = mock_response
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock) as mock_publish:
             await self.summarizer.summarize_conversation(messages, self.config)
         
         # Should publish start, progress, and end events
@@ -247,7 +247,7 @@ class TestConversationSummarizerStatusEvents:
         # Mock LLM failure
         self.mock_llm.complete.side_effect = Exception("LLM error")
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock) as mock_publish:
             with patch.object(self.summarizer, '_create_fallback_summary',
                             new_callable=AsyncMock, return_value="Fallback"):
                 await self.summarizer._create_summary(messages, ContextConfig())
@@ -279,7 +279,7 @@ class TestConversationSummarizerEdgeCases:
         ]
         
         # Should create fallback summary when no LLM available
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             summary = await self.summarizer._create_summary(messages, ContextConfig())
         
         assert isinstance(summary, str)
@@ -288,7 +288,7 @@ class TestConversationSummarizerEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_messages_list(self):
         """Test behavior with empty messages list."""
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             result = await self.summarizer.summarize_conversation([], self.config)
         
         assert result == []
@@ -302,7 +302,7 @@ class TestConversationSummarizerEdgeCases:
             ChatMessage(role="user", content="Message")
         ]
         
-        with patch('agent_system.context.summarizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.summarizer.publish_status', new_callable=AsyncMock):
             formatted = self.summarizer._format_messages_for_summary(messages, ContextConfig())
         
         assert isinstance(formatted, str)

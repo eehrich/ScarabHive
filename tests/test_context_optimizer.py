@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from agent_system.context.optimizer import TokenOptimizer
 from agent_system.llm.clients import ChatMessage
-from agent_system.mcp.improved_status import StatusPhase
+from agent_system.mcp.status import StatusPhase
 
 
 class TestTokenOptimizer:
@@ -79,7 +79,7 @@ class TestTokenOptimizer:
     @pytest.mark.asyncio
     async def test_optimize_messages_empty_list(self):
         """Test optimization with empty message list."""
-        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock):
             result = await self.optimizer.optimize_messages([])
         
         assert result == []
@@ -92,7 +92,7 @@ class TestTokenOptimizer:
             ChatMessage(role="assistant", content="Hi there! How can I help you today?")
         ]
         
-        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
             result = await self.optimizer.optimize_messages(messages)
         
         # Should return optimized messages
@@ -109,7 +109,7 @@ class TestTokenOptimizer:
             ChatMessage(role="assistant", content="I understand that you want help.")
         ]
         
-        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
             await self.optimizer.optimize_messages(messages)
             
             # Check that tokens_saved in stats is not negative
@@ -138,7 +138,7 @@ class TestTokenOptimizer:
             for i in range(25)
         ]
         
-        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
+        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
             result = await self.optimizer.optimize_messages(messages)
         
         assert len(result) == 25
@@ -155,7 +155,7 @@ class TestTokenOptimizer:
         
         # Mock _optimize_message to raise an exception
         with patch.object(self.optimizer, '_optimize_message', side_effect=Exception("Test error")):
-            with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock) as mock_publish:
+            with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
                 result = await self.optimizer.optimize_messages(messages)
         
         # Should return original messages on error
@@ -385,7 +385,7 @@ class TestTokenOptimizerEdgeCases:
         
         initial_processed = self.optimizer.compression_stats["messages_processed"]
         
-        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock):
             await self.optimizer.optimize_messages(messages)
         
         # Stats should be updated
@@ -434,7 +434,7 @@ I hope this helps you understand the basics! Let me know if you need clarificati
             )
         ]
         
-        with patch('agent_system.context.optimizer.publish_status_improved', new_callable=AsyncMock):
+        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock):
             optimized = await self.optimizer.optimize_messages(messages)
         
         assert len(optimized) == len(messages)

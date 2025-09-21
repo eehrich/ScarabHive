@@ -29,7 +29,7 @@ class TestWebResearchAgentStatusEvents:
                 "phase": phase
             })
         
-        with patch('plugins.web_research_agent.server.publish_status_improved', mock_publish_status):
+        with patch('plugins.web_research_agent.server.publish_status', mock_publish_status):
             result = await agent.call("research", {
                 "topic": "artificial intelligence",
                 "request_id": "test-123"
@@ -73,7 +73,7 @@ class TestWebResearchAgentStatusEvents:
                 "phase": phase
             })
         
-        with patch('plugins.web_research_agent.server.publish_status_improved', mock_publish_status):
+        with patch('plugins.web_research_agent.server.publish_status', mock_publish_status):
             result = await agent.call("fact_check", {
                 "claim": "The Earth is flat",
                 "request_id": "fact-456"
@@ -108,7 +108,7 @@ class TestWebResearchAgentStatusEvents:
                 "phase": phase
             })
         
-        with patch('plugins.web_research_agent.server.publish_status_improved', mock_publish_status):
+        with patch('plugins.web_research_agent.server.publish_status', mock_publish_status):
             result = await agent.call("compare_sources", {
                 "topic": "climate change",
                 "source_urls": ["https://site1.com", "https://site2.com"],
@@ -141,7 +141,7 @@ class TestWebResearchAgentStatusEvents:
                 "phase": phase
             })
         
-        with patch('plugins.web_research_agent.server.publish_status_improved', mock_publish_status):
+        with patch('plugins.web_research_agent.server.publish_status', mock_publish_status):
             result = await agent.call("research", {"topic": "test without request_id"})
         
         # Verify events are still published with None request_id
@@ -176,7 +176,7 @@ class TestWebResearchAgentStatusEvents:
                 "phase": phase
             })
         
-        with patch('plugins.web_research_agent.server.publish_status_improved', mock_publish_status):
+        with patch('plugins.web_research_agent.server.publish_status', mock_publish_status):
             result = await agent._run_with_progress("test research task", "Testing", "test-progress-123")
         
         # Verify progress events were published
@@ -221,7 +221,7 @@ class TestWebResearchAgentStatusEvents:
                 "phase": phase
             })
         
-        with patch('plugins.web_research_agent.server.publish_status_improved', mock_publish_status):
+        with patch('plugins.web_research_agent.server.publish_status', mock_publish_status):
             with pytest.raises(Exception, match="Test error occurred"):
                 await agent._run_with_progress("test task", "Error Test", "error-123")
         
@@ -258,7 +258,7 @@ class TestWebResearchAgentStatusEvents:
                 "phase": phase
             })
         
-        with patch('plugins.web_research_agent.server.publish_status_improved', mock_publish_status):
+        with patch('plugins.web_research_agent.server.publish_status', mock_publish_status):
             result = await agent.research("machine learning", max_results=3, request_id="integration-test")
         
         # Verify _run_with_progress was called correctly
