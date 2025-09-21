@@ -66,15 +66,14 @@ Systematic replacement of 32+ asyncio.sleep(0) calls with guaranteed delivery pa
    
    **Use:**
    ```python
-   await publish_status_improved("server", "message", request_id, StatusPhase.START)
+   await publish_status("server", "message", request_id, StatusPhase.START)
    ```
 
 2. **For dual agent coordination:**
    ```python
    async with status_scope(
-       improved_status_bus,
-       coordinator_name="agent_coordinator",
-       worker_name="agent_worker", 
+       status_bus,
+       name="agent",
        request_id=request_id
    ) as status:
        await status.step("Working...")
@@ -84,7 +83,7 @@ Systematic replacement of 32+ asyncio.sleep(0) calls with guaranteed delivery pa
 3. **For simple migrations:**
    ```python
    # Replace: await publish_status(...); await asyncio.sleep(0)
-   # With:    await publish_status_improved(...)
+   # With:    await publish_status(...)
    ```
 
 ## Risk Assessment
@@ -115,10 +114,14 @@ Systematic replacement of 32+ asyncio.sleep(0) calls with guaranteed delivery pa
 - ✅ Web UI shows correct dual status for all agents
 - ✅ No timing-dependent race conditions
 - ✅ Improved system reliability and maintainability
+- ✅ Clean status API with modern async patterns
 
-## Rollback Plan
+## Migration Completed
 
-- Keep old status.py alongside new improved_status.py
-- Use feature flags to switch between systems
-- Gradual migration allows easy rollback if issues found
+The migration from the old status system to the new clean `status` module has been completed:
+- Old `improved_status.py` has been replaced with clean `status.py`
+- All imports updated across the codebase
+- Examples and documentation updated
+- Tests adapted to use the new API
+- No backward compatibility layer needed due to clean design
 """
