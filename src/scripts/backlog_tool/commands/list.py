@@ -143,7 +143,12 @@ def cmd_list(args: argparse.Namespace) -> int:
             # keep the summary/list views visually consistent with task lines.
             # The legacy full-green header helper `_format_epic_line` is still
             # available for callers that explicitly need the `show.py` style.
-            print(_format_epic_inline(epic, color))
+            line = _format_epic_inline(epic, color)
+            print(line)
+            # print single-line description if present (keep it short)
+            if getattr(epic, 'description', None):
+                desc = _sanitize(' '.join(epic.description), max_len=120)
+                print(f"  {desc}")
 
     if tasks:
         if args.only == 'all' and epics:
@@ -163,6 +168,11 @@ def cmd_list(args: argparse.Namespace) -> int:
 
         for epic_id, (epic, epic_tasks) in sorted(task_by_epic.items()):
             for task in epic_tasks:
-                print(_format_task_line(task, epic, color))
+                line = _format_task_line(task, epic, color)
+                print(line)
+                # print a short single-line description if present
+                if getattr(task, 'description', None):
+                    desc = _sanitize(' '.join(task.description), max_len=100)
+                    print(f"  {desc}")
 
     return 0

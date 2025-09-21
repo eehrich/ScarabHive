@@ -111,6 +111,11 @@ def cmd_show(args: argparse.Namespace) -> int:
                         print(f"      - added: {t.added}")
                     if t.closed:
                         print(f"      - closed: {t.closed}")
+                    # Print multiline description if present
+                    if getattr(t, 'description', None):
+                        print("      - description:")
+                        for line in t.description:
+                            print(f"        {line}")
                 break
 
         if found:
@@ -131,5 +136,10 @@ def cmd_show(args: argparse.Namespace) -> int:
         if task.closed:
             print(f"  closed: {task.closed}")
         print(f"  Parent Epic: {epic.id}: {epic.title}")
+        # Print multiline description if present
+        if getattr(task, 'description', None):
+            print("  - description:")
+            for line in task.description:
+                print(f"    {line}")
 
     return 1 if missing else 0
