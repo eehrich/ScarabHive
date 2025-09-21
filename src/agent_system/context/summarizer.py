@@ -4,8 +4,8 @@ import logging
 from typing import List
 from ..llm.clients import ChatMessage
 from .config import ContextConfig
-from ..mcp.improved_status import (
-    publish_status_improved,
+from ..mcp.status import (
+    publish_status,
     StatusPhase,
 )
 
@@ -117,7 +117,7 @@ class ConversationSummarizer:
             logger.exception("Failed while preserving assistant/tool messages before summarization")
         
         # Publish start status event
-        await publish_status_improved(
+        await publish_status(
             server="conversation-summarizer",
             message=f"📝 Starting conversation summarization: {len(to_summarize)} messages to summarize",
             phase=StatusPhase.START,
@@ -161,7 +161,7 @@ class ConversationSummarizer:
         logger.debug("   📝 New summary included: %s", "Yes" if summary_text else "No")
         
         # Publish completion status event
-        await publish_status_improved(
+        await publish_status(
             server="conversation-summarizer",
             message=f"✅ Summarization complete: {len(messages)}→{len(result)} messages",
             phase=StatusPhase.END,
@@ -223,7 +223,7 @@ class ConversationSummarizer:
             # Create summarization prompt
             summary_prompt = self._create_summary_prompt(conversation_text, config)
             
-            await publish_status_improved(
+            await publish_status(
                 server="conversation-summarizer",
                 message=f"🤖 Requesting summary from LLM ({len(conversation_text):,} chars)",
                 phase=StatusPhase.PROGRESS,
@@ -242,7 +242,7 @@ class ConversationSummarizer:
                 logger.debug("✅ LLM summary complete (output: %d chars, %.1f%% reduction)", 
                            summary_length, reduction_ratio)
                 
-                await publish_status_improved(
+                await publish_status(
                     server="conversation-summarizer", 
                     message=f"✅ LLM summary complete: {len(conversation_text):,}→{summary_length:,} chars ({reduction_ratio:.1f}% reduction)",
                     phase=StatusPhase.PROGRESS,
@@ -259,7 +259,7 @@ class ConversationSummarizer:
                 return await self._create_fallback_summary(messages)
                 
         except Exception as e:
-            await publish_status_improved(
+            await publish_status(
                 server="conversation-summarizer",
                 message=f"❌ LLM summary failed: {str(e)}, using fallback method",
                 phase=StatusPhase.ERROR,

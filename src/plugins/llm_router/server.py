@@ -7,8 +7,8 @@ from pathlib import Path
 from agent_system.llm.clients import ChatMessage, make_llm
 from agent_system.mcp.base import MCPServer
 from agent_system.utils.text_sanitizer import sanitize_for_llm
-from agent_system.mcp.improved_status import (
-    publish_status_improved,
+from agent_system.mcp.status import (
+    publish_status,
     StatusPhase,
 )
 
@@ -89,7 +89,7 @@ class LLMRouterServer(MCPServer):
             try:
                 # publish start
                 try:
-                    await publish_status_improved(self.name, f"Chat request to {provider}/{model}", request_id=request_id, phase=StatusPhase.START)
+                    await publish_status(self.name, f"Chat request to {provider}/{model}", request_id=request_id, phase=StatusPhase.START)
                 except Exception:
                     pass
 
@@ -99,7 +99,7 @@ class LLMRouterServer(MCPServer):
                 content = await client.chat(messages)
 
                 try:
-                    await publish_status_improved(self.name, f"Chat completed ({provider}/{model})", request_id=request_id, phase=StatusPhase.END)
+                    await publish_status(self.name, f"Chat completed ({provider}/{model})", request_id=request_id, phase=StatusPhase.END)
                 except Exception:
                     pass
 

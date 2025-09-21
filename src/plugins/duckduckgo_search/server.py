@@ -5,8 +5,8 @@ from typing import Any
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer  # absolute import to work when executed with -m
-from agent_system.mcp.improved_status import (
-    publish_status_improved,
+from agent_system.mcp.status import (
+    publish_status,
     StatusPhase,
 )
 
@@ -37,7 +37,7 @@ class DuckDuckGoSearchServer(MCPServer):
             # Publish start; ensure terminal event is sent regardless of failures
             try:
                 try:
-                    await publish_status_improved(self.name, f"Searching: {query}", request_id=request_id, phase=StatusPhase.START)
+                    await publish_status(self.name, f"Searching: {query}", request_id=request_id, phase=StatusPhase.START)
                 except Exception:
                     pass
 
@@ -52,7 +52,7 @@ class DuckDuckGoSearchServer(MCPServer):
                     logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
                     # publish error status
                     try:
-                        await publish_status_improved(
+                        await publish_status(
                             self.name,
                             f"Search failed: {str(e)}",
                             request_id=request_id,
@@ -73,7 +73,7 @@ class DuckDuckGoSearchServer(MCPServer):
             finally:
                 # Always attempt to publish an END event to signal completion to subscribers.
                 try:
-                    await publish_status_improved(
+                    await publish_status(
                         self.name,
                         f"Search completed: {query} ({len(results)} results)",
                         request_id=request_id,

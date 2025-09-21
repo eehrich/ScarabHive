@@ -1,6 +1,6 @@
 import json, asyncio, httpx, pytest
 from agent_system.agent.interface_api import build_app
-from agent_system.mcp.status import publish_status, PHASE_START
+from agent_system.mcp.status import StatusPhase, publish_status
 
 pytestmark = pytest.mark.anyio
 
@@ -12,7 +12,7 @@ async def test_traceparent_meta_extraction():
         # Start a stream filtered to server
         async def _pub():
             await asyncio.sleep(0.05)
-            await publish_status('trace_srv','boot', phase=PHASE_START, traceparent=tp)
+            await publish_status('trace_srv','boot', phase=StatusPhase.START, traceparent=tp)
         task = asyncio.create_task(_pub())
         resp = await client.get('/status/stream', params={'close_after':1, 'server':'trace_srv'})
         await task

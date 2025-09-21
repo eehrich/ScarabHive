@@ -3,7 +3,7 @@ import asyncio
 import httpx
 import pytest
 from datetime import datetime
-from agent_system.mcp.status import StatusBus, StatusEvent, publish_status, PHASE_START, PHASE_END, PHASE_PROGRESS, PHASE_ERROR
+from agent_system.mcp.status import StatusBus, StatusEvent, publish_status, StatusPhase
 from agent_system.agent.interface_api import build_app
 
 pytestmark = pytest.mark.anyio
@@ -16,8 +16,8 @@ async def test_bus_filters_and_phases():
     q_req = await bus.subscribe(request_id='r1')
     q_both = await bus.subscribe(server='alpha', request_id='r1')
 
-    ev1 = StatusEvent('alpha','r1','boot', datetime.now(), phase=PHASE_START)
-    ev2 = StatusEvent('beta','r2','other', datetime.now(), phase=PHASE_PROGRESS)
+    ev1 = StatusEvent('alpha','r1','boot', datetime.now(), phase=StatusPhase.START)
+    ev2 = StatusEvent('beta','r2','other', datetime.now(), phase=StatusPhase.PROGRESS)
     await bus.publish(ev1)
     await bus.publish(ev2)
 
@@ -32,8 +32,8 @@ async def test_api_stream_filters_and_close_after():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://t') as client:
         async def _pub():
             await asyncio.sleep(0.05)
-            await publish_status('fs','one', request_id='abc', phase=PHASE_PROGRESS)
-            await publish_status('fs','two', request_id='abc', phase=PHASE_END)
+            await publish_status('fs','one', request_id='abc', phase=StatusPhase.PROGRESS)
+            await publish_status('fs','two', request_id='abc', phase=StatusPhase.END)
         t = asyncio.create_task(_pub())
         resp = await client.get('/status/stream', params={'server':'fs','request_id':'abc','close_after':2})
         await t
@@ -47,7 +47,7 @@ async def test_api_stream_heartbeat_only_then_event():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://t') as client:
         async def _pub():
             await asyncio.sleep(0.2)
-            await publish_status('hb','late', phase=PHASE_PROGRESS)
+            await publish_status('hb','late', phase=StatusPhase.PROGRESS)
         t = asyncio.create_task(_pub())
         resp = await client.get('/status/stream', params={'close_after':1,'heartbeat':5})
         await t
@@ -69,8 +69,8 @@ async def test_error_phase_level_escalation(monkeypatch):
     orig = status_mod.status_bus.publish
     status_mod.status_bus.publish = fake_publish  # type: ignore
     try:
-        await publish_status('esc','oops', phase=PHASE_ERROR, level='info')
+        await publish_status('esc','oops', phase=StatusPhase.ERROR, level='info')
     finally:
         status_mod.status_bus.publish = orig
-    assert captured.get('phase') == 'error'
+    assert captured.get('phase') == StatusPhase.ERROR
     assert captured.get('level') == 'error'

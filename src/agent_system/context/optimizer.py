@@ -5,7 +5,7 @@ import re
 import json
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
-from ..mcp.improved_status import publish_status_improved, StatusPhase
+from ..mcp.status import publish_status, StatusPhase
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class TokenOptimizer:
             return messages
         
         # Publish start status event
-        await publish_status_improved(
+        await publish_status(
             server="token-optimizer",
             message=f"🔧 Starting token optimization for {len(messages)} messages",
             phase=StatusPhase.START,
@@ -80,14 +80,14 @@ class TokenOptimizer:
                 # Log progress for large batches
                 if len(messages) > 10 and (i + 1) % 10 == 0:
                     logger.debug("   📊 Processed %d/%d messages...", i + 1, len(messages))
-                    await publish_status_improved(
+                    await publish_status(
                         server="token-optimizer",
                         message=f"📊 Processed {i + 1}/{len(messages)} messages",
                         phase=StatusPhase.PROGRESS,
                         meta={"processed": i + 1, "total": len(messages)}
                     )
         except Exception as e:
-            await publish_status_improved(
+            await publish_status(
                 server="token-optimizer",
                 message=f"❌ Token optimization failed: {str(e)}",
                 phase=StatusPhase.ERROR,
@@ -131,7 +131,7 @@ class TokenOptimizer:
                 "compression_ratio": ratio,
                 "messages_processed": len(messages),
             }
-            await publish_status_improved(
+            await publish_status(
                 server="token-optimizer",
                 message=f"Optimization degraded token usage: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
                 phase=StatusPhase.ERROR,
@@ -188,7 +188,7 @@ class TokenOptimizer:
         # Do not suppress the completion icon for zero-savings runs; only negative
         # savings should suppress the completion indicator.
 
-        await publish_status_improved(
+        await publish_status(
             server="token-optimizer",
             message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
             phase=StatusPhase.END,

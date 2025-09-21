@@ -17,8 +17,8 @@ from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
 from ...context.agent_tracker import register_agent_for_tracking, update_agent_context_usage
-from ...mcp.improved_status import (
-    publish_status_improved,
+from ...mcp.status import (
+    publish_status,
     StatusPhase,
 )
 from .planner import Planner
@@ -530,7 +530,7 @@ class Agent(MCPServer):
                 # Best-effort: publish a StatusPhase.START for the whole run when first entering run()
                 if step == 0:
                     # High-level operation status using StatusPhase.PROGRESS so it doesn't conflict with LLM StatusPhase.START
-                    await publish_status_improved(
+                    await publish_status(
                         server=f"{self.name}_worker",
                         message="started", 
                         request_id=request_id, 
@@ -540,7 +540,7 @@ class Agent(MCPServer):
                     await asyncio.sleep(0)
 
                 # Emit status: calling LLM (planner) - technical detail level
-                await publish_status_improved(
+                await publish_status(
                     server=f"{self.name}_worker", 
                     message="Calling LLM (planner)", 
                     request_id=request_id, 
@@ -553,7 +553,7 @@ class Agent(MCPServer):
                 llm_out = await planner.chat(messages, tools_schema)
 
                 # Emit status: LLM call complete
-                await publish_status_improved(
+                await publish_status(
                     server=f"{self.name}_worker",
                     message="LLM (planner) response received", 
                     request_id=request_id, 
@@ -617,7 +617,7 @@ class Agent(MCPServer):
                     logger.warning("Breaking agent loop: %d consecutive empty responses", consecutive_empty_responses)
                     results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses")
                     # Best-effort publish terminal error status
-                    await publish_status_improved(
+                    await publish_status(
                         server=f"{self.name}_worker",
                         message=f"stopped due to {consecutive_empty_responses} empty responses",
                         request_id=request_id,
@@ -635,7 +635,7 @@ class Agent(MCPServer):
                     else:
                         results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls")
                     # Best-effort: publish terminal status
-                    await publish_status_improved(
+                    await publish_status(
                         server=f"{self.name}_worker",
                         message=f"stopped after {consecutive_no_tool_calls} responses without tool calls",
                         request_id=request_id,
@@ -884,7 +884,7 @@ class Agent(MCPServer):
                         
             # Then complete the technical status
             final_msg = f"{self.name}: completed" if final_phase == StatusPhase.END else f"{self.name}: completed with errors"
-            await publish_status_improved(
+            await publish_status(
                 server=f"{self.name}_worker",
                 message=final_msg, 
                 request_id=request_id, 
@@ -945,8 +945,8 @@ class Agent(MCPServer):
 
             # Subscribe to status events for this request to forward them through SSE
             # Listen for ALL servers with this request_id, not just this agent's server name
-            from ...mcp.improved_status import improved_status_bus
-            status_queue = await improved_status_bus.subscribe(request_id=request_id)
+            from ...mcp.status import status_bus
+            status_queue = await status_bus.subscribe(request_id=request_id)
 
             # Set up status event forwarding task
             status_events_to_forward = []
@@ -1134,7 +1134,7 @@ class Agent(MCPServer):
             # Now that everything is set up and the forwarding task is definitely running,
             # publish the StatusPhase.START event so it gets captured
             logger.debug("Publishing StatusPhase.START at execution start for server=%s request_id=%s", self.name, request_id)
-            await publish_status_improved(
+            await publish_status(
                 server=f"{self.name}_coordinator",
                 message="started",
                 request_id=request_id,
@@ -1159,7 +1159,7 @@ class Agent(MCPServer):
                     logger.info("Request %s cancelled at step %d", request_id, step + 1)
                     yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
                     # Best-effort: publish terminal status so clients see completion
-                    await publish_status_improved(
+                    await publish_status(
                         server=f"{self.name}_worker",
                         message=f"cancelled at step {step + 1}",
                         request_id=request_id,
@@ -1167,7 +1167,7 @@ class Agent(MCPServer):
                         meta={"step": step + 1, "reason": "cancelled"}
                     )
                     await asyncio.sleep(0)
-                    await publish_status_improved(
+                    await publish_status(
                         server=f"{self.name}_coordinator",
                         message=f"cancelled at step {step + 1}",
                         request_id=request_id,
@@ -1179,7 +1179,7 @@ class Agent(MCPServer):
                     return
 
                 # Publish heartbeat status for overall agent progress (best-effort)
-                await publish_status_improved(
+                await publish_status(
                         server=f"{self.name}_coordinator",
                         message=f"running step {step + 1}/{max_steps}",
                         request_id=request_id,
@@ -1266,7 +1266,7 @@ class Agent(MCPServer):
                 yield {"type": "thinking", "step": step + 1}
 
                 # Emit status: calling LLM (chat_tools)
-                await publish_status_improved(
+                await publish_status(
                     server=f"{self.name}_worker",
                     message="Calling LLM (chat)", 
                     request_id=request_id, 
@@ -1282,7 +1282,7 @@ class Agent(MCPServer):
                 messages = await self._drain_appended_messages(request_id, messages)
 
                 # Emit status: LLM call complete            
-                await publish_status_improved(
+                await publish_status(
                     server=f"{self.name}_worker",
                     message="LLM (chat) response received", 
                     request_id=request_id, 
@@ -1369,7 +1369,7 @@ class Agent(MCPServer):
                 # Execute ALL tool calls with immediate streaming
                 if tool_calls:
 
-                    await publish_status_improved(
+                    await publish_status(
                         server=f"{self.name}_worker",
                         message="Executing Tools", 
                         request_id=request_id, 
@@ -1602,7 +1602,7 @@ class Agent(MCPServer):
         # Then complete the technical status
         final_msg = "completed" if final_phase == StatusPhase.END else "completed with errors"
 
-        await publish_status_improved(
+        await publish_status(
             server=f"{self.name}_worker",
             message=final_msg, 
             request_id=request_id, 
@@ -1610,7 +1610,7 @@ class Agent(MCPServer):
             meta={"summary": results.get('summary') if 'results' in locals() else None}
         )
         await asyncio.sleep(0)       
-        await publish_status_improved(
+        await publish_status(
             server= f"{self.name}_coordinator", 
             message=f"{final_msg} ({step+1} steps)",
             request_id=request_id, 

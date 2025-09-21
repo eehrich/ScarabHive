@@ -2,7 +2,7 @@ import httpx, asyncio, json
 import re
 import pytest
 from agent_system.agent.interface_api import build_app
-from agent_system.mcp.status import publish_status, PHASE_START, PHASE_END
+from agent_system.mcp.status import StatusPhase, publish_status
 
 pytestmark = pytest.mark.anyio
 

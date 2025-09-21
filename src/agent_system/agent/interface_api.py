@@ -24,10 +24,10 @@ from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
 from ..llm.clients import ChatMessage
-from ..mcp.improved_status import (
-    improved_status_bus,
+from ..mcp.status import (
+    status_bus,
     StatusEvent,
-    publish_status_improved,
+    publish_status,
     StatusPhase,
     get_status_metrics,
 )
@@ -411,12 +411,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # If a dedicated summarizer is available, run a forced summarization
                     if getattr(cm, '_summarizer', None):
                         try:
-                            await publish_status_improved(server="context-manager", message="🔧 Force summarization requested", phase=StatusPhase.START, meta={"session_id": session_id})
+                            await publish_status(server="context-manager", message="🔧 Force summarization requested", phase=StatusPhase.START, meta={"session_id": session_id})
                         except Exception:
                             pass
                         new_msgs = await cm._summarize_conversation(msgs)
                         try:
-                            await publish_status_improved(server="context-manager", message="🔧 Force summarization complete", phase=StatusPhase.END, meta={"session_id": session_id})
+                            await publish_status(server="context-manager", message="🔧 Force summarization complete", phase=StatusPhase.END, meta={"session_id": session_id})
                         except Exception:
                             pass
                     else:
@@ -462,12 +462,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         msgs = list(agent._sessions.get(sid, []))
                         if getattr(cm, '_summarizer', None):
                             try:
-                                await publish_status_improved(server="context-manager", message=f"🔧 Force summarization requested (session {sid})", phase=StatusPhase.START, meta={"session_id": sid})
+                                await publish_status(server="context-manager", message=f"🔧 Force summarization requested (session {sid})", phase=StatusPhase.START, meta={"session_id": sid})
                             except Exception:
                                 pass
                             new_msgs = await cm._summarize_conversation(msgs)
                             try:
-                                await publish_status_improved(server="context-manager", message=f"🔧 Force summarization complete (session {sid})", phase=StatusPhase.END, meta={"session_id": sid})
+                                await publish_status(server="context-manager", message=f"🔧 Force summarization complete (session {sid})", phase=StatusPhase.END, meta={"session_id": sid})
                             except Exception:
                                 pass
                         else:
@@ -516,7 +516,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=401, detail="Unauthorized status stream")
 
         logger.info("SSE /status/stream connected (server=%s request_id=%s)", server, request_id)
-        queue = await improved_status_bus.subscribe(server=server, request_id=request_id)
+        queue = await status_bus.subscribe(server=server, request_id=request_id)
 
         async def event_gen():
             sent_events = 0
@@ -579,7 +579,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Ignore issues while draining to ensure cleanup continues
                     pass
                 try:
-                    improved_status_bus.unsubscribe(queue)
+                    status_bus.unsubscribe(queue)
                 except Exception:  # pragma: no cover - defensive
                     pass
                 if logger.handlers:  # avoid errors during interpreter shutdown
@@ -630,7 +630,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         Helps verifying that the SSE `/status/stream` is delivering events to connected clients.
         """
         try:
-            await publish_status_improved(server, message, phase="progress")
+            await publish_status(server, message, phase="progress")
             return {"result": "published", "server": server, "message": message}
         except Exception as e:
             return {"error": str(e)}

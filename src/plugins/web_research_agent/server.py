@@ -12,9 +12,9 @@ from agent_system.config.models import AgentConfig, MCPConfig, LLMConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.servers.bootstrap import bootstrap_servers
-from agent_system.mcp.improved_status import (
+from agent_system.mcp.status import (
     status_scope,
-    improved_status_bus,
+    status_bus,
 )
 from agent_system.context.agent_tracker import update_agent_context_usage
 
@@ -175,7 +175,7 @@ class WebResearchAgent(Agent):
 
         # Use status_scope for automatic START/END coordinator/worker status management
         async with status_scope(
-            improved_status_bus,
+            status_bus,
             coordinator_name=f"{status_name}_coordinator",
             worker_name=f"{status_name}_worker",
             request_id=request_id,

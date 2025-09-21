@@ -4,7 +4,7 @@ import pytest
 import httpx
 
 from agent_system.agent.interface_api import build_app
-from agent_system.mcp.status import publish_status, PHASE_START
+from agent_system.mcp.status import StatusPhase, publish_status
 
 pytestmark = pytest.mark.anyio  # single backend auto-selected
 
@@ -26,7 +26,7 @@ async def test_status_stream_single_event():
     async with _client(app) as client:
         async def _delayed_publish():
             await asyncio.sleep(0.05)
-            await publish_status(server="only_http", message="one", phase=PHASE_START)
+            await publish_status(server="only_http", message="one", phase=StatusPhase.START)
 
         pub_task = asyncio.create_task(_delayed_publish())
         resp = await asyncio.wait_for(

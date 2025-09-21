@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent / "src" / "plugins"))
 
 from weather.server import WeatherServer
-from agent_system.mcp.status import status_bus, PHASE_START, PHASE_END, PHASE_ERROR
+from agent_system.mcp.status import status_bus, StatusPhase
 import asyncio
 
 
@@ -36,20 +36,20 @@ async def test_weather_status_phases():
         
         phases = [event.phase for event in events]
         
-        assert PHASE_START in phases, "Weather should send START phase"
+        assert StatusPhase.START in phases, "Weather should send START phase"
         if result.get("status") == "success":
-            assert PHASE_END in phases, "Weather should send END phase on success"
+            assert StatusPhase.END in phases, "Weather should send END phase on success"
         else:
-            assert PHASE_ERROR in phases, "Weather should send ERROR phase on failure"
+            assert StatusPhase.ERROR in phases, "Weather should send ERROR phase on failure"
             
         # Check event ordering - START should come before END/ERROR
         start_index = None
         end_or_error_index = None
         
         for i, phase in enumerate(phases):
-            if phase == PHASE_START and start_index is None:
+            if phase == StatusPhase.START and start_index is None:
                 start_index = i
-            elif phase in [PHASE_END, PHASE_ERROR] and end_or_error_index is None:
+            elif phase in [StatusPhase.END, StatusPhase.ERROR] and end_or_error_index is None:
                 end_or_error_index = i
                 
         assert start_index is not None, "Should have START event"
@@ -86,7 +86,7 @@ async def test_weather_error_status_phases():
         
         phases = [event.phase for event in events]
         
-        assert PHASE_ERROR in phases, "Weather should send ERROR phase for missing location"
+        assert StatusPhase.ERROR in phases, "Weather should send ERROR phase for missing location"
         assert result["status"] == "error", "Result should indicate error"
         
     finally:

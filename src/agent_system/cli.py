@@ -20,7 +20,7 @@ except Exception:
 from .config.settings import load_settings
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
-from .mcp.improved_status import improved_status_bus
+from .mcp.status import status_bus
 from .mcp.integration import MCPIntegration
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
@@ -1285,7 +1285,7 @@ def main() -> None:
         # Subscribe to status events if enabled
         status_queue = None
         if show_status:
-            status_queue = await improved_status_bus.subscribe()
+            status_queue = await status_bus.subscribe()
 
         # Optionally auto-subscribe to external SSE status stream
         sse_task = None

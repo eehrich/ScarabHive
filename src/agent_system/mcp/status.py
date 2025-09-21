@@ -1,0 +1,309 @@
+"""
+Status System - Guaranteed message delivery without timing dependencies
+======================================================================
+
+This module provides a robust status messaging system that eliminates
+asyncio.sleep(0) anti-patterns through guaranteed delivery mechanisms.
+"""
+
+import logging
+from contextlib import asynccontextmanager
+from typing import List, Optional, Dict, Any
+from dataclasses import dataclass, field
+from enum import Enum
+from datetime import datetime
+import asyncio
+
+logger = logging.getLogger(__name__)
+
+
+class StatusPhase(Enum):
+    START = "start"
+    PROGRESS = "progress" 
+    END = "end"
+    ERROR = "error"
+
+
+@dataclass
+class StatusEvent:
+    server: str
+    request_id: Optional[str]
+    message: str
+    timestamp: datetime = field(default_factory=datetime.now)
+    phase: StatusPhase = StatusPhase.PROGRESS
+    sequence: int = 0  # Will be assigned by bus if 0
+    level: str = "info"  # info, warning, error
+    meta: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "server": self.server,
+            "request_id": self.request_id,
+            "message": self.message,
+            "timestamp": self.timestamp.isoformat(),
+            "phase": self.phase.value,  # Convert enum to string
+            "level": self.level,
+            "sequence": self.sequence,
+            "meta": self.meta
+        }
+
+
+class StatusHandler:
+    """Base class for status event handlers"""
+    
+    async def process(self, event: StatusEvent) -> None:
+        """Process a status event - must be implemented by subclasses"""
+        raise NotImplementedError
+
+
+class SSEStatusHandler(StatusHandler):
+    """Handler that forwards status events to SSE streams"""
+    
+    def __init__(self, sse_queue):
+        self.sse_queue = sse_queue
+    
+    async def process(self, event: StatusEvent) -> None:
+        """Forward event to SSE queue"""
+        try:
+            await self.sse_queue.put({
+                "type": "status",
+                "server": event.server,
+                "message": event.message,
+                "request_id": event.request_id,
+                "phase": event.phase.value,
+                "sequence": event.sequence,
+                "meta": event.meta
+            })
+        except Exception as e:
+            logger.error(f"Failed to forward status to SSE: {e}")
+
+
+class LogStatusHandler(StatusHandler):
+    """Handler that logs status events"""
+    
+    async def process(self, event: StatusEvent) -> None:
+        """Log the status event"""
+        logger.info(f"Status: {event.server} [{event.phase.value}] {event.message}")
+
+
+class QueueStatusHandler(StatusHandler):
+    """Handler that forwards status events to an asyncio queue for subscribers"""
+    
+    def __init__(self, queue: asyncio.Queue):
+        self.queue = queue
+    
+    async def process(self, event: StatusEvent) -> None:
+        """Forward event to queue for subscriber"""
+        try:
+            await self.queue.put(event)
+        except Exception as e:
+            logger.error(f"Failed to forward status to queue: {e}")
+
+
+class FilteredQueueStatusHandler(QueueStatusHandler):
+    """Queue handler with optional server and request_id filtering"""
+    
+    def __init__(self, queue: asyncio.Queue, server_filter: Optional[str] = None, 
+                 request_id_filter: Optional[str] = None):
+        super().__init__(queue)
+        self.server_filter = server_filter
+        self.request_id_filter = request_id_filter
+    
+    async def process(self, event: StatusEvent) -> None:
+        """Forward event to queue if it matches filters"""
+        # Apply server filter
+        if self.server_filter and event.server != self.server_filter:
+            return
+            
+        # Apply request_id filter  
+        if self.request_id_filter and event.request_id != self.request_id_filter:
+            return
+        
+        try:
+            await self.queue.put(event)
+        except Exception as e:
+            logger.error(f"Failed to forward filtered status to queue: {e}")
+
+
+class StatusBus:
+    """Central status event bus with guaranteed delivery"""
+    
+    def __init__(self):
+        self.handlers: List[StatusHandler] = []
+        self.sequence_counter = 0
+        self._lock = asyncio.Lock()
+        # Track handlers by queue for unsubscribe support
+        self._queue_handlers: Dict[asyncio.Queue, StatusHandler] = {}
+    
+    def add_handler(self, handler: StatusHandler) -> None:
+        """Add a status handler"""
+        self.handlers.append(handler)
+        
+    def remove_handler(self, handler: StatusHandler) -> None:
+        """Remove a status handler"""
+        if handler in self.handlers:
+            self.handlers.remove(handler)
+    
+    async def publish(self, event: StatusEvent) -> None:
+        """Publish a status event with guaranteed delivery to all handlers"""
+        async with self._lock:
+            # Update sequence if not set
+            if event.sequence == 0:
+                self.sequence_counter += 1
+                event.sequence = self.sequence_counter
+            
+            # Deliver to all handlers - guaranteed processing
+            for handler in self.handlers:
+                try:
+                    await handler.process(event)
+                except Exception as e:
+                    logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
+    
+    def get_status_metrics(self) -> dict:
+        """Get status bus metrics"""
+        return {
+            "handlers_count": len(self.handlers),
+            "sequence_counter": self.sequence_counter,
+            "handler_types": [h.__class__.__name__ for h in self.handlers]
+        }
+    
+    async def subscribe(self, server: Optional[str] = None, 
+                  request_id: Optional[str] = None) -> asyncio.Queue:
+        """Subscribe to status events with optional filtering
+        
+        Args:
+            server: Only receive events from this server (optional)
+            request_id: Only receive events with this request_id (optional)
+            
+        Returns:
+            Queue that will receive filtered StatusEvent objects
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        handler = FilteredQueueStatusHandler(queue, server, request_id)
+        self.add_handler(handler)
+        # Track the handler for unsubscribe
+        self._queue_handlers[queue] = handler
+        return queue
+    
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        """Unsubscribe from status events by removing the queue's handler"""
+        if queue in self._queue_handlers:
+            handler = self._queue_handlers[queue]
+            self.remove_handler(handler)
+            del self._queue_handlers[queue]
+
+
+# Global status bus instance
+status_bus = StatusBus()
+
+
+def get_status_metrics() -> Dict[str, Any]:
+    """Get metrics about the status system"""
+    return status_bus.get_status_metrics()
+
+
+async def publish_status(server: str, message: str, request_id: Optional[str] = None, 
+                        phase: StatusPhase = StatusPhase.PROGRESS, level: str = "info",
+                        meta: Optional[Dict[str, Any]] = None) -> None:
+    """Publish a status event with guaranteed delivery"""
+    # Auto-escalate level based on phase
+    if phase == StatusPhase.ERROR and level == "info":
+        level = "error"
+    
+    # Create StatusEvent and let bus.publish handle sequencing
+    event = StatusEvent(
+        server=server,
+        request_id=request_id,
+        message=message,
+        phase=phase,
+        sequence=0,  # Bus will assign sequence
+        level=level,
+        meta=meta
+    )
+    await status_bus.publish(event)
+
+
+class StatusScope:
+    """Context manager for automatic START/END status pairing"""
+    
+    def __init__(self, bus: StatusBus, coordinator_name: str, worker_name: str, 
+                 request_id: Optional[str]):
+        self.bus = bus
+        self.coordinator_name = coordinator_name
+        self.worker_name = worker_name  
+        self.request_id = request_id
+        
+    async def __aenter__(self):
+        # Send coordinator START
+        await self.bus.publish(StatusEvent(
+            server=self.coordinator_name,
+            request_id=self.request_id,
+            message="started",
+            phase=StatusPhase.START
+        ))
+        # Send worker START
+        await self.bus.publish(StatusEvent(
+            server=self.worker_name,
+            request_id=self.request_id,
+            message="started", 
+            phase=StatusPhase.START
+        ))
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            # Error occurred
+            await self.bus.publish(StatusEvent(
+                server=self.worker_name,
+                request_id=self.request_id,
+                message=f"failed: {exc_val}",
+                phase=StatusPhase.ERROR
+            ))
+            await self.bus.publish(StatusEvent(
+                server=self.coordinator_name,
+                request_id=self.request_id,
+                message=f"failed: {exc_val}",
+                phase=StatusPhase.ERROR
+            ))
+        else:
+            # Success
+            await self.bus.publish(StatusEvent(
+                server=self.worker_name,
+                request_id=self.request_id,
+                message="completed",
+                phase=StatusPhase.END
+            ))
+            await self.bus.publish(StatusEvent(
+                server=self.coordinator_name,
+                request_id=self.request_id,
+                message="completed",
+                phase=StatusPhase.END
+            ))
+    
+    async def step(self, message: str, is_coordinator: bool = True) -> None:
+        """Report a step in the process"""
+        server = self.coordinator_name if is_coordinator else self.worker_name
+        await self.bus.publish(StatusEvent(
+            server=server,
+            request_id=self.request_id,
+            message=message,
+            phase=StatusPhase.PROGRESS
+        ))
+        
+    async def progress(self, message: str, is_coordinator: bool = True) -> None:
+        """Report progress in the process"""
+        server = self.coordinator_name if is_coordinator else self.worker_name
+        await self.bus.publish(StatusEvent(
+            server=server,
+            request_id=self.request_id,
+            message=message,
+            phase=StatusPhase.PROGRESS
+        ))
+
+
+@asynccontextmanager  
+async def status_scope(bus: StatusBus, name: str, request_id: Optional[str]):
+    """Status scope context manager for automatic START/END pairing"""
+    scope = StatusScope(bus, f"{name}_coordinator", f"{name}_worker", request_id)
+    async with scope:
+        yield scope

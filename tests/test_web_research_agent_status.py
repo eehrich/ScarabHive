@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from plugins.web_research_agent.server import WebResearchAgent
-from agent_system.mcp.status import PHASE_START, PHASE_END, PHASE_ERROR, PHASE_PROGRESS
+from agent_system.mcp.status import StatusPhase
 
 
 class TestWebResearchAgentStatusEvents:
@@ -46,14 +46,14 @@ class TestWebResearchAgentStatusEvents:
         assert start_event["server"] == "test_research_agent"
         assert "Research started: artificial intelligence" in start_event["message"]
         assert start_event["request_id"] == "test-123"
-        assert start_event["phase"] == PHASE_START
+        assert start_event["phase"] == StatusPhase.START
         
         # Check END event
         end_event = published_events[1]
         assert end_event["server"] == "test_research_agent"
         assert "Research completed: artificial intelligence" in end_event["message"]
         assert end_event["request_id"] == "test-123"
-        assert end_event["phase"] == PHASE_END
+        assert end_event["phase"] == StatusPhase.END
 
     @pytest.mark.asyncio
     async def test_fact_check_status_events(self):
@@ -89,7 +89,7 @@ class TestWebResearchAgentStatusEvents:
         assert start_event["server"] == "test_fact_checker"
         assert "Fact-check started: The Earth is flat" in start_event["message"]
         assert start_event["request_id"] == "fact-456"
-        assert start_event["phase"] == PHASE_START
+        assert start_event["phase"] == StatusPhase.START
 
     @pytest.mark.asyncio
     async def test_compare_sources_status_events(self):
@@ -122,7 +122,7 @@ class TestWebResearchAgentStatusEvents:
         assert start_event["server"] == "test_comparer"
         assert "Compare sources started: climate change" in start_event["message"]
         assert start_event["request_id"] == "compare-789"
-        assert start_event["phase"] == PHASE_START
+        assert start_event["phase"] == StatusPhase.START
 
     @pytest.mark.asyncio
     async def test_status_events_without_request_id(self):
@@ -180,7 +180,7 @@ class TestWebResearchAgentStatusEvents:
             result = await agent._run_with_progress("test research task", "Testing", "test-progress-123")
         
         # Verify progress events were published
-        progress_events = [e for e in published_events if e["phase"] == PHASE_PROGRESS]
+        progress_events = [e for e in published_events if e["phase"] == StatusPhase.PROGRESS]
         assert len(progress_events) >= 4  # Starting analysis, step with tools, processing results, finalizing
         
         # Check specific progress messages
@@ -226,7 +226,7 @@ class TestWebResearchAgentStatusEvents:
                 await agent._run_with_progress("test task", "Error Test", "error-123")
         
         # Verify error status was published
-        error_events = [e for e in published_events if e["phase"] == PHASE_ERROR]
+        error_events = [e for e in published_events if e["phase"] == StatusPhase.ERROR]
         assert len(error_events) >= 1
         
         error_event = error_events[0]
@@ -268,8 +268,8 @@ class TestWebResearchAgentStatusEvents:
         assert call_args[0][2] == "integration-test"  # request_id
         
         # Verify START and END events were published
-        start_events = [e for e in published_events if e["phase"] == PHASE_START]
-        end_events = [e for e in published_events if e["phase"] == PHASE_END]
+        start_events = [e for e in published_events if e["phase"] == StatusPhase.START]
+        end_events = [e for e in published_events if e["phase"] == StatusPhase.END]
         assert len(start_events) == 1
         assert len(end_events) == 1
         

@@ -56,8 +56,11 @@ class TestBaseMCPAdapter:
 
         # Mock the status bus publish
         with patch.object(status_bus, 'publish', new_callable=AsyncMock) as mock_publish:
-            from datetime import datetime
-            event = StatusEvent("server1", "req1", "test message", datetime.now())
+            event = StatusEvent(
+                server="server1",
+                request_id="req1",
+                message="test message"
+            )
             await adapter.publish_status(event)
 
             mock_publish.assert_called_once_with(event)

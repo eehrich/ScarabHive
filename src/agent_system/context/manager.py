@@ -6,8 +6,8 @@ from typing import List, Optional, Tuple
 from ..llm.clients import ChatMessage
 from .config import ContextConfig, WarningLevel
 from .tracker import record_context_usage
-from ..mcp.improved_status import (
-    publish_status_improved,
+from ..mcp.status import (
+    publish_status,
     StatusPhase,
 )
 
@@ -303,7 +303,7 @@ class ContextManager:
         # Helper to safely publish status without letting failures bubble up
         async def _safe_publish(**kwargs):
             try:
-                await publish_status_improved(**kwargs)
+                await publish_status(**kwargs)
             except Exception:
                 logger.exception("Status publish failed (non-fatal)")
 

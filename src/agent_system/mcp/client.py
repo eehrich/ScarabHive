@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 from .core import MCPClient, MCPTool, MCPMessage, MCPTransport
 from .transport import HTTPTransport
 from .streaming_transport import HTTPStreamingTransport
-from .improved_status import (
-    publish_status_improved,
+from .status import (
+    publish_status,
     StatusPhase,
 )
 
@@ -36,29 +36,29 @@ class StandardMCPClient(MCPClient):
         logger.info(f"Connecting MCP client {self.name}")
         try:
             try:
-                await publish_status_improved(self.name, "Transport connecting to MCP server", phase=StatusPhase.START)
+                await publish_status(self.name, "Transport connecting to MCP server", phase=StatusPhase.START)
                 # Also publish under logical server id (e.g., strip AgentSystem- prefix)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
                     logical = self.name.split("AgentSystem-", 1)[1]
-                    await publish_status_improved(logical, "Transport connecting to MCP server", phase=StatusPhase.START)
+                    await publish_status(logical, "Transport connecting to MCP server", phase=StatusPhase.START)
             except Exception as e:
                 logger.debug("publish_status failed for transport connect start: %s", e)
 
             await self.transport.connect()
 
             try:
-                await publish_status_improved(self.name, "Transport connected to MCP server", phase=StatusPhase.END)
+                await publish_status(self.name, "Transport connected to MCP server", phase=StatusPhase.END)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
                     logical = self.name.split("AgentSystem-", 1)[1]
-                    await publish_status_improved(logical, "Transport connected to MCP server", phase=StatusPhase.END)
+                    await publish_status(logical, "Transport connected to MCP server", phase=StatusPhase.END)
             except Exception as e:
                 logger.debug("publish_status failed for transport connected: %s", e)
         except Exception as e:
             try:
-                await publish_status_improved(self.name, f"Transport connection failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
+                await publish_status(self.name, f"Transport connection failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
                     logical = self.name.split("AgentSystem-", 1)[1]
-                    await publish_status_improved(logical, f"Transport connection failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
+                    await publish_status(logical, f"Transport connection failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
             except Exception as pub_e:
                 logger.debug("publish_status failed for transport connect error: %s", pub_e)
             raise
@@ -68,28 +68,28 @@ class StandardMCPClient(MCPClient):
         logger.info(f"Disconnecting MCP client {self.name}")
         try:
             try:
-                await publish_status_improved(self.name, "Transport disconnecting from MCP server", phase=StatusPhase.START)
+                await publish_status(self.name, "Transport disconnecting from MCP server", phase=StatusPhase.START)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
                     logical = self.name.split("AgentSystem-", 1)[1]
-                    await publish_status_improved(logical, "Transport disconnecting from MCP server", phase=StatusPhase.START)
+                    await publish_status(logical, "Transport disconnecting from MCP server", phase=StatusPhase.START)
             except Exception as e:
                 logger.debug("publish_status failed for transport disconnect start: %s", e)
 
             await self.transport.disconnect()
 
             try:
-                await publish_status_improved(self.name, "Transport disconnected from MCP server", phase=StatusPhase.END)
+                await publish_status(self.name, "Transport disconnected from MCP server", phase=StatusPhase.END)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
                     logical = self.name.split("AgentSystem-", 1)[1]
-                    await publish_status_improved(logical, "Transport disconnected from MCP server", phase=StatusPhase.END)
+                    await publish_status(logical, "Transport disconnected from MCP server", phase=StatusPhase.END)
             except Exception as e:
                 logger.debug("publish_status failed for transport disconnect end: %s", e)
         except Exception as e:
             try:
-                await publish_status_improved(self.name, f"Transport disconnect failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
+                await publish_status(self.name, f"Transport disconnect failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
                     logical = self.name.split("AgentSystem-", 1)[1]
-                    await publish_status_improved(logical, f"Transport disconnect failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
+                    await publish_status(logical, f"Transport disconnect failed: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
             except Exception as pub_e:
                 logger.debug("publish_status failed for transport disconnect error: %s", pub_e)
             raise
@@ -98,7 +98,7 @@ class StandardMCPClient(MCPClient):
         """Initialize connection and get server capabilities"""
         logger.info(f"Initializing MCP connection for {self.name}")
         try:
-            await publish_status_improved(self.name, "Initializing MCP connection", phase=StatusPhase.START)
+            await publish_status(self.name, "Initializing MCP connection", phase=StatusPhase.START)
         except Exception:
             logger.debug("publish_status failed for initialize start")
 
@@ -141,11 +141,11 @@ class StandardMCPClient(MCPClient):
         logger.info(f"Connected to MCP server: {self.server_info.get('name', 'Unknown')}")
         try:
             try:
-                await publish_status_improved(self.name, "MCP initialization completed", phase=StatusPhase.END)
+                await publish_status(self.name, "MCP initialization completed", phase=StatusPhase.END)
                 if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
                     try:
                         logical = self.name.split("AgentSystem-", 1)[1]
-                        await publish_status_improved(logical, "MCP initialization completed", phase=StatusPhase.END)
+                        await publish_status(logical, "MCP initialization completed", phase=StatusPhase.END)
                     except Exception:
                         pass
             except Exception:
@@ -201,7 +201,7 @@ class StandardMCPClient(MCPClient):
 
         # Publish status for tool call start
         try:
-            await publish_status_improved(
+            await publish_status(
                 logical_server,
                 f"Starting tool call: {name}",
                 phase=StatusPhase.START,
@@ -233,7 +233,7 @@ class StandardMCPClient(MCPClient):
         if response.error:
             # Publish status for tool call error
             try:
-                await publish_status_improved(
+                await publish_status(
                     logical_server,
                     f"Tool call failed: {name}",
                     phase=StatusPhase.ERROR,
@@ -258,7 +258,7 @@ class StandardMCPClient(MCPClient):
                     text_result = item.get("text", "")
                     # Publish status for successful tool call
                     try:
-                        await publish_status_improved(
+                        await publish_status(
                             logical_server,
                             f"Tool call completed: {name}",
                             phase=StatusPhase.END,
@@ -275,7 +275,7 @@ class StandardMCPClient(MCPClient):
 
         # Publish status for successful tool call
         try:
-            await publish_status_improved(
+            await publish_status(
                 logical_server,
                 f"Tool call completed: {name}",
                 phase=StatusPhase.END,
@@ -517,7 +517,7 @@ class MCPClientManager:
         try:
             # Announce connection attempt
             try:
-                await publish_status_improved(name, "Connecting to external MCP server", phase=StatusPhase.START)
+                await publish_status(name, "Connecting to external MCP server", phase=StatusPhase.START)
             except Exception:
                 logger.debug("publish_status failed for start event")
             # If a client with this name already exists, disconnect it first
@@ -535,13 +535,13 @@ class MCPClientManager:
             self.clients[name] = client
             logger.info(f"Added MCP client: {name}")
             try:
-                await publish_status_improved(name, "Connected to external MCP server", phase=StatusPhase.END)
+                await publish_status(name, "Connected to external MCP server", phase=StatusPhase.END)
             except Exception:
                 logger.debug("publish_status failed for connected event")
         except Exception as e:
             logger.debug(f"Failed to add MCP client {name}: {e}")
             try:
-                await publish_status_improved(name, f"Failed to connect to external MCP server: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
+                await publish_status(name, f"Failed to connect to external MCP server: {e}", phase=StatusPhase.ERROR, meta={"error": str(e)})
             except Exception:
                 logger.debug("publish_status failed for error event")
             raise
@@ -550,14 +550,14 @@ class MCPClientManager:
         """Remove an MCP client"""
         if name in self.clients:
             try:
-                await publish_status_improved(name, "Disconnecting external MCP client", phase=StatusPhase.START)
+                await publish_status(name, "Disconnecting external MCP client", phase=StatusPhase.START)
             except Exception:
                 logger.debug("publish_status failed for disconnect start")
             await self.clients[name].disconnect()
             del self.clients[name]
             logger.info(f"Removed MCP client: {name}")
             try:
-                await publish_status_improved(name, "Disconnected external MCP client", phase=StatusPhase.END)
+                await publish_status(name, "Disconnected external MCP client", phase=StatusPhase.END)
             except Exception:
                 logger.debug("publish_status failed for disconnect end")
 
