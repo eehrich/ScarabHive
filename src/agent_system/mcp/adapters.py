@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 import asyncio
 
-from .status import StatusEvent, status_bus, StatusPhase
+from .status import StatusEvent, status_bus
 
 
 class MCPAdapter(ABC):
