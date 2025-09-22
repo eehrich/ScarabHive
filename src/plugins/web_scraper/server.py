@@ -11,6 +11,71 @@ from agent_system.mcp.base import MCPServer
 
 
 class WebScraperServer(MCPServer):
+    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True):
+        super().__init__(name, config, ssl_verify)
+        
+        # Initialize User-Agent pool for anti-bot evasion
+        self._user_agents = [
+            # Chrome (most common)
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            
+            # Firefox
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0",
+            
+            # Safari
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1.1 Safari/605.1.15",
+            
+            # Edge
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+            
+            # Mobile browsers
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+        ]
+        
+        # Browser-like headers that real browsers send
+        self._browser_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+        }
+        
+        # Session management for cookie persistence
+        self._sessions = {}  # domain -> httpx.Cookies
+        
+        # Proxy configuration
+        self._proxies = config.get("proxies", []) if config else []
+
+    def _get_random_user_agent(self) -> str:
+        """Get a random User-Agent from the pool"""
+        return random.choice(self._user_agents)
+
+    def _get_browser_headers(self, user_agent: str) -> dict[str, str]:
+        """Get browser-like headers with the specified User-Agent"""
+        headers = self._browser_headers.copy()
+        headers["User-Agent"] = user_agent
+        return headers
+
+    def set_proxies(self, proxies: list[str]):
+        """Set proxy URLs for requests. Format: ['http://proxy1:port', 'https://proxy2:port']"""
+        self._proxies = proxies
+
+    def add_proxy(self, proxy_url: str):
+        """Add a single proxy URL"""
+        if proxy_url not in self._proxies:
+            self._proxies.append(proxy_url)
     def _clean_text(self, text: str) -> str:
         """Clean up extracted text by removing excessive whitespace, normalizing newlines, and filtering invalid Unicode."""
         if not text:
@@ -99,7 +164,21 @@ class WebScraperServer(MCPServer):
             "suspicious activity",
             "too many requests",
             "rate limit",
-            "forbidden"
+            "forbidden",
+            "403 forbidden",
+            "access forbidden",
+            "bot detected",
+            "automated request",
+            "request blocked",
+            "anti-bot protection",
+            "please wait",
+            "checking browser",
+            "verify human",
+            "prove you are human",
+            "complete the captcha",
+            "security verification",
+            "request denied",
+            "blocked request"
         ]
         
         all_patterns = cloudflare_patterns + antibot_patterns
@@ -138,6 +217,11 @@ class WebScraperServer(MCPServer):
         last_exception = None
         
         for attempt in range(max_retries + 1):
+            # Add random delay before each request (except first) to avoid rate limiting
+            if attempt > 0:
+                delay = random.uniform(1.0, 3.0)  # 1-3 second random delay
+                await asyncio.sleep(delay)
+            
             try:
                 html, status_code, final_url, content_type = await self._fetch_html_once(target_url, user_agent, timeout)
                 
@@ -179,11 +263,32 @@ class WebScraperServer(MCPServer):
         try:
             import httpx  # type: ignore
             from httpx import ReadTimeout, RequestError
+            
+            # Get browser-like headers
+            headers = self._get_browser_headers(user_agent)
+            
+            # Extract domain for session management
+            from urllib.parse import urlparse
+            domain = urlparse(target_url).netloc
+            
+            # Get or create session cookies for this domain
+            if domain not in self._sessions:
+                self._sessions[domain] = httpx.Cookies()
+            
+            # Configure proxy if available
+            proxy_url = None
+            if self._proxies:
+                # Rotate through available proxies
+                proxy_index = hash(domain) % len(self._proxies)
+                proxy_url = self._proxies[proxy_index]
+            
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 verify=self.ssl_verify,
-                headers={"User-Agent": user_agent},
+                headers=headers,
+                cookies=self._sessions[domain],
                 timeout=timeout,
+                proxies=proxy_url,
             ) as client:
                 try:
                     resp = await client.get(target_url)
@@ -212,7 +317,9 @@ class WebScraperServer(MCPServer):
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
             try:
-                req = Request(target_url, headers={"User-Agent": user_agent})
+                # Get browser-like headers for urllib fallback
+                headers = self._get_browser_headers(user_agent)
+                req = Request(target_url, headers=headers)
                 with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
                     final_url = r.geturl()
                     status_code = getattr(r, "status", 200)
@@ -279,10 +386,7 @@ class WebScraperServer(MCPServer):
         status = params.get("_status")
 
         timeout = float(params.get("timeout", 20))
-        user_agent = params.get(
-            "user_agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
+        user_agent = params.get("user_agent", self._get_random_user_agent())
 
         include_html = bool(params.get("include_html", False))
         max_chars = int(params.get("max_chars", 8000))
@@ -294,6 +398,14 @@ class WebScraperServer(MCPServer):
         include_nofollow = bool(params.get("include_nofollow", False))
         only_same_domain = bool(params.get("only_same_domain", False))
         max_links = int(params.get("max_links", 0))
+
+        # Proxy configuration
+        proxy_url = params.get("proxy")
+        original_proxies = None
+        if proxy_url:
+            # Temporarily set proxy for this request
+            original_proxies = self._proxies.copy()
+            self._proxies = [proxy_url]
 
         # fetch HTML (async) and parse according to requested action
         # notify start of fetch
@@ -533,6 +645,11 @@ class WebScraperServer(MCPServer):
                 await status.end(f"Completed fetch {url} (status={status_code})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
         except Exception:
             pass
+        
+        # Restore original proxy configuration if it was temporarily changed
+        if original_proxies is not None:
+            self._proxies = original_proxies
+            
         return result
 
     def _extract_tables(self, soup) -> list[dict[str, Any]]:

@@ -354,6 +354,35 @@ mcp:
   rate_limit_window: 3600     # Window size in seconds
 ```
 
+### Web Scraper Proxy Configuration
+
+The web scraper plugin supports proxy rotation to avoid IP-based blocking. Configure proxies in your `config/mcp.yaml`:
+
+```yaml
+servers:
+  web_scraper:
+    type: web_scraper
+    proxies:
+      - "http://proxy1.example.com:8080"
+      - "https://proxy2.example.com:8080"
+      - "socks5://proxy3.example.com:1080"
+```
+
+#### Proxy Options
+
+- **Free Proxies**: Not recommended due to unreliability, slow speeds, and frequent blocking
+- **Paid Proxy Services**: Recommended for production use
+  - Bright Data (formerly Luminati)
+  - Oxylabs
+  - Smart Proxy
+  - ProxyMesh
+- **Residential Proxies**: Best for avoiding detection, but most expensive
+- **Datacenter Proxies**: Faster but more easily detected
+
+#### Proxy Rotation
+
+The web scraper automatically rotates through configured proxies based on the target domain, improving success rates against anti-bot measures.
+
 ### CORS Configuration
 
 ```yaml
