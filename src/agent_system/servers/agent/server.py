@@ -134,6 +134,10 @@ class Agent(MCPServer):
         self._tool_execution_manager = ToolExecutionManager(self.registry)
         self._status_event_forwarder = StatusEventForwarder()
         self._context_management_handler = ContextManagementHandler(self.context_manager, self.token_optimizer, self.name)
+        
+        # Track emergency context management attempts to prevent loops
+        self._emergency_context_attempts = 0
+        self._max_emergency_attempts = 2  # Maximum emergency attempts per conversation
 
     def _init_context_management(self):
         """Initialize the context management system."""
@@ -394,6 +398,12 @@ class Agent(MCPServer):
                 self._sessions.setdefault(session_id, [])
                 # map request to session
                 self._request_to_session[request_id] = session_id
+                
+                # Reset emergency context management counter for new conversations
+                # Only reset if this is a new session (empty history)
+                if not self._sessions[session_id]:
+                    self._emergency_context_attempts = 0
+                    logger.debug("Reset emergency context counter for new session")
 
             yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
@@ -553,8 +563,89 @@ class Agent(MCPServer):
                 from agent_system.core.message_validator import validate_messages_before_llm
                 messages = validate_messages_before_llm(messages, context=f"agent_server_step_{step + 1}")
 
-                # Get LLM response
-                llm_out = await self.llm.chat_tools(messages, tools_schema)
+                # Get LLM response - handle context length exceeded errors
+                try:
+                    llm_out = await self.llm.chat_tools(messages, tools_schema)
+                except Exception as e:
+                    # Check if this is a context length exceeded error
+                    from agent_system.context.exceptions import ContextLengthExceededError
+                    if isinstance(e, ContextLengthExceededError):
+                        logger.warning("Context length exceeded, triggering emergency context management")
+                        
+                        # Check if we've already tried emergency context management too many times
+                        if self._emergency_context_attempts >= self._max_emergency_attempts:
+                            logger.error(f"Maximum emergency context attempts ({self._max_emergency_attempts}) exceeded, stopping agent")
+                            llm_out = {"assistant": {"role": "assistant", "content": ""}}
+                        elif self._context_management_handler.context_manager:
+                            self._emergency_context_attempts += 1
+                            logger.info(f"Applying emergency context management due to token limit (attempt {self._emergency_context_attempts}/{self._max_emergency_attempts})")
+                            
+                            try:
+                                # First, try intelligent summarization if available
+                                context_manager = self._context_management_handler.context_manager
+                                
+                                # Force summarization by temporarily changing strategy and lowering thresholds
+                                original_strategy = context_manager.config.strategy
+                                original_window = context_manager.config.context_window
+                                original_threshold = context_manager.config.summarization_threshold
+                                
+                                # Set emergency summarization parameters
+                                from agent_system.context.config import ContextStrategy
+                                context_manager.config.strategy = ContextStrategy.SUMMARIZE_OLDEST
+                                # Set a very low window to force aggressive summarization
+                                context_manager.config.context_window = min(50000, original_window // 4)
+                                context_manager.config.summarization_threshold = 1000  # Very low threshold
+                                
+                                logger.info("Attempting emergency summarization to preserve context")
+                                
+                                # Apply context management (will use summarization)
+                                summarized_messages = await context_manager.manage_context(messages)
+                                
+                                # Restore original settings
+                                context_manager.config.strategy = original_strategy
+                                context_manager.config.context_window = original_window
+                                context_manager.config.summarization_threshold = original_threshold
+                                
+                                if len(summarized_messages) < len(messages):
+                                    messages = summarized_messages
+                                    logger.info(f"Emergency summarization successful: {len(messages)} messages after summarization")
+                                else:
+                                    # Summarization didn't reduce message count enough, fall back to truncation
+                                    logger.warning("Summarization didn't reduce messages enough, falling back to truncation")
+                                    raise ValueError("Summarization insufficient")
+                                    
+                            except Exception as summary_e:
+                                logger.warning(f"Emergency summarization failed ({summary_e}), falling back to truncation")
+                                
+                                # Fallback to aggressive truncation - keep only last 5 messages + system
+                                emergency_messages = []
+                                if messages and getattr(messages[0], 'role', None) == 'system':
+                                    emergency_messages.append(messages[0])
+                                # Keep only the last 5 messages
+                                emergency_messages.extend(messages[-5:])
+                                
+                                # If that's still not enough, keep only the last 3
+                                if len(emergency_messages) > 6:  # system + 5 messages
+                                    emergency_messages = [emergency_messages[0]] + emergency_messages[-3:]
+                                
+                                messages = emergency_messages
+                                logger.info(f"Emergency truncation fallback: now have {len(messages)} messages")
+                            
+                            # Try the LLM call again with reduced context
+                            try:
+                                llm_out = await self.llm.chat_tools(messages, tools_schema)
+                                logger.info("LLM call successful after emergency context management")
+                            except Exception as retry_e:
+                                logger.error(f"LLM call failed even after emergency context management: {retry_e}")
+                                # Return empty response to trigger agent stop
+                                llm_out = {"assistant": {"role": "assistant", "content": ""}}
+                        else:
+                            logger.error("No context manager available for emergency context reduction")
+                            # Return empty response to trigger agent stop
+                            llm_out = {"assistant": {"role": "assistant", "content": ""}}
+                    else:
+                        # Re-raise other exceptions
+                        raise
                 
                 # Drain any messages that arrived during LLM call
                 messages = await self._drain_appended_messages(request_id, messages)

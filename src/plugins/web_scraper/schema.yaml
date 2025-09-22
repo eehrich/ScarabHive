@@ -24,8 +24,8 @@ function:
         description: Include raw HTML in response
       max_chars:
         type: integer
-        default: 0
-        description: "If >0, truncate extracted text to this length (0 = unlimited)"
+        default: 8000
+        description: "If >0, truncate extracted text to this length (0 = unlimited, default 8000 for better token efficiency)"
       extract_tables:
         type: boolean
         default: false

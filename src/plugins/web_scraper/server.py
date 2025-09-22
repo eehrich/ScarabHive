@@ -4,6 +4,8 @@ from typing import Any
 import re
 import urllib.parse
 from pathlib import Path
+import asyncio
+import random
 
 from agent_system.mcp.base import MCPServer
 
@@ -64,6 +66,175 @@ class WebScraperServer(MCPServer):
 
         return text.strip()
 
+    def _is_blocked_response(self, html: str, status_code: int, final_url: str) -> tuple[bool, str]:
+        """Detect if response is a Cloudflare challenge, 403 block, or other anti-bot response."""
+        if not html:
+            return False, ""
+        
+        html_lower = html.lower()
+        
+        # Common Cloudflare patterns
+        cloudflare_patterns = [
+            "just a moment",
+            "please wait while your request is being verified",
+            "cloudflare",
+            "checking your browser",
+            "enable javascript and cookies",
+            "ray id:",
+            "cf-ray:",
+            "please enable cookies",
+            "verify you are human",
+            "ddos protection by cloudflare",
+            "attention required! | cloudflare"
+        ]
+        
+        # Other anti-bot patterns
+        antibot_patterns = [
+            "please verify that you are a human",
+            "access denied",
+            "blocked by security policy",
+            "captcha",
+            "robot or human",
+            "security check",
+            "suspicious activity",
+            "too many requests",
+            "rate limit",
+            "forbidden"
+        ]
+        
+        all_patterns = cloudflare_patterns + antibot_patterns
+        
+        # Check for patterns in content
+        detected_pattern = None
+        for pattern in all_patterns:
+            if pattern in html_lower:
+                detected_pattern = pattern
+                break
+        
+        # Check status codes that typically indicate blocking
+        blocked_status_codes = [403, 429, 503]
+        
+        if status_code in blocked_status_codes or detected_pattern:
+            if status_code == 429:
+                return True, "blocked: rate limited (429)"
+            elif status_code == 403:
+                return True, "blocked: access forbidden (403)"
+            elif status_code == 503:
+                return True, "blocked: service unavailable (503)"
+            elif detected_pattern:
+                if any(cf in detected_pattern for cf in ["cloudflare", "just a moment", "ray id"]):
+                    return True, "blocked: cloudflare challenge detected"
+                elif "captcha" in detected_pattern:
+                    return True, "blocked: captcha required"
+                elif any(rl in detected_pattern for rl in ["rate limit", "too many requests"]):
+                    return True, "blocked: rate limited"
+                else:
+                    return True, f"blocked: anti-bot protection ({detected_pattern})"
+        
+        return False, ""
+
+    async def _fetch_with_retry(self, target_url: str, user_agent: str, timeout: float, max_retries: int = 3) -> tuple[str, int, str, str]:
+        """Fetch URL with retry logic for rate limiting and temporary failures."""
+        last_exception = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                html, status_code, final_url, content_type = await self._fetch_html_once(target_url, user_agent, timeout)
+                
+                # If we got a rate limit response, wait and retry
+                if status_code == 429 and attempt < max_retries:
+                    # Exponential backoff with jitter
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    await asyncio.sleep(delay)
+                    continue
+                
+                # If we got a temporary error, retry
+                if status_code in [502, 503, 504] and attempt < max_retries:
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    await asyncio.sleep(delay)
+                    continue
+                
+                return html, status_code, final_url, content_type
+                
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries:
+                    # Exponential backoff with jitter for exceptions too
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    await asyncio.sleep(delay)
+                    continue
+                
+        # All retries failed, return last result or raise last exception
+        if last_exception:
+            raise last_exception
+        return "", 0, target_url, ""
+
+    async def _fetch_html_once(self, target_url: str, user_agent: str, timeout: float) -> tuple[str, int, str, str]:
+        """Fetch HTML once without retry logic."""
+        html: str = ""
+        status_code: int = 0
+        final_url: str = target_url
+        content_type: str = ""
+        
+        try:
+            import httpx  # type: ignore
+            from httpx import ReadTimeout, RequestError
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                verify=self.ssl_verify,
+                headers={"User-Agent": user_agent},
+                timeout=timeout,
+            ) as client:
+                try:
+                    resp = await client.get(target_url)
+                    status_code = resp.status_code
+                    final_url = str(resp.url)
+                    content_type = resp.headers.get("content-type", "").lower()
+
+                    # Check if content is actually HTML/text before processing
+                    if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]):
+                        html = resp.text or ""
+                    else:
+                        # Non-HTML content detected
+                        html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
+                except ReadTimeout:
+                    return "", 0, target_url, ""
+                except RequestError:
+                    return "", 0, target_url, ""
+        except Exception:
+            # Fallback sync approach
+            import ssl
+            from urllib.request import Request, urlopen
+            from urllib.error import URLError, HTTPError
+            ctx = None
+            if not self.ssl_verify:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            try:
+                req = Request(target_url, headers={"User-Agent": user_agent})
+                with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
+                    final_url = r.geturl()
+                    status_code = getattr(r, "status", 200)
+                    content_type = r.headers.get("content-type", "").lower()
+                    data = r.read()
+                    
+                    # Check content type and data header for binary content
+                    if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]) and not data.startswith(b'%PDF'):
+                        try:
+                            html = data.decode("utf-8", errors="ignore")
+                        except Exception:
+                            html = data.decode(errors="ignore")
+                    else:
+                        # Non-HTML content detected
+                        html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
+            except (URLError, HTTPError) as e:
+                if hasattr(e, 'code'):
+                    status_code = e.code
+                return "", status_code or 0, final_url, content_type
+
+        return html, status_code, final_url, content_type
+
     def _sanitize_html(self, html: str) -> str:
         """Sanitize HTML content to remove problematic characters before parsing."""
         if not html:
@@ -110,11 +281,11 @@ class WebScraperServer(MCPServer):
         timeout = float(params.get("timeout", 20))
         user_agent = params.get(
             "user_agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
 
         include_html = bool(params.get("include_html", False))
-        max_chars = int(params.get("max_chars", 0))
+        max_chars = int(params.get("max_chars", 8000))
         extract_tables = bool(params.get("extract_tables", False))
         extract_forms = bool(params.get("extract_forms", False))
         extract_lists = bool(params.get("extract_lists", False))
@@ -123,78 +294,6 @@ class WebScraperServer(MCPServer):
         include_nofollow = bool(params.get("include_nofollow", False))
         only_same_domain = bool(params.get("only_same_domain", False))
         max_links = int(params.get("max_links", 0))
-
-        async def _fetch_html(target_url: str) -> tuple[str, int, str, str]:
-            html: str = ""
-            status_code: int = 0
-            final_url: str = target_url
-            content_type: str = ""
-            try:
-                import httpx  # type: ignore
-                from httpx import ReadTimeout, RequestError
-                async with httpx.AsyncClient(
-                    follow_redirects=True,
-                    verify=self.ssl_verify,
-                    headers={"User-Agent": user_agent},
-                    timeout=timeout,
-                ) as client:
-                    try:
-                        resp = await client.get(target_url)
-                        status_code = resp.status_code
-                        final_url = str(resp.url)
-                        content_type = resp.headers.get("content-type", "").lower()
-
-                        # Check if content is actually HTML/text before processing
-                        if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]):
-                            html = resp.text or ""
-                        else:
-                            # Non-HTML content detected
-                            html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
-                    except ReadTimeout:
-                        try:
-                            if status:
-                                await status.error(f"Timeout fetching {target_url}", meta={"error": "read_timeout", "timeout": timeout})
-                        except Exception:
-                            pass
-                        return "", 0, target_url, ""
-                    except RequestError as err:
-                        try:
-                            if status:
-                                await status.error(f"Request error fetching {target_url}: {err}", meta={"error": str(err)})
-                        except Exception:
-                            pass
-                        return "", 0, target_url, ""
-            except Exception:
-                # Fallback sync approach
-                import ssl
-                from urllib.request import Request, urlopen
-                from urllib.error import URLError, HTTPError
-                ctx = None
-                if not self.ssl_verify:
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                try:
-                    req = Request(target_url, headers={"User-Agent": user_agent})
-                    with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
-                        final_url = r.geturl()
-                        status_code = getattr(r, "status", 200)
-                        content_type = r.headers.get("content-type", "").lower()
-                        data = r.read()
-                        
-                        # Check content type and data header for binary content
-                        if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]) and not data.startswith(b'%PDF'):
-                            try:
-                                html = data.decode("utf-8", errors="ignore")
-                            except Exception:
-                                html = data.decode(errors="ignore")
-                        else:
-                            # Non-HTML content detected
-                            html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
-                except (URLError, HTTPError):
-                    return "", status_code or 0, final_url, content_type
-
-            return html, status_code, final_url, content_type
 
         # fetch HTML (async) and parse according to requested action
         # notify start of fetch
@@ -205,10 +304,28 @@ class WebScraperServer(MCPServer):
             # status publishing must not break functionality
             pass
 
-        html, status_code, final_url, content_type = await _fetch_html(url)
+        html, status_code, final_url, content_type = await self._fetch_with_retry(url, user_agent, timeout)
 
         # Sanitize HTML before processing to remove problematic characters
         html = self._sanitize_html(html)
+
+        # Check for blocked responses (Cloudflare, 403, etc.)
+        is_blocked, block_reason = self._is_blocked_response(html, status_code, final_url)
+        if is_blocked:
+            try:
+                if status:
+                    await status.error(f"Blocked response from {url}: {block_reason}")
+            except Exception:
+                pass
+            return {
+                "url": url,
+                "final_url": final_url,
+                "status_code": status_code,
+                "title": None,
+                "text": block_reason,
+                "html": html if include_html else None,
+                "content_type": content_type,
+            }
 
         # If fetch failed, publish error and return minimal payload
         if not html and status_code == 0:

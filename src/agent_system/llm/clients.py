@@ -293,6 +293,16 @@ class OpenAIAsyncClient(LLMClient):
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
                         await asyncio.sleep(wait)
                         continue
+                    # Check for context length exceeded error (400 with specific message)
+                    if status == 400:
+                        error_text = str(e)
+                        if "context_length_exceeded" in error_text or "Input tokens exceed" in error_text:
+                            # This is a context length error - raise a special exception that the agent can catch
+                            from ..context.exceptions import ContextLengthExceededError
+                            raise ContextLengthExceededError(
+                                message=f"OpenAI context length exceeded: {error_text}",
+                                original_exception=e
+                            )
                     raise
             choice = resp.choices[0] if resp.choices else None
             if not choice:
