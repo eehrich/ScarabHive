@@ -176,7 +176,7 @@ class WebResearchAgent(Agent):
         # Use status_scope for automatic START/END status management
         async with status_scope(
             status_bus,
-            f"{status_name}_coordinator",
+            status_name,
             request_id=request_id
         ) as status:
             
