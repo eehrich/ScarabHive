@@ -265,11 +265,15 @@ class StatusScope:
         if not self.ended:
             self.ended = True
             if exc_type is not None:
-                # Error occurred
+                # Error occurred - ensure we have a meaningful error message
+                error_msg = str(exc_val) if exc_val else "Unknown error"
+                if not error_msg or error_msg.strip() == "":
+                    error_msg = f"{exc_type.__name__} occurred"
+                
                 await self.bus.publish(StatusEvent(
                     server=self.server,
                     request_id=self.request_id,
-                    message=f"failed: {exc_val}",
+                    message=f"failed: {error_msg}",
                     phase=StatusPhase.ERROR
                 ))
             else:
@@ -316,15 +320,16 @@ class StatusScope:
 
 
 
-@asynccontextmanager  
-async def status_scope(bus: StatusBus, name: str, request_id: Optional[str] = None):
+@asynccontextmanager
+async def status_scope(bus: StatusBus, name: str, request_id: Optional[str] = None, start_msg: Optional[str] = None, end_msg: Optional[str] = None):
     """Status scope context manager for automatic START/END pairing
     
     Args:
         bus: StatusBus instance to publish events to
         name: Name for the status scope (used as server name)
         request_id: Optional request ID for correlation
-    
+        start_msg: Optional custom start message
+        end_msg: Optional custom end message
     Usage:
         async with status_scope(status_bus, "my_agent", request_id=req_id) as status:
             await status.progress("Processing data", meta={"step": 1})
@@ -333,6 +338,6 @@ async def status_scope(bus: StatusBus, name: str, request_id: Optional[str] = No
             # await status.end("Custom completion message")
             # await status.error("Something went wrong")
     """
-    scope = StatusScope(bus, name, request_id)
+    scope = StatusScope(bus, name, request_id, start_msg=start_msg, end_msg=end_msg)
     async with scope:
         yield scope

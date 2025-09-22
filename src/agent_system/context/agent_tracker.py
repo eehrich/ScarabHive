@@ -168,10 +168,14 @@ class AgentContextTracker:
 
     def record_summarization(self, agent_id: str) -> None:
         """Record that summarization occurred for an agent."""
-        if agent_id in self._agents:
-            self._agents[agent_id].summarization_count += 1
-            self._agents[agent_id].update_activity()
-            logger.debug(f"Recorded summarization for agent {agent_id}")
+        if agent_id not in self._agents:
+            # Auto-register agent with default context window if not already registered
+            logger.debug(f"Auto-registering agent {agent_id} for summarization tracking")
+            self.register_agent(agent_id, agent_id, context_window=40000)  # Default context window
+        
+        self._agents[agent_id].summarization_count += 1
+        self._agents[agent_id].update_activity()
+        logger.debug(f"Recorded summarization for agent {agent_id}")
 
     def get_agent_stats(self, agent_id: str) -> Optional[AgentContextStats]:
         """Get stats for a specific agent."""

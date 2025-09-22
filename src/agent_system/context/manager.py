@@ -6,9 +6,10 @@ from typing import List, Optional, Tuple
 from ..llm.clients import ChatMessage
 from .config import ContextConfig, WarningLevel
 from .tracker import record_context_usage
+from .agent_tracker import record_agent_summarization
 from ..mcp.status import (
-    publish_status,
-    StatusPhase,
+    status_bus,
+    StatusScope,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,11 +18,13 @@ logger = logging.getLogger(__name__)
 class ContextManager:
     """Manages context window usage with enhanced warnings and automatic handling."""
 
-    def __init__(self, config: ContextConfig):
+    def __init__(self, config: ContextConfig, agent_id: Optional[str] = None):
         self.config = config
+        self.agent_id = agent_id  # Store agent ID for tracking purposes
         self._last_warning_level: Optional[WarningLevel] = None
         self._summarizer = None  # Will be set when summarizer is available
         self._summarization_in_progress = False  # Prevent recursive summarization loops
+        self._context_managed_this_step = False  # Prevent duplicate context management in same step
         # Track actual token usage from LLM responses
         self._actual_usage_stats = {
             'total_tokens': 0,
@@ -38,6 +41,10 @@ class ContextManager:
     def set_summarizer(self, summarizer):
         """Set the conversation summarizer."""
         self._summarizer = summarizer
+
+    def reset_step_state(self):
+        """Reset per-step state tracking. Should be called at the start of each agent step."""
+        self._context_managed_this_step = False
 
     def update_token_usage(self, usage_data: dict) -> None:
         """Update current conversation token usage from LLM response.
@@ -233,6 +240,11 @@ class ContextManager:
         3. Recent actual usage trigger: latest LLM call was expensive (proactive management)
         4. Warning level escalation (ORANGE/RED levels)
         """
+        # Prevent duplicate context management in the same step
+        if self._context_managed_this_step:
+            logger.debug("✅ Context management already applied this step, skipping to prevent loops")
+            return False
+
         # Primary trigger: Current conversation size exceeds summarization threshold
         summarization_threshold = self.config.get_summarization_threshold_tokens()
         primary_trigger = current_tokens >= summarization_threshold
@@ -288,6 +300,9 @@ class ContextManager:
         if not should_trigger:
             return messages
 
+        # Mark that context management is being applied this step
+        self._context_managed_this_step = True
+
         # Check if we already have summaries to prevent re-summarizing summaries
         has_existing_summary = any(
             getattr(msg, 'role', None) == 'system' and 
@@ -300,97 +315,83 @@ class ContextManager:
             # Use truncation as fallback to avoid infinite summarization loops
             return self._truncate_oldest(messages)
 
-        # Helper to safely publish status without letting failures bubble up
-        async def _safe_publish(**kwargs):
+        # Use StatusScope for automatic START/END status management
+        async with StatusScope(status_bus, "context-manager") as status:
+            percentage = (current_tokens / self.config.context_window) * 100
+            logger.debug("🔄 Context management triggered: %d tokens (%.1f%% of context window)",
+                       current_tokens, percentage)
+            logger.debug("📋 Strategy: %s", self.config.strategy.value.replace('_', ' ').title())
+
+            # Record context management trigger
+            record_context_usage(
+                total_tokens=current_tokens,
+                message_count=len(messages),
+                context_window=self.config.context_window,
+                management_triggered=True,
+                management_strategy=self.config.strategy.value
+            )
+
+            original_count = len(messages)
+            start_time = time.time()
+
             try:
-                await publish_status(**kwargs)
-            except Exception:
-                logger.exception("Status publish failed (non-fatal)")
+                if self.config.strategy == self.config.strategy.TRUNCATE_OLDEST:
+                    logger.debug("✂️  Truncating oldest messages to reduce context size...")
+                    result = self._truncate_oldest(messages)
+                elif self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST and self._summarizer:
+                    logger.debug("📝 Summarizing conversation history to preserve context...")
+                    result = await self._summarize_conversation(messages)
+                    # Track summarization for UI display
+                    try:
+                        agent_name = self.agent_id if self.agent_id else "unknown_agent"
+                        record_agent_summarization(agent_name)
+                    except Exception as track_e:
+                        logger.debug("Failed to track summarization for %s: %s", agent_name, track_e)
+                elif self.config.strategy == self.config.strategy.SLIDING_WINDOW:
+                    logger.debug("🪟 Applying sliding window to keep most relevant messages...")
+                    result = self._apply_sliding_window(messages)
+                else:
+                    # Fallback to truncation
+                    logger.debug("✂️  Applying fallback truncation strategy...")
+                    result = self._truncate_oldest(messages)
 
-        # Publish start status event
-        await _safe_publish(
-            server="context-manager",
-            message="🔄 Starting context management",
-            phase=StatusPhase.START,
-            meta={"tokens": current_tokens, "strategy": self.config.strategy.value}
-        )
+                # Report results
+                end_time = time.time()
+                new_tokens = self.estimate_token_count(result)
+                new_count = len(result)
+                saved_tokens = current_tokens - new_tokens
+                processing_time = (end_time - start_time) * 1000  # Convert to milliseconds
 
-        percentage = (current_tokens / self.config.context_window) * 100
-        logger.debug("🔄 Context management triggered: %d tokens (%.1f%% of context window)",
-                   current_tokens, percentage)
-        logger.debug("📋 Strategy: %s", self.config.strategy.value.replace('_', ' ').title())
+                logger.debug("✅ Context management completed in %.1fms:", processing_time)
+                logger.debug("   📊 Messages: %d → %d (removed %d)",
+                           original_count, new_count, original_count - new_count)
+                logger.debug("   🪙 Tokens: %d → %d (saved %d tokens, %.1f%% reduction)",
+                           current_tokens, new_tokens, saved_tokens, (saved_tokens / current_tokens) * 100)
+                logger.debug("   📈 New usage: %.1f%% of context window",
+                           (new_tokens / self.config.context_window) * 100)
 
-        # Record context management trigger
-        record_context_usage(
-            total_tokens=current_tokens,
-            message_count=len(messages),
-            context_window=self.config.context_window,
-            management_triggered=True,
-            management_strategy=self.config.strategy.value
-        )
+                # Add final progress update with results
+                await status.end(
+                    f"complete: {original_count}→{new_count} messages, saved {saved_tokens:,} tokens",
+                    meta={
+                        "original_messages": original_count,
+                        "final_messages": new_count,
+                        "original_tokens": current_tokens,
+                        "final_tokens": new_tokens,
+                        "tokens_saved": saved_tokens,
+                        "processing_time_ms": processing_time
+                    }
+                )
 
-        original_count = len(messages)
-        start_time = time.time()
+                return result
 
-        try:
-            if self.config.strategy == self.config.strategy.TRUNCATE_OLDEST:
-                logger.debug("✂️  Truncating oldest messages to reduce context size...")
-                result = self._truncate_oldest(messages)
-            elif self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST and self._summarizer:
-                logger.debug("📝 Summarizing conversation history to preserve context...")
-                result = await self._summarize_conversation(messages)
-            elif self.config.strategy == self.config.strategy.SLIDING_WINDOW:
-                logger.debug("🪟 Applying sliding window to keep most relevant messages...")
-                result = self._apply_sliding_window(messages)
-            else:
-                # Fallback to truncation
-                logger.debug("✂️  Applying fallback truncation strategy...")
-                result = self._truncate_oldest(messages)
-
-            # Report results
-            end_time = time.time()
-            new_tokens = self.estimate_token_count(result)
-            new_count = len(result)
-            saved_tokens = current_tokens - new_tokens
-            processing_time = (end_time - start_time) * 1000  # Convert to milliseconds
-
-            logger.debug("✅ Context management completed in %.1fms:", processing_time)
-            logger.debug("   📊 Messages: %d → %d (removed %d)",
-                       original_count, new_count, original_count - new_count)
-            logger.debug("   🪙 Tokens: %d → %d (saved %d tokens, %.1f%% reduction)",
-                       current_tokens, new_tokens, saved_tokens, (saved_tokens / current_tokens) * 100)
-            logger.debug("   📈 New usage: %.1f%% of context window",
-                       (new_tokens / self.config.context_window) * 100)
-
-            # Publish success status event (non-fatal if publishing fails)
-            await _safe_publish(
-                server="context-manager",
-                message=f"✅ Context management complete: {original_count}→{new_count} messages, saved {saved_tokens:,} tokens",
-                phase=StatusPhase.END,
-                meta={
-                    "original_messages": original_count,
-                    "final_messages": new_count,
-                    "original_tokens": current_tokens,
-                    "final_tokens": new_tokens,
-                    "tokens_saved": saved_tokens,
-                    "processing_time_ms": processing_time
-                }
-            )
-
-            return result
-
-        except Exception as e:
-            # Publish error status event (non-fatal if publishing fails)
-            await _safe_publish(
-                server="context-manager",
-                message=f"❌ Context management failed: {str(e)}",
-                phase=StatusPhase.ERROR,
-                level="error",
-                meta={"error": str(e), "strategy": self.config.strategy.value}
-            )
-            logger.error("Context management failed: %s", e)
-            # Return original messages as fallback
-            return messages
+            except Exception as e:
+                # StatusScope will automatically publish ERROR event
+                await status.error(f"❌ failed: {str(e)}",
+                                 meta={"error": str(e), "strategy": self.config.strategy.value})
+                logger.error("Context management failed: %s", e)
+                # Return original messages as fallback
+                return messages
 
     def _log_token_breakdown(self, messages: List[ChatMessage], total_tokens: int, step: int):
         """Log detailed token usage breakdown."""

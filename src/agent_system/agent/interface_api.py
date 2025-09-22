@@ -31,10 +31,10 @@ from ..mcp.status import (
     status_bus,
     StatusEvent,
     publish_status,
-    StatusPhase,
     get_status_metrics,
 )
 from ..mcp.integration import initialize_mcp, shutdown_mcp
+from ..context.agent_tracker import record_agent_summarization
 
 
 # Global registry for MCP endpoints access
@@ -440,15 +440,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     cm = agent.context_manager
                     # If a dedicated summarizer is available, run a forced summarization
                     if getattr(cm, '_summarizer', None):
-                        try:
-                            await publish_status(server="context-manager", message="🔧 Force summarization requested", phase=StatusPhase.START, meta={"session_id": session_id})
-                        except Exception:
-                            pass
                         new_msgs = await cm._summarize_conversation(msgs)
+                        # Record summarization in agent tracking
                         try:
-                            await publish_status(server="context-manager", message="🔧 Force summarization complete", phase=StatusPhase.END, meta={"session_id": session_id})
-                        except Exception:
-                            pass
+                            agent_name = getattr(agent, 'name', 'unknown_agent')
+                            record_agent_summarization(agent_name)
+                        except Exception as e:
+                            logger.debug("Failed to record summarization: %s", e)
                     else:
                         # No dedicated summarizer; fall back to normal management which may or may not summarize
                         new_msgs = await cm.manage_context(msgs)
@@ -491,15 +489,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         cm = agent.context_manager
                         msgs = list(agent._sessions.get(sid, []))
                         if getattr(cm, '_summarizer', None):
-                            try:
-                                await publish_status(server="context-manager", message=f"🔧 Force summarization requested (session {sid})", phase=StatusPhase.START, meta={"session_id": sid})
-                            except Exception:
-                                pass
                             new_msgs = await cm._summarize_conversation(msgs)
+                            # Track summarization for UI display
                             try:
-                                await publish_status(server="context-manager", message=f"🔧 Force summarization complete (session {sid})", phase=StatusPhase.END, meta={"session_id": sid})
-                            except Exception:
-                                pass
+                                agent_name = getattr(agent, 'name', 'unknown_agent')
+                                record_agent_summarization(agent_name)
+                            except Exception as track_e:
+                                logger.debug("Failed to track summarization for %s: %s", agent_name, track_e)
                         else:
                             new_msgs = await cm.manage_context(msgs)
 

@@ -5,8 +5,8 @@ from typing import List
 from ..llm.clients import ChatMessage
 from .config import ContextConfig
 from ..mcp.status import (
-    publish_status,
-    StatusPhase,
+    status_bus,
+    status_scope,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,103 +78,99 @@ class ConversationSummarizer:
             result.extend(to_preserve)
             return result
 
-        # Ensure we preserve assistant messages that triggered tool calls and their tool results
-        # These are important for continuing the conversation and should not be summarized away.
+        # Ensure we preserve complete tool call sequences across both to_summarize and to_preserve lists
+        # This prevents orphaned tool messages that violate OpenAI API requirements
         try:
-            additional_preserve = []
-            preserve_ids = set()
+            # Combine all messages to analyze complete tool call sequences
+            all_messages = to_summarize + to_preserve
+            
+            # Find all complete tool call sequences that need to be preserved together
+            tool_call_sequences = self._find_complete_tool_call_sequences(all_messages)
+            
+            # Determine which messages need to be moved from to_summarize to to_preserve
+            indices_to_preserve = set()
+            for sequence in tool_call_sequences:
+                for msg_index, msg in enumerate(to_summarize):
+                    if any(msg is seq_msg for seq_msg in sequence):
+                        indices_to_preserve.add(msg_index)
+            
+            if indices_to_preserve:
+                # Extract messages to preserve in original chronological order
+                messages_to_move = []
+                for i in sorted(indices_to_preserve):  # Sort to maintain order
+                    messages_to_move.append(to_summarize[i])
 
-            # Collect candidate assistant messages with tool_calls from the to_summarize block
-            for msg in to_summarize:
-                if getattr(msg, 'role', None) == 'assistant' and getattr(msg, 'tool_calls', None):
-                    # Avoid duplicating if already in to_preserve
-                    if msg not in to_preserve and msg not in additional_preserve:
-                        additional_preserve.append(msg)
-                        # Collect tool call ids referenced so we can keep matching tool results
-                        for tc in msg.tool_calls:
-                            tcid = tc.get('id') if isinstance(tc, dict) else None
-                            if tcid:
-                                preserve_ids.add(tcid)
+                # Remove preserved messages from to_summarize (in reverse order to maintain indices)
+                for i in sorted(indices_to_preserve, reverse=True):
+                    to_summarize.pop(i)
 
-            # Find tool result messages that match collected tool_call_ids
-            if preserve_ids:
-                for msg in to_summarize:
-                    if getattr(msg, 'role', None) == 'tool':
-                        tid = getattr(msg, 'tool_call_id', None)
-                        if tid and tid in preserve_ids and msg not in to_preserve and msg not in additional_preserve:
-                            additional_preserve.append(msg)
+                # Add to preserve list while maintaining chronological order
+                # Insert these messages before the existing to_preserve messages since they're older
+                to_preserve = messages_to_move + to_preserve
 
-            if additional_preserve:
-                # Maintain original chronological order when adding to_preserve
-                for p in additional_preserve:
-                    if p in to_summarize:
-                        to_summarize.remove(p)
-                    if p not in to_preserve:
-                        to_preserve.append(p)
-
-                logger.debug("🔒 Preserved %d important assistant/tool messages during summarization", len(additional_preserve))
+                logger.debug("🔒 Preserved %d tool call sequence messages to prevent orphaned tool messages", len(messages_to_move))
         except Exception:
-            logger.exception("Failed while preserving assistant/tool messages before summarization")
-        
-        # Publish start status event
-        await publish_status(
-            server="conversation-summarizer",
-            message=f"📝 Starting conversation summarization: {len(to_summarize)} messages to summarize",
-            phase=StatusPhase.START,
-            meta={"messages_to_summarize": len(to_summarize), "messages_to_preserve": len(to_preserve)}
-        )
+            logger.exception("Failed while preserving complete tool call sequences")
         
         logger.debug("🤖 Starting LLM-based conversation summarization...")
         logger.debug("   📝 Messages to summarize: %d", len(to_summarize))
         logger.debug("   💾 Messages to preserve: %d", len(to_preserve))
         
-        # Create summary of older conversation
-        summary_text = await self._create_summary(to_summarize, config)
-        
-        # Build result with system message, existing summaries, new summary, and preserved messages
-        result = []
-        if system_msg:
-            result.append(system_msg)
-        
-        # Add existing summaries first (chronological order)
-        result.extend(existing_summaries)
-        
-        # Add new summary as a system message
-        if summary_text:
-            summary_msg = ChatMessage(
-                role="system",
-                content=f"[CONVERSATION SUMMARY] The following is a summary of earlier conversation:\n\n{summary_text}\n\n[END SUMMARY] Recent conversation continues below:"
+        # Create summary of older conversation with status tracking
+        async with status_scope(
+            status_bus, 
+            "conversation-summarizer", 
+            request_id=None,
+            start_msg=f"📝 Starting conversation summarization: {len(to_summarize)} messages to summarize"
+        ) as scope:
+            
+            # Create summary of older conversation
+            summary_text = await self._create_summary(to_summarize, config, scope)
+            
+            # Build result with system message, existing summaries, new summary, and preserved messages
+            result = []
+            if system_msg:
+                result.append(system_msg)
+            
+            # Add existing summaries first (chronological order)
+            result.extend(existing_summaries)
+            
+            # Add new summary as a system message
+            if summary_text:
+                summary_msg = ChatMessage(
+                    role="system",
+                    content=f"[CONVERSATION SUMMARY] The following is a summary of earlier conversation:\n\n{summary_text}\n\n[END SUMMARY] Recent conversation continues below:"
+                )
+                result.append(summary_msg)
+                logger.debug("✅ New conversation summary created (length: %d characters)", len(summary_text))
+            else:
+                logger.warning("⚠️  Summary creation failed, proceeding without new summary")
+            
+            # Add preserved recent messages (with tool result truncation and validation)
+            truncated_preserved = self._truncate_tool_results(to_preserve, config)
+            from agent_system.core.message_validator import validate_messages_before_llm
+            validated_preserved = validate_messages_before_llm(truncated_preserved, context="summarizer_preserve")
+            result.extend(validated_preserved)
+            
+            logger.debug("📊 Summarization complete:")
+            logger.debug("   🗂️  Original messages: %d → Final messages: %d", 
+                       len(messages), len(result))
+            logger.debug("   📝 Existing summaries preserved: %d", len(existing_summaries))
+            logger.debug("   📝 New summary included: %s", "Yes" if summary_text else "No")
+            
+            # Update status with final result
+            await scope.end(
+                f"✅ Summarization complete: {len(messages)}→{len(result)} messages",
+                meta={
+                    "original_messages": len(messages),
+                    "final_messages": len(result),
+                    "messages_summarized": len(to_summarize),
+                    "summaries_preserved": len(existing_summaries),
+                    "new_summary_created": bool(summary_text)
+                }
             )
-            result.append(summary_msg)
-            logger.debug("✅ New conversation summary created (length: %d characters)", len(summary_text))
-        else:
-            logger.warning("⚠️  Summary creation failed, proceeding without new summary")
-        
-        # Add preserved recent messages (with tool result truncation)
-        truncated_preserved = self._truncate_tool_results(to_preserve, config)
-        result.extend(truncated_preserved)
-        
-        logger.debug("📊 Summarization complete:")
-        logger.debug("   🗂️  Original messages: %d → Final messages: %d", 
-                   len(messages), len(result))
-        logger.debug("   📝 Existing summaries preserved: %d", len(existing_summaries))
-        logger.debug("   📝 New summary included: %s", "Yes" if summary_text else "No")
-        
-        # Publish completion status event
-        await publish_status(
-            server="conversation-summarizer",
-            message=f"✅ Summarization complete: {len(messages)}→{len(result)} messages",
-            phase=StatusPhase.END,
-            meta={
-                "original_messages": len(messages),
-                "final_messages": len(result),
-                "existing_summaries": len(existing_summaries),
-                "new_summary_included": bool(summary_text),
-                "summary_length": len(summary_text) if summary_text else 0
-            }
-        )
-        
-        return result
+            
+            return result
     
     def _truncate_tool_results(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
         """Truncate large tool results in messages to prevent context overflow."""
@@ -207,7 +203,7 @@ class ConversationSummarizer:
         
         return truncated_messages
     
-    async def _create_summary(self, messages: List[ChatMessage], config: ContextConfig) -> str:
+    async def _create_summary(self, messages: List[ChatMessage], config: ContextConfig, scope) -> str:
         """Create a concise summary of the conversation messages."""
         # If no LLM client is available, use fallback method immediately
         if not self.llm_client:
@@ -220,13 +216,16 @@ class ConversationSummarizer:
             # Prepare conversation text for summarization
             conversation_text = self._format_messages_for_summary(messages, config)
             
+            # Check if there's meaningful content to summarize
+            if not conversation_text.strip():
+                logger.debug("No meaningful content to summarize - returning empty summary")
+                return ""
+            
             # Create summarization prompt
             summary_prompt = self._create_summary_prompt(conversation_text, config)
             
-            await publish_status(
-                server="conversation-summarizer",
-                message=f"🤖 Requesting summary from LLM ({len(conversation_text):,} chars)",
-                phase=StatusPhase.PROGRESS,
+            await scope.progress(
+                f"🤖 Requesting summary from LLM ({len(conversation_text):,} chars)",
                 meta={"input_chars": len(conversation_text)}
             )
             
@@ -234,18 +233,27 @@ class ConversationSummarizer:
             
             # Get summary from LLM using chat method
             summary_messages = [ChatMessage(role="user", content=summary_prompt)]
+            
+            # Validate message sequence before LLM call
+            from agent_system.core.message_validator import validate_messages_before_llm
+            summary_messages = validate_messages_before_llm(summary_messages, context="summarizer")
+            
             response_content = await self.llm_client.chat(summary_messages)
             
             if response_content and response_content.strip():
                 summary_length = len(response_content.strip())
-                reduction_ratio = (1 - summary_length / len(conversation_text)) * 100
-                logger.debug("✅ LLM summary complete (output: %d chars, %.1f%% reduction)", 
-                           summary_length, reduction_ratio)
+                # Prevent division by zero when conversation_text is empty
+                if len(conversation_text) > 0:
+                    reduction_ratio = (1 - summary_length / len(conversation_text)) * 100
+                    logger.debug("✅ LLM summary complete (output: %d chars, %.1f%% reduction)", 
+                               summary_length, reduction_ratio)
+                else:
+                    reduction_ratio = 0.0
+                    logger.debug("✅ LLM summary complete (output: %d chars, no reduction calculated - empty input)", 
+                               summary_length)
                 
-                await publish_status(
-                    server="conversation-summarizer", 
-                    message=f"✅ LLM summary complete: {len(conversation_text):,}→{summary_length:,} chars ({reduction_ratio:.1f}% reduction)",
-                    phase=StatusPhase.PROGRESS,
+                await scope.progress(
+                    f"✅ LLM summary complete: {len(conversation_text):,}→{summary_length:,} chars ({reduction_ratio:.1f}% reduction)",
                     meta={
                         "input_chars": len(conversation_text),
                         "output_chars": summary_length,
@@ -259,11 +267,8 @@ class ConversationSummarizer:
                 return await self._create_fallback_summary(messages)
                 
         except Exception as e:
-            await publish_status(
-                server="conversation-summarizer",
-                message=f"❌ LLM summary failed: {str(e)}, using fallback method",
-                phase=StatusPhase.ERROR,
-                level="error",
+            await scope.error(
+                f"❌ LLM summary failed: {str(e)}, using fallback method",
                 meta={"error": str(e), "fallback": "text_extraction"}
             )
             logger.error("❌ LLM summary failed: %s, using fallback method", e)
@@ -287,7 +292,26 @@ class ConversationSummarizer:
                     for tc in msg.tool_calls:
                         func = tc.get("function", {})
                         func_name = func.get("name", "unknown")
-                        tool_summaries.append(f"called {func_name}")
+                        func_args = func.get("arguments", "")
+                        
+                        # Include important tool parameters for better summarization
+                        if func_args:
+                            # Try to extract key parameters (URLs, filenames, search terms)
+                            try:
+                                import json
+                                args_dict = json.loads(func_args) if isinstance(func_args, str) else func_args
+                                key_params = []
+                                for key in ['url', 'query', 'filename', 'path', 'symbol', 'topic', 'task']:
+                                    if key in args_dict:
+                                        key_params.append(f"{key}={args_dict[key]}")
+                                if key_params:
+                                    tool_summaries.append(f"called {func_name}({', '.join(key_params)})")
+                                else:
+                                    tool_summaries.append(f"called {func_name}")
+                            except Exception:
+                                tool_summaries.append(f"called {func_name}")
+                        else:
+                            tool_summaries.append(f"called {func_name}")
                     
                     if content:
                         formatted_parts.append(f"Assistant: {content} [Tools: {', '.join(tool_summaries)}]")
@@ -296,11 +320,21 @@ class ConversationSummarizer:
                 else:
                     formatted_parts.append(f"Assistant: {content}")
             elif role == "tool":
-                # Summarize tool results (they can be very long)
-                tool_id = getattr(msg, 'tool_call_id', 'unknown')
-                preview_chars = config.tool_result_preview_chars
-                content_preview = str(content)[:preview_chars] + "..." if len(str(content)) > preview_chars else str(content)
-                formatted_parts.append(f"Tool Result ({tool_id}): {content_preview}")
+                # Improved tool result summarization - preserve more context
+                tool_name = getattr(msg, 'name', 'unknown_tool')
+                
+                # Use larger preview for tool results to preserve more context
+                preview_chars = min(config.tool_result_preview_chars * 3, 1000)  # Up to 1000 chars
+                content_str = str(content)
+                
+                if len(content_str) > preview_chars:
+                    # For long content, try to preserve beginning and end
+                    half_chars = preview_chars // 2
+                    content_preview = content_str[:half_chars] + f"...[{len(content_str)-preview_chars} chars omitted]..." + content_str[-half_chars:]
+                else:
+                    content_preview = content_str
+                    
+                formatted_parts.append(f"Tool Result ({tool_name}): {content_preview}")
             elif role == "system":
                 formatted_parts.append(f"System: {content}")
         
@@ -364,3 +398,49 @@ SUMMARY:"""
             summary_parts.append(f"Tools used: {', '.join(sorted(tools_used))}.")
         
         return " ".join(summary_parts)
+    
+    def _find_complete_tool_call_sequences(self, messages: List[ChatMessage]) -> List[List[ChatMessage]]:
+        """
+        Find complete tool call sequences that must be preserved together.
+        
+        A complete sequence includes:
+        1. Assistant message with tool_calls
+        2. All corresponding tool response messages
+        
+        Returns:
+            List of sequences, where each sequence is a list of messages that must stay together
+        """
+        sequences = []
+        tool_call_map = {}  # Maps tool_call_id to assistant message
+        
+        # First pass: collect all assistant messages with tool_calls and map their tool_call_ids
+        for msg in messages:
+            if getattr(msg, 'role', None) == 'assistant' and getattr(msg, 'tool_calls', None):
+                tool_calls = getattr(msg, 'tool_calls', [])
+                for tc in tool_calls:
+                    tcid = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                    if tcid:
+                        tool_call_map[tcid] = msg
+        
+        # Second pass: group tool responses with their assistant messages
+        sequence_map = {}  # Maps assistant message id to its complete sequence
+        
+        for msg in messages:
+            if getattr(msg, 'role', None) == 'tool':
+                tool_call_id = getattr(msg, 'tool_call_id', None)
+                if tool_call_id and tool_call_id in tool_call_map:
+                    assistant_msg = tool_call_map[tool_call_id]
+                    assistant_id = id(assistant_msg)  # Use object id as key
+                    
+                    # Initialize sequence if not exists
+                    if assistant_id not in sequence_map:
+                        sequence_map[assistant_id] = [assistant_msg]
+                    
+                    # Add tool response to sequence
+                    sequence_map[assistant_id].append(msg)
+        
+        # Convert to list of sequences
+        sequences = list(sequence_map.values())
+        
+        logger.debug("🔍 Found %d complete tool call sequences to preserve integrity", len(sequences))
+        return sequences

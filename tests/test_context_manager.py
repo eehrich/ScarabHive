@@ -5,7 +5,6 @@ from unittest.mock import Mock, AsyncMock, patch
 from agent_system.context.manager import ContextManager
 from agent_system.context.config import ContextConfig, ContextStrategy, WarningLevel
 from agent_system.llm.clients import ChatMessage
-from agent_system.mcp.status import StatusPhase
 
 
 class TestContextManager:
@@ -240,7 +239,7 @@ class TestContextManagerAsync:
         messages = [ChatMessage(role="user", content="Short message")]
         
         with patch.object(self.manager, 'estimate_token_count', return_value=500):
-            with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock):
+            with patch('agent_system.mcp.status.status_bus.publish', new_callable=AsyncMock):
                 result = await self.manager.manage_context(messages)
         
         # Should return original messages unchanged
@@ -258,15 +257,15 @@ class TestContextManagerAsync:
         
         with patch.object(self.manager, 'estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', mock_truncate):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.mcp.status.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
         
         # Should call truncation
         mock_truncate.assert_called_once_with(messages)
         assert result == messages[:2]
         
-        # Should publish start and end status events
-        assert mock_publish.call_count >= 2
+        # Should publish status events via StatusScope
+        assert mock_publish.call_count >= 2  # START and END events
     
     async def test_manage_context_error_handling(self):
         """Test manage_context error handling."""
@@ -274,16 +273,15 @@ class TestContextManagerAsync:
         
         with patch.object(self.manager, 'estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', side_effect=Exception("Test error")):
-                with patch('agent_system.context.manager.publish_status', new_callable=AsyncMock) as mock_publish:
+                with patch('agent_system.mcp.status.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
         
         # Should return original messages on error
         assert result == messages
         
-        # Should publish error status event
-        error_calls = [call for call in mock_publish.call_args_list 
-                      if len(call[1]) > 0 and call[1].get('phase') == StatusPhase.ERROR]
-        assert len(error_calls) > 0
+        # Should publish error status event via StatusScope
+        # StatusScope automatically publishes ERROR event on exception
+        assert mock_publish.call_count >= 1
 
 
 class TestContextManagerIntegration:

@@ -5,7 +5,7 @@ import re
 import json
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
-from ..mcp.status import status_scope, status_bus
+from ..mcp.status import StatusScope, status_bus
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,8 @@ class TokenOptimizer:
             logger.debug("⏱️ Skipping token optimization due to cooldown and no prior savings")
             return messages
         
-        # Use status_scope for automatic START/END status management
-        async with status_scope(status_bus, "token-optimizer", request_id=request_id) as status:
+        # Use StatusScope for automatic START/END status management
+        async with StatusScope(status_bus, "token-optimizer", request_id) as status:
             await status.progress(f"🔧 Starting token optimization for {len(messages)} messages", 
                                 meta={"message_count": len(messages)})
                 
@@ -160,7 +160,7 @@ class TokenOptimizer:
                 "compression_ratio": ratio,
                 "messages_processed": len(messages),
             }
-            await status.end(f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})", 
+            await status.end(f"complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})", 
                            meta=meta)
             
             return optimized
@@ -176,6 +176,8 @@ class TokenOptimizer:
         # Handle tool calls optimization
         optimized_tool_calls = None
         if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            # Never attempt semantic compression of tool call JSON itself – just whitespace normalization
+            logger.debug("🔧 Preserving tool_calls structure (%d calls)", len(msg.tool_calls))
             optimized_tool_calls = self._optimize_tool_calls(msg.tool_calls)
         
         # Create potential optimized message
@@ -190,6 +192,19 @@ class TokenOptimizer:
         
         # Check if optimization actually helps
         optimized_tokens = self._estimate_message_tokens(optimized_msg)
+
+        # Guard: If assistant message has tool_calls ensure none were lost
+        if getattr(msg, 'role', None) == 'assistant' and getattr(msg, 'tool_calls', None):
+            orig_ids = [tc.get('id') for tc in msg.tool_calls if isinstance(tc, dict)]
+            new_ids = [tc.get('id') for tc in (optimized_msg.tool_calls or []) if isinstance(tc, dict)]
+            if set(orig_ids) != set(new_ids):
+                logger.warning("⚠️  Optimization attempted to alter tool_call ids (%s -> %s); reverting message untouched", orig_ids, new_ids)
+                return msg  # Structural safety override
+            # Also ensure tool_call_id on tool messages is preserved
+        if getattr(msg, 'role', None) == 'tool':
+            if getattr(msg, 'tool_call_id', None) != getattr(optimized_msg, 'tool_call_id', None):
+                logger.warning("⚠️  Optimization altered tool_call_id on tool message; reverting")
+                return msg
         
         # Only return optimized version if it's actually better
         if optimized_tokens < original_tokens:

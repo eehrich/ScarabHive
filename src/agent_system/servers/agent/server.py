@@ -168,8 +168,9 @@ class Agent(MCPServer):
                 compress_tool_results=context_mgmt_settings.get("optimization", {}).get("compress_tool_results", True)
             )
 
-            # Initialize context manager
-            self.context_manager = ContextManager(self.context_config)
+            # Initialize context manager with agent-specific tracking
+            agent_id = getattr(self, 'name', 'unknown_agent')
+            self.context_manager = ContextManager(self.context_config, agent_id=agent_id)
 
             # Initialize and set summarizer with dedicated LLM client
             # Create a separate LLM client for summarization to prevent recursive context management
@@ -588,6 +589,10 @@ class Agent(MCPServer):
                 # Drain any appended user messages before each step
                 messages = await self._drain_appended_messages(request_id, messages)
                 
+                # Reset context manager step state to prevent duplicate management
+                if self.context_manager:
+                    self.context_manager.reset_step_state()
+                
                 # Check for cancellation at the start of each step
                 if self._is_cancelled(request_id):
                     logger.info("Request %s cancelled at step %d", request_id, step + 1)
@@ -650,6 +655,10 @@ class Agent(MCPServer):
                                     messages = await self.token_optimizer.optimize_messages(messages, request_id=request_id)
                                     self._last_optimizer_tokens_snapshot = self.context_manager.estimate_token_count(messages)
                                     self._last_optimizer_run_time = now
+                                    
+                                    # Validate messages after token optimization to catch any structural issues
+                                    from agent_system.core.message_validator import validate_messages_before_llm
+                                    messages = validate_messages_before_llm(messages, context="agent_server")
                                 else:
                                     logger.debug("Skipping token optimizer (events): growth=%d, time_since_last=%.2fs", tokens_growth, time_since_last)
                             except Exception as e:
@@ -685,6 +694,10 @@ class Agent(MCPServer):
 
                 # Signal LLM call using status_worker
                 await status_worker.progress("Calling LLM (chat)", meta={"step": step + 1})
+
+                # Validate messages before LLM call to ensure API compliance
+                from agent_system.core.message_validator import validate_messages_before_llm
+                messages = validate_messages_before_llm(messages, context=f"agent_server_step_{step + 1}")
 
                 # Get LLM response
                 llm_out = await self.llm.chat_tools(messages, tools_schema)
@@ -734,17 +747,61 @@ class Agent(MCPServer):
                 tool_calls = assistant.get("tool_calls") or []
                 content = assistant.get("content")
 
+                # Normalize content variants for empty detection
+                def _is_effectively_empty(c) -> tuple[bool, str]:  # (empty?, reason)
+                    if c is None:
+                        return True, "content=None"
+                    # Text string
+                    if isinstance(c, str):
+                        if c.strip() == "":
+                            return True, "content=empty-string"
+                        return False, "non-empty-string"
+                    # OpenAI style list of segments
+                    if isinstance(c, list):
+                        if len(c) == 0:
+                            return True, "content=list-empty"
+                        # Collect any non-empty text segments
+                        has_text = False
+                        for seg in c:
+                            try:
+                                if isinstance(seg, dict):
+                                    # Accept either {type: 'text', text: '...'} or {type:'...','content': '...'}
+                                    txt = seg.get("text") or seg.get("content")
+                                    if isinstance(txt, str) and txt.strip():
+                                        has_text = True
+                                        break
+                                elif isinstance(seg, str) and seg.strip():
+                                    has_text = True
+                                    break
+                            except Exception:
+                                continue
+                        if has_text:
+                            return False, "list-has-text"
+                        return True, "list-only-empty-segments"
+                    # Fallback for unexpected structure
+                    return False, f"unexpected-type-{type(c).__name__}"
+
+                is_empty_content, empty_reason = _is_effectively_empty(content)
+
                 # Track consecutive responses without progress to prevent infinite loops
-                if not tool_calls and not content:
+                if not tool_calls and is_empty_content:
                     consecutive_empty_responses += 1
                     consecutive_no_tool_calls += 1
-                    logger.warning("LLM returned empty response (step %d), consecutive empty: %d", 
-                                 step + 1, consecutive_empty_responses)
+                    logger.warning(
+                        "LLM returned empty response (step %d), consecutive empty: %d (reason=%s)",
+                        step + 1,
+                        consecutive_empty_responses,
+                        empty_reason,
+                    )
                 elif not tool_calls:
                     consecutive_no_tool_calls += 1
                     consecutive_empty_responses = 0  # Reset empty counter if we have content
-                    logger.debug("LLM returned content without tool calls (step %d), consecutive no-tools: %d", 
-                               step + 1, consecutive_no_tool_calls)
+                    logger.debug(
+                        "LLM returned content without tool calls (step %d), consecutive no-tools: %d (reason=%s)",
+                        step + 1,
+                        consecutive_no_tool_calls,
+                        empty_reason,
+                    )
                 else:
                     # Reset counters when we get tool calls (making progress)
                     consecutive_no_tool_calls = 0
@@ -752,9 +809,26 @@ class Agent(MCPServer):
 
                 # Emergency break conditions to prevent infinite loops
                 if consecutive_empty_responses >= max_consecutive_empty:
-                    logger.warning("Breaking agent loop: %d consecutive empty responses", consecutive_empty_responses)
-                    results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses")
-                    yield {"type": "error", "message": f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses"}
+                    logger.warning(
+                        "Breaking agent loop: %d consecutive empty responses (last_empty_reason=%s)",
+                        consecutive_empty_responses,
+                        empty_reason,
+                    )
+                    diagnostic = {
+                        "empty_reason": empty_reason,
+                        "assistant_keys": list(assistant.keys()) if isinstance(assistant, dict) else None,
+                        "has_tool_calls": bool(tool_calls),
+                        "raw_content_repr": repr(content)[:400],
+                    }
+                    # Keep legacy phrasing 'consecutive empty' for test compatibility while adding reason detail
+                    results.setdefault("errors", []).append(
+                        f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses (reason={empty_reason})"
+                    )
+                    yield {
+                        "type": "error",
+                        "message": f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses (reason={empty_reason})",
+                        "diagnostic": diagnostic,
+                    }
                     break
                 
                 if consecutive_no_tool_calls >= max_consecutive_no_tools:
@@ -942,6 +1016,10 @@ class Agent(MCPServer):
             else:
                 # Max steps reached - get final answer
                 try:
+                    # Validate messages before final LLM call
+                    from agent_system.core.message_validator import validate_messages_before_llm
+                    messages = validate_messages_before_llm(messages, context="agent_server_final")
+                    
                     final_llm_out = await self.llm.chat_tools(messages, [])
                     final_assistant = final_llm_out.get("assistant", {})
                     final_content = final_assistant.get("content")

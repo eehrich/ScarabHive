@@ -183,7 +183,7 @@ class WebResearchAgent(Agent):
                 elif event_type == "thinking":
                     # Track LLM conversation activity
                     total_messages += 1
-                    await status.progress("Processing...")
+                    await status.progress(f"Processing {total_messages} ...")
                     try:
                         # Get conversation context for tracking
                         if hasattr(self, '_current_messages'):
@@ -251,6 +251,8 @@ class WebResearchAgent(Agent):
 
                 elif event_type == "error":
                     error_msg = event.get("message", "Unknown error")
+                    if not error_msg or error_msg.strip() == "":
+                        error_msg = "Agent error occurred without details"
                     results.setdefault("errors", []).append(error_msg)
                     await status.error(f"Error - {error_msg}")
                     raise Exception(error_msg)

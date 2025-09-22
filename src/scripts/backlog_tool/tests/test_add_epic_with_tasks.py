@@ -3,11 +3,11 @@ import os
 import sys
 from pathlib import Path
 
+from scripts.backlog_tool.commands import add as add_cmd
+
 # Ensure package import works when running tests directly
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'src'))
-
-from scripts.backlog_tool.commands import add as add_cmd
 
 
 def test_add_epic_with_tasks_bulk(tmp_path):
