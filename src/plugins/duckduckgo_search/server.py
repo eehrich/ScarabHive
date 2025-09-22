@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from typing import Any
 from pathlib import Path
 
@@ -35,9 +37,35 @@ class DuckDuckGoSearchServer(MCPServer):
 
             logger.debug("DuckDuckGo search: %s (max_results=%d)", query, max_results)
             results = []
+            
             try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=max_results))
+                # Retry logic for rate limiting and temporary failures
+                max_retries = 3
+                for attempt in range(max_retries + 1):
+                    try:
+                        # Add delay before retry attempts (not before first attempt)
+                        if attempt > 0:
+                            delay = (2 ** attempt) + random.uniform(0, 1)  # Exponential backoff with jitter
+                            logger.debug("Search attempt %d failed, retrying in %.2f seconds", attempt, delay)
+                            await asyncio.sleep(delay)
+                        
+                        with DDGS() as ddgs:
+                            results = list(ddgs.text(query, max_results=max_results))
+                        break  # Success, exit retry loop
+                        
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        is_rate_limit = any(indicator in error_msg for indicator in [
+                            '429', 'rate limit', 'too many requests', 'throttle', 'blocked'
+                        ])
+                        
+                        if attempt < max_retries and (is_rate_limit or 'timeout' in error_msg or 'connection' in error_msg):
+                            logger.warning("DuckDuckGo search attempt %d failed: %s (will retry)", attempt + 1, str(e))
+                            continue
+                        else:
+                            # Final attempt or non-retryable error
+                            raise e
+                
                 logger.debug("DuckDuckGo search returned %d results", len(results))
                 
                 # Update status with success
@@ -46,22 +74,23 @@ class DuckDuckGoSearchServer(MCPServer):
                                    meta={"results": len(results)})
                 
                 return {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
+            
             except Exception as e:
                 logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
                 
                 # Update status with error
                 if status:
-                    await status.error(f"Search failed: {str(e)}", meta={"error": str(e)})
+                    await status.error(f"Search failed for query '{query}': {str(e)}", meta={"error": str(e)})
                 
                 return {
                     "engine": "duckduckgo",
                     "query": query,
                     "results": [],
                     "package": pkg,
-                    "error": f"Search failed: {str(e)}",
+                    "error": f"Search failed for query '{query}': {str(e)}",
                     "suggestion": "Try a different search query or use broader terms",
                 }
-                
+        
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_schema(self) -> dict[str, Any]:
