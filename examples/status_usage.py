@@ -42,10 +42,10 @@ async def new_agent_run(request_id: str):
     ) as status:
         
         # All status updates are guaranteed to be delivered
-        await status.step("Analyzing task")
-        await status.progress("Processing data", is_coordinator=False)
-        await status.step("Calling tools")
-        await status.progress("Synthesizing results", is_coordinator=False)
+        await status.progress("Analyzing task")
+        await status.progress("Processing data")
+        await status.progress("Calling tools")
+        await status.progress("Synthesizing results")
         
         # START/END automatically handled - no more forgotten status messages!
         # No more asyncio.sleep(0) needed anywhere!
@@ -96,9 +96,9 @@ class WebResearchAgentImproved:
             # Process events from base agent
             async for event in self.run_events(task_prompt, request_id=request_id):
                 if event.get("type") == "mcp_call":
-                    await status.step(f"Using {event.get('server', 'tool')}")
+                    await status.progress(f"Using {event.get('server', 'tool')}")
                 elif event.get("type") == "thinking":
-                    await status.progress("Processing...", is_coordinator=False)
+                    await status.progress("Processing...")
                 # No need to break on "final" - context manager handles completion!
             
             # ✅ Coordinator/Worker completion guaranteed by context manager

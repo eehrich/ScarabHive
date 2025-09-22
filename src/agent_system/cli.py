@@ -1319,7 +1319,6 @@ def main() -> None:
                     if phase == "error" and _supports_color():
                         status_line = _colorize(status_line, "31")
                     print(status_line)
-                    print(status_line)
             except asyncio.CancelledError:
                 return
             except Exception:

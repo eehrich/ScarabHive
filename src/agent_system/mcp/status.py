@@ -8,6 +8,7 @@ asyncio.sleep(0) anti-patterns through guaranteed delivery mechanisms.
 
 import logging
 from contextlib import asynccontextmanager
+from os import name
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -235,86 +236,99 @@ async def publish_status(server: str, message: str, request_id: Optional[str] = 
 
 
 class StatusScope:
-    """Context manager for automatic START/END status pairing"""
+    """Context manager for automatic START/END status pairing with step and progress tracking"""
     
-    def __init__(self, bus: StatusBus, coordinator_name: str, worker_name: str, 
-                 request_id: Optional[str]):
+    def __init__(self, bus: StatusBus, server: str, request_id: Optional[str] = None, start_msg: Optional[str] = None, end_msg: Optional[str] = None):
         self.bus = bus
-        self.coordinator_name = coordinator_name
-        self.worker_name = worker_name  
+        self.server = server
         self.request_id = request_id
+        self.ended = False
+        self.start_msg = start_msg or "started"
+        self.end_msg = end_msg or "completed"
         
     async def __aenter__(self):
-        # Send coordinator START
+        # Send START message
         await self.bus.publish(StatusEvent(
-            server=self.coordinator_name,
+            server=self.server,
             request_id=self.request_id,
-            message="started",
+            message=self.start_msg,
             phase=StatusPhase.START
         ))
-        # Send worker START
-        await self.bus.publish(StatusEvent(
-            server=self.worker_name,
-            request_id=self.request_id,
-            message="started", 
-            phase=StatusPhase.START
-        ))
+        self.ended = False
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            # Error occurred
-            await self.bus.publish(StatusEvent(
-                server=self.worker_name,
-                request_id=self.request_id,
-                message=f"failed: {exc_val}",
-                phase=StatusPhase.ERROR
-            ))
-            await self.bus.publish(StatusEvent(
-                server=self.coordinator_name,
-                request_id=self.request_id,
-                message=f"failed: {exc_val}",
-                phase=StatusPhase.ERROR
-            ))
-        else:
-            # Success
-            await self.bus.publish(StatusEvent(
-                server=self.worker_name,
-                request_id=self.request_id,
-                message="completed",
-                phase=StatusPhase.END
-            ))
-            await self.bus.publish(StatusEvent(
-                server=self.coordinator_name,
-                request_id=self.request_id,
-                message="completed",
-                phase=StatusPhase.END
-            ))
+        if not self.ended:
+            self.ended = True
+            if exc_type is not None:
+                # Error occurred
+                await self.bus.publish(StatusEvent(
+                    server=self.server,
+                    request_id=self.request_id,
+                    message=f"failed: {exc_val}",
+                    phase=StatusPhase.ERROR
+                ))
+            else:
+                # Success
+                await self.bus.publish(StatusEvent(
+                    server=self.server,
+                    request_id=self.request_id,
+                    message=self.end_msg,
+                    phase=StatusPhase.END
+                ))
     
-    async def step(self, message: str, is_coordinator: bool = True) -> None:
-        """Report a step in the process"""
-        server = self.coordinator_name if is_coordinator else self.worker_name
+    async def progress(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        """Report a step or progress in the process"""
         await self.bus.publish(StatusEvent(
-            server=server,
+            server=self.server,
             request_id=self.request_id,
             message=message,
-            phase=StatusPhase.PROGRESS
+            phase=StatusPhase.PROGRESS,
+            meta=meta
+        ))
+    
+    async def end(self, message: str = "completed", meta: Optional[Dict[str, Any]] = None) -> None:
+        """Explicitly end the process (useful for early completion)"""
+        self.ended = True
+        await self.bus.publish(StatusEvent(
+            server=self.server,
+            request_id=self.request_id,
+            message=message,
+            phase=StatusPhase.END,
+            meta=meta
         ))
         
-    async def progress(self, message: str, is_coordinator: bool = True) -> None:
-        """Report progress in the process"""
-        server = self.coordinator_name if is_coordinator else self.worker_name
+    async def error(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        """Report an error in the process"""
+        self.ended = True
         await self.bus.publish(StatusEvent(
-            server=server,
+            server=self.server,
             request_id=self.request_id,
             message=message,
-            phase=StatusPhase.PROGRESS
+            phase=StatusPhase.ERROR,
+            level="error",
+            meta=meta
         ))
+
 
 
 @asynccontextmanager  
-async def status_scope(bus: StatusBus, name: str, request_id: Optional[str]):
-    """Status scope context manager for automatic START/END pairing"""
-    scope = StatusScope(bus, f"{name}_coordinator", f"{name}_worker", request_id)
+async def status_scope(bus: StatusBus, name: str, request_id: Optional[str] = None):
+    """Status scope context manager for automatic START/END pairing
+    
+    Args:
+        bus: StatusBus instance to publish events to
+        name: Name for the status scope (used as server name)
+        request_id: Optional request ID for correlation
+    
+    Usage:
+        async with status_scope(status_bus, "my_agent", request_id=req_id) as status:
+            await status.step("Processing data", meta={"step": 1})
+            await status.step("50% complete", meta={"progress": 0.5})
+            # Optional explicit control:
+            # await status.end("Custom completion message")
+            # await status.error("Something went wrong")
+    """
+    scope = StatusScope(bus, name, request_id)
     async with scope:
         yield scope
