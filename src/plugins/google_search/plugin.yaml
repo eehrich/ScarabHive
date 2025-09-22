@@ -1,5 +1,0 @@
-name: google_search
-author: "Enrico Ehrich"
-version: "0.1.0"
-description: "Google Custom Search plugin wrapper around legacy implementation. Requires `api_key` and `cx` in server config or via CLI args/env vars."
-entrypoint: plugin:PLUGIN_FACTORY
