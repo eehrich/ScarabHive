@@ -6,10 +6,6 @@ import urllib.parse
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer
-from agent_system.mcp.status import (
-    publish_status,
-    StatusPhase,
-)
 
 
 class WebScraperServer(MCPServer):
@@ -108,8 +104,8 @@ class WebScraperServer(MCPServer):
         if not url or not isinstance(url, str):
             raise ValueError("Missing 'url' (string)")
 
-            # correlate status events with provided request_id when available
-        request_id = params.get("request_id") or params.get("requestId")
+        # Get status object from base class (injected by call_with_status)
+        status = params.get("_status")
 
         timeout = float(params.get("timeout", 20))
         user_agent = params.get(
@@ -156,27 +152,15 @@ class WebScraperServer(MCPServer):
                             html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
                     except ReadTimeout:
                         try:
-                            await publish_status(
-                                self.name,
-                                f"Timeout fetching {target_url}",
-                                request_id=request_id,
-                                level="error",
-                                phase=StatusPhase.ERROR,
-                                meta={"error": "read_timeout", "timeout": timeout},
-                            )
+                            if status:
+                                await status.error(f"Timeout fetching {target_url}", meta={"error": "read_timeout", "timeout": timeout})
                         except Exception:
                             pass
                         return "", 0, target_url, ""
                     except RequestError as err:
                         try:
-                            await publish_status(
-                                self.name,
-                                f"Request error fetching {target_url}: {err}",
-                                request_id=request_id,
-                                level="error",
-                                phase=StatusPhase.ERROR,
-                                meta={"error": str(err)},
-                            )
+                            if status:
+                                await status.error(f"Request error fetching {target_url}: {err}", meta={"error": str(err)})
                         except Exception:
                             pass
                         return "", 0, target_url, ""
@@ -215,7 +199,8 @@ class WebScraperServer(MCPServer):
         # fetch HTML (async) and parse according to requested action
         # notify start of fetch
         try:
-            await publish_status(self.name, f"Fetching {url}", request_id=request_id, phase=StatusPhase.START)
+            if status:
+                await status.progress(f"Fetching {url}")
         except Exception:
             # status publishing must not break functionality
             pass
@@ -228,13 +213,8 @@ class WebScraperServer(MCPServer):
         # If fetch failed, publish error and return minimal payload
         if not html and status_code == 0:
             try:
-                await publish_status(
-                    self.name,
-                    f"Failed to fetch {url}",
-                    request_id=request_id,
-                    level="error",
-                    phase=StatusPhase.ERROR,
-                )
+                if status:
+                    await status.error(f"Failed to fetch {url}")
             except Exception:
                 pass
             return {
@@ -263,13 +243,8 @@ class WebScraperServer(MCPServer):
                 result["html"] = html
                 
             try:
-                await publish_status(
-                    self.name,
-                    f"Completed fetch {url} - non-HTML content detected ({content_type})",
-                    request_id=request_id,
-                    phase=StatusPhase.END,
-                    meta={"final_url": final_url, "status_code": status_code, "content_type": content_type},
-                )
+                if status:
+                    await status.end(f"Completed fetch {url} - non-HTML content detected ({content_type})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
             except Exception:
                 pass
             return result
@@ -437,13 +412,8 @@ class WebScraperServer(MCPServer):
             result["links"] = links
         # publish success
         try:
-            await publish_status(
-                self.name,
-                f"Completed fetch {url} (status={status_code})",
-                request_id=request_id,
-                phase=StatusPhase.END,
-                meta={"final_url": final_url, "status_code": status_code, "content_type": content_type},
-            )
+            if status:
+                await status.end(f"Completed fetch {url} (status={status_code})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
         except Exception:
             pass
         return result

@@ -208,6 +208,11 @@ class StatusBus:
 status_bus = StatusBus()
 
 
+def get_status_bus() -> StatusBus:
+    """Get the global status bus instance"""
+    return status_bus
+
+
 def get_status_metrics() -> Dict[str, Any]:
     """Get metrics about the status system"""
     return status_bus.get_status_metrics()

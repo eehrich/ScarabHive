@@ -24,7 +24,7 @@ async def serve_mcp_server(server: MCPServer, host: str | None = None, port: int
 
     @app.post("/call")
     async def call(req: CallRequest):
-        return await server.call(req.tool, req.params)
+        return await server.call_with_status(req.tool, req.params)
 
     config = uvicorn.Config(
         app,

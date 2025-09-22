@@ -21,7 +21,7 @@ class Executor:
         server = self.registry.get(tool_name)
         action_name = params.get("action") or server.get_default_action()
         try:
-            result = await server.call(action_name, params)
+            result = await server.call_with_status(action_name, params)
             return result
         except Exception as e:
             logger.exception("Tool %s invocation failed: %s", tool_name, e)

@@ -16,6 +16,24 @@ class MCPServer(ABC):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         ...
 
+    async def call_with_status(self, action: str, params: dict[str, Any]):
+        """Call tool with automatic StatusScope management
+        
+        Supports both 'request_id' (Python convention) and 'requestId' (JS convention)
+        for compatibility with different MCP clients.
+        """
+        from .status import get_status_bus, status_scope
+        
+        status_bus = get_status_bus()
+        # Support both snake_case and camelCase request_id for compatibility
+        # Prefer request_id (Python convention) but fallback to requestId (JS convention)
+        request_id = params.get("request_id") or params.get("requestId")
+        
+        async with status_scope(status_bus, self.name, request_id=request_id) as status:
+            # Inject status object for the plugin to use
+            params["_status"] = status
+            return await self.call(action, params)
+
     def get_tools(self) -> list[dict[str, Any]]:
         """Return a list of OpenAI function schemas for this MCP server's tools.
         

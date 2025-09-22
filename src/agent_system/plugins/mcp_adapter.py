@@ -95,7 +95,11 @@ class PluginMCPAdapter(MCPServer):
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """Call a tool on the underlying plugin"""
         try:
-            if hasattr(self.plugin_server, 'call'):
+            if hasattr(self.plugin_server, 'call_with_status'):
+                result = await self.plugin_server.call_with_status(name, arguments)
+                return result
+            elif hasattr(self.plugin_server, 'call'):
+                # Fallback for plugins that haven't been updated yet
                 result = await self.plugin_server.call(name, arguments)
                 return result
             else:

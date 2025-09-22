@@ -5,10 +5,6 @@ from typing import Any
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer  # absolute import to work when executed with -m
-from agent_system.mcp.status import (
-    publish_status,
-    StatusPhase,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +13,8 @@ class DuckDuckGoSearchServer(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool == "search":
             query = params.get("query", "")
-            request_id = params.get("request_id") or params.get("requestId")
             max_results = int(params.get("max_results", 5))
+            status = params.get("_status")  # Get status object from base class
             
             if not query.strip():
                 return {"engine": "duckduckgo", "query": query, "results": [], "package": "ddgs", "error": "Empty query"}
@@ -33,55 +29,39 @@ class DuckDuckGoSearchServer(MCPServer):
             except Exception as e:
                 raise RuntimeError("Install `ddgs` (preferred) or `duckduckgo-search` for duckduckgo_search server.") from e
 
-            # Try search with error handling
-            # Publish start; ensure terminal event is sent regardless of failures
-            try:
-                try:
-                    await publish_status(self.name, f"Searching: {query}", request_id=request_id, phase=StatusPhase.START)
-                except Exception:
-                    pass
+            # Update status with search progress
+            if status:
+                await status.progress(f"🔍 Searching: {query}")
 
-                logger.debug("DuckDuckGo search: %s (max_results=%d)", query, max_results)
-                results = []
-                try:
-                    with DDGS() as ddgs:
-                        results = list(ddgs.text(query, max_results=max_results))
-                    logger.debug("DuckDuckGo search returned %d results", len(results))
-                    return {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
-                except Exception as e:
-                    logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
-                    # publish error status
-                    try:
-                        await publish_status(
-                            self.name,
-                            f"Search failed: {str(e)}",
-                            request_id=request_id,
-                            phase=StatusPhase.ERROR,
-                            level="error",
-                            meta={"error": str(e)},
-                        )
-                    except Exception:
-                        pass
-                    return {
-                        "engine": "duckduckgo",
-                        "query": query,
-                        "results": [],
-                        "package": pkg,
-                        "error": f"Search failed: {str(e)}",
-                        "suggestion": "Try a different search query or use broader terms",
-                    }
-            finally:
-                # Always attempt to publish an END event to signal completion to subscribers.
-                try:
-                    await publish_status(
-                        self.name,
-                        f"Search completed: {query} ({len(results)} results)",
-                        request_id=request_id,
-                        phase=StatusPhase.END,
-                        meta={"results": len(results)},
-                    )
-                except Exception:
-                    pass
+            logger.debug("DuckDuckGo search: %s (max_results=%d)", query, max_results)
+            results = []
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=max_results))
+                logger.debug("DuckDuckGo search returned %d results", len(results))
+                
+                # Update status with success
+                if status:
+                    await status.end(f"Search completed: {query} ({len(results)} results)",
+                                   meta={"results": len(results)})
+                
+                return {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
+            except Exception as e:
+                logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
+                
+                # Update status with error
+                if status:
+                    await status.error(f"Search failed: {str(e)}", meta={"error": str(e)})
+                
+                return {
+                    "engine": "duckduckgo",
+                    "query": query,
+                    "results": [],
+                    "package": pkg,
+                    "error": f"Search failed: {str(e)}",
+                    "suggestion": "Try a different search query or use broader terms",
+                }
+                
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_schema(self) -> dict[str, Any]:
