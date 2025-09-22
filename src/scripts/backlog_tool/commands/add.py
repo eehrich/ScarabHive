@@ -288,6 +288,7 @@ def _cmd_add_epic_bulk(args: argparse.Namespace) -> int:
     backlog = bl.parse(lines)
 
     created_epics = []
+    created_tasks = []
     errors = []
 
     # Show progress for bulk operations with many items
@@ -300,6 +301,22 @@ def _cmd_add_epic_bulk(args: argparse.Namespace) -> int:
             forced = _pad_id_input(item.get('id')) if item.get('id') else None
             e = bl.add_epic_to_backlog(backlog, item['title'], forced_id=forced)
             created_epics.append(e.id)
+
+            # If the epic JSON includes a 'tasks' array, add those tasks under the newly created epic
+            tasks_list = item.get('tasks') or []
+            if isinstance(tasks_list, list) and tasks_list:
+                for ti, task_item in enumerate(tasks_list):
+                    if not isinstance(task_item, dict) or 'title' not in task_item or not task_item['title']:
+                        errors.append(f"Row {i+1} task {ti+1}: missing required 'title' field")
+                        continue
+                    try:
+                        task_forced = _pad_id_input(task_item.get('id')) if task_item.get('id') else None
+                        notes_arg = _normalize_notes(task_item.get('notes')) if task_item.get('notes') else None
+                        description_arg = _normalize_notes(task_item.get('description')) if task_item.get('description') else None
+                        t = bl.add_task_to_epic(backlog, e.id, task_item['title'], notes_arg, description_arg, forced_id=task_forced)
+                        created_tasks.append((t.id, e.id))
+                    except Exception as te:
+                        errors.append(f"Row {i+1} task {ti+1}: Unexpected error: {te}")
 
         except ValueError as ve:
             errors.append(f"Row {i+1}: {ve}")
@@ -314,6 +331,11 @@ def _cmd_add_epic_bulk(args: argparse.Namespace) -> int:
         print(f"Successfully created {len(created_epics)} epics:")
         for epic_id in created_epics:
             print(f"  - Epic {epic_id}")
+
+    if created_tasks:
+        print(f"Successfully created {len(created_tasks)} tasks alongside epics:")
+        for task_id, epic_id in created_tasks:
+            print(f"  - Task {task_id} under epic {epic_id}")
 
     if errors:
         print(f"\nErrors encountered ({len(errors)}):", file=sys.stderr)
