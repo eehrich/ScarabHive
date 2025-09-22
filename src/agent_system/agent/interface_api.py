@@ -273,7 +273,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger = logging.getLogger(__name__)
         request_id = str(uuid.uuid4())
         logger.info("/run invoked, task=%s, request_id=%s", task, request_id)
-        return await agent.run(task, request_id=request_id)
+        from agent_system.servers.agent.utils import collect_final_result
+        return await collect_final_result(agent, task, request_id=request_id)
 
     @app.get("/events")
     async def events(task: str, session_id: Optional[str] = Query(default=None)):

@@ -2,7 +2,7 @@
 Tests for WebResearchAgent functionality.
 """
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from plugins.web_research_agent.server import WebResearchAgent, create_web_research_agent
 from agent_system.servers.agent.server import Agent
@@ -186,17 +186,22 @@ class TestWebResearchAgent:
         """Test that standard actions fall back to parent implementation."""
         agent = WebResearchAgent("standard_agent")
         
-        # Mock the agent's run method
-        original_run = agent.run
-        agent.run = AsyncMock(return_value={"summary": "standard task done"})
+        # Mock the agent's run_events method instead
+        original_run_events = agent.run_events
+        
+        async def mock_run_events(task, request_id=None, session_id=None):
+            yield {"type": "final", "summary": "standard task done"}
+            yield {"type": "end"}
+        
+        agent.run_events = mock_run_events
         
         try:
-            result = await agent.run("general task")
+            from agent_system.servers.agent.utils import collect_final_result
+            result = await collect_final_result(agent, "general task")
             assert result["summary"] == "standard task done"
-            agent.run.assert_called_once_with("general task")
         finally:
             # Restore original method
-            agent.run = original_run
+            agent.run_events = original_run_events
             
     @pytest.mark.asyncio
     async def test_call_research_missing_topic(self):

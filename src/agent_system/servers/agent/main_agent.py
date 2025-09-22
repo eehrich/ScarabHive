@@ -4,7 +4,7 @@ MainAgent - Specialized agent for main API requests with dual status display.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent_system.servers.agent.server import Agent
 
@@ -27,11 +27,3 @@ class MainAgent(Agent):
         # Now call the parent run_events method
         async for event in super().run_events(task, request_id=request_id, session_id=session_id):
             yield event
-
-    async def run(self, task: str, request_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Run the agent with dual status display.
-        This is called by the API and raw CLI mode.
-        """
-        # Run the actual agent task (this will publish LLM status with self.name)
-        return await super().run(task, request_id=request_id)

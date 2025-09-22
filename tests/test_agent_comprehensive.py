@@ -2,8 +2,7 @@
 Comprehensive tests for the Agent System MCP architecture.
 """
 import pytest
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from agent_system.mcp.base import MCPRegistry, MCPServer
 from agent_system.config.models import AgentConfig, LLMConfig, ContextConfig, PromptsConfig
@@ -149,7 +148,8 @@ class TestAgent:
         registry = MCPRegistry()
         agent = Agent("test_agent", config, registry)
         
-        result = await agent.run("test task")
+        from agent_system.servers.agent.utils import collect_final_result
+        result = await collect_final_result(agent, "test task")
         
         assert result["task"] == "test task"
         assert "errors" in result

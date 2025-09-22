@@ -1,0 +1,53 @@
+"""
+Utility functions for agent execution and result collection.
+"""
+from typing import Dict, Any, Optional
+from .server import Agent
+
+
+async def collect_final_result(agent: Agent, task: str, request_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Collect final result from agent.run_events() into a structured result dict.
+    
+    This utility function allows consumers to get a final result from the streaming
+    run_events() method, maintaining the same result format as the old run() method.
+    
+    Args:
+        agent: The agent instance to execute
+        task: The task to execute
+        request_id: Optional request ID for correlation
+        
+    Returns:
+        Dict containing task, calls, summary, and optionally errors
+    """
+    result = {"task": task, "calls": []}
+    
+    async for event in agent.run_events(task, request_id=request_id):
+        event_type = event.get("type")
+        
+        # Collect MCP calls for the result
+        if event_type == "mcp_call":
+            # Initialize the call entry
+            call_entry = {
+                "server": event.get("server"),
+                "action": event.get("action"), 
+                "params": event.get("params", {})
+            }
+            result["calls"].append(call_entry)
+        
+        elif event_type == "mcp_result":
+            # Find matching call and add result
+            server = event.get("server")
+            action = event.get("action")
+            for call in reversed(result["calls"]):
+                if call.get("server") == server and call.get("action") == action and "result" not in call:
+                    call["result"] = event.get("result")
+                    break
+        
+        elif event_type == "final":
+            result["summary"] = event.get("summary")
+        
+        elif event_type == "error":
+            result.setdefault("errors", []).append(event.get("message"))
+    
+    return result
