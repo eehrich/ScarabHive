@@ -16,7 +16,9 @@
   </head>
   <body>
     <header>
-      <h1>Scarab Agent System</h1>
+      <div class="header-left">
+        <h1>Scarab Agent System</h1>
+      </div>
       <div class="header-buttons">
         <button id="mcpToggleBtn" aria-expanded="false" title="Show MCP servers & tools">
           MCP-Servers (<span id="mcpConnected">15</span>)
@@ -31,11 +33,18 @@
 
     <main class="main-container">
       <div class="main-content">
+        <div id="requestIdDisplay" class="request-id-display" title="Current Request ID" style="display: none;">
+          Request: <span id="currentRequestId">--</span>
+        </div>
         <div id="chat" class="chat" aria-live="polite"></div>
       </div>
     </main>
 
     <div class="inputBar" role="region" aria-label="Chat input">
+      <!-- Session ID placed inside the input bar (left side) -->
+      <div class="session-id-bottom" aria-hidden="false">
+        <span id="headerSessionId">--</span>
+      </div>
       <form id="f">
         <input id="task" type="text" placeholder="Ask the agent…" autocomplete="on" />
         <button id="runBtn" type="submit">Run</button>

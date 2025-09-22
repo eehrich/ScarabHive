@@ -23,7 +23,7 @@ window.AgentSystem.ContextDebug = {
         </button>
         <input type="checkbox" id="contextAutoRefresh" checked style="display:none;" />
       </div>
-      <span id="currentSessionId" class="session-id-display" title="Current session id">--</span>
+      <!-- Session ID display moved to main header; removed from context debug panel -->
       <label style="margin-left:12px; display:inline-flex; align-items:center; gap:6px;">
         <input type="text" id="forceSessionId" placeholder="session id (optional)" style="width:220px;" />
         <button id="forceOptimizeBtn" class="icon-btn" title="Force optimize/summarize now">
@@ -92,15 +92,14 @@ window.AgentSystem.ContextDebug = {
     // Load initial data
     this.loadContextData();
 
-    // Start auto-refresh if enabled
+  // Start auto-refresh if enabled
     // sync toggle to checkbox state
     try {
       const cb = this.panel.querySelector('#contextAutoRefresh');
-        if (cb) {
+      if (cb) {
         const enabled = !!cb.checked;
         const toggle = this.panel.querySelector('#contextAutoRefreshToggle');
         if (toggle) toggle.classList.toggle('active', enabled);
-        // set aria-pressed and icon
         try { if (toggle) toggle.setAttribute('aria-pressed', enabled ? 'true' : 'false'); } catch(e){}
         const iconPath = this.panel.querySelector('#autoToggleIcon');
         try { if (iconPath) iconPath.setAttribute('d', enabled ? 'M9 8h2v8H9V8zm4 0h2v8h-2V8z' : 'M10 8v8l6-4-6-4z'); } catch(e){}
@@ -202,21 +201,7 @@ window.AgentSystem.ContextDebug = {
       }
 
       this._updateMetrics(data.latest);
-      // Update the session id display if available
-      try {
-        const sidEl = this.panel.querySelector('#currentSessionId');
-        if (sidEl) {
-          // Prefer server-provided session id; fall back to the chat module's currentSessionId
-          let sid = (data.latest && data.latest.session_id) ? data.latest.session_id : null;
-          try {
-            if (!sid && window.chatModule && window.chatModule.currentSessionId) sid = window.chatModule.currentSessionId;
-          } catch(e) {}
-          try { if (!sid && window.currentSessionId) sid = window.currentSessionId; } catch(e) {}
-          sidEl.textContent = sid ? sid : '--';
-        }
-      } catch (e) {
-        console.debug('Failed to update session id display', e);
-      }
+      // Session ID is displayed in the main header; context panel no longer shows it.
       this._updateChart(data.recent_history);
       this._updateStatistics(data.statistics);
       this._updateAgentStats(data.agents);

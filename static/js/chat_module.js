@@ -94,6 +94,7 @@
     row.className = 'row';
     const box = document.createElement('div');
     box.className = 'msg assistant';
+    box.style.position = 'relative'; // Enable absolute positioning for request ID
     box.innerHTML = `
       <div class="container-section">
         <div class="container-header" data-toggle="thinking">
@@ -292,6 +293,53 @@
     // Track current request and session
     let currentRequestId = null;
     let currentSessionId = null;
+    
+    // Helper functions to update UI displays
+    function updateHeaderSessionId() {
+      console.log('updateHeaderSessionId called, currentSessionId:', currentSessionId);
+      const sessionElement = document.getElementById('headerSessionId');
+      if (sessionElement) {
+        const sessionId = currentSessionId || '';
+        // No 'Session:' prefix per design; leave empty when no session
+        sessionElement.textContent = sessionId;
+        const container = document.querySelector('.session-id-bottom');
+        if (container) {
+          container.style.display = currentSessionId ? 'block' : 'none';
+          // set title to full id so users can hover to see it
+          container.title = sessionId || '';
+        }
+      } else {
+        console.warn('headerSessionId element not found');
+      }
+    }
+    
+    function updateRequestId() {
+      console.log('updateRequestId called, currentRequestId:', currentRequestId);
+      
+      if (currentRequestId) {
+        // Find the latest assistant message
+        const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
+        if (latestAssistant) {
+          // Create a new request ID element for this specific message
+          const requestIdElement = document.createElement('div');
+          requestIdElement.className = 'message-request-id';
+          requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
+          requestIdElement.title = `Request ID: ${currentRequestId}`;
+          
+          // Add it to the assistant message
+          latestAssistant.appendChild(requestIdElement);
+        }
+      }
+      
+      // Also update the global request display (keep for compatibility)
+      const requestElement = document.getElementById('currentRequestId');
+      const requestContainer = document.getElementById('requestIdDisplay');
+      if (requestElement && requestContainer) {
+        requestElement.textContent = currentRequestId || '--';
+        requestContainer.style.display = 'none'; // Hide the global one, we use per-message now
+      }
+    }
+    
     // Expose current session id for other modules (fallback for UI)
     chatModule.getCurrentSessionId = function() { return currentSessionId; };
     Object.defineProperty(chatModule, 'currentSessionId', {
@@ -305,6 +353,10 @@
       console.warn('Chat form elements not found');
       return;
     }
+
+    // Initialize UI displays
+    updateHeaderSessionId();
+    updateRequestId();
 
     // Stop button event listener
     stopBtn.addEventListener('click', async function() {
@@ -392,7 +444,7 @@
       const blk = addAssistantBlock(chatContainer);
       runBtn.style.display = 'none'; // Hide run button
       stopBtn.style.display = 'block'; // Show stop button
-      currentRequestId = null; // Reset request ID
+      currentRequestId = null; // Will be set when SSE 'start' event arrives
 
       let sseOk = false;
       const eventUrl = currentSessionId 
@@ -401,10 +453,6 @@
       const es = new EventSource(eventUrl);
       currentEventSource = es; // Track current event source
       let statusEs = null;
-
-      // Store current request ID and event source
-      currentRequestId = task;
-      currentEventSource = es;
 
       try {
         statusEs = new EventSource('/status/stream');
@@ -432,6 +480,12 @@
               // update exported values
               try { global.currentSessionId = currentSessionId; } catch (e) {}
               console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
+              
+              // Update header session ID display
+              updateHeaderSessionId();
+              
+              // Update request ID display  
+              updateRequestId();
               break;
             case 'cancelled':
               showSection(blk.t);
@@ -468,7 +522,7 @@
               stopBtn.textContent = 'Stop';
               stopBtn.disabled = false;
               stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-              currentRequestId = null; // Reset request tracking
+              // Keep currentRequestId and Request ID display visible after completion
               currentEventSource = null;
               break;
             case 'error':
@@ -482,7 +536,7 @@
               stopBtn.textContent = 'Stop';
               stopBtn.disabled = false;
               stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-              currentRequestId = null; // Reset request tracking
+              // Keep currentRequestId and Request ID display visible after error
               currentEventSource = null;
               break;
           }
@@ -511,7 +565,7 @@
           stopBtn.textContent = 'Stop';
           stopBtn.disabled = false;
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-          currentRequestId = null; // Reset request tracking
+          // Keep currentRequestId and Request ID display visible
           currentEventSource = null;
           es.close();
           if (statusEs) statusEs.close();
@@ -527,7 +581,7 @@
         stopBtn.textContent = 'Stop';
         stopBtn.disabled = false;
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-        currentRequestId = null; // Reset request tracking
+        // Keep currentRequestId and Request ID display visible
         currentEventSource = null;
       };
     });

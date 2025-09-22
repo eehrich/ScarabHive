@@ -26,6 +26,70 @@ header h1 {
   flex: 1;
 }
 
+/* Header left section with title and session ID */
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+}
+
+/* Session ID display in header */
+.session-id-display {
+  color: #9ab;
+  font-size: 12px;
+  background: #0b1220;
+  border: 1px solid #243244;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  white-space: nowrap;
+}
+
+/* Request ID display in main content */
+.request-id-display {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #9ab;
+  font-size: 11px;
+  background: rgba(11,18,32,0.95);
+  border: 1px solid #243244;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  z-index: 10;
+  opacity: 0.9;
+  max-width: 250px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
+/* Per-message Request ID display */
+.message-request-id {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #9ab;
+  font-size: 10px;
+  background: rgba(11,18,32,0.95);
+  border: 1px solid #243244;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  z-index: 15;
+  opacity: 0.9;
+  max-width: 300px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
 /* Header right section for buttons */
 header .header-buttons {
   display: flex;
@@ -82,6 +146,8 @@ header .header-buttons {
 .main-content {
   flex: 1;
   min-width: 0;
+  position: relative;
+  padding-top: 8px;
 }
 
 .status-metrics {
@@ -199,6 +265,34 @@ header .header-buttons {
 
 .toggle-arrow:hover {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Session ID at bottom-left near input */
+.session-id-bottom {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9ab;
+  font-size: 12px;
+  background: rgba(11,18,32,0.9);
+  border: 1px solid #243244;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  max-width: 420px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 6;
+}
+
+/* When hovering, show full session id via tooltip-style reveal */
+.session-id-bottom:hover {
+  overflow: visible;
+  white-space: normal;
+  max-width: 60vw;
+  left: 12px;
 }
 
 .toggle-arrow svg {
