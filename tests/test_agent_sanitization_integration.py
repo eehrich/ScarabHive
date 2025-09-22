@@ -1,11 +1,10 @@
 """Integration test for text sanitization in agent message handling."""
 
 import pytest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import AgentConfig
-from agent_system.llm.clients import ChatMessage
 from agent_system.mcp.base import MCPRegistry, MCPServer
 
 
@@ -44,7 +43,7 @@ class TestAgentSanitizationIntegration:
         problematic_input = "Hello\x00world\x01test\u200Bdata"
         
         # Call the agent
-        result = await agent.call("run", {"task": problematic_input})
+        await agent.call("run", {"task": problematic_input})
         
         # Verify the user message was sanitized
         user_messages = [msg for msg in captured_messages if msg.role == "user"]
@@ -76,16 +75,26 @@ class TestAgentSanitizationIntegration:
         )
         
         # Mock tool server that returns problematic data
-        mock_server = AsyncMock(spec=MCPServer)
-        mock_server.get_schema.return_value = {
-            "type": "function",
-            "function": {
-                "name": "test_tool",
-                "description": "Test tool"
-            }
-        }
-        mock_server.get_default_action.return_value = "run"
-        mock_server.call.return_value = {"result": "Data with\x00null\x01bytes\u200Band\u202Edirection"}
+        class MockToolServer(MCPServer):
+            def __init__(self):
+                super().__init__("test_tool")
+            
+            async def call(self, tool: str, params: dict) -> dict:
+                return {"result": "Data with\x00null\x01bytes\u200Band\u202Edirection"}
+            
+            def get_schema(self) -> dict:
+                return {
+                    "type": "function",
+                    "function": {
+                        "name": "test_tool",
+                        "description": "Test tool"
+                    }
+                }
+            
+            def get_default_action(self) -> str:
+                return "run"
+        
+        mock_server = MockToolServer()
         
         # Create mock registry
         registry = MCPRegistry()
@@ -125,7 +134,7 @@ class TestAgentSanitizationIntegration:
         agent.llm.chat_tools = mock_chat_tools
         
         # Call the agent
-        result = await agent.call("run", {"task": "Test task"})
+        await agent.call("run", {"task": "Test task"})
         
         # Find the tool result message
         tool_messages = [msg for msg in captured_messages if msg.role == "tool"]

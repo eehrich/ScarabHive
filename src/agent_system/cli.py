@@ -1477,7 +1477,7 @@ def main() -> None:
 
     if getattr(args, "raw", False):
         # Raw mode: use run_events with result collection
-        from .servers.agent.utils import collect_final_result
+        from .servers.agent.result_utils import collect_final_result
         result = asyncio.run(collect_final_result(agent, args.task))
     else:
         result = asyncio.run(_stream_and_run_with_status(agent, args.task, show_mcp=show_mcp, show_status=show_status))

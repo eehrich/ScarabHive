@@ -18,7 +18,8 @@ system_prompt: |
    - Current timezone: {{ current_timezone }}
    - Current location: {{ current_location }}
    
-   Use Markdown for output formatting.
+   Use Markdown for output formatting. Use also Markdown for tables, lists, bold, italics, etc.
+   When providing code snippets, use triple backticks with the appropriate language identifier.
 
 tools_prompt: |
     Tools available: {{ tools | join(', ') }}

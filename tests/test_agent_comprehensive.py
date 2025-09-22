@@ -16,10 +16,17 @@ class MockMCPServer(MCPServer):
         super().__init__(name, config, ssl_verify)
         self.call_history = []
     
+    @property
+    def called(self):
+        """Check if the mock tool has been called."""
+        return len(self.call_history) > 0
+    
     async def call(self, tool: str, params: dict) -> dict:
         """Mock tool call that records the call history."""
-        result = {"tool": tool, "params": params, "server": self.name}
-        self.call_history.append((tool, params))
+        # Filter out injected parameters like _status
+        filtered_params = {k: v for k, v in params.items() if not k.startswith('_')}
+        result = {"tool": tool, "params": filtered_params, "server": self.name}
+        self.call_history.append((tool, filtered_params))
         return result
     
     def get_schema(self) -> dict:
@@ -148,7 +155,7 @@ class TestAgent:
         registry = MCPRegistry()
         agent = Agent("test_agent", config, registry)
         
-        from agent_system.servers.agent.utils import collect_final_result
+        from agent_system.servers.agent.result_utils import collect_final_result
         result = await collect_final_result(agent, "test task")
         
         assert result["task"] == "test task"

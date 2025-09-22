@@ -5,7 +5,6 @@ Supports multiple tool calls per conversation turn for better efficiency
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
@@ -14,15 +13,18 @@ from ...config.models import AgentConfig
 from ...mcp.base import MCPRegistry, MCPServer
 from ...llm.clients import ChatMessage
 from ...utils.prompt_renderer import render_prompts
-from ...utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
+from ...utils.text_sanitizer import sanitize_for_llm
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
-from ...context.agent_tracker import register_agent_for_tracking, update_agent_context_usage
+from ...context.agent_tracker import register_agent_for_tracking
 from ...mcp.status import (
     status_scope,
     StatusScope,
     status_bus
 )
-from .executor import Executor
+from .components.mcp_integration import MCPIntegrationManager
+from .components.tool_execution import ToolExecutionManager
+from .components.status_forwarding import StatusEventForwarder
+from .components.context_management import ContextManagementHandler
 
 
 logger = logging.getLogger(__name__)
@@ -126,6 +128,12 @@ class Agent(MCPServer):
         self._sessions: Dict[str, List[ChatMessage]] = {}
         # Map active request_id -> session_id for runs
         self._request_to_session: Dict[str, str] = {}
+
+        # Initialize component managers for better code organization
+        self._mcp_integration_manager = MCPIntegrationManager(self.agent_config)
+        self._tool_execution_manager = ToolExecutionManager(self.registry)
+        self._status_event_forwarder = StatusEventForwarder()
+        self._context_management_handler = ContextManagementHandler(self.context_manager, self.token_optimizer, self.name)
 
     def _init_context_management(self):
         """Initialize the context management system."""
@@ -389,70 +397,13 @@ class Agent(MCPServer):
 
             yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
-            # Subscribe to status events for this request to forward them through SSE
-            # Listen for ALL servers with this request_id, not just this agent's server name
-            status_queue = await status_bus.subscribe(request_id=request_id)
-
-            # Set up status event forwarding task
-            status_events_to_forward = []
-            forwarding_done = asyncio.Event()
-            forwarding_ready = asyncio.Event()
-            first_get_started = asyncio.Event()
-
-            async def forward_status_events():
-                """Forward status events from status_bus to SSE stream"""
-                try:
-                    logger.debug("Status forwarding task starting...")
-                    while not forwarding_done.is_set():
-                        try:
-                            # Signal that we're ready to receive events right before we start waiting
-                            if not forwarding_ready.is_set():
-                                forwarding_ready.set()
-                                logger.debug("Status forwarding task ready, waiting for events...")
-                            
-                            # Signal that the first get() call is about to start
-                            if not first_get_started.is_set():
-                                first_get_started.set()
-                            
-                            # Wait for status event with timeout
-                            status_event = await asyncio.wait_for(status_queue.get(), timeout=0.1)
-                            logger.debug("Forwarding received status event: %s [%s]: %s (seq: %s)", 
-                                       status_event.server, status_event.phase, status_event.message, 
-                                       status_event.meta.get('_seq') if status_event.meta else 'no-seq')
-                            logger.debug("Forwarding status event: %s [%s]: %s", status_event.server, status_event.phase, status_event.message)
-                            # Convert status event to SSE format
-                            status_sse_event = {
-                                "type": "status",
-                                "server": status_event.server,
-                                "request_id": status_event.request_id,
-                                "message": status_event.message,
-                                "phase": status_event.phase.value,  # Convert enum to string
-                                "level": status_event.level,
-                                "timestamp": status_event.timestamp.isoformat(),
-                                "meta": status_event.meta or {}
-                            }
-                            status_events_to_forward.append(status_sse_event)
-                        except asyncio.TimeoutError:
-                            continue
-                        except asyncio.CancelledError:
-                            break
-                except Exception as e:
-                    logger.debug("Error in status event forwarding: %s", e)
-
-            # Start the status forwarding task
-            forwarding_task = asyncio.create_task(forward_status_events())
+            # Start status event forwarding
+            await self._status_event_forwarder.start_forwarding(request_id)
 
             # Helper function to yield any pending status events
             def yield_pending_status_events():
-                while status_events_to_forward:
-                    yield status_events_to_forward.pop(0)
-
-            # Wait for the forwarding task to be ready AND for the first get() to start
-            await forwarding_ready.wait()
-            await first_get_started.wait()
-            # Give the forwarding task a moment to actually reach the status_queue.get() call
-            await asyncio.sleep(0.01)
-            logger.debug("Status forwarding task is ready and listening")
+                for event in self._status_event_forwarder.get_pending_events():
+                    yield event
 
             # If no LLM is configured, emit an immediate error event and end the stream
             if self.llm is None:
@@ -464,31 +415,14 @@ class Agent(MCPServer):
             mcp_integration = None
             mcp_initialized_locally = False
 
+            # Initialize MCP integration
+            await self._mcp_integration_manager.setup_mcp_integration()
+
             # Get tools from the local registry (plugins)
-            available_tools = self.registry.list()
+            plugin_tools = self.registry.list()
 
-            # Also include tools from external MCP servers
-            try:
-                from ...mcp.integration import get_mcp_integration
-                mcp_integration = get_mcp_integration()
-                if not mcp_integration.initialized:
-                    # Initialize with the same configuration as the agent
-                    if hasattr(self.agent_config, 'mcp'):
-                        mcp_config = {"mcp": self.agent_config.mcp.model_dump() if hasattr(self.agent_config.mcp, "model_dump") else getattr(self.agent_config.mcp, "__dict__", {})}
-                        await mcp_integration.initialize(mcp_config)
-                        mcp_initialized_locally = True
-                        logger.debug("Initialized MCP integration for agent in run_events")
-
-                if mcp_integration and mcp_integration.initialized:
-                    all_tools = await mcp_integration.list_all_tools()
-                    # Add external server tools to available tools
-                    for server_name, tools in all_tools.get("external_servers", {}).items():
-                        for tool in tools:
-                            tool_name = f"{server_name}.{tool['name']}"
-                            available_tools.append(tool_name)
-                            logger.debug("Added external tool to run_events: %s", tool_name)
-            except Exception as e:
-                logger.debug("Failed to get external MCP tools in run_events: %s", e)
+            # Get all available tools including external MCP tools
+            available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -532,36 +466,14 @@ class Agent(MCPServer):
             tools_schema: List[Dict] = []
             tool_name_mapping = {}  # Maps OpenAI-compatible names to original names
 
-            for tool_name in available_tools:
-                # Check if it's an external tool (contains a dot)
-                if "." in tool_name:
-                    server_name, actual_tool_name = tool_name.split(".", 1)
-                    # Create OpenAI-compatible name (replace dots with underscores)
-                    openai_tool_name = tool_name.replace(".", "_")
-                    tool_name_mapping[openai_tool_name] = tool_name
+            # Build schemas for external MCP tools
+            external_schemas, external_mapping = await self._mcp_integration_manager.build_tool_schemas(available_tools)
+            tools_schema.extend(external_schemas)
+            tool_name_mapping.update(external_mapping)
 
-                    # Create a schema for external tools
-                    try:
-                        from ...mcp.integration import get_mcp_integration
-                        mcp_integration = get_mcp_integration()
-                        if mcp_integration and mcp_integration.initialized:
-                            all_tools = await mcp_integration.list_all_tools()
-                            external_tools = all_tools.get("external_servers", {}).get(server_name, [])
-                            for tool in external_tools:
-                                if tool["name"] == actual_tool_name:
-                                    schema = {
-                                        "type": "function",
-                                        "function": {
-                                            "name": openai_tool_name,
-                                            "description": f"[{server_name}] {tool['description']}",
-                                            "parameters": tool.get("input_schema", {})
-                                        }
-                                    }
-                                    tools_schema.append(schema)
-                                    break
-                    except Exception as e:
-                        logger.debug("Failed to build schema for external tool %s: %s", tool_name, e)
-                else:
+            # Build schemas for internal plugin tools
+            for tool_name in available_tools:
+                if "." not in tool_name:  # Internal plugin tool
                     # Regular plugin tool - support multiple tools per server
                     server = self.registry.get(tool_name)
                     if hasattr(server, 'get_tools'):
@@ -574,7 +486,6 @@ class Agent(MCPServer):
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}
-            executor = Executor(self.registry)
 
             # Now that everything is set up and the forwarding task is definitely running,
 
@@ -628,64 +539,7 @@ class Agent(MCPServer):
                     yield status_event
 
                 # Enhanced context management and token tracking
-                if self.context_manager:
-                    # Apply token optimization with centralized guard to avoid repeated runs (events loop)
-                    if self.token_optimizer:
-                        # Skip optimizer for a few steps after context management
-                        if getattr(self, '_skip_optimizer_steps_after_context_mgmt', 0) > 0:
-                            self._skip_optimizer_steps_after_context_mgmt -= 1
-                            logger.debug("Skipping token optimizer (events): %d steps remaining after context mgmt",
-                                       self._skip_optimizer_steps_after_context_mgmt)
-                        else:
-                            try:
-                                import time
-                                now = time.time()
-                                estimated_tokens_now = self.context_manager.estimate_token_count(messages)
-
-                                tokens_growth = estimated_tokens_now - getattr(self, '_last_optimizer_tokens_snapshot', 0)
-                                time_since_last = now - getattr(self, '_last_optimizer_run_time', 0.0)
-
-                                should_run_optimizer = False
-                                if tokens_growth >= getattr(self, '_optimizer_min_increase_tokens', 200):
-                                    should_run_optimizer = True
-                                elif time_since_last >= getattr(self, '_optimizer_cooldown_seconds', 10.0):
-                                    should_run_optimizer = True
-
-                                if should_run_optimizer:
-                                    messages = await self.token_optimizer.optimize_messages(messages, request_id=request_id)
-                                    self._last_optimizer_tokens_snapshot = self.context_manager.estimate_token_count(messages)
-                                    self._last_optimizer_run_time = now
-                                    
-                                    # Validate messages after token optimization to catch any structural issues
-                                    from agent_system.core.message_validator import validate_messages_before_llm
-                                    messages = validate_messages_before_llm(messages, context="agent_server")
-                                else:
-                                    logger.debug("Skipping token optimizer (events): growth=%d, time_since_last=%.2fs", tokens_growth, time_since_last)
-                            except Exception as e:
-                                logger.debug("Token optimizer guard check failed (events): %s", e)
-
-                    # Check token count and issue appropriate warnings
-                    estimated_tokens, warning_level = self.context_manager.check_and_warn(messages, step)
-
-                    # Apply context management if needed
-                    if self.context_manager.should_manage_context(estimated_tokens, warning_level):
-                        logger.info("Applying context management at step %d", step + 1)
-                        messages = await self.context_manager.manage_context(messages)
-                        # Skip optimizer for next 2 steps after context management
-                        self._skip_optimizer_steps_after_context_mgmt = 2
-                        # Re-check after management
-                        estimated_tokens, _ = self.context_manager.check_and_warn(messages, step)
-                else:
-                    # Fallback to legacy token warning
-                    message_count = len(messages)
-                    estimated_tokens = self._estimate_token_count(messages)
-                    context_window = getattr(self.agent_config, "context_window", 32768)
-                    logger.debug("LLM input (step %d): %d messages, ~%d tokens (context: %d)",
-                               step + 1, message_count, estimated_tokens, context_window)
-
-                    if estimated_tokens > context_window * 0.9:  # 90% threshold
-                        logger.warning("Token count approaching context window limit: %d/%d tokens",
-                                     estimated_tokens, context_window)
+                messages, estimated_tokens = await self._context_management_handler.handle_context_management(messages, step, request_id)
 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
@@ -712,34 +566,7 @@ class Agent(MCPServer):
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
 
                 # Track actual token usage for streamed events if available
-                if self.context_manager and isinstance(llm_out, dict) and 'usage' in llm_out:
-                    try:
-                        usage_data = llm_out['usage']
-                        self.context_manager.update_token_usage(usage_data)
-                        logger.debug("Updated token usage from LLM response (events): %s", usage_data)
-
-                        # Coerce token count to int safely and always update tracker
-                        raw_total = usage_data.get('total_tokens', 0)
-                        try:
-                            actual_tokens = int(raw_total or 0)
-                        except Exception:
-                            try:
-                                actual_tokens = int(float(str(raw_total)))
-                            except Exception:
-                                actual_tokens = 0
-
-                        try:
-                            update_agent_context_usage(
-                                self.name,
-                                current_tokens=estimated_tokens,
-                                predicted_tokens=estimated_tokens,
-                                message_count=len(messages),
-                                actual_tokens=actual_tokens
-                            )
-                        except Exception as e:
-                            logger.debug("Failed to update agent context (events) with LLM tokens: %s", e)
-                    except Exception as e:
-                        logger.debug("Failed to handle LLM usage in run_events: %s", e)
+                await self._context_management_handler.update_token_usage(llm_out, estimated_tokens, len(messages))
 
                 # Emit thinking event with LLM response content
                 yield {"type": "thinking", "step": step + 1, "assistant": assistant}
@@ -852,148 +679,20 @@ class Agent(MCPServer):
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
 
-                    # Execute ALL tool calls with immediate streaming
-                    for i, tc in enumerate(tool_calls):
-                        func = tc.get("function", {})
-                        openai_tool_name = func.get("name")  # This is the OpenAI-compatible name
-                        raw_args = func.get("arguments")
-
-                        # Map back to original tool name if it was converted
-                        tool_name = tool_name_mapping.get(openai_tool_name, openai_tool_name)
-
-                        # Parse arguments
-                        params: Dict[str, Any] = {}
-                        if isinstance(raw_args, str) and raw_args:
-                            try:
-                                params = json.loads(raw_args)
-                            except json.JSONDecodeError:
-                                logger.warning("Failed to parse tool arguments: %s", raw_args)
-                                params = {}
-                        elif isinstance(raw_args, dict):
-                            params = raw_args
-
-                        if not tool_name or tool_name not in available_tools:
-                            logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
-                            yield {"type": "error", "message": f"Unknown tool: {tool_name}"}
-                            # Add error result for this specific tool call
-                            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-                            messages.append(ChatMessage(
-                                role="tool",
-                                tool_call_id=tool_call_id,
-                                name=openai_tool_name or "unknown",
-                                content=json.dumps({"error": f"Tool '{tool_name}' is not available."})
-                            ))
-                            continue
-
-                        # Get action name and validate
-                        if "." in tool_name:
-                            # External tool - call via MCP integration
-                            server_name, actual_tool_name = tool_name.split(".", 1)
-
-                            # Emit MCP call event immediately
-                            yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": params}
-
-                            try:
-                                logger.info("Invoking external tool %s on server %s with params %s", actual_tool_name, server_name, params)
-                                from ...mcp.integration import get_mcp_integration
-                                mcp_integration = get_mcp_integration()
-                                tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, params, "external")
-                                logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
-
-                                results["calls"].append({
-                                    "server": tool_name,
-                                    "action": actual_tool_name,
-                                    "params": params,
-                                    "result": tool_result
-                                })
-
-                                # Emit MCP result event immediately
-                                yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result}
-
-                                # Add tool result to conversation
-                                tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-                                tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-                                # Sanitize tool result content before adding to messages
-                                tool_msg_content = sanitize_json_content(tool_msg_content)
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=sanitize_for_llm(openai_tool_name),
-                                    content=tool_msg_content
-                                ))
-                            except Exception as e:
-                                logger.exception("External tool %s invocation failed: %s", tool_name, e)
-                                yield {"type": "error", "message": f"External tool {tool_name} failed: {str(e)}"}
-                                tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
-                                error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=sanitize_for_llm(openai_tool_name),
-                                    content=sanitize_json_content(error_content)
-                                ))
-                        else:
-                            # Plugin tool - use existing logic
-                            server = self.registry.get(tool_name)
-                            action_name = params.get("action") or params.get("tool") or server.get_default_action()
-
-                            # Validate action against server schema
-                            schema = server.get_schema()
-                            valid_actions = []
-                            if "function" in schema and "parameters" in schema["function"]:
-                                action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
-                                valid_actions = action_prop.get("enum", [])
-
-                            if valid_actions and action_name not in valid_actions:
-                                logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.",
-                                             action_name, tool_name, valid_actions)
-                                action_name = server.get_default_action()
-                                params["action"] = action_name
-
-                            # Emit MCP call event immediately
-                            yield {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": params}
-
-                            try:
-                                logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-                                tool_result = await executor.invoke(tool_name, params)
-                                logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
-
-                                results["calls"].append({
-                                    "server": tool_name,
-                                    "action": action_name,
-                                    "params": params,
-                                    "result": tool_result
-                                })
-
-                                # Emit MCP result event immediately
-                                yield {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result}
-
-
-                                # Add tool result to conversation
-                                tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-                                tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-                                # Sanitize tool result content before adding to messages
-                                tool_msg_content = sanitize_json_content(tool_msg_content)
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=openai_tool_name,
-                                    content=tool_msg_content
-                                ))
-
-                            except Exception as e:
-                                logger.exception("Tool %s invocation failed: %s", tool_name, e)
-                                results.setdefault("errors", []).append(str(e))
-                                yield {"type": "error", "message": f"Tool {tool_name} failed: {e}"}
-                                # Add error result for this specific tool call
-                                tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-                                error_content = json.dumps({"error": sanitize_for_llm(str(e))})
-                                messages.append(ChatMessage(
-                                    role="tool",
-                                    tool_call_id=tool_call_id,
-                                    name=sanitize_for_llm(openai_tool_name),
-                                    content=sanitize_json_content(error_content)
-                                ))
+                    # Execute all tools using the component
+                    tool_messages, tool_events, tool_results = await self._tool_execution_manager.execute_tools(
+                        tool_calls, tool_name_mapping, available_tools, step
+                    )
+                    
+                    # Yield the tool events
+                    for event in tool_events:
+                        yield event
+                    
+                    # Add tool results to the results dictionary
+                    results["calls"].extend(tool_results)
+                    
+                    # Add tool messages to conversation
+                    messages.extend(tool_messages)
 
                 # Check for final content
                 elif content:
@@ -1062,12 +761,7 @@ class Agent(MCPServer):
                         logger.debug("Failed to persist session %s: %s", sid, e)
 
             # Clean up MCP integration if we initialized it locally
-            if 'mcp_initialized_locally' in locals() and mcp_initialized_locally and 'mcp_integration' in locals() and mcp_integration:
-                try:
-                    await mcp_integration.shutdown()
-                    logger.debug("Shut down MCP integration after agent run_events")
-                except Exception as e:
-                    logger.debug("Error shutting down MCP integration in run_events: %s", e)
+            await self._mcp_integration_manager.shutdown()
 
         # Signal completion using status contexts
         final_msg = "completed" if not ('results' in locals() and results.get('errors')) else "completed with errors"
@@ -1087,17 +781,7 @@ class Agent(MCPServer):
         await asyncio.sleep(0.01)
 
         # Clean up status forwarding task AFTER publishing final status
-        if 'forwarding_task' in locals() and 'forwarding_done' in locals():
-            try:
-                forwarding_done.set()
-                forwarding_task.cancel()
-                try:
-                    await forwarding_task
-                except asyncio.CancelledError:
-                    pass
-                logger.debug("Cleaned up status forwarding task")
-            except Exception as e:
-                logger.debug("Error cleaning up status forwarding task: %s", e)
+        await self._status_event_forwarder.stop_forwarding()
 
         # Yield any final pending status events before ending
         if 'yield_pending_status_events' in locals():
@@ -1136,7 +820,8 @@ class Agent(MCPServer):
         try:
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])
-            result = await self.run(str(task))
+            from .result_utils import collect_final_result
+            result = await collect_final_result(self, str(task))
 
             # Wrap result with agent metadata
             return {

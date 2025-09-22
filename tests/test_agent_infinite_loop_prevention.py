@@ -1,9 +1,9 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import AgentConfig
 from agent_system.mcp.base import MCPRegistry
+from test_agent_comprehensive import MockMCPServer
 
 
 class MockLLMClient:
@@ -93,17 +93,7 @@ async def test_agent_normal_execution_not_affected():
     registry = MCPRegistry()
     
     # Add a mock tool to registry
-    mock_tool = MagicMock()
-    mock_tool.get_schema.return_value = {
-        "type": "function",
-        "function": {
-            "name": "test_tool",
-            "description": "Test tool",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    }
-    mock_tool.get_default_action.return_value = "run"
-    mock_tool.call = AsyncMock(return_value={"result": "success"})
+    mock_tool = MockMCPServer("test_tool")
     registry.register("test_tool", mock_tool)
     
     # Mock LLM that makes tool calls initially, then provides final content
@@ -148,4 +138,4 @@ async def test_agent_normal_execution_not_affected():
     assert "Task completed successfully" in final_events[0]["summary"]
     
     # Should have made the expected tool call
-    assert mock_tool.call.called
+    assert mock_tool.called
