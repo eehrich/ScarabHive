@@ -63,7 +63,10 @@ class ToolExecutionManager:
         tool_messages = []
         events_to_yield = []
         results_to_add = []
-
+        
+        # Prepare tool executions (parse arguments and validate tools)
+        valid_tool_executions = []
+        
         for i, tc in enumerate(tool_calls):
             func = tc.get("function", {})
             openai_tool_name = func.get("name")  # This is the OpenAI-compatible name
@@ -96,11 +99,41 @@ class ToolExecutionManager:
                 ))
                 continue
 
-            # Execute the tool and collect events/results
-            tool_message, events, results = await self._execute_single_tool(tc, tool_name, openai_tool_name, params, step)
-            tool_messages.append(tool_message)
-            events_to_yield.extend(events)
-            results_to_add.extend(results)
+            # Store valid tool execution for parallel processing
+            valid_tool_executions.append((tc, tool_name, openai_tool_name, params))
+
+        # Execute all valid tools in parallel
+        if valid_tool_executions:
+            import asyncio
+            
+            # Create tasks for parallel execution
+            tasks = [
+                self._execute_single_tool(tc, tool_name, openai_tool_name, params, step)
+                for tc, tool_name, openai_tool_name, params in valid_tool_executions
+            ]
+            
+            # Execute all tools concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results (maintain order based on original tool_calls order)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    # Handle exceptions from parallel execution
+                    tc, tool_name, openai_tool_name, params = valid_tool_executions[i]
+                    logger.exception("Tool execution failed for %s: %s", tool_name, result)
+                    tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
+                    tool_messages.append(ChatMessage(
+                        role="tool",
+                        tool_call_id=tool_call_id,
+                        name=openai_tool_name,
+                        content=json.dumps({"error": f"Tool execution failed: {str(result)}"})
+                    ))
+                else:
+                    # Normal result
+                    tool_message, events, tool_results = result
+                    tool_messages.append(tool_message)
+                    events_to_yield.extend(events)
+                    results_to_add.extend(tool_results)
 
         return tool_messages, events_to_yield, results_to_add
 

@@ -4,23 +4,35 @@ function:
   description: >-
     Advanced web research agent for comprehensive topic research, fact-checking,
     and source comparison.
+
+    Action-specific parameter requirements:
+    - run/execute/ask: require 'task' parameter
+    - research: requires 'topic' parameter
+    - fact_check: requires 'claim' parameter
+    - compare_sources: requires 'topic' parameter
   parameters:
     type: object
     properties:
       action:
         type: string
         enum: [run, execute, ask, research, fact_check, compare_sources]
+        description: "Action to perform. Each action has specific required parameters."
       task:
         type: string
+        description: "Required for run/execute/ask actions: the research task or query to perform"
       topic:
         type: string
+        description: "Required for research/compare_sources actions: the topic to research"
       claim:
         type: string
+        description: "Required for fact_check action: the claim to verify"
       source_urls:
         type: array
         items:
           type: string
+        description: "Optional: specific URLs to include in research"
       max_results:
         type: integer
         default: 5
+        description: "Maximum number of results to return"
     required: [action]
