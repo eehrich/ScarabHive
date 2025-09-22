@@ -8,7 +8,6 @@ asyncio.sleep(0) anti-patterns through guaranteed delivery mechanisms.
 
 import logging
 from contextlib import asynccontextmanager
-from os import name
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -323,8 +322,8 @@ async def status_scope(bus: StatusBus, name: str, request_id: Optional[str] = No
     
     Usage:
         async with status_scope(status_bus, "my_agent", request_id=req_id) as status:
-            await status.step("Processing data", meta={"step": 1})
-            await status.step("50% complete", meta={"progress": 0.5})
+            await status.progress("Processing data", meta={"step": 1})
+            await status.progress("50% complete", meta={"progress": 0.5})
             # Optional explicit control:
             # await status.end("Custom completion message")
             # await status.error("Something went wrong")

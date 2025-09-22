@@ -173,13 +173,11 @@ class WebResearchAgent(Agent):
         step_count = 0
         total_messages = 0
 
-        # Use status_scope for automatic START/END coordinator/worker status management
+        # Use status_scope for automatic START/END status management
         async with status_scope(
             status_bus,
-            coordinator_name=f"{status_name}_coordinator",
-            worker_name=f"{status_name}_worker",
-            request_id=request_id,
-            operation_name=operation_name
+            f"{status_name}_coordinator",
+            request_id=request_id
         ) as status:
             
             try:
@@ -191,12 +189,12 @@ class WebResearchAgent(Agent):
 
                     if event_type == "start":
                         step_count += 1
-                        await status.step("Starting analysis...")
+                        await status.progress("Starting analysis...")
 
                     elif event_type == "thinking":
                         # Track LLM conversation activity
                         total_messages += 1
-                        await status.progress("Processing...", is_coordinator=False)
+                        await status.progress("Processing...")
                         try:
                             # Get conversation context for tracking
                             if hasattr(self, '_current_messages'):
@@ -218,7 +216,7 @@ class WebResearchAgent(Agent):
                         step_count += 1
                         tool_name = event.get("server", "unknown")
                         action = event.get("action", "unknown")
-                        await status.step(f"Step {step_count} - Using {tool_name} ({action})")
+                        await status.progress(f"Step {step_count} - Using {tool_name} ({action})")
                         
                         # Store tool calls in results - convert to expected format
                         if "calls" not in results:
@@ -232,11 +230,11 @@ class WebResearchAgent(Agent):
 
                     elif event_type == "mcp_result":
                         tool_name = event.get("server", "unknown")
-                        await status.progress(f"Processing results from {tool_name}...", is_coordinator=False)
+                        await status.progress(f"Processing results from {tool_name}...")
 
                     elif event_type == "final":
                         results["summary"] = event.get("summary", "")
-                        await status.step("Finalizing results...")
+                        await status.progress("Finalizing results...")
 
                         # Final agent tracking update
                         try:

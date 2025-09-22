@@ -771,7 +771,7 @@ class Agent(MCPServer):
                 # Execute ALL tool calls with immediate streaming
                 if tool_calls:
 
-                    await status_worker.progress("Executing Tools", meta={"step": step + 1})
+                    await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
 
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
