@@ -106,11 +106,27 @@ class ToolExecutionManager:
         if valid_tool_executions:
             import asyncio
             
-            # Create tasks for parallel execution
-            tasks = [
-                self._execute_single_tool(tc, tool_name, openai_tool_name, params, step)
-                for tc, tool_name, openai_tool_name, params in valid_tool_executions
-            ]
+            # Create tasks for parallel execution with unique request_id suffixes
+            tasks = []
+            for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
+                # Create tool-specific request_id suffix for parallel call visibility
+                # If original request_id is "abc123", tool calls become "abc123_001", "abc123_002", etc.
+                original_request_id = params.get("request_id") or params.get("requestId")
+                if original_request_id and len(valid_tool_executions) > 1:
+                    # Only add suffix for parallel execution (multiple tools)
+                    tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
+                    # Update params with tool-specific request_id for status tracking
+                    params_with_suffix = params.copy()
+                    params_with_suffix["request_id"] = tool_specific_request_id
+                    # Also set camelCase version for JS compatibility
+                    params_with_suffix["requestId"] = tool_specific_request_id
+                else:
+                    # Single tool execution or no request_id - use original params
+                    params_with_suffix = params
+                
+                tasks.append(
+                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step)
+                )
             
             # Execute all tools concurrently
             results = await asyncio.gather(*tasks, return_exceptions=True)

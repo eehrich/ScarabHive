@@ -194,6 +194,10 @@ class StandardMCPClient(MCPClient):
         """Call a tool on the server"""
         logger.debug(f"Calling MCP tool: {name}")
 
+        # Extract request_id from arguments for status correlation
+        # Support both snake_case and camelCase for compatibility
+        request_id = arguments.get("request_id") or arguments.get("requestId")
+
         # Get logical server name for cleaner status messages
         logical_server = self.name
         if isinstance(self.name, str) and self.name.startswith("AgentSystem-"):
@@ -204,6 +208,7 @@ class StandardMCPClient(MCPClient):
             await publish_status(
                 logical_server,
                 f"Starting tool call: {name}",
+                request_id=request_id,
                 phase=StatusPhase.START,
                 meta={
                     "tool": name,
@@ -236,6 +241,7 @@ class StandardMCPClient(MCPClient):
                 await publish_status(
                     logical_server,
                     f"Tool call failed: {name}",
+                    request_id=request_id,
                     phase=StatusPhase.ERROR,
                     meta={
                         "tool": name,
@@ -261,6 +267,7 @@ class StandardMCPClient(MCPClient):
                         await publish_status(
                             logical_server,
                             f"Tool call completed: {name}",
+                            request_id=request_id,
                             phase=StatusPhase.END,
                             meta={
                                 "tool": name,
@@ -278,6 +285,7 @@ class StandardMCPClient(MCPClient):
             await publish_status(
                 logical_server,
                 f"Tool call completed: {name}",
+                request_id=request_id,
                 phase=StatusPhase.END,
                 meta={
                     "tool": name,
