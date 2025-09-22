@@ -356,16 +356,21 @@ class Agent(MCPServer):
         return estimated_tokens
 
     async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None):
-        async with status_scope(status_bus, f"{self.name}_coordinator", request_id) as status_coordinator, status_scope(status_bus, f"{self.name}_worker", request_id) as status_worker:
-            async for event in self._run_events(task, request_id=request_id, session_id=session_id, status_coordinator=status_coordinator, status_worker=status_worker):
-                yield event
-
-    async def _run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None, status_coordinator: StatusScope = None, status_worker: StatusScope = None):
         """Run the agent and yield structured events for UI streaming."""
+        
         # Generate request ID if not provided
         if request_id is None:
             request_id = str(uuid.uuid4())
 
+        # If no session_id provided, generate one and persist empty history
+        if not session_id:
+            session_id = str(uuid.uuid4())
+
+        async with status_scope(status_bus, f"{self.name}_coordinator", request_id) as status_coordinator, status_scope(status_bus, f"{self.name}_worker", request_id) as status_worker:
+            async for event in self._run_events(task, request_id=request_id, session_id=session_id, status_coordinator=status_coordinator, status_worker=status_worker):
+                yield event
+
+    async def _run_events(self, task: str, request_id: str, session_id: str, status_coordinator: StatusScope, status_worker: StatusScope):
         # Register this request for potential cancellation and appended messages
         async with self._request_lock:
             self._active_requests[request_id] = {
@@ -375,9 +380,6 @@ class Agent(MCPServer):
             }
 
         try:
-            # If no session_id provided, generate one and persist empty history
-            if not session_id:
-                session_id = str(uuid.uuid4())
             async with self._request_lock:
                 # ensure session exists
                 self._sessions.setdefault(session_id, [])
