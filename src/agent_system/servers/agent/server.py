@@ -357,7 +357,7 @@ class Agent(MCPServer):
 
     async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None):
         """Run the agent and yield structured events for UI streaming."""
-        
+
         # Generate request ID if not provided
         if request_id is None:
             request_id = str(uuid.uuid4())
@@ -647,7 +647,7 @@ class Agent(MCPServer):
                                     should_run_optimizer = True
 
                                 if should_run_optimizer:
-                                    messages = await self.token_optimizer.optimize_messages(messages)
+                                    messages = await self.token_optimizer.optimize_messages(messages, request_id=request_id)
                                     self._last_optimizer_tokens_snapshot = self.context_manager.estimate_token_count(messages)
                                     self._last_optimizer_run_time = now
                                 else:

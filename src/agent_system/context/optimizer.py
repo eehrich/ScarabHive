@@ -5,7 +5,7 @@ import re
 import json
 from typing import List, Dict, Any
 from ..llm.clients import ChatMessage
-from ..mcp.status import publish_status, StatusPhase
+from ..mcp.status import status_scope, status_bus
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class TokenOptimizer:
         # Cooldown in seconds between optimization attempts when no savings were observed
         self._cooldown_seconds = 1.0
     
-    async def optimize_messages(self, messages: List[ChatMessage]) -> List[ChatMessage]:
+    async def optimize_messages(self, messages: List[ChatMessage], request_id: str = None) -> List[ChatMessage]:
         """Apply various optimization techniques to reduce token count."""
         if not messages:
             return messages
@@ -53,21 +53,17 @@ class TokenOptimizer:
             logger.debug("⏱️ Skipping token optimization due to cooldown and no prior savings")
             return messages
         
-        # Publish start status event
-        await publish_status(
-            server="token-optimizer",
-            message=f"🔧 Starting token optimization for {len(messages)} messages",
-            phase=StatusPhase.START,
-            meta={"message_count": len(messages)}
-        )
+        # Use status_scope for automatic START/END status management
+        async with status_scope(status_bus, "token-optimizer", request_id=request_id) as status:
+            await status.progress(f"🔧 Starting token optimization for {len(messages)} messages", 
+                                meta={"message_count": len(messages)})
+                
+            logger.debug("🔧 Starting token optimization for %d messages...", len(messages))
             
-        logger.debug("🔧 Starting token optimization for %d messages...", len(messages))
-        
-        optimized = []
-        total_original_tokens = 0
-        total_optimized_tokens = 0
-        
-        try:
+            optimized = []
+            total_original_tokens = 0
+            total_optimized_tokens = 0
+            
             for i, msg in enumerate(messages):
                 original_tokens = self._estimate_message_tokens(msg)
                 optimized_msg = self._optimize_message(msg)
@@ -80,31 +76,55 @@ class TokenOptimizer:
                 # Log progress for large batches
                 if len(messages) > 10 and (i + 1) % 10 == 0:
                     logger.debug("   📊 Processed %d/%d messages...", i + 1, len(messages))
-                    await publish_status(
-                        server="token-optimizer",
-                        message=f"📊 Processed {i + 1}/{len(messages)} messages",
-                        phase=StatusPhase.PROGRESS,
-                        meta={"processed": i + 1, "total": len(messages)}
-                    )
-        except Exception as e:
-            await publish_status(
-                server="token-optimizer",
-                message=f"❌ Token optimization failed: {str(e)}",
-                phase=StatusPhase.ERROR,
-                meta={"error": str(e), "processed": len(optimized)}
-            )
-            logger.error("Token optimization failed: %s", e)
-            # Return original messages as fallback
-            return messages
+                    await status.progress(f"📊 Processed {i + 1}/{len(messages)} messages",
+                                        meta={"processed": i + 1, "total": len(messages)})
         
-        # Compute token delta and decide whether to accept the optimized batch.
-        tokens_saved = total_original_tokens - total_optimized_tokens
+            # Compute token delta and decide whether to accept the optimized batch.
+            tokens_saved = total_original_tokens - total_optimized_tokens
 
-        # If the optimization resulted in negative savings (worse overall), avoid
-        # applying and emit a suppressed completion icon. Zero savings is neutral
-        # and should be treated as a completed run (show success).
-        if tokens_saved < 0:
-            # Record last run metadata (no savings)
+            # If the optimization resulted in negative savings (worse overall), avoid
+            # applying and emit an error. Zero savings is neutral and should be treated as a completed run.
+            if tokens_saved < 0:
+                # Record last run metadata (no savings)
+                try:
+                    self._last_run_time = time.time()
+                    self._last_tokens_saved = int(tokens_saved)
+                    self._last_input_fingerprint = input_fingerprint
+                except Exception:
+                    pass
+
+                # Update message processed counter but do not add negative savings
+                self.compression_stats["messages_processed"] += len(messages)
+
+                # Compression ratio reflects no improvement (100% remaining)
+                ratio = 100.0 if total_original_tokens > 0 else 0.0
+                self.compression_stats["compression_ratio"] = ratio
+
+                # Log that optimization would not help overall
+                logger.debug("⚠️  Token optimization produced no net savings: %d → %d (saved %d)",
+                             total_original_tokens, total_optimized_tokens, tokens_saved)
+
+                # Report error for negative savings
+                meta = {
+                    "original_tokens": total_original_tokens,
+                    "optimized_tokens": total_optimized_tokens,
+                    "tokens_saved": tokens_saved,
+                    "compression_ratio": ratio,
+                    "messages_processed": len(messages),
+                }
+                await status.error(f"Optimization degraded token usage: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})", 
+                                 meta=meta)
+
+                # Return original messages to keep behavior safe and non-regressive
+                return messages
+
+            # Otherwise we have net zero or positive savings; update stats and accept optimized batch
+            self.compression_stats["messages_processed"] += len(messages)
+            # Only accumulate positive tokens_saved into aggregate stats
+            if tokens_saved > 0:
+                self.compression_stats["tokens_saved"] += int(tokens_saved)
+
+            # Record last run metadata
             try:
                 self._last_run_time = time.time()
                 self._last_tokens_saved = int(tokens_saved)
@@ -112,18 +132,27 @@ class TokenOptimizer:
             except Exception:
                 pass
 
-            # Update message processed counter but do not add negative savings
-            self.compression_stats["messages_processed"] += len(messages)
-
-            # Compression ratio reflects no improvement (100% remaining)
-            ratio = 100.0 if total_original_tokens > 0 else 0.0
+            # Compute a safe compression ratio (avoid division by zero)
+            if total_original_tokens > 0:
+                ratio = (total_optimized_tokens / total_original_tokens) * 100
+            else:
+                ratio = 0.0
             self.compression_stats["compression_ratio"] = ratio
 
-            # Log that optimization would not help overall
-            logger.debug("⚠️  Token optimization produced no net savings: %d → %d (saved %d)",
-                         total_original_tokens, total_optimized_tokens, tokens_saved)
+            # Log summary information
+            if total_original_tokens > 0:
+                logger.debug("✅ Token optimization complete:")
+                logger.debug("   🪙 Tokens: %d → %d (saved %d tokens)", 
+                           total_original_tokens, total_optimized_tokens, tokens_saved)
+                if tokens_saved > 0:
+                    logger.debug("   📉 Compression: %.1f%% (%.1f%% reduction)", 
+                               ratio, 100 - ratio)
+                else:
+                    logger.debug("   📊 No optimization opportunities found")
+            else:
+                logger.debug("⚪ Token optimization complete: no tokenized content found to analyze")
 
-            # Publish an error-level event to indicate negative savings so UI marks it as failed
+            # Publish completion status using explicit end to include metadata
             meta = {
                 "original_tokens": total_original_tokens,
                 "optimized_tokens": total_optimized_tokens,
@@ -131,71 +160,10 @@ class TokenOptimizer:
                 "compression_ratio": ratio,
                 "messages_processed": len(messages),
             }
-            await publish_status(
-                server="token-optimizer",
-                message=f"Optimization degraded token usage: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-                phase=StatusPhase.ERROR,
-                meta=meta
-            )
-
-            # Return original messages to keep behavior safe and non-regressive
-            return messages
-
-        # Otherwise we have net zero or positive savings; update stats and accept optimized batch
-        self.compression_stats["messages_processed"] += len(messages)
-        # Only accumulate positive tokens_saved into aggregate stats
-        if tokens_saved > 0:
-            self.compression_stats["tokens_saved"] += int(tokens_saved)
-
-        # Record last run metadata
-        try:
-            self._last_run_time = time.time()
-            self._last_tokens_saved = int(tokens_saved)
-            self._last_input_fingerprint = input_fingerprint
-        except Exception:
-            pass
-
-        # Compute a safe compression ratio (avoid division by zero)
-        if total_original_tokens > 0:
-            ratio = (total_optimized_tokens / total_original_tokens) * 100
-        else:
-            ratio = 0.0
-        self.compression_stats["compression_ratio"] = ratio
-
-        # Log summary information
-        if total_original_tokens > 0:
-            logger.debug("✅ Token optimization complete:")
-            logger.debug("   🪙 Tokens: %d → %d (saved %d tokens)", 
-                       total_original_tokens, total_optimized_tokens, tokens_saved)
-            if tokens_saved > 0:
-                logger.debug("   📉 Compression: %.1f%% (%.1f%% reduction)", 
-                           ratio, 100 - ratio)
-            else:
-                logger.debug("   📊 No optimization opportunities found")
-        else:
-            logger.debug("⚪ Token optimization complete: no tokenized content found to analyze")
-
-        # Publish completion status event using PHASE_END so the UI always receives an end event.
-        # Include a meta flag to allow the UI to suppress the completion checkmark for internal helpers
-        # only when no tokens were saved.
-        meta = {
-            "original_tokens": total_original_tokens,
-            "optimized_tokens": total_optimized_tokens,
-            "tokens_saved": tokens_saved,
-            "compression_ratio": ratio,
-            "messages_processed": len(messages),
-        }
-        # Do not suppress the completion icon for zero-savings runs; only negative
-        # savings should suppress the completion indicator.
-
-        await publish_status(
-            server="token-optimizer",
-            message=f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})",
-            phase=StatusPhase.END,
-            meta=meta
-        )
-        
-        return optimized
+            await status.end(f"Optimization complete: {total_original_tokens:,}→{total_optimized_tokens:,} tokens (saved {tokens_saved:,})", 
+                           meta=meta)
+            
+            return optimized
     
     def _optimize_message(self, msg: ChatMessage) -> ChatMessage:
         """Optimize a single message for token efficiency."""

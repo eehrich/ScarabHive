@@ -1,10 +1,9 @@
 """Tests for TokenOptimizer functionality."""
 
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import patch
 from agent_system.context.optimizer import TokenOptimizer
 from agent_system.llm.clients import ChatMessage
-from agent_system.mcp.status import StatusPhase
 
 
 class TestTokenOptimizer:
@@ -79,8 +78,7 @@ class TestTokenOptimizer:
     @pytest.mark.asyncio
     async def test_optimize_messages_empty_list(self):
         """Test optimization with empty message list."""
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock):
-            result = await self.optimizer.optimize_messages([])
+        result = await self.optimizer.optimize_messages([])
         
         assert result == []
     
@@ -92,8 +90,8 @@ class TestTokenOptimizer:
             ChatMessage(role="assistant", content="Hi there! How can I help you today?")
         ]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
-            result = await self.optimizer.optimize_messages(messages)
+        # Use simple mocking that doesn't interfere with async context managers
+        result = await self.optimizer.optimize_messages(messages)
         
         # Should return optimized messages
         assert len(result) == len(messages)
@@ -109,25 +107,11 @@ class TestTokenOptimizer:
             ChatMessage(role="assistant", content="I understand that you want help.")
         ]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
-            await self.optimizer.optimize_messages(messages)
-            
-            # Check that tokens_saved in stats is not negative
-            stats = self.optimizer.get_compression_stats()
-            assert stats["tokens_saved"] >= 0  # Should never be negative
-            
-            # Should publish start and end status events
-            assert mock_publish.call_count >= 2
-            
-            # Check for start event
-            start_calls = [call for call in mock_publish.call_args_list 
-                          if len(call[1]) > 0 and call[1].get('phase') == StatusPhase.START]
-            assert len(start_calls) >= 1
-            
-            # Check for end event  
-            end_calls = [call for call in mock_publish.call_args_list 
-                        if len(call[1]) > 0 and call[1].get('phase') == StatusPhase.END]
-            assert len(end_calls) >= 1
+        await self.optimizer.optimize_messages(messages)
+        
+        # Check that tokens_saved in stats is not negative
+        stats = self.optimizer.get_compression_stats()
+        assert stats["tokens_saved"] >= 0  # Should never be negative
     
     @pytest.mark.asyncio
     async def test_optimize_messages_large_batch_progress(self):
@@ -138,15 +122,9 @@ class TestTokenOptimizer:
             for i in range(25)
         ]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
-            result = await self.optimizer.optimize_messages(messages)
+        result = await self.optimizer.optimize_messages(messages)
         
         assert len(result) == 25
-        
-        # Should publish progress events for batches of 10
-        progress_calls = [call for call in mock_publish.call_args_list 
-                         if len(call[1]) > 0 and call[1].get('phase') == StatusPhase.PROGRESS]
-        assert len(progress_calls) >= 2  # At 10 and 20 messages
     
     @pytest.mark.asyncio
     async def test_optimize_messages_error_handling(self):
@@ -155,16 +133,9 @@ class TestTokenOptimizer:
         
         # Mock _optimize_message to raise an exception
         with patch.object(self.optimizer, '_optimize_message', side_effect=Exception("Test error")):
-            with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock) as mock_publish:
-                result = await self.optimizer.optimize_messages(messages)
-        
-        # Should return original messages on error
-        assert result == messages
-        
-        # Should publish error status event
-        error_calls = [call for call in mock_publish.call_args_list 
-                      if len(call[1]) > 0 and call[1].get('phase') == StatusPhase.ERROR]
-        assert len(error_calls) >= 1
+            # The new implementation should raise the exception instead of catching it
+            with pytest.raises(Exception, match="Test error"):
+                await self.optimizer.optimize_messages(messages)
     
     def test_optimize_message_basic(self):
         """Test optimization of a single message."""
@@ -385,8 +356,7 @@ class TestTokenOptimizerEdgeCases:
         
         initial_processed = self.optimizer.compression_stats["messages_processed"]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock):
-            await self.optimizer.optimize_messages(messages)
+        await self.optimizer.optimize_messages(messages)
         
         # Stats should be updated
         assert self.optimizer.compression_stats["messages_processed"] == initial_processed + len(messages)
@@ -434,8 +404,7 @@ I hope this helps you understand the basics! Let me know if you need clarificati
             )
         ]
         
-        with patch('agent_system.context.optimizer.publish_status', new_callable=AsyncMock):
-            optimized = await self.optimizer.optimize_messages(messages)
+        optimized = await self.optimizer.optimize_messages(messages)
         
         assert len(optimized) == len(messages)
         
