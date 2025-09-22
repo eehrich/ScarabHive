@@ -20,6 +20,26 @@ class ToolExecutionManager:
     def __init__(self, registry: Any):
         self.registry = registry
 
+    def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a JSON-serializable copy of params by excluding non-serializable objects.
+        
+        This is needed because params may contain StatusScope objects or other non-JSON-serializable
+        objects that are added for internal use but shouldn't be included in event data.
+        """
+        serializable_params = {}
+        for key, value in params.items():
+            # Skip parameters starting with "_" (internal objects)
+            if key.startswith('_'):
+                continue
+            # Try to serialize the value to check if it's JSON-serializable
+            try:
+                json.dumps(value)
+                serializable_params[key] = value
+            except (TypeError, ValueError):
+                # Skip non-serializable values
+                continue
+        return serializable_params
+
     async def _invoke_tool(self, tool_name: str, params: Dict[str, Any]):
         """Execute a tool call against the registry and return results."""
         if tool_name not in self.registry.list():
@@ -99,8 +119,11 @@ class ToolExecutionManager:
         """Execute an external MCP tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
 
+        # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
+        serializable_params = self._make_params_serializable(params)
+
         # Emit MCP call event
-        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": params}
+        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": serializable_params}
         events = [call_event]
         results = []
 
@@ -113,7 +136,7 @@ class ToolExecutionManager:
             results.append({
                 "server": tool_name,
                 "action": actual_tool_name,
-                "params": params,
+                "params": serializable_params,
                 "result": tool_result
             })
 
@@ -164,8 +187,11 @@ class ToolExecutionManager:
             action_name = server.get_default_action()
             params["action"] = action_name
 
+        # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
+        serializable_params = self._make_params_serializable(params)
+
         # Emit MCP call event
-        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": params}
+        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": serializable_params}
         events = [call_event]
         results = []
 
@@ -177,7 +203,7 @@ class ToolExecutionManager:
             results.append({
                 "server": tool_name,
                 "action": action_name,
-                "params": params,
+                "params": serializable_params,
                 "result": tool_result
             })
 
