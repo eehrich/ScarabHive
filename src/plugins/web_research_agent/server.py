@@ -13,15 +13,11 @@ from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.mcp.status import (
-    status_scope,
-    status_bus,
+    StatusScope
 )
 from agent_system.context.agent_tracker import update_agent_context_usage
 
 logger = logging.getLogger(__name__)
-
-status_name = "WebResearchAgent"
-
 
 def create_web_research_agent(
     name: str = "web_researcher",
@@ -167,127 +163,127 @@ class WebResearchAgent(Agent):
         self.cfg = server_cfg  # legacy compatibility expected by tests
         logger.info("Created WebResearchAgent '%s' with tools: %s", name, research_registry.list())
 
-    async def _run_with_progress(self, task_prompt: str, operation_name: str, request_id: str = None) -> Dict[str, Any]:
+    async def _run_with_progress(self, task_prompt: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
         """Run agent task with progress updates published as status events."""
         results = {"task": task_prompt, "calls": []}
         step_count = 0
         total_messages = 0
 
-        # Use status_scope for automatic START/END status management
-        async with status_scope(
-            status_bus,
-            status_name,
-            request_id=request_id
-        ) as status:
-            
-            try:
-                # Pass the request_id to run_events so coordinator/worker messages have correct correlation
-                # Consume all events but don't break early to let base Agent.run_events complete
-                events_generator = self.run_events(task_prompt, request_id=request_id)
-                async for event in events_generator:
-                    event_type = event.get("type")
+        try:
+            # Pass the request_id to run_events so coordinator/worker messages have correct correlation
+            # Consume all events but don't break early to let base Agent.run_events complete
+            events_generator = self.run_events(task_prompt, request_id=request_id)
+            async for event in events_generator:
+                event_type = event.get("type")
 
-                    if event_type == "start":
-                        step_count += 1
-                        await status.progress("Starting analysis...")
+                if event_type == "start":
+                    step_count += 1
+                    await status.progress("Starting analysis...")
 
-                    elif event_type == "thinking":
-                        # Track LLM conversation activity
-                        total_messages += 1
-                        await status.progress("Processing...")
-                        try:
-                            # Get conversation context for tracking
-                            if hasattr(self, '_current_messages'):
-                                message_count = len(self._current_messages)
-                                # Estimate tokens from current conversation
-                                estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
+                elif event_type == "thinking":
+                    # Track LLM conversation activity
+                    total_messages += 1
+                    await status.progress("Processing...")
+                    try:
+                        # Get conversation context for tracking
+                        if hasattr(self, '_current_messages'):
+                            message_count = len(self._current_messages)
+                            # Estimate tokens from current conversation
+                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
 
-                                # Update agent context tracker
-                                update_agent_context_usage(
-                                    self.name,
-                                    current_tokens=estimated_tokens,
-                                    predicted_tokens=estimated_tokens,
-                                    message_count=message_count
-                                )
-                        except Exception as e:
-                            logger.debug("Failed to update agent context stats: %s", e)
+                            # Update agent context tracker
+                            update_agent_context_usage(
+                                self.name,
+                                current_tokens=estimated_tokens,
+                                predicted_tokens=estimated_tokens,
+                                message_count=message_count
+                            )
+                    except Exception as e:
+                        logger.debug("Failed to update agent context stats: %s", e)
 
-                    elif event_type == "mcp_call":
-                        step_count += 1
-                        tool_name = event.get("server", "unknown")
-                        action = event.get("action", "unknown")
-                        await status.progress(f"Step {step_count} - Using {tool_name} ({action})")
-                        
-                        # Store tool calls in results - convert to expected format
-                        if "calls" not in results:
-                            results["calls"] = []
-                        results["calls"].append({
-                            "function": {"name": tool_name},
-                            "server": tool_name,
-                            "action": action,
-                            "params": event.get("params", {})
-                        })
+                elif event_type == "mcp_call":
+                    step_count += 1
+                    tool_name = event.get("server", "unknown")
+                    action = event.get("action", "unknown")
+                    await status.progress(f"Step {step_count} - Using {tool_name} ({action})")
+                    
+                    # Store tool calls in results - convert to expected format
+                    if "calls" not in results:
+                        results["calls"] = []
+                    # Filter out internal parameters like _status before storing
+                    filtered_params = {k: v for k, v in event.get("params", {}).items() if not k.startswith('_')}
+                    results["calls"].append({
+                        "function": {"name": tool_name},
+                        "server": tool_name,
+                        "action": action,
+                        "params": filtered_params
+                    })
 
-                    elif event_type == "mcp_result":
-                        tool_name = event.get("server", "unknown")
-                        await status.progress(f"Processing results from {tool_name}...")
+                elif event_type == "mcp_result":
+                    tool_name = event.get("server", "unknown")
+                    await status.progress(f"Processing results from {tool_name}...")
 
-                    elif event_type == "final":
-                        results["summary"] = event.get("summary", "")
-                        await status.progress("Finalizing results...")
+                elif event_type == "final":
+                    results["summary"] = event.get("summary", "")
+                    await status.progress("Finalizing results...")
 
-                        # Final agent tracking update
-                        try:
-                            if hasattr(self, '_current_messages'):
-                                message_count = len(self._current_messages)
-                                estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
+                    # Final agent tracking update
+                    try:
+                        if hasattr(self, '_current_messages'):
+                            message_count = len(self._current_messages)
+                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
 
-                                # Check if LLM usage data is available in the event
-                                actual_tokens = event.get("usage", {}).get("total_tokens", 0) if event.get("usage") else 0
+                            # Check if LLM usage data is available in the event
+                            actual_tokens = event.get("usage", {}).get("total_tokens", 0) if event.get("usage") else 0
 
-                                update_agent_context_usage(
-                                    self.name,
-                                    current_tokens=estimated_tokens,
-                                    predicted_tokens=estimated_tokens,
-                                    message_count=message_count,
-                                    actual_tokens=actual_tokens if actual_tokens > 0 else None
-                                )
-                        except Exception as e:
-                            logger.debug("Failed to update final agent context stats: %s", e)
+                            update_agent_context_usage(
+                                self.name,
+                                current_tokens=estimated_tokens,
+                                predicted_tokens=estimated_tokens,
+                                message_count=message_count,
+                                actual_tokens=actual_tokens if actual_tokens > 0 else None
+                            )
+                    except Exception as e:
+                        logger.debug("Failed to update final agent context stats: %s", e)
 
-                        # Continue consuming events to let base Agent.run_events complete 
-                        # and publish final coordinator/worker status messages
+                    # Continue consuming events to let base Agent.run_events complete 
+                    # and publish final coordinator/worker status messages
 
-                    elif event_type == "error":
-                        error_msg = event.get("message", "Unknown error")
-                        results.setdefault("errors", []).append(error_msg)
-                        await status.error(f"Error - {error_msg}")
-                        raise Exception(error_msg)
+                elif event_type == "error":
+                    error_msg = event.get("message", "Unknown error")
+                    results.setdefault("errors", []).append(error_msg)
+                    await status.error(f"Error - {error_msg}")
+                    raise Exception(error_msg)
 
-                    elif event_type == "end":
-                        # Mark that we've seen the end event but continue consuming
-                        # to let base Agent.run_events complete and publish final status
-                        # Continue loop to let generator finish naturally
-                        pass
+                elif event_type == "end":
+                    # Mark that we've seen the end event but continue consuming
+                    # to let base Agent.run_events complete and publish final status
+                    # Continue loop to let generator finish naturally
+                    pass
 
-                # Let the generator complete naturally to ensure final status publishing
-                # The async for loop will exit when the generator is exhausted
-                # status_scope will automatically publish coordinator/worker END messages
-                return results
+            # Let the generator complete naturally to ensure final status publishing
+            # The async for loop will exit when the generator is exhausted
+            # status_scope will automatically publish coordinator/worker END messages
+            return results
 
-            except Exception as e:
-                # Error handling - status_scope will still publish proper END status
-                logger.error(f"WebResearchAgent task failed: {e}")
-                results.setdefault("errors", []).append(str(e))
-                raise
+        except Exception as e:
+            # Error handling - status_scope will still publish proper END status
+            logger.error(f"WebResearchAgent task failed: {e}")
+            results.setdefault("errors", []).append(str(e))
+            raise
 
-            except Exception as e:
-                # Error handling - status_scope will still publish proper END status
-                logger.error(f"WebResearchAgent task failed: {e}")
-                results.setdefault("errors", []).append(str(e))
-                raise
+    async def _execute_task(self, prompt: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
+        """Execute a research task with common error handling and result formatting."""
+        try:
+            res = await self._run_with_progress(prompt, request_id, status)
+            # Add status and agent info to match expected format
+            res["status"] = "success"
+            res["agent"] = self.name
+            return res
+        except Exception as e:
+            return {"status": "error", "error": str(e), "agent": self.name}
 
-    async def research(self, topic: str, max_results: int = 5, request_id: str = None) -> Dict[str, Any]:
+    async def research(self, topic: str, max_results: int, request_id: str, status: StatusScope) -> Dict[str, Any]:
         research_prompt = f"""
         Perform comprehensive research on: {topic}
 
@@ -303,20 +299,9 @@ class WebResearchAgent(Agent):
         - Different perspectives or viewpoints
         - Source URLs for verification
         """
-        # Note: _run_with_progress already uses status_scope for coordinator/worker status
-        # So we don't need to wrap this method with status_scope again
-        try:
-            res = await self._run_with_progress(research_prompt, f"Researching '{topic}'", request_id)
-            # Add status and agent info to match expected format
-            res["status"] = "success"
-            res["agent"] = self.name
-            # _run_with_progress handles all status publishing via status_scope
-            return res
-        
-        except Exception as e:
-            return {"status": "error", "error": str(e), "agent": self.name}
+        return await self._execute_task(research_prompt, request_id, status)
 
-    async def fact_check(self, claim: str, request_id: str = None) -> Dict[str, Any]:
+    async def fact_check(self, claim: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
         fact_check_prompt = f"""
         Fact-check this claim: "{claim}"
 
@@ -332,46 +317,26 @@ class WebResearchAgent(Agent):
         - Contradicting evidence if any
         - Context and nuances
         """
-        # Note: _run_with_progress already uses status_scope for coordinator/worker status
-        try:
-            res = await self._run_with_progress(fact_check_prompt, "Fact-checking claim", request_id)
-            # Add status and agent info to match expected format
-            res["status"] = "success"
-            res["agent"] = self.name
-            return res
-        
-        except Exception as e:
-            return {"status": "error", "error": str(e), "agent": self.name}
+        return await self._execute_task(fact_check_prompt, request_id, status)
 
-    async def compare_sources(self, topic: str, source_urls: list[str], request_id: str = None) -> Dict[str, Any]:
-        sources_text = "\n".join([f"- {url}" for url in source_urls])
+    async def compare_sources(self, topic: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
         compare_prompt = f"""
-        Compare how different sources cover this topic: {topic}
-
-        Scrape content from these specific sources:
-        {sources_text}
+        Compare information about this topic across multiple sources: "{topic}"
 
         Instructions:
-        1. Scrape content from each provided URL
-        2. Extract information relevant to "{topic}" from each source
-        3. Compare and contrast the different perspectives/information
-        4. Identify agreements, disagreements, and unique insights
+        1. Search for information about this topic from multiple perspectives
+        2. Include diverse sources (news, academic, blogs, official sites)
+        3. Scrape content from various credible sources
+        4. Compare and contrast the information provided
+        5. Identify consensus, disagreements, and biases
 
         Please provide:
-        - Summary from each source
-        - Key similarities and differences
-        - Bias or perspective analysis
-        - Most comprehensive/reliable source assessment
+        - Summary of common information
+        - Points of agreement and disagreement
+        - Source credibility assessment
+        - Potential biases or limitations
         """
-        # Note: _run_with_progress already uses status_scope for coordinator/worker status
-        try:
-            res = await self._run_with_progress(compare_prompt, f"Comparing sources for '{topic}'", request_id)
-            # Add status and agent info to match expected format
-            res["status"] = "success"
-            res["agent"] = self.name
-            return res
-        except Exception as e:
-            return {"status": "error", "error": str(e), "agent": self.name}
+        return await self._execute_task(compare_prompt, request_id, status)
 
     def get_schema(self) -> Dict[str, Any]:
         from agent_system.plugins.schema_loader import load_schema_from_dir
@@ -383,31 +348,31 @@ class WebResearchAgent(Agent):
     async def call(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
         # Extract request_id for status correlation
         request_id = params.get("request_id") or params.get("requestId")
+        status = params.get("_status")   
 
         if action == "research":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
             max_results = params.get("max_results", 5)
-            return await self.research(topic, max_results, request_id)
+            return await self.research(topic, max_results, request_id, status)
         elif action == "fact_check":
             claim = params.get("claim")
             if not claim:
                 return {"status": "error", "error": "Missing required parameter 'claim' for fact_check action"}
-            return await self.fact_check(claim, request_id)
+            return await self.fact_check(claim, request_id, status)
         elif action == "compare_sources":
-            source_urls = params.get("source_urls")
             topic = params.get("topic")
-            if not topic or not source_urls:
-                return {"status": "error", "error": "Missing required parameters 'topic' and 'source_urls' for compare_sources action"}
-            return await self.compare_sources(topic, source_urls, request_id)
+            if not topic:
+                return {"status": "error", "error": "Missing required parameter 'topic' for compare_sources action"}
+            return await self.compare_sources(topic, request_id, status)
         elif action in ("run", "execute", "ask"):
             # Handle general task requests by routing to research with progress tracking
             task = params.get("task") or params.get("query") or params.get("prompt")
             if not task:
                 return {"status": "error", "error": f"Missing required parameter 'task' for {action} action"}
             # Route general tasks to research method with progress tracking
-            return await self.research(task, params.get("max_results", 5), request_id)
+            return await self.research(task, params.get("max_results", 5), request_id, status)
 
         return await super().call(action, params)
 

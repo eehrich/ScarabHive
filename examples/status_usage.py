@@ -1,40 +1,23 @@
 """
-Example: How to use the status system
+Example: How to use the StatusScope system
 
-This shows how to use the clean status API with guaranteed delivery
-and modern async patterns.
+This shows how to use the modern StatusScope API with guaranteed delivery
+and clean async patterns. The StatusScope system replaces the old 
+publish_status approach with a more robust design.
 """
 
 from agent_system.mcp.status import (
     status_scope, 
     status_bus,
-    publish_status,
-    StatusPhase,
-    StatusEvent
+    StatusEvent,
+    StatusPhase
 )
 import asyncio
 
 
-# OLD WAY (error-prone):
-async def old_agent_run(request_id: str):
-    await publish_status("agent_coordinator", "started", request_id, StatusPhase.START)
-    await asyncio.sleep(0)  # ❌ Race condition prone!
-    
-    await publish_status("agent_worker", "started", request_id, StatusPhase.START) 
-    await asyncio.sleep(0)  # ❌ Easy to forget!
-    
-    # ... work ...
-    
-    await publish_status("agent_worker", "completed", request_id, StatusPhase.END)
-    await asyncio.sleep(0)  # ❌ Timing dependent!
-    
-    await publish_status("agent_coordinator", "completed (3 steps)", request_id, StatusPhase.END)
-    await asyncio.sleep(0)  # ❌ Anti-pattern!
-
-
-# NEW WAY (guaranteed safe):
-async def new_agent_run(request_id: str):
-    # Use context manager for automatic START/END pairing
+# MODERN WAY (recommended):
+async def modern_agent_run(request_id: str):
+    """Example of using StatusScope context manager for automatic START/END handling."""
     async with status_scope(
         status_bus,
         name="agent", 
@@ -51,20 +34,23 @@ async def new_agent_run(request_id: str):
         # No more asyncio.sleep(0) needed anywhere!
 
 
-# For individual status messages (drop-in replacement):
+# Manual status updates (for individual messages):
 async def manual_status_example(request_id: str):
-    # This guarantees delivery without asyncio.sleep(0)
-    await publish_status(
-        "my_server", 
-        "operation complete", 
-        request_id, 
-        StatusPhase.END
-    )
-    # ✅ Message is guaranteed delivered to all handlers before continuing
+    """Example of creating a StatusScope manually for custom control."""
+    from agent_system.mcp.status import StatusScope, get_status_bus
+    
+    status_bus_instance = get_status_bus()
+    status = StatusScope(status_bus_instance, "my_server", request_id)
+    
+    async with status:
+        await status.progress("Processing step 1")
+        await status.progress("Processing step 2") 
+        await status.end("Operation complete")
 
 
 # For subscription and filtering:
 async def subscribe_example():
+    """Example of subscribing to status events."""
     # Subscribe to all events
     queue = await status_bus.subscribe()
     
@@ -84,29 +70,31 @@ async def subscribe_example():
     status_bus.unsubscribe(both_queue)
 
 
-# For web_research_agent fix:
-class WebResearchAgentImproved:
-    async def _run_with_progress(self, task_prompt: str, request_id: str = None):
-        async with status_scope(
-            status_bus,
-            name="web_research_agent",
-            request_id=request_id
-        ) as status:
-            
-            # Process events from base agent
-            async for event in self.run_events(task_prompt, request_id=request_id):
-                if event.get("type") == "mcp_call":
-                    await status.progress(f"Using {event.get('server', 'tool')}")
-                elif event.get("type") == "thinking":
-                    await status.progress("Processing...")
-                # No need to break on "final" - context manager handles completion!
-            
-            # ✅ Coordinator/Worker completion guaranteed by context manager
-            return {"status": "completed"}
+# Plugin example - how plugins use StatusScope:
+class ExamplePlugin:
+    """Example of how a plugin uses the StatusScope system."""
+    
+    async def call(self, action: str, params: dict):
+        """Plugin call method that uses injected status object."""
+        # Get the status object injected by the base class
+        status = params.get("_status")
+        
+        if action == "process_data":
+            if status:
+                await status.progress("Starting data processing")
+                await status.progress("Validating input")
+                await status.progress("Processing...")
+                await status.progress("Generating results")
+                # status.end() called automatically by context manager
+                
+            # Do actual work here
+            result = {"processed": "data"}
+            return result
 
 
 # Direct StatusEvent usage for advanced scenarios:
 async def advanced_status_example():
+    """Example of direct StatusEvent usage."""
     # Create events directly
     event = StatusEvent(
         server="advanced_server",
@@ -125,5 +113,27 @@ async def advanced_status_example():
     print(f"Handlers: {metrics['handlers_count']}, Sequence: {metrics['sequence_counter']}")
 
 
+# Error handling example:
+async def error_handling_example(request_id: str):
+    """Example of proper error handling with StatusScope."""
+    async with status_scope(
+        status_bus,
+        name="error_example", 
+        request_id=request_id
+    ) as status:
+        
+        try:
+            await status.progress("Starting risky operation")
+            # Simulate some work that might fail
+            raise ValueError("Something went wrong")
+            
+        except ValueError as e:
+            await status.error(f"Operation failed: {e}")
+            raise  # Re-raise the exception
+        
+        # If we reach here, the operation succeeded
+        await status.progress("Operation completed successfully")
+
+
 if __name__ == "__main__":
-    asyncio.run(new_agent_run("example_request_123"))
+    asyncio.run(modern_agent_run("example_request_123"))

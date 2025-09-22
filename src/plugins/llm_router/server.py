@@ -7,10 +7,6 @@ from pathlib import Path
 from agent_system.llm.clients import ChatMessage, make_llm
 from agent_system.mcp.base import MCPServer
 from agent_system.utils.text_sanitizer import sanitize_for_llm
-from agent_system.mcp.status import (
-    publish_status,
-    StatusPhase,
-)
 
 
 class LLMRouterServer(MCPServer):
@@ -68,6 +64,8 @@ class LLMRouterServer(MCPServer):
         )
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
+        status = params.get("_status")
+
         if tool == "chat":
             # Handle both message formats first
             if "messages" in params:
@@ -84,24 +82,17 @@ class LLMRouterServer(MCPServer):
             # Extract provider and model from parameters, with fallback to defaults
             provider = params.get("provider") or self.default_provider
             model = params.get("model") or self.default_model
-            request_id = params.get("request_id") or params.get("requestId")
 
             try:
                 # publish start
-                try:
-                    await publish_status(self.name, f"Chat request to {provider}/{model}", request_id=request_id, phase=StatusPhase.START)
-                except Exception:
-                    pass
+                await status.progress(f"Chat request to {provider}/{model}")
 
                 # Create appropriate client
                 client = self._make_client(provider, model)
 
                 content = await client.chat(messages)
 
-                try:
-                    await publish_status(self.name, f"Chat completed ({provider}/{model})", request_id=request_id, phase=StatusPhase.END)
-                except Exception:
-                    pass
+                await status.end(f"Chat completed ({provider}/{model})")
 
                 return {
                     "content": content,

@@ -7,10 +7,6 @@ import pytz
 import calendar
 
 from agent_system.mcp.base import MCPServer
-from agent_system.mcp.status import (
-    publish_status,
-    StatusPhase,
-)
 
 
 class DateTimeServer(MCPServer):
@@ -31,9 +27,10 @@ class DateTimeServer(MCPServer):
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Execute datetime operations."""
+        status = params.get("_status")
 
         # Publish status for operation start
-        await publish_status(self.name, f"Processing {tool} operation", phase=StatusPhase.START)
+        await status.progress(f"Processing {tool} operation")
 
         try:
             if tool == "current":
@@ -66,9 +63,9 @@ class DateTimeServer(MCPServer):
         # Publish status for operation completion
         status_msg = f"Completed {tool} operation"
         if result.get("status") == "error":
-            await publish_status(self.name, status_msg, level="error", phase=StatusPhase.ERROR)
+            await status.error(status_msg)
         else:
-            await publish_status(self.name, status_msg, phase=StatusPhase.END)
+            await status.end(status_msg)
 
         return result
 
