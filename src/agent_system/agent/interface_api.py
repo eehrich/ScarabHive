@@ -151,7 +151,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Startup
         global _app_start_time
         _app_start_time = time.time()
-        
+
         logger = logging.getLogger(__name__)
         logger.info("Lifespan startup: Initializing MCP integration...")
         await _init_mcp_for_app(app)
@@ -243,10 +243,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/health")
     def health():
         global _app_start_time
-        
+
         # Calculate uptime
         uptime_seconds = time.time() - _app_start_time if _app_start_time else 0
-        
+
         # Load agent config for version info
         agent_config = {}
         try:
@@ -255,7 +255,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 agent_config = yaml.safe_load(f) or {}
         except Exception:
             pass  # Continue with empty config if loading fails
-        
+
         return {
             "status": "ok",
             "version": agent_config.get("version", "unknown"),
@@ -770,7 +770,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             latest = tracker.get_latest()
             recent_history = tracker.get_history(last_n=100)  # Last 100 data points
 
-            
+
 
             # Get statistics for different time windows
             stats_1h = tracker.get_statistics(time_window_seconds=3600)  # Last hour
@@ -900,7 +900,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         import socket
         import logging
         from urllib.parse import urlparse
-        
+
         logger = logging.getLogger(__name__)
 
         try:
@@ -1066,6 +1066,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                     # Get originally configured external servers (including failed connections)
                     configured_servers = getattr(_mcp_integration, 'configured_external_servers', {})
+
+                    # Some callers (e.g. test harnesses or earlier merge logic) may
+                    # populate `configured_external_servers` with entries that are
+                    # explicitly disabled in config. Ensure we only expose enabled
+                    # servers in the UI/status response so disabled servers do not
+                    # appear as "Disconnected" in the web UI.
+                    try:
+                        configured_servers = {
+                            name: cfg
+                            for name, cfg in (configured_servers or {}).items()
+                            if cfg.get('enabled', True)
+                        }
+                    except Exception:
+                        # If anything goes wrong while filtering, fall back to the
+                        # original mapping so we don't hide potentially important
+                        # entries in unexpected failure modes.
+                        pass
 
                     logger = logging.getLogger(__name__)
                     logger.info(f"Connected external servers: {connected_servers}")
