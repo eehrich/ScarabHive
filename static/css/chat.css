@@ -272,10 +272,11 @@ input::placeholder {
 
 /* Progress View */
 .operation-progress {
-  margin: 4px 0;
+  margin: 2px 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   line-height: 1.4;
+  position: relative;
 }
 
 .progress-line {
@@ -284,6 +285,43 @@ input::placeholder {
   gap: 8px;
   padding: 2px 0;
   color: #e6edf3;
+  position: relative;
+}
+
+/* Tree hierarchy styles */
+.tree-connector {
+  color: #6e7681;
+  font-size: 12px;
+  margin-right: 4px;
+  font-family: monospace;
+  flex-shrink: 0;
+}
+
+.operation-progress[data-depth="0"] .progress-line {
+  border-left: none;
+}
+
+.operation-progress[data-depth="1"] .progress-line {
+  border-left: 2px solid #30363d;
+}
+
+.operation-progress[data-depth="2"] .progress-line {
+  border-left: 2px solid #21262d;
+}
+
+.operation-progress[data-depth="3"] .progress-line {
+  border-left: 2px solid #161b22;
+}
+
+/* Indent deeper levels progressively */
+.operation-progress[data-depth] .progress-line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #30363d;
 }
 
 .progress-icon {
@@ -757,4 +795,44 @@ div .container-section .container-header .toggle-arrow {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+/* Tree Hierarchy Styles for Status Operations */
+.operation-request-id {
+  color: #79c0ff;
+  font-size: 11px;
+  background: #0d1117;
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid #21262d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  flex-shrink: 0;
+}
+
+/* Visual tree connections for nested operations */
+.operation-progress[data-depth]:not([data-depth="0"])::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--depth) * 16px - 8px);
+  top: 0;
+  bottom: 50%;
+  width: 1px;
+  background: #30363d;
+}
+
+/* Tree connector improvements */
+.tree-connector {
+  font-weight: normal;
+  opacity: 0.7;
+}
+
+.operation-progress[data-depth="1"] .tree-connector {
+  color: #58a6ff;
+}
+
+.operation-progress[data-depth="2"] .tree-connector {
+  color: #f9826c;
+}
+
+.operation-progress[data-depth="3"] .tree-connector {
+  color: #56d364;
 }

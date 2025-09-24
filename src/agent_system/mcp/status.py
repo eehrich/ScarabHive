@@ -15,6 +15,8 @@ from datetime import datetime
 import asyncio
 from contextvars import ContextVar
 
+from ..utils.tree_hierarchy import get_tree_builder
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +37,11 @@ class StatusEvent:
     sequence: int = 0  # Will be assigned by bus if 0
     level: str = "info"  # info, warning, error
     meta: Optional[Dict[str, Any]] = None
+    # Tree hierarchy metadata
+    parent_id: Optional[str] = None
+    depth_level: int = 0
+    child_count: int = 0
+    is_leaf: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -45,7 +52,13 @@ class StatusEvent:
             "phase": self.phase.value,  # Convert enum to string
             "level": self.level,
             "sequence": self.sequence,
-            "meta": self.meta
+            "meta": self.meta,
+            "tree": {
+                "parent_id": self.parent_id,
+                "depth_level": self.depth_level,
+                "child_count": self.child_count,
+                "is_leaf": self.is_leaf
+            }
         }
 
 
@@ -73,7 +86,13 @@ class SSEStatusHandler(StatusHandler):
                 "request_id": event.request_id,
                 "phase": event.phase.value,
                 "sequence": event.sequence,
-                "meta": event.meta
+                "meta": event.meta,
+                "tree": {
+                    "parent_id": event.parent_id,
+                    "depth_level": event.depth_level,
+                    "child_count": event.child_count,
+                    "is_leaf": event.is_leaf
+                }
             })
         except Exception as e:
             logger.error(f"Failed to forward status to SSE: {e}")
@@ -159,6 +178,15 @@ class StatusBus:
             if event.sequence == 0:
                 self.sequence_counter += 1
                 event.sequence = self.sequence_counter
+            
+            # Compute tree hierarchy metadata if request_id is available
+            if event.request_id:
+                tree_builder = get_tree_builder()
+                node = tree_builder._ensure_node_exists(event.request_id)
+                event.parent_id = node.parent_id
+                event.depth_level = node.depth
+                event.child_count = len(node.children)
+                event.is_leaf = len(node.children) == 0
             
             # Deliver to all handlers - guaranteed processing
             for handler in self.handlers:

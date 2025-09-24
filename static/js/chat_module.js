@@ -188,6 +188,68 @@
   }
 
   const activeOperations = new Map();
+  const treeNodes = new Map(); // Track hierarchical tree nodes
+
+  function createTreeOperationDiv(operationKey, ev, depthLevel, parentId) {
+    const operationDiv = document.createElement('div');
+    operationDiv.className = 'operation-progress';
+    operationDiv.setAttribute('data-operation', operationKey);
+    operationDiv.setAttribute('data-request-id', ev.request_id || '');
+    operationDiv.setAttribute('data-depth', depthLevel);
+    
+    const reqSpan = ev.request_id ? `<span class="operation-request-id">${escapeHtml(ev.request_id)}</span>` : '';
+    const indentation = '  '.repeat(depthLevel); // 2 spaces per level
+    const expandIcon = depthLevel > 0 ? '<span class="tree-connector">└─</span>' : '';
+    
+    operationDiv.innerHTML = `
+      <div class="progress-line" style="padding-left: ${depthLevel * 16}px;">
+        ${expandIcon}
+        <span class="progress-icon"><div class="spinner"></div></span>
+        <span class="progress-time">${formatTime(ev.timestamp)}</span>
+        ${reqSpan}
+        <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
+        <span class="progress-message">${escapeHtml(ev.message || (ev.phase === 'start' ? 'Starting...' : 'In progress...'))}</span>
+      </div>
+    `;
+    
+    return operationDiv;
+  }
+
+  function insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel) {
+    if (!parentId) {
+      // Root level - append at end
+      container.appendChild(operationDiv);
+      return;
+    }
+    
+    // Find parent element
+    const parentNode = treeNodes.get(parentId);
+    if (parentNode && parentNode.element) {
+      // Insert after parent and its existing children
+      let insertAfter = parentNode.element;
+      
+      // Find the last child element of the parent
+      for (const childId of parentNode.children) {
+        const childNode = treeNodes.get(childId);
+        if (childNode && childNode.element) {
+          const childElement = childNode.element;
+          if (container.contains(childElement)) {
+            insertAfter = childElement;
+          }
+        }
+      }
+      
+      // Insert after the determined position
+      if (insertAfter.nextSibling) {
+        container.insertBefore(operationDiv, insertAfter.nextSibling);
+      } else {
+        container.appendChild(operationDiv);
+      }
+    } else {
+      // Parent not found, append at end
+      container.appendChild(operationDiv);
+    }
+  }
 
   function addStatusEvent(container, ev) {
     if (!container || !ev) return;
@@ -195,8 +257,16 @@
     if (statusSection && statusSection.style.display === 'none') {
       statusSection.style.display = 'block';
     }
-    const opIdPart = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
-    const operationKey = opIdPart ? `${ev.server}_${opIdPart}` : `${ev.server}`;
+    
+    // Use request_id for hierarchical operations if available
+    const requestId = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
+    const operationKey = requestId || ev.server;
+    
+    // Get tree hierarchy metadata
+    const treeInfo = ev.tree || { parent_id: null, depth_level: 0, child_count: 0, is_leaf: true };
+    const depthLevel = treeInfo.depth_level || 0;
+    const parentId = treeInfo.parent_id;
+    
     // Prefer server-provided sequence number for ordering when available
     const seq = ev.meta && ev.meta._seq ? ev.meta._seq : null;
     if (ev.phase === 'start') {
@@ -207,42 +277,47 @@
         if (msg) msg.textContent = ev.message || 'Starting...';
         if (time) time.textContent = formatTime(ev.timestamp);
       } else {
-        const operationDiv = document.createElement('div');
-        operationDiv.className = 'operation-progress';
-        operationDiv.setAttribute('data-operation', operationKey);
-        const reqSpan = ev.request_id ? `<span class="operation-request-id">${escapeHtml(ev.request_id)}</span>` : '';
-        operationDiv.innerHTML = `
-          <div class="progress-line">
-            <span class="progress-icon"><div class="spinner"></div></span>
-            <span class="progress-time">${formatTime(ev.timestamp)}</span>
-            ${reqSpan}
-            <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
-            <span class="progress-message">${escapeHtml(ev.message || 'Starting...')}</span>
-          </div>
-        `;
-        container.appendChild(operationDiv);
+        const operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
+        
+        // Insert at correct hierarchical position
+        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        
         activeOperations.set(operationKey, operationDiv);
+        treeNodes.set(requestId, {
+          element: operationDiv,
+          requestId: requestId,
+          parentId: parentId,
+          depthLevel: depthLevel,
+          children: new Set()
+        });
+        
+        // Update parent's children tracking
+        if (parentId && treeNodes.has(parentId)) {
+          treeNodes.get(parentId).children.add(requestId);
+        }
       }
     } else if (ev.phase === 'progress') {
       let operationDiv = activeOperations.get(operationKey);
       // If progress arrives before start, create a row from this progress event
       if (!operationDiv) {
-        const operationDivNew = document.createElement('div');
-        operationDivNew.className = 'operation-progress';
-        operationDivNew.setAttribute('data-operation', operationKey);
-        const reqSpan = ev.request_id ? `<span class="operation-request-id">${escapeHtml(ev.request_id)}</span>` : '';
-        operationDivNew.innerHTML = `
-          <div class="progress-line">
-            <span class="progress-icon"><div class="spinner"></div></span>
-            <span class="progress-time">${formatTime(ev.timestamp)}</span>
-            ${reqSpan}
-            <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
-            <span class="progress-message">${escapeHtml(ev.message || 'In progress...')}</span>
-          </div>
-        `;
-        container.appendChild(operationDivNew);
-        activeOperations.set(operationKey, operationDivNew);
-        operationDiv = operationDivNew;
+        operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
+        
+        // Insert at correct hierarchical position
+        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        
+        activeOperations.set(operationKey, operationDiv);
+        treeNodes.set(requestId, {
+          element: operationDiv,
+          requestId: requestId,
+          parentId: parentId,
+          depthLevel: depthLevel,
+          children: new Set()
+        });
+        
+        // Update parent's children tracking
+        if (parentId && treeNodes.has(parentId)) {
+          treeNodes.get(parentId).children.add(requestId);
+        }
       } else {
         const messageSpan = operationDiv.querySelector('.progress-message');
         const timeSpan = operationDiv.querySelector('.progress-time');
@@ -276,6 +351,14 @@
         operationDiv.classList.add('completed');
       }
       activeOperations.delete(operationKey);
+      // Clean up tree node
+      if (requestId) {
+        const node = treeNodes.get(requestId);
+        if (node && node.parentId && treeNodes.has(node.parentId)) {
+          treeNodes.get(node.parentId).children.delete(requestId);
+        }
+        treeNodes.delete(requestId);
+      }
     } else if (ev.phase === 'error') {
       const operationDiv = activeOperations.get(operationKey);
       if (operationDiv) {
@@ -288,6 +371,14 @@
         operationDiv.classList.add('error');
       }
       activeOperations.delete(operationKey);
+      // Clean up tree node
+      if (requestId) {
+        const node = treeNodes.get(requestId);
+        if (node && node.parentId && treeNodes.has(node.parentId)) {
+          treeNodes.get(node.parentId).children.delete(requestId);
+        }
+        treeNodes.delete(requestId);
+      }
     }
   }
 
