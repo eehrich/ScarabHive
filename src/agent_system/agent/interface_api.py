@@ -639,6 +639,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/", status_code=302)
 
+    @app.get("/tree-test", response_class=HTMLResponse)
+    async def tree_test_page(request: Request):
+        """Test page for foldable hierarchical status tree functionality."""
+        return templates.TemplateResponse(request, "tree_test.html")
+    
+    @app.get("/tree-alignment-test", response_class=HTMLResponse)
+    async def tree_alignment_test_page(request: Request):
+        """Test page for tree alignment and layout validation."""
+        from pathlib import Path
+        test_file = Path(__file__).parent.parent.parent.parent / "test_tree_alignment.html"
+        if test_file.exists():
+            return HTMLResponse(content=test_file.read_text(encoding="utf-8"))
+        else:
+            return HTMLResponse(content="<h1>Test file not found</h1>", status_code=404)
+
     @app.get("/status/meta")
     async def status_meta(request: Request):  # pragma: no cover - simple diagnostics
         if os.getenv("AGENT_STATUS_REQUIRE_AUTH") == "1":

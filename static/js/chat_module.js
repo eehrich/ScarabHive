@@ -188,7 +188,98 @@
   }
 
   const activeOperations = new Map();
-  const treeNodes = new Map(); // Track hierarchical tree nodes
+  const treeNodes = new Map(); // requestId -> { element, parentId, depth, children:Set }
+  const pendingChildren = new Map(); // parentId -> [{elementInfo}]
+
+  function toggleTreeNode(requestId) {
+    const node = treeNodes.get(requestId);
+    if (!node) return;
+    const el = node.element;
+    if (!el) return;
+    const expanded = el.getAttribute('data-expanded') === 'true';
+    const newState = !expanded;
+    el.setAttribute('data-expanded', newState ? 'true' : 'false');
+  const icon = el.querySelector('.tree-expand-btn .expand-icon');
+  if (icon) icon.style.transform = newState ? 'rotate(90deg)' : 'rotate(0deg)';
+    setDescendantsVisibility(requestId, newState);
+  }
+
+  function setDescendantsVisibility(rootId, rootVisible) {
+    const queue = [...(treeNodes.get(rootId)?.children || [])];
+    while (queue.length) {
+      const cid = queue.shift();
+      const cn = treeNodes.get(cid);
+      if (!cn) continue;
+      
+      // If we're collapsing (rootVisible = false), hide all descendants
+      // If we're expanding (rootVisible = true), only show if all ancestors are expanded
+      const shouldBeVisible = rootVisible ? isAllAncestorsExpanded(cid) : false;
+      cn.element.style.display = shouldBeVisible ? 'block' : 'none';
+      
+      // Always traverse deeper to hide/show all descendants
+      queue.push(...cn.children);
+    }
+  }
+
+  function isAllAncestorsExpanded(requestId) {
+    let current = treeNodes.get(requestId);
+    while (current && current.parentId) {
+      const parent = treeNodes.get(current.parentId);
+      if (!parent) return false;
+      if (parent.element.getAttribute('data-expanded') !== 'true') return false;
+      current = parent;
+    }
+    return true;
+  }
+  
+  function updateParentExpandButton(requestId) {
+    const node = treeNodes.get(requestId);
+    if (!node) return;
+    const btn = node.element.querySelector('.tree-expand-btn');
+    if (!btn) return;
+    if (node.children.size > 0) {
+      btn.style.display = 'inline-block';
+      const icon = btn.querySelector('.expand-icon');
+      if (icon) icon.style.transform = node.element.getAttribute('data-expanded') === 'true' ? 'rotate(90deg)' : 'rotate(0deg)';
+    } else {
+      btn.style.display = 'none';
+    }
+  }
+
+  function registerNode(requestId, parentId, element, depthLevel) {
+    treeNodes.set(requestId, { element, parentId, depthLevel, children: new Set() });
+    if (parentId) {
+      const parentNode = treeNodes.get(parentId);
+      if (parentNode) {
+        parentNode.children.add(requestId);
+        updateParentExpandButton(parentId);
+        // Check full ancestor chain to determine visibility
+        const shouldBeVisible = isAllAncestorsExpanded(requestId);
+        element.style.display = shouldBeVisible ? 'block' : 'none';
+      } else {
+        // Queue child until parent arrives
+        element.style.display = 'none';
+        if (!pendingChildren.has(parentId)) pendingChildren.set(parentId, []);
+        pendingChildren.get(parentId).push({ requestId, element, depthLevel });
+      }
+    }
+    attachPendingChildren(requestId);
+  }
+
+  function attachPendingChildren(parentId) {
+    const waiting = pendingChildren.get(parentId);
+    if (!waiting) return;
+    const parentNode = treeNodes.get(parentId);
+    if (!parentNode) return;
+    for (const child of waiting) {
+      parentNode.children.add(child.requestId);
+      updateParentExpandButton(parentId);
+      // Check full ancestor chain to determine visibility
+      const shouldBeVisible = isAllAncestorsExpanded(child.requestId);
+      child.element.style.display = shouldBeVisible ? 'block' : 'none';
+    }
+    pendingChildren.delete(parentId);
+  }
 
   function createTreeOperationDiv(operationKey, ev, depthLevel, parentId) {
     const operationDiv = document.createElement('div');
@@ -196,14 +287,33 @@
     operationDiv.setAttribute('data-operation', operationKey);
     operationDiv.setAttribute('data-request-id', ev.request_id || '');
     operationDiv.setAttribute('data-depth', depthLevel);
+    operationDiv.setAttribute('data-expanded', 'true'); // Default to expanded
     
     const reqSpan = ev.request_id ? `<span class="operation-request-id">${escapeHtml(ev.request_id)}</span>` : '';
-    const indentation = '  '.repeat(depthLevel); // 2 spaces per level
-    const expandIcon = depthLevel > 0 ? '<span class="tree-connector">└─</span>' : '';
+    
+    // Tree connector/expand button - unified approach with same SVG arrow as section headers
+    const arrowSvg = `<svg class="expand-icon" width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    let treeIndicator = '';
+    if (depthLevel > 0) {
+      treeIndicator = `
+        <span class="tree-indicator">
+          <span class="tree-expand-btn" data-request-id="${ev.request_id || ''}" style="display: none;">
+            ${arrowSvg}
+          </span>
+          <span class="tree-connector">└─</span>
+        </span>`;
+    } else {
+      treeIndicator = `
+        <span class="tree-indicator">
+          <span class="tree-expand-btn" data-request-id="${ev.request_id || ''}" style="display: none;">
+            ${arrowSvg}
+          </span>
+        </span>`;
+    }
     
     operationDiv.innerHTML = `
       <div class="progress-line" style="padding-left: ${depthLevel * 16}px;">
-        ${expandIcon}
+        ${treeIndicator}
         <span class="progress-icon"><div class="spinner"></div></span>
         <span class="progress-time">${formatTime(ev.timestamp)}</span>
         ${reqSpan}
@@ -211,6 +321,15 @@
         <span class="progress-message">${escapeHtml(ev.message || (ev.phase === 'start' ? 'Starting...' : 'In progress...'))}</span>
       </div>
     `;
+    
+    // Add click handler for expand/collapse
+    const expandBtn = operationDiv.querySelector('.tree-expand-btn');
+    if (expandBtn) {
+      expandBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleTreeNode(ev.request_id || '');
+      });
+    }
     
     return operationDiv;
   }
@@ -262,10 +381,31 @@
     const requestId = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
     const operationKey = requestId || ev.server;
     
+    // Debug logging can be enabled here if needed
+    // if (requestId && (ev.server === 'token-optimizer' || ev.server === 'duckduckgo_search')) {
+    //   console.log(`[HIERARCHY DEBUG] ${ev.server}:`, { requestId, originalParentId: ev.tree?.parent_id });
+    // }
+    
     // Get tree hierarchy metadata
     const treeInfo = ev.tree || { parent_id: null, depth_level: 0, child_count: 0, is_leaf: true };
-    const depthLevel = treeInfo.depth_level || 0;
-    const parentId = treeInfo.parent_id;
+    let depthLevel = treeInfo.depth_level || 0;
+    let parentId = treeInfo.parent_id;
+
+    // Treat special/placeholder parent ids (e.g. backend using a label instead of null) as null roots
+    if (parentId && !treeNodes.has(parentId) && parentId.indexOf('_') === -1 && depthLevel === 1) {
+      // If backend gives parent like "main" for first real root, normalize to null so it shows
+      parentId = null;
+      depthLevel = 0;
+    }
+    
+    // Generic request_id parsing if backend does not supply tree metadata
+    if (!parentId && requestId && requestId.includes('_')) {
+      const parts = requestId.split('_');
+      if (parts.length >= 2) {
+        parentId = parts.length > 2 ? parts.slice(0, parts.length - 1).join('_') : null;
+        depthLevel = parts.length - 2; // first child depth 0
+      }
+    }
     
     // Prefer server-provided sequence number for ordering when available
     const seq = ev.meta && ev.meta._seq ? ev.meta._seq : null;
@@ -283,18 +423,7 @@
         insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
         
         activeOperations.set(operationKey, operationDiv);
-        treeNodes.set(requestId, {
-          element: operationDiv,
-          requestId: requestId,
-          parentId: parentId,
-          depthLevel: depthLevel,
-          children: new Set()
-        });
-        
-        // Update parent's children tracking
-        if (parentId && treeNodes.has(parentId)) {
-          treeNodes.get(parentId).children.add(requestId);
-        }
+        registerNode(requestId, parentId, operationDiv, depthLevel);
       }
     } else if (ev.phase === 'progress') {
       let operationDiv = activeOperations.get(operationKey);
@@ -306,18 +435,7 @@
         insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
         
         activeOperations.set(operationKey, operationDiv);
-        treeNodes.set(requestId, {
-          element: operationDiv,
-          requestId: requestId,
-          parentId: parentId,
-          depthLevel: depthLevel,
-          children: new Set()
-        });
-        
-        // Update parent's children tracking
-        if (parentId && treeNodes.has(parentId)) {
-          treeNodes.get(parentId).children.add(requestId);
-        }
+        registerNode(requestId, parentId, operationDiv, depthLevel);
       } else {
         const messageSpan = operationDiv.querySelector('.progress-message');
         const timeSpan = operationDiv.querySelector('.progress-time');
@@ -351,14 +469,7 @@
         operationDiv.classList.add('completed');
       }
       activeOperations.delete(operationKey);
-      // Clean up tree node
-      if (requestId) {
-        const node = treeNodes.get(requestId);
-        if (node && node.parentId && treeNodes.has(node.parentId)) {
-          treeNodes.get(node.parentId).children.delete(requestId);
-        }
-        treeNodes.delete(requestId);
-      }
+      // Keep tree structure intact for folding - don't clean up completed operations
     } else if (ev.phase === 'error') {
       const operationDiv = activeOperations.get(operationKey);
       if (operationDiv) {
@@ -371,14 +482,7 @@
         operationDiv.classList.add('error');
       }
       activeOperations.delete(operationKey);
-      // Clean up tree node
-      if (requestId) {
-        const node = treeNodes.get(requestId);
-        if (node && node.parentId && treeNodes.has(node.parentId)) {
-          treeNodes.get(node.parentId).children.delete(requestId);
-        }
-        treeNodes.delete(requestId);
-      }
+      // Keep tree structure intact for folding - don't clean up errored operations
     }
   }
 
@@ -706,6 +810,10 @@
     }
   }
 
+  // Expose functions for testing
+  chatModule.addStatusEvent = addStatusEvent;
+  chatModule.toggleTreeNode = toggleTreeNode;
+  
   // attach to global
   global.chatModule = chatModule;
 

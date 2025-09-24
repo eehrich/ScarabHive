@@ -836,3 +836,76 @@ div .container-section .container-header .toggle-arrow {
 .operation-progress[data-depth="3"] .tree-connector {
   color: #56d364;
 }
+
+/* Tree Expand/Collapse Functionality - Fixed Layout */
+.tree-indicator {
+  display: inline-block;
+  width: 16px;
+  position: relative;
+  vertical-align: middle;
+}
+
+.tree-expand-btn {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background-color 0.2s ease;
+  user-select: none;
+  display: inline-block;
+  width: 20px;
+  text-align: center;
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+}
+
+.tree-expand-btn:hover {
+  background-color: #21262d;
+}
+
+.expand-icon {
+  color: #8b949e;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-block;
+}
+
+/* Ensure SVG icons are centered and sized consistently */
+.expand-icon svg,
+.expand-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: 0 auto;
+}
+
+/* Tree connector - positioned under expand button when needed */
+.tree-connector {
+  color: #8b949e;
+  user-select: none;
+  display: inline-block;
+  width: 16px;
+  text-align: left;
+  position: absolute;
+  left: -4px;
+  top: 0;
+  z-index: 5;
+}
+
+/* Hide collapsed children */
+.operation-progress[style*="display: none"] {
+  display: none !important;
+}
+
+/* When expand button is visible, hide the tree connector */
+.tree-indicator .tree-expand-btn[style*="display: inline-block"] + .tree-connector,
+.tree-indicator .tree-expand-btn[style*="display: block"] + .tree-connector {
+  display: none;
+}
+
+/* Ensure proper alignment */
+.operation-progress .progress-line {
+  align-items: center;
+}
