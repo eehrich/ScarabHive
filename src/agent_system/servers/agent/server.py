@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from typing import Any, Dict, List, Optional
 
 from ...config.models import AgentConfig
 from ...mcp.base import MCPRegistry, MCPServer
+from ...utils.id import short_id
 from ...llm.clients import ChatMessage
 from ...utils.prompt_renderer import render_prompts
 from ...utils.text_sanitizer import sanitize_for_llm
@@ -19,7 +19,8 @@ from ...context.agent_tracker import register_agent_for_tracking
 from ...mcp.status import (
     status_scope,
     StatusScope,
-    status_bus
+    status_bus,
+    current_request_id
 )
 from .components.mcp_integration import MCPIntegrationManager
 from .components.tool_execution import ToolExecutionManager
@@ -110,6 +111,10 @@ class Agent(MCPServer):
         # Initialize context management system
         self._init_context_management()
 
+        # Centralized internal tool-call counter (used to generate per-tool suffixes)
+        self._internal_tool_counter = 0
+        self._internal_tool_counter_lock = asyncio.Lock()
+
         # Register agent with context tracker
         if hasattr(self, 'context_manager') and self.context_manager:
             register_agent_for_tracking(name, name, self.context_manager.config.context_window)
@@ -131,13 +136,23 @@ class Agent(MCPServer):
 
         # Initialize component managers for better code organization
         self._mcp_integration_manager = MCPIntegrationManager(self.agent_config)
-        self._tool_execution_manager = ToolExecutionManager(self.registry)
+        self._tool_execution_manager = ToolExecutionManager(self.registry, self)
         self._status_event_forwarder = StatusEventForwarder()
-        self._context_management_handler = ContextManagementHandler(self.context_manager, self.token_optimizer, self.name)
-        
+        self._context_management_handler = ContextManagementHandler(self.context_manager, self.token_optimizer, self)
+
         # Track emergency context management attempts to prevent loops
         self._emergency_context_attempts = 0
         self._max_emergency_attempts = 2  # Maximum emergency attempts per conversation
+
+    async def next_internal_tool_request_id(self, base_request_id: str) -> str:
+        """Return the next internal tool request id with a 3-digit suffix.
+
+        This method is async and protected by an internal lock to ensure
+        unique, monotonic counters for the lifetime of the Agent instance.
+        """
+        async with self._internal_tool_counter_lock:
+            self._internal_tool_counter += 1
+            return f"{base_request_id}_{self._internal_tool_counter:03d}"
 
     def _init_context_management(self):
         """Initialize the context management system."""
@@ -373,13 +388,21 @@ class Agent(MCPServer):
 
         # Generate request ID if not provided
         if request_id is None:
-            request_id = str(uuid.uuid4())
+            request_id = short_id()
 
         # If no session_id provided, generate one and persist empty history
         if not session_id:
-            session_id = str(uuid.uuid4())
+            session_id = short_id()
 
-        async with status_scope(status_bus, f"{self.name}_coordinator", request_id) as status_coordinator, status_scope(status_bus, f"{self.name}_worker", request_id) as status_worker:
+        # Create suffixed request IDs for coordinator and worker so their
+        # status messages can be correlated separately while still linking
+        # back to the base request_id. Use the Agent's centralized counter
+        # to ensure monotonic, global numbering across components.
+        coordinator_request_id = await self.next_internal_tool_request_id(request_id) if request_id else None
+        worker_request_id = await self.next_internal_tool_request_id(request_id) if request_id else None
+
+        async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
+                   status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
             async for event in self._run_events(task, request_id=request_id, session_id=session_id, status_coordinator=status_coordinator, status_worker=status_worker):
                 yield event
 
@@ -392,7 +415,14 @@ class Agent(MCPServer):
                 "appended": []
             }
 
+        # Set the ContextVar so any publish_status() calls without explicit request_id
+        # will inherit the current request id. Store token for reset in finally.
+        token = None
         try:
+            try:
+                token = current_request_id.set(request_id)
+            except Exception:
+                token = None
             async with self._request_lock:
                 # ensure session exists
                 self._sessions.setdefault(session_id, [])
@@ -599,7 +629,9 @@ class Agent(MCPServer):
                                 logger.info("Attempting emergency summarization to preserve context")
                                 
                                 # Apply context management (will use summarization)
-                                summarized_messages = await context_manager.manage_context(messages)
+                                # Generate unique request ID for emergency context management
+                                emergency_request_id = f"{request_id}_emergency" if request_id else None
+                                summarized_messages = await context_manager.manage_context(messages, request_id=emergency_request_id)
                                 
                                 # Restore original settings
                                 context_manager.config.strategy = original_strategy
@@ -772,7 +804,7 @@ class Agent(MCPServer):
 
                     # Execute all tools using the component
                     tool_messages, tool_events, tool_results = await self._tool_execution_manager.execute_tools(
-                        tool_calls, tool_name_mapping, available_tools, step
+                        tool_calls, tool_name_mapping, available_tools, step, request_id=request_id
                     )
                     
                     # Yield the tool events
@@ -853,7 +885,12 @@ class Agent(MCPServer):
 
             # Clean up MCP integration if we initialized it locally
             await self._mcp_integration_manager.shutdown()
-
+            # Reset the current_request_id ContextVar so it doesn't leak to other tasks
+            try:
+                if token is not None:
+                    current_request_id.reset(token)
+            except Exception:
+                pass
         # Signal completion using status contexts
         final_msg = "completed" if not ('results' in locals() and results.get('errors')) else "completed with errors"
         

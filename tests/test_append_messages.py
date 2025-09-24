@@ -1,5 +1,5 @@
 import pytest
-import uuid
+from agent_system.utils.id import short_id
 
 from agent_system.servers.agent.server import Agent
 from agent_system.mcp.base import MCPRegistry
@@ -27,7 +27,7 @@ async def test_append_message_consumed(tmp_path):
     agent.llm = DummyLLM()
 
     task = "Initial task"
-    request_id = str(uuid.uuid4())
+    request_id = short_id()
 
     # Start run_events generator
     gen = agent.run_events(task, request_id=request_id)

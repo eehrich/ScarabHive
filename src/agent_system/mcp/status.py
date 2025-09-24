@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 import asyncio
+from contextvars import ContextVar
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,9 @@ class StatusBus:
 # Global status bus instance
 status_bus = StatusBus()
 
+# ContextVar to hold the current request id for automatic propagation
+current_request_id: ContextVar[Optional[str]] = ContextVar('current_request_id', default=None)
+
 
 def get_status_bus() -> StatusBus:
     """Get the global status bus instance"""
@@ -226,6 +230,16 @@ async def publish_status(server: str, message: str, request_id: Optional[str] = 
     if phase == StatusPhase.ERROR and level == "info":
         level = "error"
     
+    # If no request_id provided, try to read from ContextVar for implicit propagation
+    if not request_id:
+        try:
+            rid = current_request_id.get()
+            if rid:
+                request_id = rid
+        except Exception:
+            # ignore context var errors
+            pass
+
     # Create StatusEvent and let bus.publish handle sequencing
     event = StatusEvent(
         server=server,
@@ -245,6 +259,15 @@ class StatusScope:
     def __init__(self, bus: StatusBus, server: str, request_id: Optional[str] = None, start_msg: Optional[str] = None, end_msg: Optional[str] = None):
         self.bus = bus
         self.server = server
+        # If no request_id provided, try to read from ContextVar for implicit propagation
+        if not request_id:
+            try:
+                rid = current_request_id.get()
+                if rid:
+                    request_id = rid
+            except Exception:
+                # ignore context var errors
+                pass
         self.request_id = request_id
         self.ended = False
         self.start_msg = start_msg or "started"

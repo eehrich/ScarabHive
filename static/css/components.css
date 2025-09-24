@@ -340,3 +340,23 @@ h1 {
   scrollbar-width: thin;
   scrollbar-color: #243244 #0b1220;
 }
+
+/* Request ID display inside messages and operations */
+.message-request-id {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.03);
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #9ab;
+  border-radius: 6px;
+}
+
+.operation-request-id {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #9ab;
+  background: transparent;
+}

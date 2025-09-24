@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import time
-import uuid
+from ..utils.id import short_id
 import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -271,7 +271,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.post("/run")
     async def run(task: str, traceparent: Optional[str] = Header(default=None)):
         logger = logging.getLogger(__name__)
-        request_id = str(uuid.uuid4())
+        request_id = short_id()
         logger.info("/run invoked, task=%s, request_id=%s", task, request_id)
         from agent_system.servers.agent.result_utils import collect_final_result
         return await collect_final_result(agent, task, request_id=request_id)
@@ -279,7 +279,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/events")
     async def events(task: str, session_id: Optional[str] = Query(default=None)):
         logger = logging.getLogger(__name__)
-        request_id = str(uuid.uuid4())
+        request_id = short_id()
         logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s", task, request_id, session_id)
 
         async def event_stream():
@@ -372,7 +372,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.post("/sessions")
     async def create_session():
         """Create a new session id for multi-turn conversations."""
-        sid = str(uuid.uuid4())
+        sid = short_id()
         # Pre-create empty session in agent
         async def _create():
             async with agent._request_lock:

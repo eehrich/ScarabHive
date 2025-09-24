@@ -287,7 +287,7 @@ class ContextManager:
 
         return primary_trigger or prediction_trigger or actual_usage_trigger or level_trigger
 
-    async def manage_context(self, messages: List[ChatMessage]) -> List[ChatMessage]:
+    async def manage_context(self, messages: List[ChatMessage], request_id: Optional[str] = None) -> List[ChatMessage]:
         """Apply context management strategy to reduce token count."""
         current_tokens = self.estimate_token_count(messages)
 
@@ -316,7 +316,7 @@ class ContextManager:
             return self._truncate_oldest(messages)
 
         # Use StatusScope for automatic START/END status management
-        async with StatusScope(status_bus, "context-manager") as status:
+        async with StatusScope(status_bus, "context-manager", request_id) as status:
             percentage = (current_tokens / self.config.context_window) * 100
             logger.debug("🔄 Context management triggered: %d tokens (%.1f%% of context window)",
                        current_tokens, percentage)

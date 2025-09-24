@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
-    def __init__(self, registry: Any):
+    def __init__(self, registry: Any, agent=None):
         self.registry = registry
+        # Optional Agent instance for centralized counters
+        self._agent = agent
 
     def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create a JSON-serializable copy of params by excluding non-serializable objects.
@@ -54,7 +56,7 @@ class ToolExecutionManager:
             raise
 
     async def execute_tools(self, tool_calls: List[Dict], tool_name_mapping: Dict[str, str],
-                          available_tools: List[str], step: int) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
+                          available_tools: List[str], step: int, request_id: str | None = None) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
         """Execute all tool calls and return tool result messages, events, and results.
         
         Returns:
@@ -109,23 +111,33 @@ class ToolExecutionManager:
             # Create tasks for parallel execution with unique request_id suffixes
             tasks = []
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
-                # Create tool-specific request_id suffix for parallel call visibility
+                # Create tool-specific request_id suffix for all tool calls to ensure unique IDs
                 # If original request_id is "abc123", tool calls become "abc123_001", "abc123_002", etc.
-                original_request_id = params.get("request_id") or params.get("requestId")
-                if original_request_id and len(valid_tool_executions) > 1:
-                    # Only add suffix for parallel execution (multiple tools)
-                    tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
+                original_request_id = params.get("request_id") or params.get("requestId") or request_id
+                if original_request_id:
+                    # Prefer the Agent counter when available so suffixes are globally unique
+                    if self._agent is not None:
+                        try:
+                            tool_specific_request_id = await self._agent.next_internal_tool_request_id(original_request_id)
+                        except Exception:
+                            tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
+                    else:
+                        # Local deterministic suffix if no Agent provided
+                        tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
+
                     # Update params with tool-specific request_id for status tracking
                     params_with_suffix = params.copy()
                     params_with_suffix["request_id"] = tool_specific_request_id
                     # Also set camelCase version for JS compatibility
                     params_with_suffix["requestId"] = tool_specific_request_id
                 else:
-                    # Single tool execution or no request_id - use original params
+                    # No request_id available - use original params
                     params_with_suffix = params
+                    tool_specific_request_id = None
                 
+                # Pass the tool-specific request_id to ensure events use the correct ID
                 tasks.append(
-                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step)
+                    self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id)
                 )
             
             # Execute all tools concurrently
@@ -154,25 +166,27 @@ class ToolExecutionManager:
         return tool_messages, events_to_yield, results_to_add
 
     async def _execute_single_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 params: Dict[str, Any], step: int) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a single tool and return the result message, events, and results."""
         if "." in tool_name:
             # External tool - call via MCP integration
-            return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step)
+            return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id)
         else:
             # Plugin tool - use existing logic
-            return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step)
+            return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id)
 
     async def _execute_external_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                   params: Dict[str, Any], step: int) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                   params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute an external MCP tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
 
         # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
 
-        # Emit MCP call event
-        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": serializable_params}
+        # Emit MCP call event (include request_id for correlation)
+        # Prefer tool-specific request_id from params over the general request_id
+        event_request_id = serializable_params.get('request_id') or request_id
+        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": actual_tool_name, "params": serializable_params, "request_id": event_request_id}
         events = [call_event]
         results = []
 
@@ -189,8 +203,8 @@ class ToolExecutionManager:
                 "result": tool_result
             })
 
-            # Emit MCP result event
-            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result}
+            # Emit MCP result event (include request_id for correlation)
+            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": actual_tool_name, "result": tool_result, "request_id": event_request_id}
             events.append(result_event)
 
             # Create tool result message
@@ -218,7 +232,7 @@ class ToolExecutionManager:
             return message, events, results
 
     async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
-                                 params: Dict[str, Any], step: int) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+                                 params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a plugin tool."""
         server = self.registry.get(tool_name)
         action_name = params.get("action") or params.get("tool") or server.get_default_action()
@@ -239,8 +253,10 @@ class ToolExecutionManager:
         # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
 
-        # Emit MCP call event
-        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": serializable_params}
+        # Emit MCP call event (include request_id for correlation)
+        # Prefer tool-specific request_id from params over the general request_id
+        event_request_id = serializable_params.get('request_id') or request_id
+        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": serializable_params, "request_id": event_request_id}
         events = [call_event]
         results = []
 
@@ -256,8 +272,8 @@ class ToolExecutionManager:
                 "result": tool_result
             })
 
-            # Emit MCP result event
-            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result}
+            # Emit MCP result event (include request_id for correlation)
+            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result, "request_id": event_request_id}
             events.append(result_event)
 
             # Create tool result message

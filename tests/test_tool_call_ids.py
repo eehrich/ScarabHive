@@ -1,10 +1,8 @@
 """Test tool call ID generation."""
 
-import pytest
-import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-from agent_system.llm.clients import OpenAIAsyncClient, OllamaNativeAsyncClient
+from agent_system.utils.id import short_id
 
 
 class TestToolCallIds:
@@ -28,8 +26,7 @@ class TestToolCallIds:
         tool_calls = [mock_tc]
         out_calls = []
         for tc in tool_calls:
-            import uuid
-            tc_id = getattr(tc, "id", None) or f"call_{uuid.uuid4().hex[:12]}"
+            tc_id = getattr(tc, "id", None) or f"call_{short_id()}"
             out_calls.append({
                 "id": tc_id,
                 "function": {"name": tc.function.name, "arguments": tc.function.arguments},
@@ -38,7 +35,7 @@ class TestToolCallIds:
         # Verify ID was generated
         assert out_calls[0]["id"] is not None
         assert out_calls[0]["id"].startswith("call_")
-        assert len(out_calls[0]["id"]) == 17  # "call_" + 12 hex chars
+    assert len(out_calls[0]["id"]) == 15  # "call_" + 10 base36 chars
 
     def test_ollama_client_generates_id_when_missing(self):
         """Test that Ollama client generates UUID when tool call has no ID."""
@@ -52,8 +49,7 @@ class TestToolCallIds:
         }
         
         # Apply the same logic as in OllamaNativeAsyncClient
-        import uuid
-        tc_id = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
+        tc_id = tc.get("id") or f"call_{short_id()}"
         
         result = {
             "id": tc_id,
@@ -66,25 +62,22 @@ class TestToolCallIds:
         # Verify ID was generated
         assert result["id"] is not None
         assert result["id"].startswith("call_")
-        assert len(result["id"]) == 17  # "call_" + 12 hex chars
+        assert len(result["id"]) == 15  # "call_" + 10 base36 chars
 
     def test_id_preserved_when_provided(self):
         """Test that existing IDs are preserved."""
         existing_id = "provided_id_123"
         tc = {"id": existing_id, "function": {"name": "test", "arguments": "{}"}}
         
-        import uuid
-        tc_id = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
+        tc_id = tc.get("id") or f"call_{short_id()}"
         
         assert tc_id == existing_id
 
     def test_generated_ids_are_unique(self):
         """Test that generated IDs are unique."""
-        import uuid
-        
         ids = []
         for _ in range(10):
-            tc_id = f"call_{uuid.uuid4().hex[:12]}"
+            tc_id = f"call_{short_id()}"
             ids.append(tc_id)
         
         # All IDs should be unique

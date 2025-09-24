@@ -14,12 +14,21 @@ logger = logging.getLogger(__name__)
 
 
 class ContextManagementHandler:
-    """Handles context management operations within the agent loop."""
+    """Handles context management operations within the agent loop.
 
-    def __init__(self, context_manager, token_optimizer, agent_name: str):
+    The handler may receive either the owning Agent instance or just the
+    agent name. When an Agent instance is provided it will be used to
+    obtain globally-unique internal tool-call ids via
+    `agent.next_internal_tool_request_id()`; otherwise the handler falls
+    back to a local counter (legacy behavior).
+    """
+
+    def __init__(self, context_manager, token_optimizer, agent_or_name):
         self.context_manager = context_manager
         self.token_optimizer = token_optimizer
-        self.agent_name = agent_name
+        # agent_or_name may be an Agent instance or a simple agent name string
+        self._agent = agent_or_name if hasattr(agent_or_name, 'next_internal_tool_request_id') else None
+        self.agent_name = agent_or_name.name if getattr(agent_or_name, 'name', None) else str(agent_or_name)
 
         # Token optimizer state
         self._last_optimizer_tokens_snapshot = 0
@@ -27,6 +36,25 @@ class ContextManagementHandler:
         self._optimizer_cooldown_seconds = 10.0  # Increased from 1.0 to 10.0 seconds
         self._optimizer_min_increase_tokens = 200  # Minimum token increase required
         self._skip_optimizer_steps_after_context_mgmt = 0
+        
+        # Local fallback counter in case Agent-provided counter is unavailable
+        self._local_internal_tool_counter = 0
+
+    async def _get_next_internal_tool_request_id(self, base_request_id: str) -> str:
+        """Return the next internal tool request id.
+
+        Prefer the Agent-provided centralized counter when available.
+        """
+        if self._agent is not None:
+            try:
+                return await self._agent.next_internal_tool_request_id(base_request_id)
+            except Exception:
+                # Fall back to local counter on any agent-side failure
+                pass
+
+        # Local fallback counter (synchronous increment)
+        self._local_internal_tool_counter += 1
+        return f"{base_request_id}_{self._local_internal_tool_counter:03d}"
 
     async def handle_context_management(self, messages: List[ChatMessage], step: int,
                                       request_id: str) -> tuple[List[ChatMessage], int]:
@@ -50,7 +78,9 @@ class ContextManagementHandler:
         # Apply context management if needed
         if self.context_manager.should_manage_context(estimated_tokens, warning_level):
             logger.info("Applying context management at step %d", step + 1)
-            messages = await self.context_manager.manage_context(messages)
+            # Generate unique request ID for this context manager call
+            context_mgr_request_id = await self._get_next_internal_tool_request_id(request_id)
+            messages = await self.context_manager.manage_context(messages, request_id=context_mgr_request_id)
             # Skip optimizer for next 2 steps after context management
             self._skip_optimizer_steps_after_context_mgmt = 2
             # Re-check after management
@@ -81,7 +111,9 @@ class ContextManagementHandler:
                 should_run_optimizer = True
 
             if should_run_optimizer:
-                messages = await self.token_optimizer.optimize_messages(messages, request_id=request_id)
+                # Generate unique request ID for this token optimizer call
+                optimizer_request_id = await self._get_next_internal_tool_request_id(request_id)
+                messages = await self.token_optimizer.optimize_messages(messages, request_id=optimizer_request_id)
                 self._last_optimizer_tokens_snapshot = self.context_manager.estimate_token_count(messages)
                 self._last_optimizer_run_time = now
 

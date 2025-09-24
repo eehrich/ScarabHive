@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, Any, List, Dict, cast
 import json
-import uuid
+from ..utils.id import short_id
 import asyncio
 import random
 
@@ -62,22 +62,25 @@ class OpenAIAsyncClient(LLMClient):
                 logger.warning("Failed to create custom httpx client, will use SDK default: %s", e)
                 httpx_client = None
 
-        # Try the known parameter names for a custom httpx client; fall back to letting the SDK create its own client
+        # Determine whether AsyncOpenAI accepts a custom httpx client parameter
         if httpx_client is not None:
-            # Try arguments that different SDK versions might accept.
-            for param in ("httpx_client", "http_client", "client"):
-                try:
+            try:
+                import inspect
+                params = inspect.signature(AsyncOpenAI).parameters
+                supported = None
+                for param in ("httpx_client", "http_client", "client"):
+                    if param in params:
+                        supported = param
+                        break
+                if supported:
                     _kwargs = dict(kwargs)
-                    _kwargs[param] = httpx_client
+                    _kwargs[supported] = httpx_client
                     self._client = AsyncOpenAI(**_kwargs)
-                    break
-                except Exception as e:
-                    # Log failure to set httpx client parameter
-                    logger = logging.getLogger(__name__)
-                    logger.debug("Failed to set %s parameter for OpenAI client: %s", param, e)
-                    self._client = None
-            if self._client is None:
-                # Last attempt: pass kwargs without client and let SDK handle network behavior
+                else:
+                    # SDK doesn't accept a custom client - fall back to default construction
+                    self._client = AsyncOpenAI(**kwargs)
+            except Exception:
+                # If anything goes wrong inspecting/constructing, fall back to default SDK client
                 self._client = AsyncOpenAI(**kwargs)
         else:
             self._client = AsyncOpenAI(**kwargs)
@@ -318,7 +321,7 @@ class OpenAIAsyncClient(LLMClient):
                     name = getattr(function, "name", None) if function is not None else getattr(tc, "name", None)
                     arguments = getattr(function, "arguments", None) if function is not None else getattr(tc, "arguments", None)
                     # Generate UUID if no ID provided by LLM
-                    tc_id = getattr(tc, "id", None) or f"call_{uuid.uuid4().hex[:12]}"
+                    tc_id = getattr(tc, "id", None) or f"call_{short_id()}"
                     out_calls.append({
                         "id": tc_id,
                         "type": "function",
@@ -419,8 +422,8 @@ class OllamaNativeAsyncClient(LLMClient):
             out_calls = []
             for tc in tcs:
                 func = tc.get("function", {})
-                # Generate UUID if no ID provided by LLM
-                tc_id = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
+                # Generate short id if no ID provided by LLM
+                tc_id = tc.get("id") or f"call_{short_id()}"
                 out_calls.append({
                     "id": tc_id,
                     "function": {

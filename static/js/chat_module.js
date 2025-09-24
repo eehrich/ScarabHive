@@ -210,12 +210,14 @@
         const operationDiv = document.createElement('div');
         operationDiv.className = 'operation-progress';
         operationDiv.setAttribute('data-operation', operationKey);
+        const reqSpan = ev.request_id ? `<span class="operation-request-id">${escapeHtml(ev.request_id)}</span>` : '';
         operationDiv.innerHTML = `
           <div class="progress-line">
             <span class="progress-icon"><div class="spinner"></div></span>
+            <span class="progress-time">${formatTime(ev.timestamp)}</span>
+            ${reqSpan}
             <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
             <span class="progress-message">${escapeHtml(ev.message || 'Starting...')}</span>
-            <span class="progress-time">${formatTime(ev.timestamp)}</span>
           </div>
         `;
         container.appendChild(operationDiv);
@@ -228,12 +230,14 @@
         const operationDivNew = document.createElement('div');
         operationDivNew.className = 'operation-progress';
         operationDivNew.setAttribute('data-operation', operationKey);
+        const reqSpan = ev.request_id ? `<span class="operation-request-id">${escapeHtml(ev.request_id)}</span>` : '';
         operationDivNew.innerHTML = `
           <div class="progress-line">
             <span class="progress-icon"><div class="spinner"></div></span>
+            <span class="progress-time">${formatTime(ev.timestamp)}</span>
+            ${reqSpan}
             <span class="progress-server">${escapeHtml(ev.server || 'Unknown')}</span>
             <span class="progress-message">${escapeHtml(ev.message || 'In progress...')}</span>
-            <span class="progress-time">${formatTime(ev.timestamp)}</span>
           </div>
         `;
         container.appendChild(operationDivNew);
@@ -244,6 +248,19 @@
         const timeSpan = operationDiv.querySelector('.progress-time');
         if (messageSpan) messageSpan.textContent = ev.message || 'In progress...';
         if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
+        // Update request id if present
+        if (ev.request_id) {
+          let req = operationDiv.querySelector('.operation-request-id');
+          if (!req) {
+            const span = document.createElement('span');
+            span.className = 'operation-request-id';
+            span.textContent = ev.request_id;
+            const timeSpan = operationDiv.querySelector('.progress-time');
+            if (timeSpan && timeSpan.parentNode) timeSpan.parentNode.insertBefore(span, timeSpan.nextSibling);
+          } else {
+            req.textContent = ev.request_id;
+          }
+        }
       }
     } else if (ev.phase === 'end') {
       const operationDiv = activeOperations.get(operationKey);
@@ -315,22 +332,26 @@
     
     function updateRequestId() {
       console.log('updateRequestId called, currentRequestId:', currentRequestId);
-      
+
       if (currentRequestId) {
         // Find the latest assistant message
         const latestAssistant = document.querySelector('.chat .row:last-child .msg.assistant');
         if (latestAssistant) {
-          // Create a new request ID element for this specific message
-          const requestIdElement = document.createElement('div');
-          requestIdElement.className = 'message-request-id';
-          requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
-          requestIdElement.title = `Request ID: ${currentRequestId}`;
-          
-          // Add it to the assistant message
-          latestAssistant.appendChild(requestIdElement);
+          // Avoid inserting duplicate request id elements
+          let existing = latestAssistant.querySelector('.message-request-id');
+          if (!existing) {
+            const requestIdElement = document.createElement('div');
+            requestIdElement.className = 'message-request-id';
+            requestIdElement.innerHTML = `Request: <span>${currentRequestId}</span>`;
+            requestIdElement.title = `Request ID: ${currentRequestId}`;
+            latestAssistant.appendChild(requestIdElement);
+          } else {
+            existing.innerHTML = `Request: <span>${currentRequestId}</span>`;
+            existing.title = `Request ID: ${currentRequestId}`;
+          }
         }
       }
-      
+
       // Also update the global request display (keep for compatibility)
       const requestElement = document.getElementById('currentRequestId');
       const requestContainer = document.getElementById('requestIdDisplay');
