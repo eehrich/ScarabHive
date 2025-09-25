@@ -35,7 +35,7 @@ class TestToolCallIds:
         # Verify ID was generated
         assert out_calls[0]["id"] is not None
         assert out_calls[0]["id"].startswith("call_")
-    assert len(out_calls[0]["id"]) == 15  # "call_" + 10 base36 chars
+        assert len(out_calls[0]["id"]) == 15  # "call_" + 10 base36 chars
 
     def test_ollama_client_generates_id_when_missing(self):
         """Test that Ollama client generates UUID when tool call has no ID."""
