@@ -42,6 +42,7 @@ class LogViewerMCPServer(MCPServer):
         """Return available MCP tools"""
         return [
             {
+                "type": "function",
                 "function": {
                     "name": "list_log_files",
                     "description": "List available log files and their status",
@@ -53,6 +54,7 @@ class LogViewerMCPServer(MCPServer):
                 }
             },
             {
+                "type": "function",
                 "function": {
                     "name": "get_log_tail",
                     "description": "Get the last N lines from a log file",
@@ -74,6 +76,7 @@ class LogViewerMCPServer(MCPServer):
                 }
             },
             {
+                "type": "function",
                 "function": {
                     "name": "search_logs",
                     "description": "Search for patterns in log files",

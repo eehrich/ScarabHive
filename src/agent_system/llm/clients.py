@@ -255,6 +255,35 @@ class OpenAIAsyncClient(LLMClient):
                 # For OpenAI assistant message with tool calls
                 d["tool_calls"] = m.tool_calls
             msgs.append(d)
+
+        # Defensive normalization of tool schemas to prevent 400 errors like
+        # "Missing required parameter: 'tools[5].type'" when a plugin forgets it.
+        normalized_tools: list[dict] = []
+        for idx, t in enumerate(tools):
+            if not isinstance(t, dict):
+                logger.warning("Skipping non-dict tool schema at index %d: %r", idx, t)
+                continue
+            tool_obj = dict(t)  # shallow copy
+            if "type" not in tool_obj:
+                tool_obj["type"] = "function"
+            # Some legacy schemas might put name/description directly at top-level; wrap if needed
+            if tool_obj.get("type") == "function" and "function" not in tool_obj:
+                # Attempt to build function envelope
+                fn_fields = {k: tool_obj.get(k) for k in ("name", "description", "parameters") if k in tool_obj}
+                if fn_fields:
+                    # Remove moved keys
+                    for k in list(fn_fields.keys()):
+                        tool_obj.pop(k, None)
+                    tool_obj["function"] = fn_fields
+            # Validate minimal required structure
+            fn = tool_obj.get("function") if tool_obj.get("type") == "function" else None
+            if tool_obj.get("type") == "function" and (not isinstance(fn, dict) or not fn.get("name")):
+                logger.warning("Tool schema at index %d missing function.name; skipping: %r", idx, tool_obj)
+                continue
+            normalized_tools.append(tool_obj)
+        if len(normalized_tools) != len(tools):
+            logger.debug("Normalized tool schemas: input=%d, output=%d", len(tools), len(normalized_tools))
+        tools = normalized_tools
         try:
             opts = {"model": self.model, "messages": msgs, "tools": tools, "tool_choice": "auto"}
             opts.update(self._default_extra)

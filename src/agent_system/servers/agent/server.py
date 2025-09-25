@@ -458,8 +458,10 @@ class Agent(MCPServer):
             # Initialize MCP integration
             await self._mcp_integration_manager.setup_mcp_integration()
 
-            # Get tools from the local registry (plugins)
-            plugin_tools = self.registry.list()
+            # Get tools from the MCP integration plugin registry (not the empty local registry)
+            plugin_tools = []
+            if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
+                plugin_tools = self._mcp_integration_manager.mcp_integration.plugin_registry.list_servers()
 
             # Get all available tools including external MCP tools
             available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
@@ -511,18 +513,33 @@ class Agent(MCPServer):
             tools_schema.extend(external_schemas)
             tool_name_mapping.update(external_mapping)
 
-            # Build schemas for internal plugin tools
-            for tool_name in available_tools:
-                if "." not in tool_name:  # Internal plugin tool
-                    # Regular plugin tool - support multiple tools per server
-                    server = self.registry.get(tool_name)
-                    if hasattr(server, 'get_tools'):
-                        # New multi-tool interface
-                        server_tools = server.get_tools()
-                        tools_schema.extend(server_tools)
-                    else:
-                        # Fallback to legacy single-tool interface
-                        tools_schema.append(server.get_schema())
+            # Build schemas for internal plugin tools and update available_tools for multi-tool plugins
+            plugin_tools_to_add = []  # Individual tool names to add to available_tools
+            if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
+                plugin_registry = self._mcp_integration_manager.mcp_integration.plugin_registry
+                for tool_name in available_tools.copy():  # Use copy to avoid modifying during iteration
+                    if "." not in tool_name:  # Internal plugin tool
+                        # Get plugin server from MCP integration plugin registry
+                        plugin_adapter = plugin_registry.get_server(tool_name)
+                        if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
+                            server = plugin_adapter.plugin_server
+                            if hasattr(server, 'get_tools'):
+                                # New multi-tool interface
+                                server_tools = server.get_tools()
+                                tools_schema.extend(server_tools)
+                                # For multi-tool plugins, map individual tool names back to the registry name
+                                for tool_schema in server_tools:
+                                    if tool_schema.get("type") == "function" and "function" in tool_schema:
+                                        individual_tool_name = tool_schema["function"].get("name")
+                                        if individual_tool_name:
+                                            tool_name_mapping[individual_tool_name] = tool_name
+                                            plugin_tools_to_add.append(individual_tool_name)
+                            else:
+                                # Fallback to legacy single-tool interface
+                                tools_schema.append(server.get_schema())
+            
+            # Add individual tool names to available_tools for multi-tool plugins
+            available_tools.extend(plugin_tools_to_add)
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}

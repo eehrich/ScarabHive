@@ -139,25 +139,30 @@ class DateTimeServer(MCPServer):
         try:
             # Parse input datetime
             if input_format == "auto":
-                # Try common formats
-                formats = [
-                    "%Y-%m-%dT%H:%M:%S",
-                    "%Y-%m-%dT%H:%M:%S.%f",
-                    "%Y-%m-%d %H:%M:%S",
-                    "%Y-%m-%d",
-                    "%d.%m.%Y",
-                    "%d/%m/%Y",
-                    "%m/%d/%Y"
-                ]
-                dt = None
-                for fmt in formats:
-                    try:
-                        dt = datetime.strptime(datetime_str, fmt)
-                        break
-                    except ValueError:
-                        continue
-                if dt is None:
-                    raise ValueError(f"Could not parse datetime: {datetime_str}")
+                # First try to parse as Unix timestamp
+                try:
+                    timestamp = float(datetime_str)
+                    dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                except (ValueError, OSError):
+                    # Not a valid Unix timestamp, try string formats
+                    formats = [
+                        "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%dT%H:%M:%S.%f",
+                        "%Y-%m-%d %H:%M:%S",
+                        "%Y-%m-%d",
+                        "%d.%m.%Y",
+                        "%d/%m/%Y",
+                        "%m/%d/%Y"
+                    ]
+                    dt = None
+                    for fmt in formats:
+                        try:
+                            dt = datetime.strptime(datetime_str, fmt)
+                            break
+                        except ValueError:
+                            continue
+                    if dt is None:
+                        raise ValueError(f"Could not parse datetime: {datetime_str}")
             else:
                 dt = datetime.strptime(datetime_str, input_format)
 
@@ -188,34 +193,40 @@ class DateTimeServer(MCPServer):
             return {"status": "error", "error": "Missing required parameter: datetime_string or datetime"}
 
         try:
-            # Try parsing with various formats
-            formats = [
-                "%Y-%m-%dT%H:%M:%S",
-                "%Y-%m-%dT%H:%M:%S.%f",
-                "%Y-%m-%dT%H:%M:%S%z",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d",
-                "%d.%m.%Y",
-                "%d.%m.%Y %H:%M",
-                "%d/%m/%Y",
-                "%m/%d/%Y",
-                "%B %d, %Y",
-                "%d %B %Y",
-                "%A, %B %d, %Y"
-            ]
+            # First try to parse as Unix timestamp
+            try:
+                timestamp = float(datetime_str)
+                dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                used_format = "unix_timestamp"
+            except (ValueError, OSError):
+                # Not a valid Unix timestamp, try string formats
+                formats = [
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S.%f",
+                    "%Y-%m-%dT%H:%M:%S%z",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%d",
+                    "%d.%m.%Y",
+                    "%d.%m.%Y %H:%M",
+                    "%d/%m/%Y",
+                    "%m/%d/%Y",
+                    "%B %d, %Y",
+                    "%d %B %Y",
+                    "%A, %B %d, %Y"
+                ]
 
-            dt = None
-            used_format = None
-            for fmt in formats:
-                try:
-                    dt = datetime.strptime(datetime_str, fmt)
-                    used_format = fmt
-                    break
-                except ValueError:
-                    continue
+                dt = None
+                used_format = None
+                for fmt in formats:
+                    try:
+                        dt = datetime.strptime(datetime_str, fmt)
+                        used_format = fmt
+                        break
+                    except ValueError:
+                        continue
 
-            if dt is None:
-                return {"status": "error", "error": f"Could not parse datetime: {datetime_str}"}
+                if dt is None:
+                    return {"status": "error", "error": f"Could not parse datetime: {datetime_str}"}
 
             return {
                 "status": "success",

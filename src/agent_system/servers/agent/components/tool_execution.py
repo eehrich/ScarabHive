@@ -18,8 +18,8 @@ class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
     def __init__(self, registry: Any, agent=None):
-        self.registry = registry
-        # Optional Agent instance for centralized counters
+        self.registry = registry  # Legacy registry (empty for now)
+        # Optional Agent instance for centralized counters and MCP integration access
         self._agent = agent
 
     def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -44,12 +44,29 @@ class ToolExecutionManager:
 
     async def _invoke_tool(self, tool_name: str, params: Dict[str, Any]):
         """Execute a tool call against the registry and return results."""
-        if tool_name not in self.registry.list():
+        # Get plugin server from MCP integration plugin registry  
+        server = None
+        if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
+            mcp_integration = self._agent._mcp_integration_manager.mcp_integration
+            if mcp_integration and mcp_integration.initialized:
+                plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
+                    server = plugin_adapter.plugin_server
+        
+        if not server:
+            # Fallback to legacy registry (though it will be empty)
+            server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
+        
+        if not server:
             raise RuntimeError(f"Unknown tool: {tool_name}")
-        server = self.registry.get(tool_name)
         action_name = params.get("action") or server.get_default_action()
         try:
-            result = await server.call_with_status(action_name, params)
+            # Check if server has call_with_status (MCP server interface)
+            if hasattr(server, 'call_with_status'):
+                result = await server.call_with_status(action_name, params)
+            else:
+                # Fallback to regular call method
+                result = await server.call(action_name, params)
             return result
         except Exception as e:
             logger.exception("Tool %s invocation failed: %s", tool_name, e)
@@ -234,21 +251,48 @@ class ToolExecutionManager:
     async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a plugin tool."""
-        server = self.registry.get(tool_name)
-        action_name = params.get("action") or params.get("tool") or server.get_default_action()
+        # Get plugin server from MCP integration plugin registry
+        server = None
+        if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
+            mcp_integration = self._agent._mcp_integration_manager.mcp_integration
+            if mcp_integration and mcp_integration.initialized:
+                plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
+                    server = plugin_adapter.plugin_server
+        
+        if not server:
+            # Fallback to legacy registry (though it will be empty)
+            server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
+        
+        if not server:
+            raise RuntimeError(f"Plugin server not found for tool: {tool_name}")
+        
+        # For multi-tool plugins, the openai_tool_name contains the actual tool name to call
+        # The tool_name is the plugin registry name that was mapped back
+        # So we should call the server with the original tool name, not an action
+        if hasattr(server, 'get_tools') and openai_tool_name != tool_name:
+            # Multi-tool plugin: call with the specific tool name
+            action_name = openai_tool_name
+        else:
+            # Legacy single-tool plugin: use action parameter
+            action_name = params.get("action") or params.get("tool") or server.get_default_action()
 
-        # Validate action against server schema
-        schema = server.get_schema()
-        valid_actions = []
-        if "function" in schema and "parameters" in schema["function"]:
-            action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
-            valid_actions = action_prop.get("enum", [])
+            # Validate action against server schema for legacy plugins
+            if hasattr(server, 'get_schema'):
+                try:
+                    schema = server.get_schema()
+                    valid_actions = []
+                    if "function" in schema and "parameters" in schema["function"]:
+                        action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
+                        valid_actions = action_prop.get("enum", [])
 
-        if valid_actions and action_name not in valid_actions:
-            logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.",
-                         action_name, tool_name, valid_actions)
-            action_name = server.get_default_action()
-            params["action"] = action_name
+                    if valid_actions and action_name not in valid_actions:
+                        logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.",
+                                     action_name, tool_name, valid_actions)
+                        action_name = server.get_default_action()
+                        params["action"] = action_name
+                except Exception as e:
+                    logger.debug("Could not validate action for tool %s: %s", tool_name, e)
 
         # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
