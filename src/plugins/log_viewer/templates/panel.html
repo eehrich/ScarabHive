@@ -1,5 +1,19 @@
 <!-- Log Viewer Plugin Panel Content -->
-<link rel="stylesheet" href="/plugins/{{ plugin_name }}/static/log_viewer.css">
+<link rel="stylesheet" href="/plugins/{{ plugin_name }}/static/log_viewer.css?v={{ timestamp }}">
+<style>
+    /* Standalone view fallback (when not embedded in host panel system) */
+    body:not(.agent-host) {
+        margin: 0;
+        background: #0d1117;
+        padding: 12px; /* mimic host panel padding */
+        font-family: system-ui, sans-serif;
+    }
+    body:not(.agent-host) .log-viewer-wrapper {
+        border: 1px solid #243244;
+        border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+</style>
 
 <div class="log-viewer-wrapper">
     <div class="log-controls-fixed">
@@ -8,7 +22,7 @@
             <select id="logFileSelect">
                 <option value="">Loading...</option>
             </select>
-            
+
             <div class="icon-button-group">
                 <button id="refreshBtn" class="icon-btn" title="Refresh">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -34,9 +48,9 @@
                     </svg>
                 </button>
             </div>
-            
+
             <input type="text" id="searchInput" placeholder="Search logs..." style="width: 150px;">
-            
+
             <label for="lineLimitSelect">Lines:</label>
             <select id="lineLimitSelect" style="width: 70px;">
                 <option value="25">25</option>
@@ -46,10 +60,10 @@
                 <option value="200">200</option>
                 <option value="500">500</option>
             </select>
-            
+
             <span id="logStatus" class="status">Ready</span>
         </div>
-        
+
         <div class="log-controls-right">
             <div class="filter-dropdown">
                 <button id="filterDropdownBtn" class="dropdown-btn">
@@ -71,7 +85,6 @@
 
     <div class="log-viewer-container">
         <div id="logContainer" class="log-container"></div>
-        <div class="resize-handle" id="resizeHandle"></div>
     </div>
 </div>
 
@@ -87,7 +100,7 @@
             console.error('Log viewer module not found:', window.AgentSystem);
         }
     });
-    
+
     // Fallback initialization with timeout
     setTimeout(() => {
         if (window.AgentSystem && window.AgentSystem.log_viewer) {

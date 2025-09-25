@@ -1,20 +1,24 @@
-/* Modern Console-Style Log Viewer */
+/* Modern Console-Style Log Viewer (scoped) */
 
-body {
-    margin: 0;
-    padding: 0;
+/* Scope all styling to the plugin root to avoid overriding host page globals */
+.log-viewer-wrapper, .log-viewer-wrapper * {
+    box-sizing: border-box;
+}
+
+.log-viewer-wrapper {
     font-family: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
     background-color: #0d1117;
     color: #c9d1d9;
     font-size: 13px;
     line-height: 1.4;
-    overflow: hidden;
 }
 
 .log-viewer-wrapper {
-    height: 100vh;
+    height: 100%;
+    max-height: 100%;
     display: flex;
     flex-direction: column;
+    overflow: hidden; /* Contain inner scroll area */
 }
 
 .log-controls-fixed {
@@ -229,7 +233,8 @@ body {
     background-color: #0d1117;
     padding: 0;
     font-family: inherit;
-    min-height: 200px;
+    min-height: 0;
+    width: 100%;
 }
 
 .log-line {
@@ -246,14 +251,7 @@ body {
     background-color: rgba(255,255,255,0.02);
 }
 
-.log-line.historical {
-    color: #7d8590;
-}
-
-.log-line.live {
-    color: #c9d1d9;
-    animation: fadeIn 0.3s ease-in;
-}
+/* Removed .log-line.historical and .log-line.live (no longer used) */
 
 .log-line.error {
     color: #ff7b72;
@@ -352,13 +350,13 @@ body {
 }
 
 @keyframes fadeIn {
-    from { 
-        opacity: 0; 
-        transform: translateY(-4px); 
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
     }
-    to { 
-        opacity: 1; 
-        transform: translateY(0); 
+    to {
+        opacity: 1;
+        transform: translateY(0);
     }
 }
 
@@ -404,27 +402,13 @@ body {
     flex-direction: column;
     flex: 1;
     min-height: 0;
+    max-height: 100%;
+    overflow: hidden;
 }
 
-.resize-handle {
-    height: 4px;
-    background-color: #30363d;
-    cursor: ns-resize;
-    transition: background-color 0.2s ease;
-    border-radius: 2px;
-    margin-top: 2px;
-}
+/* Removed internal .resize-handle element; do NOT hide global panel resize handles */
 
-.resize-handle:hover {
-    background-color: #58a6ff;
-}
 
-.log-container {
-    flex: 1;
-    min-height: 200px;
-    resize: vertical;
-    overflow: auto;
-}
 
 @keyframes fadeIn {
     from { opacity: 0; transform: translateX(-10px); }
