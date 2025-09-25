@@ -1,5 +1,4 @@
 // Log Viewer Plugin Module
-console.log('Loading log_viewer_module.js v2.0 - cache busted!');
 window.AgentSystem = window.AgentSystem || {};
 
 window.AgentSystem.log_viewer = {
@@ -64,8 +63,6 @@ window.AgentSystem.log_viewer = {
   },
 
   init(shadowRoot = null) {
-    console.log('Initializing Log Viewer plugin...');
-
     // Set root element for queries (shadow root or document)
     this.rootElement = shadowRoot || document;
 
@@ -75,10 +72,6 @@ window.AgentSystem.log_viewer = {
     // Clear any conflicting styles from previous sessions
     const logContainer = this.rootElement.querySelector('#logContainer');
     const viewerContainer = this.rootElement.querySelector('.log-viewer-container');
-    console.log('Elements found:', {
-      logContainer: !!logContainer,
-      viewerContainer: !!viewerContainer
-    });
 
     if (logContainer) {
       logContainer.style.height = '';
@@ -274,28 +267,22 @@ window.AgentSystem.log_viewer = {
   },
 
   async loadLogFiles() {
-    console.log('Loading log files...');
     try {
-      console.log('Fetching from /plugins/log_viewer/logs/list');
       const response = await fetch('/plugins/log_viewer/logs/list');
-      console.log('Fetch response:', response.status, response.statusText);
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
       const data = await response.json();
-      console.log('Received log data:', data);
 
       this.populateFileSelect(data.logs || []);
 
       // Auto-select first existing file if available
       const existingFiles = (data.logs || []).filter(file => file.exists);
       if (existingFiles.length > 0) {
-        console.log('Auto-selecting first file:', existingFiles[0].name);
         this.selectLogFile(existingFiles[0].name);
       } else {
-        console.log('No existing files found to auto-select');
       }
 
     } catch (error) {
@@ -311,12 +298,10 @@ window.AgentSystem.log_viewer = {
       return;
     }
 
-    console.log('Populating file select with files:', files);
     fileSelect.innerHTML = '<option value="">Select a log file...</option>';
 
     // Only show files that exist
     const existingFiles = files.filter(file => file.exists);
-    console.log('Filtered to existing files:', existingFiles);
 
     existingFiles.forEach(file => {
       const option = document.createElement('option');
@@ -324,8 +309,6 @@ window.AgentSystem.log_viewer = {
       option.textContent = `${file.name} (${this.formatFileSize(file.size)})`;
       fileSelect.appendChild(option);
     });
-
-    console.log(`Added ${existingFiles.length} files to dropdown`);
 
     // If user had a saved file selection, try to select it now
     if (this._desiredFileSelection) {
@@ -412,7 +395,6 @@ window.AgentSystem.log_viewer = {
     this.lastTimestamp = 0;
     this.stopPolling(); // Stop any existing polling
 
-    console.log(`Starting polling for ${filename}`);
     this.updateStatus(`Loading ${filename}...`);
 
     // Initial load
@@ -427,7 +409,6 @@ window.AgentSystem.log_viewer = {
 
     try {
       const url = `/plugins/log_viewer/logs/content/${encodeURIComponent(this.currentFile)}?lines=${this.lineLimit}&since_timestamp=${this.lastTimestamp}`;
-      console.log(`Polling for updates: ${url}`);
 
       const response = await fetch(url);
       if (!response.ok) {
@@ -435,8 +416,6 @@ window.AgentSystem.log_viewer = {
       }
 
       const data = await response.json();
-      console.log('Poll response:', data);
-      console.log(`Poll found ${data.lines?.length || 0} new lines since timestamp ${this.lastTimestamp}`);
 
       if (data.error) {
         this.showError(data.error);
@@ -753,8 +732,6 @@ window.AgentSystem.log_viewer = {
     const fullContent = data.full_content || message;
     const multilineIndicator = hasMultiline ? ' <span class="multiline-indicator">📋</span>' : '';
 
-    console.log('Creating log line:', data.line_number, 'hasMultiline:', hasMultiline, 'data:', data);
-
     logLine.innerHTML = `
       <span class="log-line-number">${displayLineNumber}</span>
       <span class="log-timestamp">${timeDisplay}</span>
@@ -766,7 +743,6 @@ window.AgentSystem.log_viewer = {
     // Add custom tooltip for multiline entries
     if (hasMultiline) {
       const messageSpan = logLine.querySelector('.log-message');
-      console.log('Adding tooltip for multiline entry:', data.line_number, 'messageSpan:', messageSpan);
       if (messageSpan) {
         this.addMultilineTooltip(messageSpan, fullContent);
       } else {
@@ -797,14 +773,12 @@ window.AgentSystem.log_viewer = {
   },
 
   addMultilineTooltip(element, fullContent) {
-    console.log('Setting up tooltip for element:', element, 'with content length:', fullContent.length);
     let tooltip = null;
 
     // Use the correct document context for creating elements
     const ownerDocument = element.ownerDocument || document;
 
     element.addEventListener('mouseenter', (e) => {
-      console.log('Mouse enter triggered! Creating tooltip...');
       // Create tooltip in the same document context as the element
       tooltip = ownerDocument.createElement('div');
       tooltip.className = 'multiline-tooltip';
@@ -827,8 +801,6 @@ window.AgentSystem.log_viewer = {
       tooltip.style.maxWidth = '700px';
       tooltip.style.whiteSpace = 'pre-wrap';
 
-      console.log('Tooltip created with rect:', rect, 'element:', element);
-
       // Append tooltip to appropriate container (shadow root or document body)
       let tooltipContainer;
       if (this.rootElement === document) {
@@ -838,7 +810,6 @@ window.AgentSystem.log_viewer = {
         tooltipContainer = this.rootElement;
       }
       tooltipContainer.appendChild(tooltip);
-      console.log('Tooltip appended to container:', tooltipContainer);
 
       // Adjust position if it goes off screen
       const tooltipRect = tooltip.getBoundingClientRect();
@@ -851,19 +822,10 @@ window.AgentSystem.log_viewer = {
     });
 
     element.addEventListener('mouseleave', () => {
-      console.log('Mouse leave triggered! Removing tooltip...');
       if (tooltip && tooltip.parentNode) {
         tooltip.parentNode.removeChild(tooltip);
         tooltip = null;
       }
-    });
-
-    // Add some debugging to see if events are properly attached
-    console.log('Tooltip event listeners attached to element:', element, 'in context:', this.rootElement);
-
-    // Test if the element can receive mouse events
-    element.addEventListener('click', () => {
-      console.log('TEST: Element clicked - mouse events are working!');
     });
   },
 

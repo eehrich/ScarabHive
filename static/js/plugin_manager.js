@@ -5,7 +5,6 @@ window.AgentSystem.PluginManager = {
   plugins: new Map(),
 
   async init() {
-    console.log('Initializing Plugin Manager...');
     try {
       await this.loadPlugins();
       this.createPluginButtons();
@@ -22,7 +21,6 @@ window.AgentSystem.PluginManager = {
       }
 
       const plugins = await response.json();
-      console.log(`Loaded ${plugins.length} plugins with UI:`, plugins);
 
       // Store plugins in map
       this.plugins.clear();
@@ -92,8 +90,6 @@ window.AgentSystem.PluginManager = {
   },
 
   async showPluginPanel(plugin) {
-    console.log(`Showing panel for plugin: ${plugin.id}`);
-
     try {
       // Create panel with loading state
       const panel = window.AgentSystem.PanelManager.createPanel(
@@ -223,7 +219,6 @@ window.AgentSystem.PluginManager = {
           if (window.AgentSystem && window.AgentSystem[plugin.id]) {
             const pluginModule = window.AgentSystem[plugin.id];
             if (typeof pluginModule.init === 'function') {
-              console.log(`Initializing plugin ${plugin.id} with Shadow DOM`);
               pluginModule.init(shadowRoot);
             }
           } else {
