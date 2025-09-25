@@ -1,10 +1,37 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Literal, Optional, Dict
+
+
+class LLMModelConfig(BaseModel):
+    """Individual LLM model configuration"""
+    provider: Literal["ollama", "openai"] = "ollama"
+    model: str
+    openai_api_key: Optional[str] = None
+    ollama_url: Optional[str] = None  # e.g. http://remote-host:11434
+    context_window: int = 32768  # default num_ctx for Ollama-compatible models
+    ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
+    request_timeout: int = 120  # seconds for LLM API calls
+
+
+class LLMProfile(BaseModel):
+    """LLM usage profile that references a model"""
+    model_ref: str  # Reference to model in models dict
+    description: Optional[str] = None
+    max_steps: Optional[int] = None
+    # Could add profile-specific overrides here if needed
+
+
+class LLMSystemConfig(BaseModel):
+    """Complete LLM system configuration with models and profiles"""
+    models: Dict[str, LLMModelConfig] = {}
+    profiles: Dict[str, LLMProfile] = {}
+    default_profile: str = "fast"
 
 
 class LLMConfig(BaseModel):
+    """Legacy LLM config - kept for backwards compatibility"""
     provider: Literal["ollama", "openai"] = "ollama"
     model: str = "gpt-oss:20b"
     openai_api_key: Optional[str] = None
@@ -12,6 +39,9 @@ class LLMConfig(BaseModel):
     context_window: int = 32768  # default num_ctx for Ollama-compatible models
     ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
     request_timeout: int = 120  # seconds for LLM API calls
+    
+    # New field for profile-based configuration
+    profile: Optional[str] = None  # Reference to profile name
 
 
 class MCPServerRef(BaseModel):
@@ -77,6 +107,8 @@ class ContextManagementConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     llm: LLMConfig = LLMConfig()
+    llm_system: Optional[LLMSystemConfig] = None  # New LLM system configuration
+    agent_llm_profiles: Optional[Dict[str, str]] = None  # Agent-specific LLM profile assignments
     mcp: MCPConfig = MCPConfig()
     network: NetworkConfig = NetworkConfig()
     servers: dict[str, dict] = {}

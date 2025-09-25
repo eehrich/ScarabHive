@@ -15,13 +15,15 @@ logger = logging.getLogger(__name__)
 class ConversationSummarizer:
     """Summarizes conversation history to fit within context windows."""
     
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, profile_info=None):
         """Initialize the conversation summarizer.
         
         Args:
             llm_client: Optional LLM client. If None, summarization will fall back to simple text extraction.
+            profile_info: Optional profile information string for status display (e.g., "(turbo:openai/gpt-4)")
         """
         self.llm_client = llm_client
+        self.profile_info = profile_info
     
     async def summarize_conversation(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
         """Summarize older conversation while preserving recent messages.
@@ -231,6 +233,10 @@ class ConversationSummarizer:
             
             logger.debug("🤖 Requesting summary from LLM (input: %d chars)...", len(conversation_text))
             
+            # Status message with profile information (if available)
+            profile_info = getattr(self, 'profile_info', None) or getattr(self.llm_client, 'profile_info', '(unknown)')
+            await scope.progress(f"Calling LLM (summarizer) {profile_info}")
+            
             # Get summary from LLM using chat method
             summary_messages = [ChatMessage(role="user", content=summary_prompt)]
             
@@ -239,6 +245,9 @@ class ConversationSummarizer:
             summary_messages = validate_messages_before_llm(summary_messages, context="summarizer")
             
             response_content = await self.llm_client.chat(summary_messages)
+            
+            # Status: LLM response received
+            await scope.progress("LLM (summarizer) response received")
             
             if response_content and response_content.strip():
                 summary_length = len(response_content.strip())

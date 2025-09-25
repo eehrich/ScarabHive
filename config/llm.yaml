@@ -1,0 +1,82 @@
+llm_system:
+  models:
+
+    gpt-4.1:
+      provider: openai
+      model: gpt-4.1
+      openai_api_key: ***REMOVED***
+      context_window: 1000000
+      request_timeout: 60  
+
+    gpt-5-nano:
+      provider: openai
+      model: gpt-5-nano
+      openai_api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 60
+
+    gpt-5-mini:
+      provider: openai
+      model: gpt-5-mini
+      openai_api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 180
+
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      openai_api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 180
+
+    gpt-realtime:
+      provider: openai
+      model: gpt-realtime
+      openai_api_key: ***REMOVED***
+      context_window: 27900
+      request_timeout: 180
+
+    gpt-audio:
+      provider: openai
+      model: gpt-audio
+      openai_api_key: ***REMOVED***
+      context_window: 100000
+      request_timeout: 180      
+
+    ollama-gpt-oss-20b:
+      provider: ollama
+      model: gpt-oss:20b
+      ollama_url: http://192.0.2.64:11434
+      ollama_mode: native
+      request_timeout: 180
+      context_window: 65535
+
+
+   
+  profiles:
+    turbo:
+      model_ref: gpt-5-nano
+      description: "Turbo model for high-speed responses"
+      max_steps: 100
+    normal:
+      model_ref: gpt-5-mini
+      description: "Fast model for quick responses"
+      max_steps: 100      
+    think:
+      model_ref: gpt-5
+      description: "Advanced model for complex reasoning"
+      max_steps: 100
+    big:
+      model_ref: gpt-4.1
+      description: "model for big context windows"
+      max_steps: 100
+    audio:
+      model_ref: gpt-audio
+      description: "model for audio processing"
+      max_steps: 100
+    image:
+      model_ref: gpt-realtime
+      description: "Ollama model for image processing"
+      max_steps: 100
+
+  default_profile: normal

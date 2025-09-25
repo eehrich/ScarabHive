@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 from pathlib import Path
 
@@ -13,55 +12,103 @@ class LLMRouterServer(MCPServer):
     def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
         super().__init__(name, config, ssl_verify=ssl_verify)
         self.config = config or {}
-        # Store base configuration but don't create a fixed client
-        self.default_provider = self._determine_default_provider()
-        self.default_model = self.config.get("model", "gpt-4o-mini")
-        self.openai_api_key = self.config.get("openai_api_key")
-        self.ollama_url = self.config.get("ollama_url")
-        self.context_window = self.config.get("context_window")
-        self.ollama_mode = self.config.get("ollama_mode")
-        self.request_timeout = self.config.get("request_timeout")
+        
+        # Get parent LLM configuration for profile-based routing
+        self.parent_llm = self.config.get("parent_llm", {})
 
-    def _determine_default_provider(self) -> str:
-        """Determine the best default provider based on available configuration."""
-        # Check if OpenAI is configured via config or env - this takes precedence
-        openai_key = self.config.get("openai_api_key") or os.getenv("OPENAI_API_KEY")
-        if openai_key:
-            return "openai"
 
-        # Then respect an explicit default_provider
-        explicit_provider = self.config.get("default_provider")
-        if explicit_provider:
-            return explicit_provider
 
-        # Fallback to default 'openai' when nothing else is configured
-        return "openai"
-
-    def _is_ollama_available(self, url: str) -> bool:
-        """Check if Ollama is available at the given URL."""
+    def _resolve_profile_config(self, profile_name: str) -> dict:
+        """Resolve LLM configuration from profile name using parent LLM system."""
+        if not isinstance(self.parent_llm, dict) or not self.parent_llm.get('llm_system'):
+            raise ValueError("Profile-based routing requires LLM system configuration")
+        
         try:
-            import httpx
-            # Try a quick connection to Ollama
-            with httpx.Client(timeout=2.0) as client:
-                response = client.get(f"{url}/api/tags")
-                return response.status_code == 200
-        except Exception:
-            return False
+            # Import using relative paths to avoid import issues
+            import sys
+            import os
+            # Add the src directory to Python path for imports
+            src_path = os.path.join(os.path.dirname(__file__), '..', '..', '..')
+            if src_path not in sys.path:
+                sys.path.insert(0, src_path)
+                
+            from agent_system.config.models import AgentConfig, LLMConfig, LLMSystemConfig
+            from agent_system.llm.factory import resolve_llm_config_for_agent
+            
+            # Create AgentConfig from parent_llm dictionary  
+            temp_config = AgentConfig(
+                llm=LLMConfig(**(self.parent_llm.get('llm', {}))),
+                llm_system=LLMSystemConfig(**(self.parent_llm.get('llm_system', {}))),
+                agent_llm_profiles={f"llm_router_{profile_name}": profile_name},
+            )
+            
+            # Resolve profile to get LLM kwargs
+            return resolve_llm_config_for_agent(temp_config, f"llm_router_{profile_name}")
+        except Exception as e:
+            raise ValueError(f"Failed to resolve profile '{profile_name}': {e}")
 
-    def _make_client(self, provider: str | None = None, model: str | None = None):
-        """Create an LLM client with specified or default parameters."""
-        provider = provider or self.default_provider
-        model = model or self.default_model
-        return make_llm(
-            provider,
-            model,
-            self.openai_api_key,
-            self.ollama_url,
-            self.context_window,
-            self.ollama_mode,
-            self.request_timeout,
-            ssl_verify=self.ssl_verify,
-        )
+    def _get_profile_details(self) -> dict[str, Any]:
+        """Get detailed information about all available LLM profiles."""
+        if not isinstance(self.parent_llm, dict) or not self.parent_llm.get('llm_system'):
+            raise ValueError("Profile-based routing requires LLM system configuration")
+        
+        llm_system = self.parent_llm.get('llm_system', {})
+        profiles = llm_system.get('profiles', {})
+        models = llm_system.get('models', {})
+        
+        profile_details = {}
+        
+        for profile_name, profile_config in profiles.items():
+            if isinstance(profile_config, dict):
+                # Get model reference
+                model_ref = profile_config.get('model_ref', 'unknown')
+                
+                # Look up model details
+                model_details = models.get(model_ref, {})
+                if isinstance(model_details, dict):
+                    provider = model_details.get('provider', 'unknown')
+                    model_name = model_details.get('model', model_ref)
+                else:
+                    provider = 'unknown'
+                    model_name = model_ref
+                
+                profile_details[profile_name] = {
+                    'description': profile_config.get('description', 'No description available'),
+                    'model_ref': model_ref,
+                    'provider': provider,
+                    'model': model_name,
+                    'max_steps': profile_config.get('max_steps', 'unlimited'),
+                    'config': profile_config
+                }
+            else:
+                # Handle simple string descriptions
+                profile_details[profile_name] = {
+                    'description': str(profile_config),
+                    'model_ref': 'unknown',
+                    'provider': 'unknown', 
+                    'model': 'unknown',
+                    'max_steps': 'unlimited',
+                    'config': profile_config
+                }
+        
+        return profile_details
+
+    def _make_client(self, profile: str):
+        """Create an LLM client using profile-based configuration."""
+        try:
+            llm_kwargs = self._resolve_profile_config(profile)
+            return make_llm(
+                llm_kwargs["provider"],
+                llm_kwargs["model"],
+                llm_kwargs["openai_api_key"],
+                llm_kwargs["ollama_url"],
+                llm_kwargs["context_window"],
+                llm_kwargs["ollama_mode"],
+                llm_kwargs["request_timeout"],
+                ssl_verify=self.ssl_verify,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to create LLM client for profile '{profile}': {e}")
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         status = params.get("_status")
@@ -79,69 +126,100 @@ class LLMRouterServer(MCPServer):
             else:
                 return {"error": "No message or messages provided"}
 
-            # Extract provider and model from parameters, with fallback to defaults
-            provider = params.get("provider") or self.default_provider
-            model = params.get("model") or self.default_model
+            # Extract profile parameter (required)
+            profile = params.get("profile")
+            if not profile:
+                return {"error": "Profile parameter is required"}
 
             try:
-                # publish start
-                await status.progress(f"Chat request to {provider}/{model}")
+                await status.progress(f"Chat request using profile '{profile}'")
 
-                # Create appropriate client
-                client = self._make_client(provider, model)
+                # Create client using profile-based configuration
+                client = self._make_client(profile=profile)
 
                 content = await client.chat(messages)
 
-                await status.end(f"Chat completed ({provider}/{model})")
-
+                await status.end(f"Chat completed using profile '{profile}'")
                 return {
                     "content": content,
-                    "provider": provider,
-                    "model": model
+                    "profile": profile,
+                    "provider": getattr(client, 'provider', 'unknown'),
+                    "model": getattr(client, 'model', 'unknown')
                 }
-            except ValueError as e:
-                if "API_KEY" in str(e) or "api_key" in str(e):
-                    # Try to provide helpful fallback suggestions
-                    suggestions = []
-                    if provider == "openai":
-                        suggestions.append("configure OPENAI_API_KEY environment variable")
-                        if self._is_ollama_available(self.ollama_url or "http://127.0.0.1:11434"):
-                            suggestions.append("use provider='ollama' instead")
-                    elif provider == "ollama":
-                        suggestions.append("ensure Ollama is running locally")
-                        suggestions.append("configure ollama_url if using custom Ollama instance")
-
-                    return {
-                        "error": f"Provider '{provider}' is not properly configured",
-                        "details": str(e),
-                        "suggestions": suggestions,
-                        "available_providers": self._get_available_providers()
-                    }
-                raise
             except Exception as e:
                 return {
-                    "error": f"Chat failed with provider '{provider}': {str(e)}",
-                    "provider": provider,
-                    "model": model
+                    "error": f"Chat failed with profile '{profile}': {str(e)}",
+                    "profile": profile
                 }
+        
+        elif tool == "list_profiles":
+            try:
+                await status.progress("Retrieving available LLM profiles")
+                
+                profile_details = self._get_profile_details()
+                
+                await status.end(f"Retrieved {len(profile_details)} profile(s)")
+                return {
+                    "profiles": profile_details,
+                    "total_count": len(profile_details)
+                }
+            except Exception as e:
+                return {"error": f"Failed to list profiles: {str(e)}"}
+        
         raise ValueError(f"Unknown tool: {tool}")
 
-    def _get_available_providers(self) -> list[str]:
-        """Get list of potentially available providers."""
-        available = []
-        if self.openai_api_key or os.getenv("OPENAI_API_KEY"):
-            available.append("openai")
-        if self._is_ollama_available(self.ollama_url or "http://127.0.0.1:11434"):
-            available.append("ollama")
-        return available
+
+
+    def get_tools(self) -> list[dict[str, Any]]:
+        """Return the OpenAI function schemas for LLM router tools (multi-tool interface)."""
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        
+        # Extract available profiles and models from parent LLM configuration
+        available_profiles = []
+        available_models = []
+        available_providers = []
+        
+        if isinstance(self.parent_llm, dict) and self.parent_llm.get('llm_system'):
+            llm_system = self.parent_llm.get('llm_system', {})
+            
+            # Get available profiles
+            profiles = llm_system.get('profiles', {})
+            available_profiles = list(profiles.keys())
+            
+            # Get available models 
+            models = llm_system.get('models', {})
+            available_models = list(models.keys())
+            
+            # Get available providers from models
+            providers_set = set()
+            for model_config in models.values():
+                if isinstance(model_config, dict) and 'provider' in model_config:
+                    providers_set.add(model_config['provider'])
+            available_providers = sorted(list(providers_set))
+        
+        # Pass configuration data to schema template
+        template_vars = {
+            "name": self.name,
+            "available_profiles": available_profiles,
+            "available_models": available_models, 
+            "available_providers": available_providers
+        }
+        
+        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars=template_vars)
+        if not schema_data:
+            raise RuntimeError("Missing required schema.yaml for llm_router plugin")
+        
+        # Extract tools array from schema
+        if 'tools' in schema_data:
+            return schema_data['tools']
+        else:
+            # Fallback for single-tool schemas
+            return [schema_data]
 
     def get_schema(self) -> dict[str, Any]:
-        """Return the OpenAI function schema for LLM router."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema:
-            raise RuntimeError("Missing required schema.yaml for llm_router plugin")
-        return schema
+        """Return legacy schema format for backward compatibility."""
+        tools = self.get_tools()
+        return {'functions': [tool['function'] for tool in tools]}
 
     def get_default_action(self) -> str:
         """Return the default action for LLM router."""

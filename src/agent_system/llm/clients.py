@@ -62,7 +62,7 @@ class OpenAIAsyncClient(LLMClient):
                 logger.warning("Failed to create custom httpx client, will use SDK default: %s", e)
                 httpx_client = None
 
-        # Determine whether AsyncOpenAI accepts a custom httpx client parameter
+    # Determine whether AsyncOpenAI accepts a custom httpx client parameter
         if httpx_client is not None:
             try:
                 import inspect
@@ -84,6 +84,14 @@ class OpenAIAsyncClient(LLMClient):
                 self._client = AsyncOpenAI(**kwargs)
         else:
             self._client = AsyncOpenAI(**kwargs)
+        # Log the effective configuration so runtime issues (like unexpected base_url)
+        # are visible in logs. This is low-risk and helps debug cases where a default
+        # Ollama URL (http://127.0.0.1:11434) is unintentionally used.
+        try:
+            _logger = logging.getLogger(__name__)
+            _logger.debug("OpenAIAsyncClient initialized model=%s base_url=%s timeout=%s verify=%s custom_httpx=%s", self.model, kwargs.get('base_url'), timeout, verify, httpx_client is not None)
+        except Exception:
+            pass
         # Retry/backoff configuration
         self._retry_max_attempts = int(max_attempts)
         self._retry_base_backoff = float(base_backoff)
@@ -510,6 +518,11 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
     - provider=ollama: use Ollama (native or openai-compat) depending on mode.
     """
     import os
+    logger = logging.getLogger(__name__)
+    try:
+        logger.debug("make_llm called provider=%s model=%s openai_key_set=%s ollama_url=%s ollama_mode=%s request_timeout=%s ssl_verify=%s", provider, model, bool(openai_api_key), ollama_url, ollama_mode, request_timeout, ssl_verify)
+    except Exception:
+        pass
 
     if provider == "openai":
         # Prefer an explicit api key passed in, otherwise honor the

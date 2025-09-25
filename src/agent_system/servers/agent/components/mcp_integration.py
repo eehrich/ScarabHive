@@ -23,12 +23,21 @@ class MCPIntegrationManager:
         try:
             self.mcp_integration = get_mcp_integration()
             if not self.mcp_integration.initialized:
-                # Initialize with the same configuration as the agent
+                # Initialize with full agent configuration including LLM system
                 if hasattr(self.agent_config, 'mcp'):
-                    mcp_config = {"mcp": self.agent_config.mcp.model_dump() if hasattr(self.agent_config.mcp, "model_dump") else getattr(self.agent_config.mcp, "__dict__", {})}
-                    await self.mcp_integration.initialize(mcp_config)
+                    # Build complete config including LLM system for plugin inheritance
+                    full_config = {"mcp": self.agent_config.mcp.model_dump() if hasattr(self.agent_config.mcp, "model_dump") else getattr(self.agent_config.mcp, "__dict__", {})}
+                    
+                    # Add LLM system configuration for plugins that need it
+                    if hasattr(self.agent_config, 'llm_system'):
+                        full_config['llm_system'] = self.agent_config.llm_system.model_dump() if hasattr(self.agent_config.llm_system, "model_dump") else getattr(self.agent_config.llm_system, "__dict__", {})
+                    
+                    if hasattr(self.agent_config, 'agent_llm_profiles'):
+                        full_config['agent_llm_profiles'] = self.agent_config.agent_llm_profiles
+                        
+                    await self.mcp_integration.initialize(full_config)
                     self.mcp_initialized_locally = True
-                    logger.debug("Initialized MCP integration for agent")
+                    logger.debug("Initialized MCP integration for agent with full configuration")
         except Exception as e:
             logger.debug("Failed to initialize MCP integration: %s", e)
 

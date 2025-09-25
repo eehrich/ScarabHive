@@ -70,6 +70,9 @@ class Agent(MCPServer):
             self.config["description"] = f"Agent: {name}"
 
         # Initialize LLM if not provided. Prefer an explicitly passed `llm`.
+        # Store LLM profile information for status display
+        self.llm_profile_info = None
+        
         if self.llm is None:
             # If a factory is provided, use it to create the client.
             if self._llm_factory is not None:
@@ -79,19 +82,26 @@ class Agent(MCPServer):
                     logger.warning("LLM factory creation failed: %s", e)
                     self.llm = None
             else:
-                # Fallback: attempt to create LLM directly from config if available.
+                # Fallback: attempt to create LLM using the new profile-based system
                 try:
                     # Lazy import to avoid circular imports when testing
-                    from ...llm.clients import make_llm
+                    from ...llm.factory import resolve_llm_config_for_agent
                     if getattr(config, "llm", None):
+                        # Use new profile-based resolution with agent name
+                        llm_kwargs = resolve_llm_config_for_agent(config, name)
+                        
+                        # Store profile information for status display
+                        self.llm_profile_info = self._extract_profile_info(config, name, llm_kwargs)
+                        
+                        from ...llm.clients import make_llm
                         self.llm = make_llm(
-                            config.llm.provider,
-                            config.llm.model,
-                            config.llm.openai_api_key,
-                            config.llm.ollama_url,
-                            config.llm.context_window,
-                            getattr(config.llm, "ollama_mode", None),
-                            getattr(config.llm, "request_timeout", None),
+                            llm_kwargs["provider"],
+                            llm_kwargs["model"], 
+                            llm_kwargs["openai_api_key"],
+                            llm_kwargs["ollama_url"],
+                            llm_kwargs["context_window"],
+                            llm_kwargs["ollama_mode"],
+                            llm_kwargs["request_timeout"],
                             ssl_verify=getattr(config, "network").ssl_verify if getattr(config, "network", None) else None,
                         )
                 except Exception as e:
@@ -144,6 +154,39 @@ class Agent(MCPServer):
         self._emergency_context_attempts = 0
         self._max_emergency_attempts = 2  # Maximum emergency attempts per conversation
 
+    def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
+        """Extract profile information for status display."""
+        try:
+            # Check if we have the new LLM system configuration
+            if config.llm_system and config.llm_system.models and config.llm_system.profiles:
+                # Determine which profile was used (same logic as resolve_llm_config_for_agent)
+                profile_name = None
+                
+                # 1. Check agent-specific assignment
+                if agent_name and config.agent_llm_profiles:
+                    profile_name = config.agent_llm_profiles.get(agent_name)
+                
+                # 2. Check if main LLM config specifies a profile (legacy support)
+                if not profile_name and getattr(config, 'llm', None) and getattr(config.llm, 'profile', None):
+                    profile_name = config.llm.profile
+                
+                # 3. Fall back to default profile
+                if not profile_name:
+                    profile_name = config.llm_system.default_profile
+                
+                # Get model info
+                model = llm_kwargs.get("model", "unknown")
+                provider = llm_kwargs.get("provider", "unknown")
+                
+                return f"{profile_name}:{provider}/{model}"
+            else:
+                # Legacy config - just show provider/model
+                model = llm_kwargs.get("model", "unknown")
+                provider = llm_kwargs.get("provider", "unknown")
+                return f"legacy:{provider}/{model}"
+        except Exception:
+            return "unknown"
+
     async def next_internal_tool_request_id(self, base_request_id: str) -> str:
         """Return the next internal tool request id with a 3-digit suffix.
 
@@ -157,8 +200,14 @@ class Agent(MCPServer):
     def _init_context_management(self):
         """Initialize the context management system."""
         try:
-            # Read context window from LLM config if present
-            context_window = self.agent_config.llm.context_window if getattr(self.agent_config, 'llm', None) else 32768
+            # Read context window from resolved LLM profile
+            try:
+                from ...llm.factory import resolve_llm_config_for_agent
+                llm_kwargs = resolve_llm_config_for_agent(self.agent_config, self.name)
+                context_window = llm_kwargs.get("context_window", 32768)
+            except Exception:
+                # Fallback to default if profile resolution fails
+                context_window = 32768
 
             # Read user-provided context management settings (may be None)
             context_mgmt = getattr(self.agent_config, 'context_management', None) or {}
@@ -204,23 +253,35 @@ class Agent(MCPServer):
             summarizer_llm = None
             if self.llm and getattr(self.agent_config, "llm", None):
                 try:
-                    # Create a direct LLM client that bypasses context management
+                    # Use profile-based resolution for summarizer LLM (with "summarizer" agent name)
+                    from ...llm.factory import resolve_llm_config_for_agent
                     from ...llm.clients import make_llm
+                    
+                    # Resolve LLM config for summarizer using agent name suffix
+                    summarizer_agent_name = f"{self.name}_summarizer" if self.name else "summarizer"
+                    summarizer_kwargs = resolve_llm_config_for_agent(self.agent_config, summarizer_agent_name)
+                    
                     summarizer_llm = make_llm(
-                        self.agent_config.llm.provider,
-                        self.agent_config.llm.model,
-                        self.agent_config.llm.openai_api_key,
-                        self.agent_config.llm.ollama_url,
-                        self.agent_config.llm.context_window,
-                        getattr(self.agent_config.llm, "ollama_mode", None),
-                        getattr(self.agent_config.llm, "request_timeout", None),
+                        summarizer_kwargs["provider"],
+                        summarizer_kwargs["model"],
+                        summarizer_kwargs["openai_api_key"],
+                        summarizer_kwargs["ollama_url"],
+                        summarizer_kwargs["context_window"],
+                        summarizer_kwargs["ollama_mode"],
+                        summarizer_kwargs["request_timeout"],
                         ssl_verify=getattr(self.agent_config, "network").ssl_verify if getattr(self.agent_config, "network", None) else None,
                     )
+                    
+                    # Store profile info for summarizer
+                    self.summarizer_profile_info = self._extract_profile_info(self.agent_config, summarizer_agent_name, summarizer_kwargs)
+                    
                 except Exception as e:
                     logger.warning("Failed to create dedicated summarizer LLM client: %s", e)
                     summarizer_llm = None
 
-            summarizer = ConversationSummarizer(summarizer_llm)
+            # Pass profile info to summarizer for status display
+            summarizer_profile = getattr(self, 'summarizer_profile_info', None)
+            summarizer = ConversationSummarizer(summarizer_llm, profile_info=summarizer_profile)
             self.context_manager.set_summarizer(summarizer)
 
             # Initialize optimizer
@@ -604,7 +665,8 @@ class Agent(MCPServer):
                 yield {"type": "thinking", "step": step + 1}
 
                 # Signal LLM call using status_worker
-                await status_worker.progress("Calling LLM (chat)", meta={"step": step + 1})
+                llm_info = f" ({self.llm_profile_info})" if self.llm_profile_info else ""
+                await status_worker.progress(f"Calling LLM (chat){llm_info}", meta={"step": step + 1})
 
                 # Validate messages before LLM call to ensure API compliance
                 from agent_system.core.message_validator import validate_messages_before_llm

@@ -74,8 +74,15 @@ class MCPIntegration:
         # Register enabled plugins as MCP servers
         enabled_servers = mcp_config.get('enabled_servers', [])
         servers_config = mcp_config.get('servers', {})
+        
+        # Extract parent configuration for plugin inheritance
+        parent_config = {}
+        if 'llm_system' in config:
+            parent_config['llm_system'] = config['llm_system']
+        if 'agent_llm_profiles' in config:
+            parent_config['agent_llm_profiles'] = config['agent_llm_profiles']
 
-        await self.plugin_registry.register_from_config(enabled_servers, servers_config)
+        await self.plugin_registry.register_from_config(enabled_servers, servers_config, parent_config)
 
         # Register plugin servers with HTTP server
         for server_name in self.plugin_registry.list_servers():

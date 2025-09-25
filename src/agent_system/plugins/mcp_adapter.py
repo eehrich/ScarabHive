@@ -129,15 +129,31 @@ class PluginMCPRegistry:
                 self.plugin_factories.update(factories)
                 logger.info(f"Discovered {len(factories)} plugins from {plugin_dir}")
 
-    async def register_plugin(self, name: str, config: Optional[Dict[str, Any]] = None) -> None:
+    async def register_plugin(self, name: str, config: Optional[Dict[str, Any]] = None, parent_config: Optional[Dict[str, Any]] = None) -> None:
         """Register a plugin as an MCP server"""
         if name not in self.plugin_factories:
             raise Exception(f"Unknown plugin: {name}")
 
-        # Create plugin instance
+        # Create plugin instance with parent config injection
         factory = self.plugin_factories[name]
+        plugin_config = config or {}
+        
+        # Inject parent_llm configuration if available and not already present
+        if parent_config and isinstance(plugin_config, dict) and 'parent_llm' not in plugin_config:
+            parent_llm = {}
+            # Include LLM system configuration
+            if 'llm_system' in parent_config:
+                parent_llm['llm_system'] = parent_config['llm_system']
+            if 'agent_llm_profiles' in parent_config:
+                parent_llm['agent_llm_profiles'] = parent_config['agent_llm_profiles']
+            # Include minimal LLM config for backwards compatibility
+            parent_llm['llm'] = {}
+            if parent_llm:
+                plugin_config['parent_llm'] = parent_llm
+                logger.debug(f"Injected parent_llm configuration into plugin {name}")
+        
         try:
-            plugin_server = factory(name, config or {}, ssl_verify=True)
+            plugin_server = factory(name, plugin_config, ssl_verify=True)
         except Exception as e:
             logger.error(f"Failed to create plugin {name}: {e}")
             raise
@@ -210,13 +226,13 @@ class PluginMCPRegistry:
         """List all available plugins (not necessarily registered)"""
         return list(self.plugin_factories.keys())
 
-    async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any]) -> None:
+    async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any], parent_config: Optional[Dict[str, Any]] = None) -> None:
         """Register plugins from configuration"""
         for server_name in enabled_servers:
             if server_name in self.plugin_factories:
                 config = servers_config.get(server_name, {})
                 try:
-                    await self.register_plugin(server_name, config)
+                    await self.register_plugin(server_name, config, parent_config)
                 except Exception as e:
                     logger.error(f"Failed to register plugin {server_name}: {e}")
 

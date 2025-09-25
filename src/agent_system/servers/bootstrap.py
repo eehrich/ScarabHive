@@ -60,9 +60,19 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
             # Provide inheritance hook: if plugin server config lacks explicit LLM
             # fields, inject a parent_llm snapshot so specialized plugins (e.g.
             # web_research_agent) can inherit without duplicating credentials.
+            # Now includes full config for new LLM system support.
             try:  # pragma: no cover - defensive
-                if isinstance(server_cfg, dict) and 'parent_llm' not in server_cfg and getattr(config, 'llm', None):
-                    server_cfg['parent_llm'] = config.llm.model_dump()
+                if isinstance(server_cfg, dict) and 'parent_llm' not in server_cfg:
+                    parent_config = {}
+                    # Only include modern LLM system configuration
+                    if getattr(config, 'llm_system', None):
+                        parent_config['llm_system'] = config.llm_system.model_dump()
+                    if getattr(config, 'agent_llm_profiles', None):
+                        parent_config['agent_llm_profiles'] = config.agent_llm_profiles
+                    # Include minimal LLM config for backwards compatibility (empty dict)
+                    parent_config['llm'] = {}
+                    if parent_config:
+                        server_cfg['parent_llm'] = parent_config
             except Exception:
                 pass
             try:
