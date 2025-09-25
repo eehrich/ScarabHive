@@ -351,6 +351,10 @@ window.AgentSystem.PanelManager = {
     let isResizing = false;
     let resizeStart = { x: 0, y: 0 };
     let panelStart = { width: 0, height: 0 };
+    // Define min width/height in the outer scope so both mousemove & mouseup handlers can reference them.
+  // Capture min width/height once so mouse handlers reference stable values
+  const minWidth = this.MIN_WIDTH;
+  const minHeight = this.MIN_HEIGHT;
 
     resizeHandle.addEventListener('mousedown', (e) => {
       // bring panel to front when starting resize
@@ -376,9 +380,7 @@ window.AgentSystem.PanelManager = {
       const newWidth = panelStart.width + deltaX;
       const newHeight = panelStart.height + deltaY;
 
-      // Enforce minimum and maximum sizes
-  const minWidth = this.MIN_WIDTH;
-  const minHeight = this.MIN_HEIGHT;
+    // Enforce minimum and maximum sizes
       const maxWidth = window.innerWidth - 20;
       const maxHeight = window.innerHeight - 100;
 

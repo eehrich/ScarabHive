@@ -156,7 +156,28 @@ window.AgentSystem.PluginManager = {
 
         // Parse the HTML content to extract styles and scripts
         const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = content;
+        // If the fetched content is a full HTML document, extract just the body innerHTML
+        if (/<!doctype html>/i.test(content)) {
+          try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(content, 'text/html');
+            // Collect head styles so we can inject them explicitly (the later code moves link/style from tempDiv)
+            const headLinks = Array.from(doc.head.querySelectorAll('link[rel="stylesheet"]'));
+            const headStyles = Array.from(doc.head.querySelectorAll('style'));
+            // Build body HTML first
+            tempDiv.innerHTML = doc.body ? doc.body.innerHTML : content;
+            // Prepend collected head resources to preserve order relative to body content
+            const headContainer = document.createElement('div');
+            headLinks.forEach(l => headContainer.appendChild(l.cloneNode(true)));
+            headStyles.forEach(s => headContainer.appendChild(s.cloneNode(true)));
+            tempDiv.prepend(headContainer);
+          } catch (e) {
+            console.warn('Failed to parse full document plugin content, falling back to raw HTML:', e);
+            tempDiv.innerHTML = content;
+          }
+        } else {
+          tempDiv.innerHTML = content;
+        }
 
         // Create a loading wrapper to hide content until styles load
         const loadingWrapper = document.createElement('div');
@@ -269,30 +290,25 @@ window.AgentSystem.PluginManager = {
 
       // Copy content and modify context for shadow DOM
       if (oldScript.src) {
+        // External script: preserve as-is so the browser loads it normally
         newScript.src = oldScript.src;
       } else {
-        let scriptContent = oldScript.textContent;
+        const isModule = (oldScript.getAttribute('type') || '').toLowerCase() === 'module';
+        let originalContent = oldScript.textContent || '';
 
-        // Modify script to work within shadow DOM context
-        // Replace document.querySelector calls to use shadowRoot
-        scriptContent = scriptContent.replace(
-          /document\.querySelector\s*\(/g,
-          'shadowRoot.querySelector('
-        );
-        scriptContent = scriptContent.replace(
-          /document\.querySelectorAll\s*\(/g,
-          'shadowRoot.querySelectorAll('
-        );
+        // Wrap in an IIFE that safely acquires the shadow root. We DO NOT rewrite document.querySelector now to avoid
+        // breaking logic that depends on the global document (e.g. multiline tooltip detection that calculates positions).
+        // Instead we simply expose a local shadowRoot variable for plugin authors to opt-in to using.
+        const wrapped = `\n(function(){\n  try {\n    var __current = document.currentScript;\n    var __root = (__current && typeof __current.getRootNode === 'function') ? __current.getRootNode() : null;\n    // Local helper: points to shadow root if available, else falls back to document.\n    var shadowRoot = (__root instanceof ShadowRoot) ? __root : document;\n    ${originalContent}\n  } catch(e) {\n    console.error('Plugin script execution error for ${plugin.id}:', e);\n  }\n})();\n`;
 
-        // Inject shadowRoot reference at the beginning
-        scriptContent = `
-          (function() {
-            const shadowRoot = document.currentScript.getRootNode();
-            ${scriptContent}
-          })();
-        `;
-
-        newScript.textContent = scriptContent;
+        if (isModule) {
+          // For modules we cannot simply wrap with function + preserve import/export; leave content unchanged
+          // but still provide a minimal shim declaring a shadowRoot variable if possible.
+          newScript.type = 'module';
+          newScript.textContent = `// Module script executed in plugin shadow context.\n// We cannot safely wrap ES modules (would break import/export), so we only predefine a shadowRoot variable.\nconst shadowRoot = document.currentScript && document.currentScript.getRootNode && document.currentScript.getRootNode() instanceof ShadowRoot ? document.currentScript.getRootNode() : document;\n${originalContent}`;
+        } else {
+          newScript.textContent = wrapped;
+        }
       }
 
       // Replace old script with new one

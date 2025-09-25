@@ -1,20 +1,16 @@
-<!-- Log Viewer Plugin Panel Content -->
-<link rel="stylesheet" href="/plugins/{{ plugin_name }}/static/log_viewer.css?v={{ timestamp }}">
-<style>
-    /* Standalone view fallback (when not embedded in host panel system) */
-    body:not(.agent-host) {
-        margin: 0;
-        background: #0d1117;
-        padding: 12px; /* mimic host panel padding */
-        font-family: system-ui, sans-serif;
-    }
-    body:not(.agent-host) .log-viewer-wrapper {
-        border: 1px solid #243244;
-        border-radius: 8px;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-    }
-</style>
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Log Viewer Panel</title>
+    <link rel="stylesheet" href="/plugins/{{ plugin_name }}/static/log_viewer.css?v={{ timestamp }}">
+    <style>
+        body { margin:0; background:#0d1117; font-family: system-ui, sans-serif; padding:12px; }
+        .log-viewer-wrapper { border: 1px solid #243244; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.4); }
+    </style>
+</head>
+<body>
 <div class="log-viewer-wrapper">
     <div class="log-controls-fixed">
         <div class="log-controls-left">
@@ -86,10 +82,10 @@
     <div class="log-viewer-container">
         <div id="logContainer" class="log-container"></div>
     </div>
-</div>
+ </div>
 
-<script src="/plugins/{{ plugin_name }}/static/log_viewer_module.js?v={{ timestamp }}"></script>
-<script>
+ <script src="/plugins/{{ plugin_name }}/static/log_viewer_module.js?v={{ timestamp }}"></script>
+ <script>
     // Auto-initialize when loaded in plugin system (supports Shadow DOM)
     (function() {
         const currentRoot = document.currentScript ? document.currentScript.getRootNode() : document;
@@ -138,5 +134,7 @@
             // In regular document, wait for DOMContentLoaded
             document.addEventListener('DOMContentLoaded', tryInit);
         }
-    })();
-</script>
+            })();
+        </script>
+    </body>
+    </html>
