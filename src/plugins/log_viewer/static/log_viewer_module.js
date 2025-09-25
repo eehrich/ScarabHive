@@ -376,7 +376,8 @@ window.AgentSystem.log_viewer = {
     try {
       // Always respect user's line limit selection
       const lines = this.lineLimit;
-      const url = `/plugins/log_viewer/logs/content/${encodeURIComponent(filename)}?lines=${lines}&since_timestamp=0`;
+      // For initial load, don't send since_timestamp to enable multiline grouping
+      const url = `/plugins/log_viewer/logs/content/${encodeURIComponent(filename)}?lines=${lines}`;
 
       const response = await fetch(url);
       if (!response.ok) {
@@ -799,21 +800,45 @@ window.AgentSystem.log_viewer = {
     console.log('Setting up tooltip for element:', element, 'with content length:', fullContent.length);
     let tooltip = null;
 
+    // Use the correct document context for creating elements
+    const ownerDocument = element.ownerDocument || document;
+
     element.addEventListener('mouseenter', (e) => {
       console.log('Mouse enter triggered! Creating tooltip...');
-      // Create tooltip
-      tooltip = document.createElement('div');
+      // Create tooltip in the same document context as the element
+      tooltip = ownerDocument.createElement('div');
       tooltip.className = 'multiline-tooltip';
       tooltip.textContent = fullContent;
 
-      // Position tooltip
+      // Position tooltip with more explicit styling for debugging
       const rect = element.getBoundingClientRect();
+      tooltip.style.position = 'fixed';
       tooltip.style.left = rect.left + 'px';
       tooltip.style.top = (rect.bottom + 5) + 'px';
+      tooltip.style.zIndex = '99999';
+
+      // Add debug styling to make sure tooltip is visible
+      tooltip.style.backgroundColor = '#161b22';
+      tooltip.style.color = '#e6edf3';
+      tooltip.style.border = '2px solid #ff6b6b'; // Red border for debugging
+      tooltip.style.padding = '12px 16px';
+      tooltip.style.borderRadius = '6px';
+      tooltip.style.fontSize = '12px';
+      tooltip.style.maxWidth = '700px';
+      tooltip.style.whiteSpace = 'pre-wrap';
+
+      console.log('Tooltip created with rect:', rect, 'element:', element);
 
       // Append tooltip to appropriate container (shadow root or document body)
-      const tooltipContainer = this.rootElement === document ? document.body : this.rootElement;
+      let tooltipContainer;
+      if (this.rootElement === document) {
+        tooltipContainer = document.body;
+      } else {
+        // In Shadow DOM, append to the shadow root itself
+        tooltipContainer = this.rootElement;
+      }
       tooltipContainer.appendChild(tooltip);
+      console.log('Tooltip appended to container:', tooltipContainer);
 
       // Adjust position if it goes off screen
       const tooltipRect = tooltip.getBoundingClientRect();
@@ -826,11 +851,19 @@ window.AgentSystem.log_viewer = {
     });
 
     element.addEventListener('mouseleave', () => {
-      if (tooltip) {
-        const tooltipContainer = this.rootElement === document ? document.body : this.rootElement;
-        tooltipContainer.removeChild(tooltip);
+      console.log('Mouse leave triggered! Removing tooltip...');
+      if (tooltip && tooltip.parentNode) {
+        tooltip.parentNode.removeChild(tooltip);
         tooltip = null;
       }
+    });
+
+    // Add some debugging to see if events are properly attached
+    console.log('Tooltip event listeners attached to element:', element, 'in context:', this.rootElement);
+
+    // Test if the element can receive mouse events
+    element.addEventListener('click', () => {
+      console.log('TEST: Element clicked - mouse events are working!');
     });
   },
 
