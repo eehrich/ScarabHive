@@ -42,35 +42,45 @@ class ToolExecutionManager:
                 continue
         return serializable_params
 
-    async def _invoke_tool(self, tool_name: str, params: Dict[str, Any]):
+    async def _invoke_tool(self, tool_name: str, params: Dict[str, Any], action_name: str = None):
         """Execute a tool call against the registry and return results."""
-        # Get plugin server from MCP integration plugin registry  
-        server = None
+        # Get plugin adapter from MCP integration plugin registry  
+        plugin_adapter = None
         if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
             mcp_integration = self._agent._mcp_integration_manager.mcp_integration
             if mcp_integration and mcp_integration.initialized:
                 plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
-                if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                    server = plugin_adapter.plugin_server
         
-        if not server:
-            # Fallback to legacy registry (though it will be empty)
+        if plugin_adapter:
+            # Use the PluginMCPAdapter which handles tool routing correctly
+            if not action_name:
+                action_name = params.get("action") or plugin_adapter.plugin_server.get_default_action()
+            try:
+                # Call through the PluginMCPAdapter which will route to the correct tool
+                result = await plugin_adapter.call_tool(action_name, params)
+                return result
+            except Exception as e:
+                logger.exception("Plugin tool %s invocation failed: %s", tool_name, e)
+                raise
+        else:
+            # Fallback to legacy registry
             server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
-        
-        if not server:
-            raise RuntimeError(f"Unknown tool: {tool_name}")
-        action_name = params.get("action") or server.get_default_action()
-        try:
-            # Check if server has call_with_status (MCP server interface)
-            if hasattr(server, 'call_with_status'):
-                result = await server.call_with_status(action_name, params)
-            else:
-                # Fallback to regular call method
-                result = await server.call(action_name, params)
-            return result
-        except Exception as e:
-            logger.exception("Tool %s invocation failed: %s", tool_name, e)
-            raise
+            if not server:
+                raise RuntimeError(f"Unknown tool: {tool_name}")
+            
+            if not action_name:
+                action_name = params.get("action") or server.get_default_action()
+            try:
+                # Check if server has call_with_status (MCP server interface)
+                if hasattr(server, 'call_with_status'):
+                    result = await server.call_with_status(action_name, params)
+                else:
+                    # Fallback to regular call method
+                    result = await server.call(action_name, params)
+                return result
+            except Exception as e:
+                logger.exception("Legacy tool %s invocation failed: %s", tool_name, e)
+                raise
 
     async def execute_tools(self, tool_calls: List[Dict], tool_name_mapping: Dict[str, str],
                           available_tools: List[str], step: int, request_id: str | None = None) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
@@ -306,7 +316,7 @@ class ToolExecutionManager:
 
         try:
             logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-            tool_result = await self._invoke_tool(tool_name, params)
+            tool_result = await self._invoke_tool(tool_name, params, action_name)
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
             results.append({

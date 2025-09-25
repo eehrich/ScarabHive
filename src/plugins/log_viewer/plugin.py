@@ -34,7 +34,7 @@ class LogViewerHybridPlugin:
                 "log_files": self.log_files,
                 "active": True
             }
-        return await self.mcp_server.call(tool, params or {})
+        return await self.mcp_server.call_with_status(tool, params or {})
     
     def get_tools(self):
         """Delegate to MCP server"""
@@ -46,7 +46,7 @@ class LogViewerHybridPlugin:
     
     async def call_tool(self, tool_name: str, arguments: dict):
         """Delegate to MCP server - compatibility method"""
-        return await self.mcp_server.call(tool_name, arguments)
+        return await self.mcp_server.call_with_status(tool_name, arguments)
     
     # Web Interface methods
     def get_web_router(self):

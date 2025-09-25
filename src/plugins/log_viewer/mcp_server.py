@@ -29,14 +29,36 @@ class LogViewerMCPServer(MCPServer):
     
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """MCP call interface - handle tool calls"""
-        if tool == "list_log_files":
-            return await self._list_log_files(params)
-        elif tool == "get_log_tail":
-            return await self._get_log_tail(params)
-        elif tool == "search_logs":
-            return await self._search_logs(params)
+        status = params.get("_status")
+        
+        # Status is mandatory for proper operation tracking
+        if not status:
+            raise ValueError("Missing required _status parameter - call should be made through call_with_status")
+
+        # Publish status for operation start
+        await status.progress(f"Processing {tool} operation")
+
+        try:
+            if tool == "list_log_files":
+                result = await self._list_log_files(params)
+            elif tool == "get_log_tail":
+                result = await self._get_log_tail(params)
+            elif tool == "search_logs":
+                result = await self._search_logs(params)
+            else:
+                result = {"error": f"Unknown tool: {tool}"}
+        except Exception as e:
+            result = {"error": str(e)}
+            logger.exception(f"Error in tool {tool}: {e}")
+
+        # Publish status for operation completion
+        status_msg = f"Completed {tool} operation"
+        if "error" in result:
+            await status.error(status_msg)
         else:
-            raise ValueError(f"Unknown tool: {tool}")
+            await status.end(status_msg)
+
+        return result
     
     def get_tools(self) -> List[Dict[str, Any]]:
         """Return available MCP tools"""
@@ -212,74 +234,3 @@ class LogViewerMCPServer(MCPServer):
                     "exists": False
                 })
         return available_logs
-    
-    async def _get_log_tail(self, log_file: str, lines: int) -> Dict[str, Any]:
-        """Get tail of log file"""
-        if log_file not in self.log_files:
-            return {"error": f"Log file {log_file} not allowed"}
-        
-        log_path = Path(log_file)
-        if not log_path.exists():
-            return {"error": f"Log file {log_file} not found"}
-        
-        try:
-            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                all_lines = f.readlines()
-                tail_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-                
-                return {
-                    "log_file": log_file,
-                    "lines": [line.rstrip() for line in tail_lines],
-                    "total_lines": len(all_lines),
-                    "returned_lines": len(tail_lines)
-                }
-        except Exception as e:
-            return {"error": f"Failed to read log: {str(e)}"}
-    
-    async def _search_logs(self, pattern: str, log_file: str = None, max_results: int = 100) -> Dict[str, Any]:
-        """Search for pattern in logs"""
-        import re
-        
-        try:
-            regex = re.compile(pattern, re.IGNORECASE)
-        except re.error as e:
-            return {"error": f"Invalid regex pattern: {str(e)}"}
-        
-        results = []
-        files_to_search = [log_file] if log_file else self.log_files
-        
-        for file_path in files_to_search:
-            if file_path not in self.log_files:
-                continue
-                
-            log_path = Path(file_path)
-            if not log_path.exists():
-                continue
-                
-            try:
-                with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                    for line_num, line in enumerate(f, 1):
-                        if regex.search(line):
-                            results.append({
-                                "file": file_path,
-                                "line_number": line_num,
-                                "line": line.rstrip(),
-                                "matches": [m.group() for m in regex.finditer(line)]
-                            })
-                            
-                            if len(results) >= max_results:
-                                break
-                    
-                    if len(results) >= max_results:
-                        break
-                        
-            except Exception as e:
-                logger.warning(f"Failed to search {file_path}: {e}")
-                continue
-        
-        return {
-            "pattern": pattern,
-            "results": results,
-            "total_matches": len(results),
-            "truncated": len(results) >= max_results
-        }
