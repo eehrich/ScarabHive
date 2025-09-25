@@ -695,6 +695,7 @@ class Agent(MCPServer):
                 yield {"type": "thinking", "step": step + 1, "assistant": assistant}
 
                 tool_calls = assistant.get("tool_calls") or []
+                assistant_error = assistant.get("error") if isinstance(assistant, dict) else None
                 content = assistant.get("content")
 
                 # Normalize content variants for empty detection
@@ -734,6 +735,17 @@ class Agent(MCPServer):
                 is_empty_content, empty_reason = _is_effectively_empty(content)
 
                 # Track consecutive responses without progress to prevent infinite loops
+                # If LLM client surfaced a structured error, emit error event and break immediately
+                if assistant_error:
+                    # Structured error propagated by LLM client (e.g. invalid tool schema, 400 request error).
+                    # Treat as hard failure instead of counting toward empty-response heuristic.
+                    consecutive_empty_responses = 0
+                    consecutive_no_tool_calls = 0
+                    logger.error("LLM returned error payload (step %d): %s", step + 1, assistant_error)
+                    results.setdefault("errors", []).append(f"LLM error: {assistant_error.get('message')}")
+                    yield {"type": "error", "message": assistant_error.get("message", "LLM error"), "llm_error": assistant_error}
+                    break
+
                 if not tool_calls and is_empty_content:
                     consecutive_empty_responses += 1
                     consecutive_no_tool_calls += 1

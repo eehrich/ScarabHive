@@ -208,8 +208,30 @@ class OpenAIAsyncClient(LLMClient):
             except Exception:
                 return ""
         except Exception as e:
-            logger.exception("OpenAI chat failed: %s", e)
-            return ""
+            # Provide richer error details so caller can differentiate real failure vs empty model output
+            try:
+                status = None
+                resp_obj = getattr(e, "response", None)
+                if resp_obj is not None:
+                    try:
+                        status = int(getattr(resp_obj, "status_code", None) or 0)
+                    except Exception:
+                        status = None
+                err_payload: dict[str, Any] = {"error": True, "message": str(e), "status": status}
+                # Attempt to extract JSON body if present
+                if resp_obj is not None:
+                    try:
+                        data = getattr(resp_obj, "json", lambda: None)()
+                        if data:
+                            err_payload["response_json"] = data
+                    except Exception:
+                        pass
+                logger.exception("OpenAI chat failed: %s", e)
+                # Encode structured error as JSON string to distinguish from normal empty content
+                return json.dumps({"_llm_error": err_payload}, ensure_ascii=False)
+            except Exception:
+                logger.exception("OpenAI chat failed (secondary error building payload): %s", e)
+                return ""
 
     async def chat_tools(self, messages: list[ChatMessage], tools: list[dict]) -> dict:
         """Call model with native tool calling enabled.
@@ -348,8 +370,25 @@ class OpenAIAsyncClient(LLMClient):
 
             return result
         except Exception as e:
+            # Preserve detailed error info instead of silently returning empty content so agent loop can treat as fatal
+            status = None
+            resp_obj = getattr(e, "response", None)
+            if resp_obj is not None:
+                try:
+                    status = int(getattr(resp_obj, "status_code", None) or 0)
+                except Exception:
+                    status = None
+            err_payload: dict[str, Any] = {"error": True, "message": str(e), "status": status}
+            if resp_obj is not None:
+                # Extract any JSON response body
+                try:
+                    data = getattr(resp_obj, "json", lambda: None)()
+                    if data:
+                        err_payload["response_json"] = data
+                except Exception:
+                    pass
             logger.exception("OpenAI chat with tools failed: %s", e)
-            return {"assistant": {"role": "assistant", "content": ""}}
+            return {"assistant": {"role": "assistant", "content": "", "error": err_payload}}
 
 
 class OllamaNativeAsyncClient(LLMClient):
