@@ -17,11 +17,60 @@ window.AgentSystem.log_viewer = {
     debug: true
   },
 
+  // Storage key for plugin settings
+  getStorageKey() {
+    return 'pluginState:log_viewer';
+  },
+
+  // Load persisted settings from localStorage (non-blocking)
+  loadState() {
+    try {
+      const raw = localStorage.getItem(this.getStorageKey());
+      if (!raw) return;
+      const state = JSON.parse(raw);
+      if (!state) return;
+
+      // Apply saved values if present
+      if (state.levelFilters) {
+        this.levelFilters = Object.assign({}, this.levelFilters, state.levelFilters);
+      }
+      if (typeof state.autoScroll !== 'undefined') this.autoScroll = !!state.autoScroll;
+      if (typeof state.autoRefresh !== 'undefined') this.autoRefresh = !!state.autoRefresh;
+      if (typeof state.searchTerm !== 'undefined') this.searchTerm = state.searchTerm || '';
+      if (typeof state.lineLimit !== 'undefined') this.lineLimit = parseInt(state.lineLimit) || this.lineLimit;
+
+      // Remember desired file selection to attempt after file list loads
+      this._desiredFileSelection = state.currentLogFile || null;
+    } catch (err) {
+      console.warn('Failed to load saved log viewer settings:', err);
+    }
+  },
+
+  // Persist current settings to localStorage
+  saveState() {
+    try {
+      const state = {
+        levelFilters: this.levelFilters,
+        autoScroll: this.autoScroll,
+        autoRefresh: this.autoRefresh,
+        searchTerm: this.searchTerm,
+        lineLimit: this.lineLimit,
+        currentLogFile: this.currentLogFile || null
+      };
+      localStorage.setItem(this.getStorageKey(), JSON.stringify(state));
+    } catch (err) {
+      console.warn('Failed to save log viewer settings:', err);
+    }
+  },
+
   init(shadowRoot = null) {
     console.log('Initializing Log Viewer plugin...');
 
     // Set root element for queries (shadow root or document)
     this.rootElement = shadowRoot || document;
+
+    // Load persisted settings (if any)
+    this.loadState();
 
     // Clear any conflicting styles from previous sessions
     const logContainer = this.rootElement.querySelector('#logContainer');
@@ -56,6 +105,7 @@ window.AgentSystem.log_viewer = {
     if (fileSelect) {
       fileSelect.addEventListener('change', (e) => {
         this.selectLogFile(e.target.value);
+        this.saveState();
       });
     }
 
@@ -64,6 +114,7 @@ window.AgentSystem.log_viewer = {
     if (autoRefreshBtn) {
       autoRefreshBtn.addEventListener('click', () => {
         this.toggleAutoRefresh();
+        this.saveState();
       });
       // Set initial state
       autoRefreshBtn.title = this.autoRefresh ? 'Auto-refresh: ON' : 'Auto-refresh: OFF';
@@ -76,6 +127,7 @@ window.AgentSystem.log_viewer = {
       autoScrollBtn.addEventListener('click', () => {
         this.autoScroll = !this.autoScroll;
         this.updateAutoScrollUI();
+        this.saveState();
       });
       // Set initial state
       autoScrollBtn.classList.toggle('active', this.autoScroll);
@@ -87,6 +139,7 @@ window.AgentSystem.log_viewer = {
       searchInput.addEventListener('input', (e) => {
         this.searchTerm = e.target.value.toLowerCase();
         this.applyFilters();
+        this.saveState();
       });
     }
 
@@ -99,6 +152,7 @@ window.AgentSystem.log_viewer = {
         if (this.currentFile) {
           this.loadInitialLogContent(this.currentFile, true);
         }
+        this.saveState();
       });
       // Set initial value
       this.lineLimit = parseInt(lineLimitSelect.value) || 50;
@@ -129,6 +183,7 @@ window.AgentSystem.log_viewer = {
           this.levelFilters[checkbox.value] = checkbox.checked;
           this.updateDropdownLabel();
           this.applyFilters();
+          this.saveState();
         });
       });
 
@@ -145,6 +200,7 @@ window.AgentSystem.log_viewer = {
           });
           this.updateDropdownLabel();
           this.applyFilters();
+          this.saveState();
         });
       }
 
@@ -157,6 +213,7 @@ window.AgentSystem.log_viewer = {
           });
           this.updateDropdownLabel();
           this.applyFilters();
+          this.saveState();
         });
       }
 
@@ -170,6 +227,49 @@ window.AgentSystem.log_viewer = {
       refreshBtn.addEventListener('click', () => {
         this.refreshLogs();
       });
+    }
+
+    // After wiring handlers, apply any persisted UI state
+    this.applyStateToUI();
+  },
+
+  // Reflect persisted state into UI controls
+  applyStateToUI() {
+    const root = this.rootElement;
+    try {
+      const fileSelect = root.querySelector('#logFileSelect');
+      const autoRefreshBtn = root.querySelector('#autoRefreshBtn');
+      const autoScrollBtn = root.querySelector('#autoScrollBtn');
+      const searchInput = root.querySelector('#searchInput');
+      const lineLimitSelect = root.querySelector('#lineLimitSelect');
+      const filterDropdownMenu = root.querySelector('#filterDropdownMenu');
+
+      if (autoRefreshBtn) autoRefreshBtn.classList.toggle('active', this.autoRefresh);
+      if (autoRefreshBtn) autoRefreshBtn.title = this.autoRefresh ? 'Auto-refresh: ON' : 'Auto-refresh: OFF';
+      if (autoScrollBtn) autoScrollBtn.classList.toggle('active', this.autoScroll);
+      if (searchInput) searchInput.value = this.searchTerm || '';
+      if (lineLimitSelect) lineLimitSelect.value = String(this.lineLimit || 50);
+
+      // Apply level filters to checkboxes if dropdown exists
+      if (filterDropdownMenu) {
+        Object.keys(this.levelFilters).forEach(level => {
+          const cb = filterDropdownMenu.querySelector(`input[value="${level}"]`);
+          if (cb) cb.checked = !!this.levelFilters[level];
+        });
+      }
+
+      // If a desired file was saved earlier, attempt to select it (populateFileSelect will choose it once files are loaded)
+      if (this._desiredFileSelection && fileSelect) {
+        // Attempt to select now if present
+        const opt = Array.from(fileSelect.options).find(o => o.value === this._desiredFileSelection);
+        if (opt) {
+          fileSelect.value = opt.value;
+          // trigger selection
+          this.selectLogFile(opt.value);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to apply UI state:', err);
     }
   },
 
@@ -226,6 +326,19 @@ window.AgentSystem.log_viewer = {
     });
 
     console.log(`Added ${existingFiles.length} files to dropdown`);
+
+    // If user had a saved file selection, try to select it now
+    if (this._desiredFileSelection) {
+      const opt = Array.from(fileSelect.options).find(o => o.value === this._desiredFileSelection);
+      if (opt) {
+        fileSelect.value = opt.value;
+        // select without saving again (already saved)
+        this.selectLogFile(opt.value);
+      }
+    }
+
+    // Ensure other UI state is applied (checkboxes, toggles, search, limits)
+    this.applyStateToUI();
   },
 
   formatFileSize(bytes) {
@@ -252,6 +365,9 @@ window.AgentSystem.log_viewer = {
 
     // Start new polling
     this.startStreaming(filename);
+
+    // Persist choice
+    this.saveState();
   },
 
   async loadInitialLogContent(filename, isRefresh = false) {
