@@ -21,6 +21,41 @@
   z-index: 1000;
   display: flex;
   flex-direction: column;
+  outline: none !important; /* Force remove blue focus outline */
+}
+
+/* Ensure no focus outline in any state */
+.floating-panel:focus {
+  outline: none !important;
+  border: 1px solid #243244 !important; /* Keep original border */
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6) !important; /* Keep original shadow */
+}
+
+.floating-panel:focus-visible {
+  outline: none !important;
+  border: 1px solid #243244 !important; /* Keep original border */
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6) !important; /* Keep original shadow */
+}
+
+.floating-panel:focus-within {
+  outline: none !important;
+  border: 1px solid #243244 !important; /* Keep original border */
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6) !important; /* Keep original shadow */
+}
+
+/* Ensure panel content areas never show focus outline */
+.panel-content,
+.floating-panel-body {
+  outline: none !important;
+}
+
+.panel-content:focus,
+.panel-content:focus-visible,
+.panel-content:focus-within,
+.floating-panel-body:focus,
+.floating-panel-body:focus-visible,
+.floating-panel-body:focus-within {
+  outline: none !important;
 }
 
 /* Status panel specific positioning - smaller and on the right */

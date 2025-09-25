@@ -9,6 +9,7 @@ window.AgentSystem.log_viewer = {
   autoRefresh: false,
   searchTerm: '',
   lineLimit: 50,  // Default line limit
+  rootElement: null, // Will hold reference to shadow root or document
   levelFilters: {
     error: true,
     warning: true,
@@ -16,12 +17,15 @@ window.AgentSystem.log_viewer = {
     debug: true
   },
 
-  init() {
+  init(shadowRoot = null) {
     console.log('Initializing Log Viewer plugin...');
 
+    // Set root element for queries (shadow root or document)
+    this.rootElement = shadowRoot || document;
+
     // Clear any conflicting styles from previous sessions
-    const logContainer = document.querySelector('#logContainer');
-    const viewerContainer = document.querySelector('.log-viewer-container');
+    const logContainer = this.rootElement.querySelector('#logContainer');
+    const viewerContainer = this.rootElement.querySelector('.log-viewer-container');
     console.log('Elements found:', {
       logContainer: !!logContainer,
       viewerContainer: !!viewerContainer
@@ -44,7 +48,7 @@ window.AgentSystem.log_viewer = {
   },
 
   setupEventHandlers() {
-    const controls = document.querySelector('.log-controls-fixed');
+    const controls = this.rootElement.querySelector('.log-controls-fixed');
     if (!controls) return;
 
     // File selector
@@ -110,7 +114,7 @@ window.AgentSystem.log_viewer = {
       });
 
       // Close dropdown when clicking outside
-      document.addEventListener('click', () => {
+      (this.rootElement === document ? document : this.rootElement.host).addEventListener('click', () => {
         dropdownMenu.style.display = 'none';
       });
 
@@ -201,7 +205,7 @@ window.AgentSystem.log_viewer = {
   },
 
   populateFileSelect(files) {
-    const fileSelect = document.querySelector('#logFileSelect');
+    const fileSelect = this.rootElement.querySelector('#logFileSelect');
     if (!fileSelect) {
       console.error('Log file select element not found');
       return;
@@ -241,7 +245,7 @@ window.AgentSystem.log_viewer = {
     this.stopPolling();
 
     // Clear logs when selecting new file
-    const logContainer = document.querySelector('#logContainer');
+    const logContainer = this.rootElement.querySelector('#logContainer');
     if (logContainer) {
       logContainer.innerHTML = '';
     }
@@ -353,7 +357,7 @@ window.AgentSystem.log_viewer = {
   },
 
   appendLogLine(data) {
-    const logContainer = document.querySelector('#logContainer');
+    const logContainer = this.rootElement.querySelector('#logContainer');
     if (!logContainer) return;
 
   const logLine = this.createLogLineElement(data);
@@ -365,7 +369,7 @@ window.AgentSystem.log_viewer = {
 
     // Auto-scroll if enabled
     if (this.autoScroll) {
-      const scrollContainer = document.querySelector('#logContainer');
+      const scrollContainer = this.rootElement.querySelector('#logContainer');
       if (scrollContainer) {
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
       }
@@ -438,7 +442,7 @@ window.AgentSystem.log_viewer = {
   },
 
   updateAutoScrollUI() {
-    const autoScrollBtn = document.querySelector('#autoScrollBtn');
+    const autoScrollBtn = this.rootElement.querySelector('#autoScrollBtn');
     if (autoScrollBtn) {
       autoScrollBtn.classList.toggle('active', this.autoScroll);
     }
@@ -446,7 +450,7 @@ window.AgentSystem.log_viewer = {
 
   toggleAutoRefresh() {
     this.autoRefresh = !this.autoRefresh;
-    const autoRefreshBtn = document.querySelector('#autoRefreshBtn');
+    const autoRefreshBtn = this.rootElement.querySelector('#autoRefreshBtn');
     if (autoRefreshBtn) {
       autoRefreshBtn.title = this.autoRefresh ? 'Auto-refresh: ON' : 'Auto-refresh: OFF';
       autoRefreshBtn.classList.toggle('active', this.autoRefresh);
@@ -462,7 +466,7 @@ window.AgentSystem.log_viewer = {
   // Removed obsolete updateLevelFilters and syncDropdownState methods
 
   updateDropdownLabel() {
-    const dropdownBtn = document.querySelector('#filterDropdownBtn');
+    const dropdownBtn = this.rootElement.querySelector('#filterDropdownBtn');
     if (!dropdownBtn) return;
 
     const activeFilters = Object.entries(this.levelFilters)
@@ -473,14 +477,14 @@ window.AgentSystem.log_viewer = {
                      activeFilters.length === 0 ? 'Levels: None' :
                      `Levels: ${activeFilters.join(', ')}`;
 
-    const filterLabel = document.querySelector('#filterLabel');
+    const filterLabel = this.rootElement.querySelector('#filterLabel');
     if (filterLabel) {
       filterLabel.textContent = labelText;
     }
   },
 
   applyFilters() {
-    const logContainer = document.querySelector('#logContainer');
+    const logContainer = this.rootElement.querySelector('#logContainer');
     if (!logContainer) return;
 
     const logLines = logContainer.querySelectorAll('.log-line');
@@ -524,11 +528,11 @@ window.AgentSystem.log_viewer = {
   },
 
   replaceLogContent(newLines) {
-    const logContainer = document.querySelector('#logContainer');
+    const logContainer = this.rootElement.querySelector('#logContainer');
     if (!logContainer || !newLines) return;
 
     // Store current scroll position
-    const scrollContainer = document.querySelector('#logContainer');
+    const scrollContainer = this.rootElement.querySelector('#logContainer');
     const wasScrolledToBottom = scrollContainer ?
       scrollContainer.scrollHeight - scrollContainer.scrollTop <= scrollContainer.clientHeight + 100 : false;    // Limit lines to user's selection (take last N lines to show most recent)
     const linesToShow = newLines.slice(-this.lineLimit);
@@ -551,7 +555,7 @@ window.AgentSystem.log_viewer = {
 
     // Restore scroll position
     if (wasScrolledToBottom && this.autoScroll) {
-      const scrollContainer = document.querySelector('#logContainer');
+      const scrollContainer = this.rootElement.querySelector('#logContainer');
       if (scrollContainer) {
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
       }
@@ -691,7 +695,9 @@ window.AgentSystem.log_viewer = {
       tooltip.style.left = rect.left + 'px';
       tooltip.style.top = (rect.bottom + 5) + 'px';
 
-      document.body.appendChild(tooltip);
+      // Append tooltip to appropriate container (shadow root or document body)
+      const tooltipContainer = this.rootElement === document ? document.body : this.rootElement;
+      tooltipContainer.appendChild(tooltip);
 
       // Adjust position if it goes off screen
       const tooltipRect = tooltip.getBoundingClientRect();
@@ -705,21 +711,22 @@ window.AgentSystem.log_viewer = {
 
     element.addEventListener('mouseleave', () => {
       if (tooltip) {
-        document.body.removeChild(tooltip);
+        const tooltipContainer = this.rootElement === document ? document.body : this.rootElement;
+        tooltipContainer.removeChild(tooltip);
         tooltip = null;
       }
     });
   },
 
   updateStatus(message) {
-    const statusElement = document.querySelector('#logStatus');
+    const statusElement = this.rootElement.querySelector('#logStatus');
     if (statusElement) {
       statusElement.textContent = message;
     }
   },
 
   showError(message) {
-    const logContainer = document.querySelector('#logContainer');
+    const logContainer = this.rootElement.querySelector('#logContainer');
     if (logContainer) {
       const errorDiv = document.createElement('div');
       errorDiv.className = 'log-error';

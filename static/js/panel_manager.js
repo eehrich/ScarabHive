@@ -8,7 +8,7 @@ window.AgentSystem.PanelManager = {
   MIN_WIDTH: 380,
   MIN_HEIGHT: 320,
   ORDER_KEY: 'panelOrder',
-  
+
   createPanel: function(id, title, content = '', additionalClasses = '', headerContent = '') {
     console.log(`Creating panel: ${id}`);
 
@@ -22,19 +22,20 @@ window.AgentSystem.PanelManager = {
       this.bringToFront(existing);
       return existing;
     }
-    
+
     // Create panel with proper structure
     const panel = document.createElement('div');
     panel.className = `floating-panel ${additionalClasses}`;
     panel.id = id;
     panel.style.display = 'block';
+    panel.tabIndex = -1; // Make panel non-focusable
   panel.style.position = 'fixed';
   panel.style.zIndex = ++this.zIndexCounter;
-    
+
   // Set default positioning based on panel type with staggering
     const panelCount = this.activePanels.size;
     const offset = panelCount * 30; // Stagger panels
-    
+
     if (id.includes('status')) {
       panel.style.width = '400px';
       panel.style.height = '700px';
@@ -109,7 +110,7 @@ window.AgentSystem.PanelManager = {
     } catch (err) {
       // silently ignore viewport clamp failures
     }
-    
+
     panel.innerHTML = `
       <div class="floating-panel-header" id="${id}Header">
         <span>${title}</span>
@@ -124,24 +125,37 @@ window.AgentSystem.PanelManager = {
       </div>
       <div class="resize-handle"></div>
     `;
-    
+
     document.body.appendChild(panel);
     this.activePanels.set(id, panel);
   // Register panel order and bring to front for new panel
   this.updateOrderOnFront(id);
-    
+
     // Add close button event listener
     const closeBtn = panel.querySelector(`#${id}CloseBtn`);
     if (closeBtn) {
       closeBtn.addEventListener('click', () => this.closePanel(id));
     }
-    
+
+    // Prevent panel from getting focus outline when child elements are focused
+    panel.addEventListener('focus', (e) => {
+      e.preventDefault();
+      panel.blur();
+    });
+    panel.addEventListener('focusin', (e) => {
+      // Only blur if the focus is on the panel itself, not on child elements
+      if (e.target === panel) {
+        e.preventDefault();
+        panel.blur();
+      }
+    });
+
     // Make panel draggable and resizable
     this.makeDraggable(panel);
     this.makeResizable(panel);
-    
+
     console.log(`Panel ${id} created and added to DOM`);
-    
+
     return panel;
   },
 
@@ -232,7 +246,7 @@ window.AgentSystem.PanelManager = {
 
     return null;
   },
-  
+
   closePanel: function(id) {
     if (id) {
       // Close specific panel
@@ -266,13 +280,13 @@ window.AgentSystem.PanelManager = {
       this.activePanels.clear();
     }
   },
-  
+
   makeDraggable: function(panel) {
     const header = panel.querySelector('.floating-panel-header');
     let isDragging = false;
     let dragStart = { x: 0, y: 0 };
     let panelStart = { x: 0, y: 0 };
-    
+
     header.addEventListener('mousedown', (e) => {
       // bring panel to front when interacting with header
       this.bringToFront(panel);
@@ -280,37 +294,37 @@ window.AgentSystem.PanelManager = {
       if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.closest('button') || e.target.closest('input')) {
         return;
       }
-      
+
       isDragging = true;
       dragStart.x = e.clientX;
       dragStart.y = e.clientY;
-      
+
       const rect = panel.getBoundingClientRect();
       panelStart.x = rect.left;
       panelStart.y = rect.top;
-      
+
       header.style.cursor = 'grabbing';
       document.body.style.userSelect = 'none';
     });
-    
+
     document.addEventListener('mousemove', (e) => {
       if (!isDragging) return;
-      
+
       const deltaX = e.clientX - dragStart.x;
       const deltaY = e.clientY - dragStart.y;
-      
+
       const newX = panelStart.x + deltaX;
       const newY = panelStart.y + deltaY;
-      
+
       // Keep panel within viewport
       const maxX = window.innerWidth - panel.offsetWidth;
       const maxY = window.innerHeight - panel.offsetHeight;
-      
+
       panel.style.left = Math.max(0, Math.min(newX, maxX)) + 'px';
       panel.style.top = Math.max(0, Math.min(newY, maxY)) + 'px';
       panel.style.right = 'auto';
     });
-    
+
     document.addEventListener('mouseup', () => {
       if (isDragging) {
         isDragging = false;
@@ -329,49 +343,49 @@ window.AgentSystem.PanelManager = {
       }
     });
   },
-  
+
   makeResizable: function(panel) {
     const resizeHandle = panel.querySelector('.resize-handle');
     if (!resizeHandle) return;
-    
+
     let isResizing = false;
     let resizeStart = { x: 0, y: 0 };
     let panelStart = { width: 0, height: 0 };
-    
+
     resizeHandle.addEventListener('mousedown', (e) => {
       // bring panel to front when starting resize
       this.bringToFront(panel);
       isResizing = true;
       resizeStart.x = e.clientX;
       resizeStart.y = e.clientY;
-      
+
       const rect = panel.getBoundingClientRect();
       panelStart.width = rect.width;
       panelStart.height = rect.height;
-      
+
       document.body.style.userSelect = 'none';
       e.preventDefault();
     });
-    
+
     document.addEventListener('mousemove', (e) => {
       if (!isResizing) return;
-      
+
       const deltaX = e.clientX - resizeStart.x;
       const deltaY = e.clientY - resizeStart.y;
-      
+
       const newWidth = panelStart.width + deltaX;
       const newHeight = panelStart.height + deltaY;
-      
+
       // Enforce minimum and maximum sizes
   const minWidth = this.MIN_WIDTH;
   const minHeight = this.MIN_HEIGHT;
       const maxWidth = window.innerWidth - 20;
       const maxHeight = window.innerHeight - 100;
-      
+
       panel.style.width = Math.max(minWidth, Math.min(newWidth, maxWidth)) + 'px';
       panel.style.height = Math.max(minHeight, Math.min(newHeight, maxHeight)) + 'px';
     });
-    
+
     document.addEventListener('mouseup', () => {
       if (isResizing) {
         isResizing = false;

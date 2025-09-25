@@ -5,6 +5,15 @@
     box-sizing: border-box;
 }
 
+/* Remove focus outlines to prevent blue frame */
+.log-viewer-wrapper *:focus {
+    outline: none;
+}
+
+.log-viewer-wrapper {
+    outline: none;
+}
+
 .log-viewer-wrapper {
     font-family: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
     background-color: #0d1117;

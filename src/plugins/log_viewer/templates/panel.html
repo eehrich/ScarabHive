@@ -90,22 +90,53 @@
 
 <script src="/plugins/{{ plugin_name }}/static/log_viewer_module.js?v={{ timestamp }}"></script>
 <script>
-    // Auto-initialize when loaded in plugin system
-    document.addEventListener('DOMContentLoaded', function() {
-        console.log('Log viewer panel DOM loaded');
-        if (window.AgentSystem && window.AgentSystem.log_viewer) {
-            console.log('Initializing log viewer...');
-            window.AgentSystem.log_viewer.init();
-        } else {
-            console.error('Log viewer module not found:', window.AgentSystem);
-        }
-    });
+    // Auto-initialize when loaded in plugin system (supports Shadow DOM)
+    (function() {
+        const currentRoot = document.currentScript ? document.currentScript.getRootNode() : document;
+        const shadowRoot = currentRoot !== document ? currentRoot : null;
 
-    // Fallback initialization with timeout
-    setTimeout(() => {
-        if (window.AgentSystem && window.AgentSystem.log_viewer) {
-            console.log('Fallback: Initializing log viewer...');
-            window.AgentSystem.log_viewer.init();
+        function initLogViewer() {
+            console.log('Log viewer panel DOM loaded', shadowRoot ? 'in Shadow DOM' : 'in document');
+            console.log('Current AgentSystem state:', window.AgentSystem);
+
+            if (window.AgentSystem && window.AgentSystem.log_viewer) {
+                console.log('Initializing log viewer...');
+                window.AgentSystem.log_viewer.init(shadowRoot);
+                return true;
+            } else {
+                console.warn('Log viewer module not found, will retry...', window.AgentSystem);
+                return false;
+            }
         }
-    }, 100);
+
+        // Try multiple initialization attempts with increasing delays
+        let attempts = 0;
+        const maxAttempts = 10;
+
+        function tryInit() {
+            attempts++;
+            console.log(`Log viewer initialization attempt ${attempts}`);
+
+            if (initLogViewer()) {
+                console.log(`Log viewer initialized successfully on attempt ${attempts}`);
+                return;
+            }
+
+            if (attempts < maxAttempts) {
+                const delay = Math.min(50 * attempts, 500); // Progressive delay up to 500ms
+                console.log(`Retrying in ${delay}ms...`);
+                setTimeout(tryInit, delay);
+            } else {
+                console.error('Failed to initialize log viewer after', maxAttempts, 'attempts');
+            }
+        }
+
+        if (shadowRoot) {
+            // In shadow DOM, start initialization attempts after a brief delay
+            setTimeout(tryInit, 10);
+        } else {
+            // In regular document, wait for DOMContentLoaded
+            document.addEventListener('DOMContentLoaded', tryInit);
+        }
+    })();
 </script>
