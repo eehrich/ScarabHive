@@ -27,7 +27,8 @@
     max-height: 100%;
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Contain inner scroll area */
+    /* Allow dropdowns/tooltips to extend beyond header; scrolling is confined to .log-container */
+    overflow: visible;
 }
 
 .log-controls-fixed {
@@ -238,7 +239,8 @@
 
 .log-container {
     flex: 1;
-    overflow-y: auto;
+    overflow-y: auto; /* Sole scroll region */
+    overflow-x: hidden;
     background-color: #0d1117;
     padding: 0;
     font-family: inherit;
@@ -412,7 +414,8 @@
     flex: 1;
     min-height: 0;
     max-height: 100%;
-    overflow: hidden;
+    /* Keep visible so dropdown isn't clipped when no logs produce scroll */
+    overflow: visible;
 }
 
 /* Removed internal .resize-handle element; do NOT hide global panel resize handles */
