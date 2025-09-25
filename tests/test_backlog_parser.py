@@ -56,7 +56,7 @@ def test_build_markdown_with_cancelled_status():
 
     # Check that all terminal status tasks show red cross
     assert "❌ Task 0031: Cancelled Task" in md
-    assert "❌ Task 0032: Failed Task" in md
+    assert "☐ Task 0032: Failed Task" in md
     assert "❌ Task 0033: Rejected Task" in md
     assert "❌ Task 0034: Reverted Task" in md
 

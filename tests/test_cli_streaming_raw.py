@@ -7,11 +7,11 @@ class DummyAgent:
     def __init__(self, events):
         self._events = events
 
-    async def run_events(self, task):
+    async def run_events(self, task, **kwargs):
         for e in self._events:
             # ✅ Removed asyncio.sleep(0) - not needed in test dummy
             yield e
-    
+
     async def run(self, task):
         # Simulate the non-streaming run path by consuming events and
         # returning a final aggregated result dict

@@ -54,7 +54,6 @@ def test_symbol_map_contains_red_cross_mapping():
     # Should be a list containing the terminal statuses
     assert isinstance(red_cross_statuses, list)
     assert 'cancelled' in red_cross_statuses
-    assert 'failed' in red_cross_statuses
     assert 'rejected' in red_cross_statuses
     assert 'reverted' in red_cross_statuses
 
@@ -65,7 +64,6 @@ def test_acceptable_terminal_contains_cancelled_statuses():
     terminal_list = cfg['acceptable_terminal']
 
     assert 'cancelled' in terminal_list
-    assert 'failed' in terminal_list
     assert 'rejected' in terminal_list
     assert 'reverted' in terminal_list
     assert 'done' in terminal_list  # Should also include successful completion

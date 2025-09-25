@@ -29,8 +29,10 @@ async def test_datetime_status_phases():
     queue = await status_bus.subscribe(server="datetime_test")
 
     try:
-        # Call datetime with valid action
-        result = await server.call("current", {"timezone": "UTC"})
+        # Call datetime with valid action within status scope
+        from agent_system.mcp.status import StatusScope
+        async with StatusScope(status_bus, "datetime_test") as status:
+            result = await server.call("current", {"timezone": "UTC", "_status": status})
 
         # Give a moment for async status events to be processed
         await asyncio.sleep(0.1)
@@ -79,8 +81,10 @@ async def test_datetime_error_status_phases():
     queue = await status_bus.subscribe(server="datetime_test_error")
 
     try:
-        # Call datetime with invalid data that should trigger an error
-        result = await server.call("parse", {"datetime": "invalid-date-format"})
+        # Call datetime with invalid data that should trigger an error within status scope
+        from agent_system.mcp.status import StatusScope
+        async with StatusScope(status_bus, "datetime_test_error") as status:
+            result = await server.call("parse", {"datetime": "invalid-date-format", "_status": status})
 
         # Give a moment for async status events to be processed
         await asyncio.sleep(0.1)
