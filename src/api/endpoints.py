@@ -131,3 +131,83 @@ async def get_version():
         "api_version": "v1",
         "service": "agent-system"
     }
+
+class PluginUIMetadata(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+    button_text: str
+    button_icon: Optional[str] = None
+    panel_title: str
+    panel_endpoint: str
+    panel_type: str
+    description: Optional[str] = None
+
+@router.get("/api/plugins/ui", response_model=List[PluginUIMetadata])
+async def get_plugin_ui_metadata():
+    """Get UI metadata for all plugins with web interfaces."""
+    try:
+        from agent_system.plugins.web_adapter import get_web_plugin_registry
+        import yaml
+        from pathlib import Path
+        
+        logger.info("Getting plugin UI metadata...")
+        
+        registry = get_web_plugin_registry()
+        logger.info(f"Registry returned: {registry}")
+        
+        if not registry:
+            logger.warning("Registry is empty or None")
+            return []
+        
+        ui_plugins = []
+        for plugin_id, plugin_info in registry.items():
+            logger.info(f"Processing plugin {plugin_id}: {plugin_info}")
+            
+            # Check if plugin has web UI configuration
+            schema_path = plugin_info.get('schema_path')
+            logger.info(f"Schema path for {plugin_id}: {schema_path}")
+            
+            if schema_path:
+                schema_file = Path(schema_path)
+                logger.info(f"Checking schema file: {schema_file} (exists: {schema_file.exists()})")
+                
+                if schema_file.exists():
+                    try:
+                        with open(schema_file, 'r') as f:
+                            schema = yaml.safe_load(f)
+                        logger.info(f"Loaded schema for {plugin_id}: {schema}")
+                        
+                        web_ui = schema.get('web_ui') if schema else None
+                        logger.info(f"Web UI config for {plugin_id}: {web_ui}")
+                        
+                        if web_ui and web_ui.get('enabled', False):
+                            plugin_metadata = PluginUIMetadata(
+                                id=plugin_id,
+                                name=plugin_info.get('name', plugin_id),
+                                enabled=True,
+                                button_text=web_ui.get('button_text', plugin_id.replace('_', ' ').title()),
+                                button_icon=web_ui.get('button_icon'),
+                                panel_title=web_ui.get('panel_title', plugin_info.get('name', plugin_id)),
+                                panel_endpoint=web_ui.get('panel_endpoint', f'/plugins/{plugin_id}/panel'),
+                                panel_type=web_ui.get('panel_type', 'fetch'),
+                                description=web_ui.get('description', plugin_info.get('description'))
+                            )
+                            ui_plugins.append(plugin_metadata)
+                            logger.info(f"Added UI plugin: {plugin_metadata}")
+                        else:
+                            logger.info(f"Plugin {plugin_id} web UI not enabled or missing")
+                    except Exception as schema_error:
+                        logger.error(f"Error parsing schema for {plugin_id}: {schema_error}")
+                else:
+                    logger.warning(f"Schema file does not exist: {schema_file}")
+            else:
+                logger.info(f"No schema path for plugin {plugin_id}")
+        
+        logger.info(f"Returning {len(ui_plugins)} UI plugins: {ui_plugins}")
+        return ui_plugins
+    except Exception as e:
+        logger.error(f"Error getting plugin UI metadata: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve plugin UI metadata: {str(e)}")

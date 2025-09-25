@@ -10,6 +10,7 @@ from __future__ import annotations
 from .discovery import discover_plugins, discover_entrypoint_plugins, discover_all_plugins
 from .mcp_adapter import PluginMCPAdapter
 from .schema_loader import load_schema_from_dir
+from .web_adapter import PluginWebInterface, PluginWebRegistry, plugin_web_registry
 
 __all__ = [
     "discover_plugins",
@@ -17,4 +18,7 @@ __all__ = [
     "discover_all_plugins",
     "PluginMCPAdapter",
     "load_schema_from_dir",
+    "PluginWebInterface",
+    "PluginWebRegistry",
+    "plugin_web_registry",
 ]

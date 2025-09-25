@@ -1,0 +1,98 @@
+<!-- Log Viewer Plugin Panel Content -->
+<link rel="stylesheet" href="/plugins/{{ plugin_name }}/static/log_viewer.css">
+
+<div class="log-viewer-wrapper">
+    <div class="log-controls-fixed">
+        <div class="log-controls-left">
+            <label for="logFileSelect">Log File:</label>
+            <select id="logFileSelect">
+                <option value="">Loading...</option>
+            </select>
+            
+            <div class="icon-button-group">
+                <button id="refreshBtn" class="icon-btn" title="Refresh">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                        <path d="M21 3v5h-5"/>
+                        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                        <path d="M3 21v-5h5"/>
+                    </svg>
+                </button>
+                <button id="autoRefreshBtn" class="icon-btn" title="Auto-refresh: OFF">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                        <path d="M21 3v5h-5"/>
+                        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                        <path d="M3 21v-5h5"/>
+                        <circle cx="12" cy="12" r="1"/>
+                    </svg>
+                </button>
+                <button id="autoScrollBtn" class="icon-btn active" title="Auto-scroll">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M7 13l3 3 7-7"/>
+                        <path d="m21 21-6-6m6 6v-4.8m0 4.8h-4.8"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <input type="text" id="searchInput" placeholder="Search logs..." style="width: 150px;">
+            
+            <label for="lineLimitSelect">Lines:</label>
+            <select id="lineLimitSelect" style="width: 70px;">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="75">75</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+            </select>
+            
+            <span id="logStatus" class="status">Ready</span>
+        </div>
+        
+        <div class="log-controls-right">
+            <div class="filter-dropdown">
+                <button id="filterDropdownBtn" class="dropdown-btn">
+                    <span id="filterLabel">Levels: All</span>
+                    <span class="dropdown-arrow">▼</span>
+                </button>
+                <div id="filterDropdownMenu" class="dropdown-menu">
+                    <label class="filter-checkbox"><input type="checkbox" id="filterError" value="error" checked> ERROR</label>
+                    <label class="filter-checkbox"><input type="checkbox" id="filterWarning" value="warning" checked> WARN</label>
+                    <label class="filter-checkbox"><input type="checkbox" id="filterInfo" value="info" checked> INFO</label>
+                    <label class="filter-checkbox"><input type="checkbox" id="filterDebug" value="debug" checked> DEBUG</label>
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-action" id="selectAllLevels">Select All</button>
+                    <button class="dropdown-action" id="selectNoneLevels">Select None</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="log-viewer-container">
+        <div id="logContainer" class="log-container"></div>
+        <div class="resize-handle" id="resizeHandle"></div>
+    </div>
+</div>
+
+<script src="/plugins/{{ plugin_name }}/static/log_viewer_module.js?v={{ timestamp }}"></script>
+<script>
+    // Auto-initialize when loaded in plugin system
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('Log viewer panel DOM loaded');
+        if (window.AgentSystem && window.AgentSystem.log_viewer) {
+            console.log('Initializing log viewer...');
+            window.AgentSystem.log_viewer.init();
+        } else {
+            console.error('Log viewer module not found:', window.AgentSystem);
+        }
+    });
+    
+    // Fallback initialization with timeout
+    setTimeout(() => {
+        if (window.AgentSystem && window.AgentSystem.log_viewer) {
+            console.log('Fallback: Initializing log viewer...');
+            window.AgentSystem.log_viewer.init();
+        }
+    }, 100);
+</script>

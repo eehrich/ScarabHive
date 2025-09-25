@@ -142,6 +142,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Non-fatal if this can't be done (tests will still work via returned instance)
                 pass
             logger.info("MCP integration initialized for API")
+            
+            # Initialize plugin web capabilities after MCP is ready
+            try:
+                from ..plugins.web_adapter import plugin_web_registry
+                plugin_web_registry.apply_to_app(app)
+                logger.info("Plugin web capabilities applied to app")
+            except Exception as e:
+                logger.warning(f"Failed to apply plugin web capabilities: {e}")
+                
         except Exception as e:
             logger.exception("Failed to initialize MCP integration for API: %s", e)
 

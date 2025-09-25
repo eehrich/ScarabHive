@@ -1,0 +1,95 @@
+# Log Viewer plugin schema
+# Provides MCP tools for log management and web UI for real-time log viewing
+
+# Web UI configuration for dynamic button registration and panel definition
+tools:
+  - type: function
+    function:
+      name: "{name}_list_log_files"
+      description: "List available log files and their status"
+      parameters:
+        type: object
+        properties: {}
+        required: []
+  
+  - type: function
+    function:
+      name: "{name}_get_log_tail"
+      description: "Get the last N lines from a log file"
+      parameters:
+        type: object
+        properties:
+          log_file:
+            type: string
+            description: "Path to the log file"
+          lines:
+            type: integer
+            description: "Number of lines to retrieve (default: 50)"
+            default: 50
+        required: ["log_file"]
+  
+  - type: function
+    function:
+      name: "{name}_search_logs"
+      description: "Search for patterns in log files using regex"
+      parameters:
+        type: object
+        properties:
+          pattern:
+            type: string
+            description: "Search pattern (regex supported)"
+          log_file:
+            type: string
+            description: "Specific log file to search (optional, searches all if not specified)"
+          max_results:
+            type: integer
+            description: "Maximum number of results (default: 100)"
+            default: 100
+        required: ["pattern"]
+
+# Web UI configuration
+web_ui:
+  # Button registration configuration
+  enabled: true
+  button_text: "Log Viewer"
+  button_icon: "📄"  # Optional icon
+  panel_title: "Real-time Log Viewer" 
+  panel_endpoint: "/plugins/log_viewer/panel"
+  panel_type: "fetch"  # How to load content: "fetch" or "iframe"
+  description: "View application logs with polling-based updates (avoids infinite logging loops)"
+  
+  # Legacy panel configuration (for compatibility)
+  panels:
+    - id: "log_viewer_panel"
+      title: "System Logs"
+      icon: "file-text"
+      position: "bottom"
+      width: "100%"
+      height: "400px"
+      url: "/plugins/{name}/panel.html"
+  
+  endpoints:
+    - path: "/logs/list"
+      method: "GET"
+      description: "List available log files with metadata"
+    - path: "/logs/content/{log_name}"
+      method: "GET"
+      description: "Get log file content with optional timestamp filtering (avoids infinite loops)"
+    - path: "/logs/poll/{log_name}"
+      method: "GET"
+      description: "Poll for log updates since last timestamp (non-streaming approach)"
+    - path: "/panel.html"
+      method: "GET"
+      description: "Main log viewer UI panel"
+    - path: "/static/{file_path}"
+      method: "GET"
+      description: "Static assets (CSS, JS, images)"
+
+# Plugin metadata
+metadata:
+  type: "hybrid"  # Both MCP and web capabilities
+  category: "monitoring"
+  description: "Polling-based log viewer with search capabilities (prevents infinite logging loops)"
+  version: "1.0.0"
+  requires_auth: false
+  rate_limit: "30/minute"

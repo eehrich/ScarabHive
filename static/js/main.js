@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Check if all required modules are loaded
-  const requiredModules = ['PanelManager', 'MCP', 'Status', 'Debug', 'ContextDebug'];
+  const requiredModules = ['PanelManager', 'PluginManager', 'MCP', 'Status', 'Debug', 'ContextDebug'];
   const missingModules = requiredModules.filter(module => !window.AgentSystem[module]);
   
   if (missingModules.length > 0) {
@@ -45,6 +45,17 @@ document.addEventListener('DOMContentLoaded', function() {
     contextDebugBtn.addEventListener('click', function() {
       window.AgentSystem.PanelManager.togglePanel('floatingContextDebugPanel', () => window.AgentSystem.ContextDebug.showPanel());
     });
+  }
+  
+  // Initialize plugin manager to load dynamic plugin buttons
+  if (window.AgentSystem.PluginManager && typeof window.AgentSystem.PluginManager.init === 'function') {
+    try {
+      window.AgentSystem.PluginManager.init();
+    } catch (err) {
+      console.error('PluginManager.init() failed', err);
+    }
+  } else {
+    console.warn('PluginManager not available; plugin buttons disabled');
   }
   
   // Initialize chat form

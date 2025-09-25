@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from ..mcp.core import MCPServer, MCPTool, MCPCapability
+from .web_adapter import PluginWebInterface, plugin_web_registry
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +175,26 @@ class PluginMCPRegistry:
         mcp_adapter = PluginMCPAdapter(name, plugin_server, schema)
         self.plugin_servers[name] = mcp_adapter
 
+        # Register web capabilities if plugin supports them
+        plugin_metadata = {'name': name, 'description': getattr(plugin_server, 'description', '')}
+        if schema_file:
+            plugin_metadata['schema_path'] = str(schema_file)
+            
+        if isinstance(plugin_server, PluginWebInterface):
+            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            logger.debug(f"Registered web capabilities for plugin {name}")
+        elif hasattr(plugin_server, 'get_web_router'):
+            # Handle hybrid plugins that implement web methods but don't inherit PluginWebInterface
+            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            logger.debug(f"Registered hybrid web capabilities for plugin {name}")
+
         logger.info(f"Registered plugin {name} as MCP server")
 
     async def unregister_plugin(self, name: str) -> None:
         """Unregister a plugin MCP server"""
         if name in self.plugin_servers:
+            # Also unregister web capabilities
+            plugin_web_registry.unregister_web_plugin(name)
             del self.plugin_servers[name]
             logger.info(f"Unregistered plugin {name}")
 
