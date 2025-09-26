@@ -99,6 +99,8 @@ def create_web_research_agent(
 
     research_config = AgentConfig(
         llm=research_llm,
+        llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
+        agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
         mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
         servers={
             "duckduckgo_search": {
@@ -181,6 +183,8 @@ class WebResearchAgent(Agent):
 
         research_config = AgentConfig(
             llm=research_llm,
+            llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
+            agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
             mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
             servers={
                 "duckduckgo_search": {"type": "duckduckgo_search"},

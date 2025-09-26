@@ -666,7 +666,7 @@ class Agent(MCPServer):
 
                 # Signal LLM call using status_worker
                 llm_info = f" ({self.llm_profile_info})" if self.llm_profile_info else ""
-                await status_worker.progress(f"Calling LLM (chat){llm_info}", meta={"step": step + 1})
+                await status_worker.progress(f"Calling LLM {llm_info}", meta={"step": step + 1})
 
                 # Validate messages before LLM call to ensure API compliance
                 from agent_system.core.message_validator import validate_messages_before_llm
