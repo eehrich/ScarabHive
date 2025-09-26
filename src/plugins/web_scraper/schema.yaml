@@ -53,5 +53,12 @@ tools:
           user_agent:
             type: string
             description: "Custom User-Agent header for requests"
+          ignore_cache:
+            type: boolean
+            default: false
+            description: "Bypass cache and force fresh request"
+          cache_ttl:
+            type: integer
+            description: "Custom cache TTL in seconds (overrides default)"
         required: [url]
         additionalProperties: false

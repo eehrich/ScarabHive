@@ -9,7 +9,7 @@ import random
 import logging
 
 from agent_system.mcp.base import MCPServer
-from agent_system.plugins.cache import PluginCache, create_cache_key
+from agent_system.plugins.cache import PluginCache
 
 logger = logging.getLogger(__name__)
 
@@ -433,16 +433,20 @@ class WebScraperServer(MCPServer):
         extract_forms = bool(params.get("extract_forms", False))
         extract_lists = bool(params.get("extract_lists", False))
         
+        # Cache control options
+        ignore_cache = bool(params.get("ignore_cache", False))
+        custom_cache_ttl = params.get("cache_ttl")  # Optional custom TTL
+        
         # Create cache key from relevant parameters
         cache_key = self._create_cache_key(url, operation, max_chars, extract_tables, 
                                          extract_forms, extract_lists, include_html)
         
-        # Try to get from cache first
-        if self.cache_enabled:
+        # Try to get from cache first (unless ignore_cache is True)
+        if self.cache_enabled and not ignore_cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result is not None:
                 if status:
-                    await status.end("Retrieved from cache")
+                    await status.end("Retrieved from cache", meta={"cache_hit": True})
                 logger.debug(f"Cache hit for URL: {url[:80]}...")
                 return cached_result
 
@@ -669,7 +673,7 @@ class WebScraperServer(MCPServer):
             
             # Cache the result
             if self.cache_enabled:
-                await self.cache.set(cache_key, links_result)
+                await self.cache.set(cache_key, links_result, ttl=custom_cache_ttl)
                 logger.debug(f"Cached links for URL: {url[:80]}...")
                 
             return links_result
@@ -707,7 +711,7 @@ class WebScraperServer(MCPServer):
         
         # Cache the result before returning
         if self.cache_enabled:
-            await self.cache.set(cache_key, result)
+            await self.cache.set(cache_key, result, ttl=custom_cache_ttl)
             logger.debug(f"Cached content for URL: {url[:80]}...")
         
         # Restore original proxy configuration if it was temporarily changed

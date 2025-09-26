@@ -15,5 +15,13 @@ tools:
             maximum: 10
             default: 5
             description: "Maximum number of search results to return"
+          ignore_cache:
+            type: boolean
+            default: false
+            description: "If true, bypass cache and fetch fresh results"
+          cache_ttl:
+            type: integer
+            minimum: 0
+            description: "Custom cache TTL in seconds (overrides default)"
         required: [query]
         additionalProperties: false

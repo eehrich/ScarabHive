@@ -37,6 +37,8 @@ class DuckDuckGoSearchServer(MCPServer):
             
         query = params.get("query", "")
         max_results = int(params.get("max_results", 5))
+        ignore_cache = params.get("ignore_cache", False)
+        custom_cache_ttl = params.get("cache_ttl")
         status = params.get("_status")  # Get status object from base class
         
         if not query.strip():
@@ -45,11 +47,11 @@ class DuckDuckGoSearchServer(MCPServer):
         # Create cache key and try to get cached result
         cache_key = self._create_cache_key(query, max_results)
         
-        if self.cache_enabled:
+        if self.cache_enabled and not ignore_cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result is not None:
                 if status:
-                    await status.end("Retrieved from cache")
+                    await status.end("Retrieved from cache", meta={"cache_hit": True})
                 logger.debug(f"Cache hit for query: {query[:50]}...")
                 return cached_result
             
@@ -105,7 +107,7 @@ class DuckDuckGoSearchServer(MCPServer):
             
             # Cache the successful result
             if self.cache_enabled:
-                await self.cache.set(cache_key, search_result)
+                await self.cache.set(cache_key, search_result, ttl=custom_cache_ttl)
                 logger.debug(f"Cached search results for query: {query[:50]}...")
             
             # Update status with success

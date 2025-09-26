@@ -11,4 +11,5 @@ external/
 logs/
 *.log
 .tmp
+.cache/
 tmp_backlog.md
