@@ -384,43 +384,52 @@ class WebResearchAgent(Agent):
         """
         return await self._execute_task(compare_prompt, request_id, status)
 
-    def get_schema(self) -> Dict[str, Any]:
+    def get_tools(self) -> list[Dict[str, Any]]:
+        """Return the multi-tool schema for web research agent."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema:
+        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema_data:
             raise RuntimeError("Missing required schema.yaml for web_research_agent plugin")
-        return schema
+        
+        # Extract tools array from schema
+        if 'tools' in schema_data:
+            return schema_data['tools']
+        else:
+            # Fallback for single-tool schemas
+            return [schema_data]
 
-    async def call(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
+
+
+    async def call(self, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
         # Extract request_id for status correlation
         request_id = params.get("request_id") or params.get("requestId")
         status = params.get("_status")   
 
-        if action == "research":
+        if tool == "research":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
             max_results = params.get("max_results", 5)
             return await self.research(topic, max_results, request_id, status)
-        elif action == "fact_check":
+        elif tool == "fact_check":
             claim = params.get("claim")
             if not claim:
                 return {"status": "error", "error": "Missing required parameter 'claim' for fact_check action"}
             return await self.fact_check(claim, request_id, status)
-        elif action == "compare_sources":
+        elif tool == "compare_sources":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for compare_sources action"}
             return await self.compare_sources(topic, request_id, status)
-        elif action in ("run", "execute", "ask"):
+        elif tool in ("run", "execute", "ask"):
             # Handle general task requests by routing to research with progress tracking
             task = params.get("task") or params.get("query") or params.get("prompt")
             if not task:
-                return {"status": "error", "error": f"Missing required parameter 'task' for {action} action"}
+                return {"status": "error", "error": f"Missing required parameter 'task' for {tool} action"}
             # Route general tasks to research method with progress tracking
             return await self.research(task, params.get("max_results", 5), request_id, status)
 
-        return await super().call(action, params)
+        raise ValueError(f"Unknown tool: {tool}")
 
     def get_default_action(self) -> str:
         return "research"

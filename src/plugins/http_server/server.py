@@ -32,18 +32,38 @@ class HTTPServer(MCPServer):
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Route calls to the wrapped MCP server."""
-        if not self.wrapped_server:
-            return {"error": "No server wrapped - use wrap_server() first"}
+        if tool == "http_server_ops":
+            operation = params.get("operation")
+            
+            if operation == "health":
+                if not self.wrapped_server:
+                    return {"error": "No server wrapped - use wrap_server() first"}
+                return {"status": "ok", "server": self.name}
+            
+            elif operation == "call":
+                if not self.wrapped_server:
+                    return {"error": "No server wrapped - use wrap_server() first"}
+                    
+                target_tool = params.get("tool")
+                if not target_tool:
+                    return {"error": "Tool name required for 'call' operation"}
+                
+                tool_params = params.get("params", {})
+                return await self.wrapped_server.call(target_tool, tool_params)
+            
+            else:
+                return {"error": f"Invalid operation: {operation}"}
+        
+        else:
+            return {"error": f"Unknown tool: {tool}"}
 
-        return await self.wrapped_server.call(tool, params)
-
-    def get_schema(self) -> dict[str, Any]:
-        """Return the OpenAPI function schema for HTTP server."""
+    def get_tools(self) -> list[dict[str, Any]]:
+        """Return the MCP tools list for HTTP server."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
         schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
         if not schema:
             raise RuntimeError("Missing required schema.yaml for http_server plugin")
-        return schema
+        return schema["tools"]
 
     def get_default_action(self) -> str:
         """Return the default action for HTTP server."""

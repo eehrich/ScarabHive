@@ -1,51 +1,57 @@
-type: function
-function:
-  name: {{name}}
-  description: >-
-    Fetch and read a web page by URL to extract text content and structured data
-    (tables, forms, lists). Enhanced with structured data extraction to reduce
-    parsing errors and improve data quality.
-  parameters:
-    type: object
-    properties:
-      action:
-        type: string
-        enum: [fetch, links]
-        description: "Use 'fetch' to download the page or 'links' to extract anchor hrefs"
-      url:
-        type: string
-      timeout:
-        type: number
-        default: 20
-        description: Request timeout in seconds
-      include_html:
-        type: boolean
-        default: false
-        description: Include raw HTML in response
-      max_chars:
-        type: integer
-        default: 8000
-        description: "If >0, truncate extracted text to this length (0 = unlimited, default 8000 for better token efficiency)"
-      extract_tables:
-        type: boolean
-        default: false
-      extract_forms:
-        type: boolean
-        default: false
-      extract_lists:
-        type: boolean
-        default: false
-      include_nofollow:
-        type: boolean
-        default: false
-      only_same_domain:
-        type: boolean
-        default: false
-      max_links:
-        type: integer
-        default: 0
-        description: "Maximum number of links to return (0 = unlimited)"
-      user_agent:
-        type: string
-    required: [url]
-    additionalProperties: true
+tools:
+  - type: function
+    function:
+      name: scrape_webpage
+      description: Scrape web pages to extract text content, structured data (tables, forms, lists), or extract all links. Supports flexible content extraction modes.
+      parameters:
+        type: object
+        properties:
+          url:
+            type: string
+            description: "Target URL to scrape"
+          operation:
+            type: string
+            enum: [content, links]
+            default: content
+            description: "'content' extracts page content, 'links' extracts all anchor hrefs"
+          timeout:
+            type: number
+            default: 20
+            description: "Request timeout in seconds"
+          include_html:
+            type: boolean
+            default: false
+            description: "Include raw HTML in response"
+          max_chars:
+            type: integer
+            default: 8000
+            description: "Truncate text length (0=unlimited, default 8000 for token efficiency)"
+          extract_tables:
+            type: boolean
+            default: false
+            description: "Extract and structure table data"
+          extract_forms:
+            type: boolean
+            default: false
+            description: "Extract form elements and inputs"
+          extract_lists:
+            type: boolean
+            default: false
+            description: "Extract list structures (ul, ol, li)"
+          include_nofollow:
+            type: boolean
+            default: false
+            description: "Include nofollow links (for links operation)"
+          only_same_domain:
+            type: boolean
+            default: false
+            description: "Only extract links from same domain (for links operation)"
+          max_links:
+            type: integer
+            default: 0
+            description: "Maximum number of links to return (0=unlimited, for links operation)"
+          user_agent:
+            type: string
+            description: "Custom User-Agent header for requests"
+        required: [url]
+        additionalProperties: false

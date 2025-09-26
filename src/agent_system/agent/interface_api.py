@@ -985,38 +985,100 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Use the global MCP integration instance that was initialized during startup
             global _mcp_integration
 
-            # Use the registry approach for plugins
+            # Use both the registry approach and MCP integration for plugins
             if not _app_registry:
                 return {"error": "Registry not initialized"}
 
             servers = []
 
-            # Add plugin servers from registry
+            # First, add plugin servers from the MCP HTTP server registry (where MCP plugins are registered)
+            if _mcp_integration and hasattr(_mcp_integration, 'http_server'):
+                try:
+                    mcp_servers = _mcp_integration.http_server.servers
+                    for server_id, server_obj in mcp_servers.items():
+                        try:
+                            # Skip servers that explicitly mark themselves as internal/private
+                            if getattr(server_obj, '_mcp_public', True) is False:
+                                continue
+                                
+                            tools = []
+                            detailed_tools = []
+
+                            # Use unified list_tools() method for all servers
+                            if hasattr(server_obj, 'list_tools'):
+                                try:
+                                    # Call async method to get tools
+                                    mcp_tools = await server_obj.list_tools()
+                                    if mcp_tools:
+                                        for mcp_tool in mcp_tools:
+                                            tool_name = mcp_tool.name
+                                            description = mcp_tool.description
+                                            parameters = mcp_tool.input_schema
+
+                                            tools.append(tool_name)
+                                            detailed_tools.append({
+                                                'name': tool_name,
+                                                'description': description,
+                                                'parameters': parameters
+                                            })
+                                except Exception as e:
+                                    logger.debug(f"list_tools() failed for server {server_id}: {e}")
+                                    # Mark server as having no tools if list_tools() fails
+                                    pass
+
+                            # Check connection using real-time verification
+                            server_info = {"id": server_id, "type": "plugin"}
+                            connected = _check_server_connection(server_info)
+
+                            servers.append({
+                                "id": server_id,
+                                "name": server_id.replace('_', ' ').title(),
+                                "type": "plugin",
+                                "connected": connected,
+                                "tools": tools,
+                                "detailed_tools": detailed_tools,
+                                "tool_count": len(tools)
+                            })
+                        except Exception as e:
+                            # If we can't get info about a server, mark it as disconnected
+                            servers.append({
+                                "id": server_id,
+                                "name": server_id.replace('_', ' ').title(),
+                                "type": "plugin", 
+                                "connected": False,
+                                "tools": [],
+                                "tool_count": 0,
+                                "error": str(e)
+                            })
+                except Exception as e:
+                    logger.debug(f"Failed to get MCP servers: {e}")
+
+            # Keep track of already processed servers to avoid duplicates
+            processed_server_ids = {server["id"] for server in servers}
+
+            # Also add plugin servers from bootstrap registry (for backward compatibility)
             for server_id, server_obj in _app_registry._servers.items():
                 try:
+                    # Skip if already processed from MCP registry
+                    if server_id in processed_server_ids:
+                        continue
                     # Skip servers that explicitly mark themselves as internal/private
                     if getattr(server_obj, '_mcp_public', True) is False:
                         continue
-                    # Get tools using both get_tools() and get_schema() methods
+                    
                     tools = []
                     detailed_tools = []
 
-                    # Try get_tools() first (for multi-tool plugins like IBKR)
-                    if hasattr(server_obj, 'get_tools'):
+                    # Use unified list_tools() method for all servers
+                    if hasattr(server_obj, 'list_tools'):
                         try:
-                            tool_definitions = server_obj.get_tools()
-                            if tool_definitions:
-                                for tool_def in tool_definitions:
-                                    # Handle both direct tool definition and function-wrapped definition
-                                    if 'function' in tool_def:
-                                        func_def = tool_def['function']
-                                        tool_name = func_def.get('name', f'{server_id}_tool')
-                                        description = func_def.get('description', f'Tool for {server_id}')
-                                        parameters = func_def.get('parameters', {})
-                                    else:
-                                        tool_name = tool_def.get('name', f'{server_id}_tool')
-                                        description = tool_def.get('description', f'Tool for {server_id}')
-                                        parameters = tool_def.get('input_schema', {})
+                            # Call async method to get tools
+                            mcp_tools = await server_obj.list_tools()
+                            if mcp_tools:
+                                for mcp_tool in mcp_tools:
+                                    tool_name = mcp_tool.name
+                                    description = mcp_tool.description
+                                    parameters = mcp_tool.input_schema
 
                                     tools.append(tool_name)
                                     detailed_tools.append({
@@ -1025,28 +1087,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                         'parameters': parameters
                                     })
                         except Exception as e:
-                            # If get_tools() fails, fall back to get_schema()
-                            logger.debug(f"get_tools() failed for server {server_id}, falling back to get_schema(): {e}")
-
-                    # Fall back to get_schema() if get_tools() didn't work or doesn't exist
-                    if not tools and hasattr(server_obj, 'get_schema'):
-                        try:
-                            schema = server_obj.get_schema()
-                            if schema:
-                                # Each plugin typically provides one function/tool
-                                if 'function' in schema and 'name' in schema['function']:
-                                    tool_name = schema['function']['name']
-                                    tools = [tool_name]
-                                    # Get description from schema if available
-                                    description = schema['function'].get('description', f'Tool for {server_id}')
-                                    detailed_tools = [{
-                                        'name': tool_name,
-                                        'description': description,
-                                        'parameters': schema['function'].get('parameters', {})
-                                    }]
-                        except Exception as e:
-                            # If schema loading fails, treat as no tools
-                            logger.debug(f"get_schema() failed for server {server_id}: {e}")
+                            logger.debug(f"list_tools() failed for server {server_id}: {e}")
 
                     # Check connection using real-time verification
                     server_info = {

@@ -14,6 +14,39 @@ Plugin contract
 
 - The factory signature should accept `(name: str, config: dict, ssl_verify: bool=True)` and return an instance of `MCPServer` or a compatible object.
 
+Multi-Tool Architecture (Required)
+
+All AgentSystem plugins must follow the **Multi-Tool format**:
+
+- **Schema**: Define tools using `tools:` array in `schema.yaml`:
+  ```yaml
+  tools:
+    - type: function
+      function:
+        name: my_tool
+        description: "Tool description"
+        parameters:
+          type: object
+          properties: {...}
+  ```
+
+- **Server Implementation**: Implement `async list_tools()` method:
+  ```python
+  async def list_tools(self) -> list[dict[str, Any]]:
+      """Return the MCP tools list."""
+      schema = load_schema_from_dir(Path(__file__).parent)
+      return schema["tools"]
+  ```
+
+- **Tool Routing**: Route calls directly by tool name in `call()` method:
+  ```python
+  async def call(self, tool: str, params: dict[str, Any]) -> Any:
+      if tool == "my_tool":
+          return await self.handle_my_tool(params)
+      else:
+          return {"error": f"Unknown tool: {tool}"}
+  ```
+
 Minimal example (filesystem plugin)
 
 Recommended folder layout
@@ -33,9 +66,30 @@ plugins/
             ...
 ```
 
+Create `plugins/example/schema.yaml` with Multi-Tool format:
+
+```yaml
+tools:
+  - type: function
+    function:
+      name: example_tool
+      description: "Example tool demonstration"
+      parameters:
+        type: object
+        properties:
+          message:
+            type: string
+            description: "Message to process"
+        required: ["message"]
+```
+
 Create `plugins/example/plugin.py` with:
 
 ```python
+from pathlib import Path
+from typing import Any
+from agent_system.plugins.schema_loader import load_schema_from_dir
+
 PLUGIN_NAME = "example"
 
 class ExampleServer:
@@ -44,8 +98,20 @@ class ExampleServer:
         self.cfg = cfg
         self.ssl_verify = ssl_verify
 
-    def call(self, *args, **kwargs):
-        return {"status": "ok", "name": self.name}
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """Return the MCP tools list."""
+        schema = load_schema_from_dir(Path(__file__).parent)
+        if not schema:
+            raise RuntimeError("Missing required schema.yaml")
+        return schema["tools"]
+
+    async def call(self, tool: str, params: dict[str, Any]) -> Any:
+        """Handle tool calls with direct routing."""
+        if tool == "example_tool":
+            message = params.get("message", "")
+            return {"status": "ok", "processed_message": f"Processed: {message}"}
+        else:
+            return {"error": f"Unknown tool: {tool}"}
 
 PLUGIN_FACTORY = ExampleServer
 ```

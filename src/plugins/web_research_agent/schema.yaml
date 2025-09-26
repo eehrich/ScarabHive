@@ -1,38 +1,79 @@
-type: function
-function:
-  name: {{name}}
-  description: >-
-    Advanced web research agent for comprehensive topic research, fact-checking,
-    and source comparison.
+tools:
+  - type: function
+    function:
+      name: research
+      description: "Comprehensive topic research with multiple sources"
+      parameters:
+        type: object
+        properties:
+          topic:
+            type: string
+            description: "The topic to research"
+          source_urls:
+            type: array
+            items:
+              type: string
+            description: "Optional: specific URLs to include in research"
+          max_results:
+            type: integer
+            default: 5
+            description: "Maximum number of results to return"
+        required: ["topic"]
 
-    Action-specific parameter requirements:
-    - run/execute/ask: require 'task' parameter
-    - research: requires 'topic' parameter
-    - fact_check: requires 'claim' parameter
-    - compare_sources: requires 'topic' parameter
-  parameters:
-    type: object
-    properties:
-      action:
-        type: string
-        enum: [run, execute, ask, research, fact_check, compare_sources]
-        description: "Action to perform. Each action has specific required parameters."
-      task:
-        type: string
-        description: "Required for run/execute/ask actions: the research task or query to perform"
-      topic:
-        type: string
-        description: "Required for research/compare_sources actions: the topic to research"
-      claim:
-        type: string
-        description: "Required for fact_check action: the claim to verify"
-      source_urls:
-        type: array
-        items:
-          type: string
-        description: "Optional: specific URLs to include in research"
-      max_results:
-        type: integer
-        default: 5
-        description: "Maximum number of results to return"
-    required: [action]
+  - type: function
+    function:
+      name: fact_check
+      description: "Verify claims against multiple reliable sources"
+      parameters:
+        type: object
+        properties:
+          claim:
+            type: string
+            description: "The claim to verify"
+          source_urls:
+            type: array
+            items:
+              type: string
+            description: "Optional: specific URLs to check against"
+          max_results:
+            type: integer
+            default: 5
+            description: "Maximum number of sources to check"
+        required: ["claim"]
+
+  - type: function
+    function:
+      name: compare_sources
+      description: "Compare information across multiple sources for a topic"
+      parameters:
+        type: object
+        properties:
+          topic:
+            type: string
+            description: "The topic to compare sources for"
+          source_urls:
+            type: array
+            items:
+              type: string
+            description: "Specific URLs to compare"
+          max_results:
+            type: integer
+            default: 5
+            description: "Maximum number of sources to compare"
+        required: ["topic"]
+
+  - type: function
+    function:
+      name: ask
+      description: "General research query with intelligent source selection"
+      parameters:
+        type: object
+        properties:
+          task:
+            type: string
+            description: "The research task or query to perform"
+          max_results:
+            type: integer
+            default: 5
+            description: "Maximum number of results to return"
+        required: ["task"]

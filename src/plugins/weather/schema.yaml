@@ -1,35 +1,42 @@
-type: function
-function:
-  name: {{name}}
-  description: Get weather forecast and current conditions for any location worldwide.
-  parameters:
-    type: object
-    properties:
-      action:
-        type: string
-        enum: [forecast, search, query, get, check, lookup]
-      location:
-        type: string
-      source:
-        type: string
-        enum: [wttr.in, weather.gov, met.no, marine.weather.gov]
-        default: met.no
-      days:
-        type: integer
-        minimum: 1
-        maximum: 7
-        default: 3
-      units:
-        type: string
-        enum: [metric, imperial]
-        default: metric
-      include_marine:
-        type: boolean
-      summary_format:
-        type: string
-        enum: [detailed, daily_summary, hourly]
-        default: detailed
-      include_radiation:
-        type: boolean
-    required: [location]
-    additionalProperties: true
+tools:
+  - type: function
+    function:
+      name: get_weather
+      description: Get weather conditions and forecasts for any location. Supports current weather and multi-day forecasts.
+      parameters:
+        type: object
+        properties:
+          location:
+            type: string
+            description: "Location name, city, or coordinates (e.g., 'Munich', 'New York', '48.1351,11.5820')"
+          source:
+            type: string
+            enum: [wttr.in, weather.gov, met.no, marine.weather.gov]
+            default: met.no
+            description: "Weather data source"
+          days:
+            type: integer
+            minimum: 1
+            maximum: 7
+            default: 3
+            description: "Number of forecast days (1=current only, 2-7=forecast)"
+          units:
+            type: string
+            enum: [metric, imperial]
+            default: metric
+            description: "Temperature and measurement units"
+          include_marine:
+            type: boolean
+            default: false
+            description: "Include marine weather (auto-switches to marine.weather.gov source)"
+          summary_format:
+            type: string
+            enum: [detailed, daily_summary, hourly]
+            default: detailed
+            description: "Output format detail level"
+          include_radiation:
+            type: boolean
+            default: false
+            description: "Include solar radiation data when available"
+        required: [location]
+        additionalProperties: false

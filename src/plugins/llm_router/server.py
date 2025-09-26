@@ -216,10 +216,7 @@ class LLMRouterServer(MCPServer):
             # Fallback for single-tool schemas
             return [schema_data]
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return legacy schema format for backward compatibility."""
-        tools = self.get_tools()
-        return {'functions': [tool['function'] for tool in tools]}
+
 
     def get_default_action(self) -> str:
         """Return the default action for LLM router."""

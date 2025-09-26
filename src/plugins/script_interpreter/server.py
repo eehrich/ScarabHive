@@ -34,19 +34,17 @@ class ScriptInterpreterServer(MCPServer):
         """Handle MCP tool calls."""
         status = params.get("_status")
 
-        if tool == "eval":
+        if tool == "execute_python":
             code = params.get("code", "")
             if not code:
                 return {"error": "Missing required parameter 'code'"}
-            reset_sandbox = params.get("reset_sandbox", False)
 
             # Publish start status
-            await status.progress("Execution started")
-            # Publish progress
+            await status.progress("Python execution started")
             await status.progress("Executing code")
 
             try:
-                result = self.executor.execute(code, reset_sandbox=reset_sandbox)
+                result = self.executor.execute(code, reset_sandbox=False)
 
                 if not result.get("success", False) or result.get("error"):
                     # Publish error status
@@ -74,75 +72,44 @@ class ScriptInterpreterServer(MCPServer):
                 await status.error(f"Execution failed: {str(e)}")
                 return {"error": f"Execution failed: {str(e)}"}
 
-        elif tool == "validate":
+        elif tool == "validate_python":
             code = params.get("code", "")
             if not code:
                 return {"error": "Missing required parameter 'code'"}
 
+            await status.progress("Validating Python syntax")
             try:
                 validation_result = self.executor.validate_syntax(code)
                 if validation_result["valid"]:
-                    return {"result": "✅ Syntax is valid"}
+                    await status.end("Validation completed - syntax is valid")
+                    return {"result": "✅ Python syntax is valid"}
                 else:
+                    await status.error("Validation failed - syntax error detected")
                     return {"error": f"❌ {validation_result['error']}"}
             except Exception as e:
+                await status.error("Validation failed")
                 return {"error": f"❌ Syntax error: {str(e)}", "suggestion": "Check Python syntax - parentheses, indentation, operators"}
 
-        elif tool == "reset":
+        elif tool == "reset_sandbox":
+            await status.progress("Resetting Python sandbox")
             try:
                 self.executor.reset_sandbox()
-                return {"result": "🔄 Sandbox reset - all variables and state cleared"}
+                await status.end("Sandbox reset completed")
+                return {"result": "🔄 Python sandbox reset - all variables and state cleared"}
             except Exception as e:
+                await status.error("Reset failed")
                 return {"error": f"Reset failed: {str(e)}"}
         else:
-            return {"error": f"Unknown tool: {tool}"}
+            return {"error": f"Unknown tool: {tool}. Supported tools: execute_python, validate_python, reset_sandbox"}
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return the OpenAI function schema for the script interpreter."""
-        # Load MCP schema and convert to OpenAI function format
+    def get_tools(self) -> list[dict[str, Any]]:
+        """Return the MCP tools list for script interpreter."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
-
-        # Try to load MCP schema first
+        
         schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": "script_interpreter"})
-
-        if schema_data and "tools" in schema_data:
-            # Convert MCP multi-tool schema to OpenAI function format
-            # For now, default to the primary "eval" tool
-            eval_tool = next((tool for tool in schema_data["tools"] if tool["name"] == "eval"), None)
-            if eval_tool:
-                return {
-                    "type": "function",
-                    "function": {
-                        "name": "script_interpreter",
-                        "description": eval_tool["description"],
-                        "parameters": eval_tool["inputSchema"]
-                    }
-                }
-
-        # Fallback to hardcoded schema
-        return {
-            "type": "function",
-            "function": {
-                "name": "script_interpreter",
-                "description": "Execute Python code in a secure sandbox. Supports mathematical expressions, basic operations, and simple programming constructs.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["eval", "validate", "reset"],
-                            "default": "eval"
-                        },
-                        "code": {
-                            "type": "string",
-                            "description": "Python code to execute. Examples: '(2+3)*4', 'x = 42; y = x * 2', 'abs(-15)'"
-                        }
-                    },
-                    "required": ["code"],
-                    "additionalProperties": True
-                }
-            }
-        }
+        if not schema_data:
+            raise RuntimeError("Missing required schema.yaml for script_interpreter plugin")
+        return schema_data["tools"]
 
     def get_default_action(self) -> str:
         """Return the default action for the script interpreter."""

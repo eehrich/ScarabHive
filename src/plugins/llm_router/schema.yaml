@@ -18,9 +18,9 @@ tools:
             type: string
             {% if available_profiles %}
             enum: {{ available_profiles | tojson }}
-            description: "LLM profile name to use. Available profiles: {{ available_profiles | join(', ') }}. Each profile defines the provider, model, and settings."
+            description: "LLM profile name. Available: {{ available_profiles | join(', ') }}. Each defines provider, model, settings."
             {% else %}
-            description: "LLM profile name to use (e.g., 'turbo', 'normal', 'think'). Each profile defines the provider, model, and settings."
+            description: "LLM profile name (e.g., 'turbo', 'normal', 'think'). Each defines provider, model, settings."
             {% endif %}
         required: ["profile"]
         additionalProperties: true
@@ -28,7 +28,7 @@ tools:
   - type: function
     function:
       name: list_profiles
-      description: List all available LLM profiles with their detailed configurations including models, providers, and settings.
+      description: List all available LLM profiles with their detailed configurations.
       parameters:
         type: object
         properties: {}

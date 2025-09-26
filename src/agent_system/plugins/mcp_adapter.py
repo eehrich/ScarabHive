@@ -28,13 +28,25 @@ class PluginMCPAdapter(MCPServer):
         self._tools_cache: Optional[List[MCPTool]] = None
 
     async def list_tools(self) -> List[MCPTool]:
-        """List tools available from the plugin"""
+        """List tools available from the plugin - converts legacy interfaces to MCPTool objects"""
         if self._tools_cache is not None:
             return self._tools_cache
 
         tools = []
 
-        # First, check for the new multi-tool interface
+        # If the plugin_server is already an MCPServer with list_tools(), delegate to it
+        if hasattr(self.plugin_server, 'list_tools') and hasattr(self.plugin_server.__class__, '__bases__'):
+            # Check if it inherits from MCPServer (not just has the method)
+            from ..mcp.base import MCPServer
+            if any(issubclass(base, MCPServer) for base in self.plugin_server.__class__.__bases__):
+                try:
+                    tools = await self.plugin_server.list_tools()
+                    self._tools_cache = tools
+                    return tools
+                except (NotImplementedError, AttributeError):
+                    pass
+
+        # Handle legacy plugins with get_tools() method (OpenAI function format)
         if hasattr(self.plugin_server, 'get_tools'):
             try:
                 tool_schemas = self.plugin_server.get_tools()
@@ -48,14 +60,37 @@ class PluginMCPAdapter(MCPServer):
                         )
                         tools.append(tool)
             except (NotImplementedError, AttributeError):
-                # Fall back to legacy single-tool interface
                 pass
 
-        # Fallback: Get schema from plugin if available (legacy interface)
+        # Handle legacy plugins with get_schema() method  
         if not tools and hasattr(self.plugin_server, 'get_schema'):
-            schema = self.plugin_server.get_schema()
-            if isinstance(schema, dict) and 'functions' in schema:
-                for func_def in schema['functions']:
+            try:
+                schema = self.plugin_server.get_schema()
+                if isinstance(schema, dict) and 'functions' in schema:
+                    # Multi-function format
+                    for func_def in schema['functions']:
+                        tool = MCPTool(
+                            name=func_def['name'],
+                            description=func_def.get('description', f'Tool {func_def["name"]}'),
+                            input_schema=func_def.get('parameters', {})
+                        )
+                        tools.append(tool)
+                elif isinstance(schema, dict) and 'function' in schema:
+                    # Single function format
+                    func_def = schema['function']
+                    tool = MCPTool(
+                        name=func_def['name'],
+                        description=func_def.get('description', f'Tool {func_def["name"]}'),
+                        input_schema=func_def.get('parameters', {})
+                    )
+                    tools.append(tool)
+            except (NotImplementedError, AttributeError):
+                pass
+
+        # Use external schema file if available
+        if not tools and self.plugin_schema:
+            if 'functions' in self.plugin_schema:
+                for func_def in self.plugin_schema['functions']:
                     tool = MCPTool(
                         name=func_def['name'],
                         description=func_def.get('description', f'Tool {func_def["name"]}'),
@@ -63,10 +98,9 @@ class PluginMCPAdapter(MCPServer):
                     )
                     tools.append(tool)
 
-        # Fallback: Inspect plugin methods
-        if not tools and hasattr(self.plugin_server, 'call'):
-            # Try to get default action or discover available tools
-            if hasattr(self.plugin_server, 'get_default_action'):
+        # Final fallback: Create tool from default action
+        if not tools and hasattr(self.plugin_server, 'get_default_action'):
+            try:
                 default_action = self.plugin_server.get_default_action()
                 tool = MCPTool(
                     name=default_action,
@@ -78,17 +112,21 @@ class PluginMCPAdapter(MCPServer):
                     }
                 )
                 tools.append(tool)
+            except (NotImplementedError, AttributeError):
+                pass
 
-        # Use schema file if available
-        if not tools and self.plugin_schema:
-            if 'functions' in self.plugin_schema:
-                for func_def in self.plugin_schema['functions']:
-                    tool = MCPTool(
-                        name=func_def['name'],
-                        description=func_def.get('description', f'Tool {func_def["name"]}'),
-                        input_schema=func_def.get('parameters', {})
-                    )
-                    tools.append(tool)
+        # If still no tools, create a generic one
+        if not tools:
+            tool = MCPTool(
+                name=self.name,
+                description=f"Generic action for {self.name}",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True
+                }
+            )
+            tools.append(tool)
 
         self._tools_cache = tools
         return tools

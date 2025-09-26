@@ -52,7 +52,7 @@ class ExampleServer(MCPServer):
         self.logger.info(f"Initialized example server '{name}' with precision={self.precision}, "
                         f"max_text_length={self.max_text_length}")
 
-    def get_tools(self) -> list[dict[str, Any]]:
+    async def list_tools(self) -> list[dict[str, Any]]:
         """Return tool definitions, preferring external schema.yaml.
         
         Returns:
@@ -183,22 +183,20 @@ class ExampleServer(MCPServer):
         """
         self.logger.debug(f"Calling tool '{tool}' with params: {params}")
         
-        # Extract tool suffix for routing
-        expected_prefix = f"{self.name}_"
-        if not tool.startswith(expected_prefix):
-            raise ValueError(f"Tool '{tool}' does not match plugin prefix '{expected_prefix}'")
-        
-        tool_suffix = tool[len(expected_prefix):]
-        
         try:
-            if tool_suffix == "calculator":
+            # Dynamic tool names based on plugin name
+            calculator_name = f"{self.name}_calculator"
+            formatter_name = f"{self.name}_formatter"
+            status_name = f"{self.name}_status"
+            
+            if tool == calculator_name:
                 return await self._handle_calculator(params)
-            elif tool_suffix == "formatter":
+            elif tool == formatter_name:
                 return await self._handle_formatter(params)
-            elif tool_suffix == "status":
+            elif tool == status_name:
                 return await self._handle_status(params)
             else:
-                available = [f"{self.name}_{t}" for t in ["calculator", "formatter", "status"]]
+                available = [calculator_name, formatter_name, status_name]
                 raise ValueError(f"Unknown tool '{tool}'. Available tools: {available}")
                 
         except Exception as e:
@@ -323,15 +321,15 @@ class ExampleServer(MCPServer):
         """
         verbose = params.get("verbose", False)
         
+        tools = await self.list_tools()
         status = {
             "server_name": self.name,
             "status": "active",
-            "tools_count": len(self.get_tools()),
+            "tools_count": len(tools),
             "version": "1.0.0"
         }
         
         if verbose:
-            tools = self.get_tools()
             status.update({
                 "config": {
                     "precision": self.precision,

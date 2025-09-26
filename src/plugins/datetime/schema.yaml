@@ -1,37 +1,47 @@
-type: function
-function:
-  name: {{name}}
-  description: >-
-    Get current date/time, format dates, perform date calculations, timezone conversions,
-    and calendar operations.
-  parameters:
-    type: object
-    properties:
-      action:
-        type: string
-        enum: [current, format, parse, add, subtract, convert_timezone, timestamp, calendar_info, business_days, day_of_week, days_until]
-      timezone:
-        type: string
-      format:
-        type: string
-      datetime:
-        type: string
-      custom_format:
-        type: string
-      input_format:
-        type: string
-      years:
-        type: integer
-      months:
-        type: integer
-      weeks:
-        type: integer
-      days:
-        type: integer
-      hours:
-        type: integer
-      minutes:
-        type: integer
-      seconds:
-        type: integer
-    additionalProperties: true
+tools:
+  - type: function
+    function:
+      name: datetime_operations
+      description: Comprehensive date/time operations including current time, formatting, calculations, timezone conversions, and calendar functions.
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: [current, format, parse, add_time, subtract_time, convert_timezone, to_timestamp, calendar_info, business_days, day_of_week, days_until]
+            description: "Date/time operation: current=now, format=custom format, add_time=add duration, convert_timezone=timezone conversion"
+          timezone:
+            type: string
+            description: "Timezone (e.g., 'UTC', 'Europe/Berlin', 'America/New_York')"
+          format:
+            type: string
+            description: "Output format ('iso', 'human', 'short', 'long', or custom strftime pattern)"
+          datetime:
+            type: string
+            description: "Input date/time string (ISO format or human readable)"
+          input_format:
+            type: string
+            description: "Format pattern for input datetime parsing"
+          years:
+            type: integer
+            description: "Years to add/subtract"
+          months:
+            type: integer
+            description: "Months to add/subtract"
+          days:
+            type: integer
+            description: "Days to add/subtract"
+          hours:
+            type: integer
+            description: "Hours to add/subtract"
+          minutes:
+            type: integer
+            description: "Minutes to add/subtract"
+          seconds:
+            type: integer
+            description: "Seconds to add/subtract"
+          target_date:
+            type: string
+            description: "Target date for day calculations"
+        required: [operation]
+        additionalProperties: false

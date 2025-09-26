@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, List
+from .core import MCPTool
 
 
 class MCPServer(ABC):
@@ -34,60 +35,85 @@ class MCPServer(ABC):
             params["_status"] = status
             return await self.call(action, params)
 
+    async def list_tools(self) -> List["MCPTool"]:
+        """List tools available from this MCP server.
+        
+        This is the unified interface. Plugins can either implement this directly
+        or override get_tools() or get_schema() for legacy compatibility.
+        """
+        from .core import MCPTool
+        
+        # Try get_tools() method first (modern multi-tool interface)
+        try:
+            tool_schemas = self.get_tools()
+            tools = []
+            for tool_schema in tool_schemas:
+                if isinstance(tool_schema, dict) and 'function' in tool_schema:
+                    func_def = tool_schema['function']
+                    tool = MCPTool(
+                        name=func_def['name'],
+                        description=func_def.get('description', f'Tool {func_def["name"]}'),
+                        input_schema=func_def.get('parameters', {})
+                    )
+                    tools.append(tool)
+            if tools:
+                return tools
+        except NotImplementedError:
+            pass
+        
+        # Try get_schema() method (legacy single-tool interface)
+        try:
+            schema = self.get_schema()
+            if isinstance(schema, dict) and 'function' in schema:
+                func_def = schema['function']
+                tool = MCPTool(
+                    name=func_def['name'],
+                    description=func_def.get('description', f'Tool {func_def["name"]}'),
+                    input_schema=func_def.get('parameters', {})
+                )
+                return [tool]
+        except NotImplementedError:
+            pass
+            
+        # Final fallback: Use default action
+        try:
+            default_action = self.get_default_action()
+            tool = MCPTool(
+                name=default_action,
+                description=f"Default action for {self.name}",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True
+                }
+            )
+            return [tool]
+        except NotImplementedError:
+            pass
+            
+        raise NotImplementedError("Plugin must implement list_tools(), get_tools(), get_schema(), or get_default_action()")
+
     def get_tools(self) -> list[dict[str, Any]]:
         """Return a list of OpenAI function schemas for this MCP server's tools.
         
-        Default implementation returns a single tool from get_schema() for backward compatibility.
-        Override this method to provide multiple tools.
+        DEPRECATED: Use list_tools() instead. This method is kept for backward compatibility.
         """
-        # Check if this class has overridden get_schema (not the base implementation)
-        if self.__class__.get_schema is not MCPServer.get_schema:
-            # Plugin has implemented get_schema, use it
-            return [self.get_schema()]
-        else:
-            # Neither get_tools nor get_schema is implemented
-            raise NotImplementedError("Plugin must implement either get_schema() or get_tools()")
+        raise NotImplementedError("Plugin should implement list_tools() instead of get_tools()")
 
     def get_schema(self) -> dict[str, Any]:
         """Return the OpenAI function schema for this MCP server's tools.
         
-        This method is kept for backward compatibility. New plugins should override
-        get_tools() instead to provide multiple tools.
+        DEPRECATED: Use list_tools() instead. This method is kept for backward compatibility.
         """
-        # Check if this class has overridden get_tools (not the base implementation)
-        if self.__class__.get_tools is not MCPServer.get_tools:
-            # Plugin has implemented get_tools, use it
-            tools = self.get_tools()
-            if len(tools) == 1:
-                return tools[0]
-            elif len(tools) == 0:
-                raise NotImplementedError("Plugin must implement either get_schema() or get_tools()")
-            else:
-                # Return the first tool as the "default" schema for backward compatibility
-                return tools[0]
-        else:
-            # Neither get_tools nor get_schema is implemented
-            raise NotImplementedError("Plugin must implement either get_schema() or get_tools()")
+        raise NotImplementedError("Plugin should implement list_tools() instead of get_schema()")
 
     def get_default_action(self) -> str:
         """Return the default action name for this MCP server.
         
-        For multi-tool plugins, this should return the name of the primary/default tool.
+        For multi-tool plugins, this returns the name of the first tool.
         """
-        # Try to extract from the first tool schema
-        try:
-            tools = self.get_tools()
-            if tools and 'function' in tools[0] and 'name' in tools[0]['function']:
-                return tools[0]['function']['name']
-        except NotImplementedError:
-            pass
-        
-        # Fallback to abstract method for backward compatibility
-        return self._get_default_action_impl()
-    
-    def _get_default_action_impl(self) -> str:
-        """Override this method if not implementing get_tools() with proper tool names."""
-        raise NotImplementedError("Plugin must implement get_default_action or provide tools with names")
+        # Default fallback for plugins that don't override this
+        return self.name
 
 
 class MCPRegistry:

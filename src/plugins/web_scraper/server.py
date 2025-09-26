@@ -367,20 +367,16 @@ class WebScraperServer(MCPServer):
             return ""
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        # support two actions: 'fetch' (existing) and 'links' (new)
-        action = params.get("action") or params.get("task") or "fetch"
+        if tool != "scrape_webpage":
+            return {"error": f"Unknown tool: {tool}. Only 'scrape_webpage' supported."}
 
-        # normalize action name when provided as top-level tool param
-        if tool and tool != "fetch":
-            # Allow callers to specify action via tool parameter (backwards compat)
-            action = tool
+        operation = params.get("operation", "content")
+        if operation not in ("content", "links"):
+            return {"error": f"Unknown operation: {operation}. Supported: 'content', 'links'"}
 
-        if action not in ("fetch", "links"):
-            raise ValueError(f"Unknown action: {action}")
-
-        url = params.get("url") or ""
+        url = params.get("url", "")
         if not url or not isinstance(url, str):
-            raise ValueError("Missing 'url' (string)")
+            return {"error": "Missing required parameter 'url' (string)"}
 
         # Get status object from base class (injected by call_with_status)
         status = params.get("_status")
@@ -562,7 +558,7 @@ class WebScraperServer(MCPServer):
 
 
         # If caller asked for links, extract anchors and return them
-        if action == "links":
+        if operation == "links":
             links: list[dict[str, Any]] = []
             try:
                 from bs4 import BeautifulSoup  # type: ignore
@@ -757,15 +753,18 @@ class WebScraperServer(MCPServer):
 
         return lists
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return the OpenAI function schema for web scraper."""
-        # Try loading schema from a schema.yaml in the plugin directory
+    def get_tools(self) -> list[dict[str, Any]]:
+        """Return tools from schema.yaml - Multi-Tool format."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema:
+        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema_data:
             raise RuntimeError("Missing required schema.yaml for web_scraper plugin")
-        return schema
+        
+        if 'tools' in schema_data:
+            return schema_data['tools']
+        else:
+            raise RuntimeError("Web Scraper plugin must use Multi-Tool format with 'tools' array")
 
-    def _get_default_action_impl(self) -> str:
-        """Return the default action for web scraper."""
-        return "fetch"
+    def get_default_action(self) -> str:
+        """Return the default tool for web scraper."""
+        return "scrape_webpage"

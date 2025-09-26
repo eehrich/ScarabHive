@@ -1,24 +1,19 @@
-type: function
-function:
-  name: {{name}}
-  description: Search recent tweets by query and return structured tweet metadata.
-  parameters:
-    type: object
-    properties:
-      action:
-        type: string
-        enum: [search]
-      query:
-        type: string
-      limit:
-        type: integer
-        minimum: 1
-        maximum: 50
-        default: 10
-      max_results:
-        type: integer
-        minimum: 1
-        maximum: 50
-        default: 10
-    required: [query]
-    additionalProperties: true
+tools:
+  - type: function
+    function:
+      name: search_tweets
+      description: Search recent tweets by query and return structured tweet metadata with user info, content, and engagement stats.
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Search query for tweets (supports hashtags, mentions, keywords)"
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+            description: "Maximum number of tweets to return"
+        required: [query]
+        additionalProperties: false

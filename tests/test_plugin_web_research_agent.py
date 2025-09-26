@@ -9,20 +9,38 @@ async def test_plugin_discovery():
     """Test that the plugin can be discovered and instantiated."""
     # Name is implied by folder. No PLUGIN_NAME constant anymore.
 
-    # Test factory instantiation
+    # Test factory instantiation with proper LLM config
+    config = {
+        "parent_llm": {
+            "llm": {"provider": "openai", "model": "gpt-5-nano"},
+            "llm_system": {
+                "profiles": {
+                    "research": {"model_ref": "gpt-5-nano"},
+                    "turbo": {"model_ref": "gpt-5-nano"}
+                },
+                "models": {
+                    "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
+                }
+            }
+        }
+    }
     factory = PLUGIN_FACTORY
-    server = factory("test_web_research", {}, ssl_verify=False)
+    server = factory("test_web_research", config, ssl_verify=False)
 
     assert server.name == "test_web_research"
-    assert server.cfg == {}
+    assert server.cfg == config
     assert server.ssl_verify is False
 
-    # Test schema
-    schema = server.get_schema()
-    assert isinstance(schema, dict)
-    assert schema["type"] == "function"
-    assert "function" in schema
-    assert schema["function"]["name"] == "test_web_research"
+    # Test tools (multi-tool format)
+    tools = server.get_tools()
+    assert isinstance(tools, list)
+    assert len(tools) == 4  # research, fact_check, compare_sources, ask
+    
+    tool_names = [tool["function"]["name"] for tool in tools]
+    assert "research" in tool_names
+    assert "fact_check" in tool_names
+    assert "compare_sources" in tool_names
+    assert "ask" in tool_names
 
     # Test default action
     default_action = server.get_default_action()
@@ -32,8 +50,22 @@ async def test_plugin_discovery():
 @pytest.mark.asyncio
 async def test_plugin_call():
     """Test basic plugin call functionality."""
+    config = {
+        "parent_llm": {
+            "llm": {"provider": "openai", "model": "gpt-5-nano"},
+            "llm_system": {
+                "profiles": {
+                    "research": {"model_ref": "gpt-5-nano"},
+                    "turbo": {"model_ref": "gpt-5-nano"}
+                },
+                "models": {
+                    "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
+                }
+            }
+        }
+    }
     factory = PLUGIN_FACTORY
-    server = factory("test_web_research", {}, ssl_verify=False)
+    server = factory("test_web_research", config, ssl_verify=False)
 
     # Test error handling for missing parameters
     result = await server.call("research", {})
@@ -48,4 +80,4 @@ async def test_plugin_call():
     # Test compare_sources error handling
     result = await server.call("compare_sources", {})
     assert result["status"] == "error"
-    assert "Missing required parameters" in result["error"]
+    assert "Missing required parameter 'topic'" in result["error"]

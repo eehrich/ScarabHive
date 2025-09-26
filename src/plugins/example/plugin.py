@@ -29,7 +29,7 @@ def PLUGIN_FACTORY(name: str, config: dict[str, Any] | None = None) -> ExampleSe
         
     Example:
         >>> plugin = PLUGIN_FACTORY("example", {"precision": 3, "enable_debug": True})
-        >>> tools = plugin.get_tools()
+        >>> tools = await plugin.list_tools()
         >>> len(tools)
         3
     """

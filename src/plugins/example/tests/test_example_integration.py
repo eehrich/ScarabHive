@@ -40,10 +40,10 @@ class TestExamplePluginIntegration:
         with pytest.raises(ValueError, match="Invalid plugin configuration"):
             PLUGIN_FACTORY("test", {"precision": -1})
     
-    def test_example_get_tools_count(self):
+    async def test_example_get_tools_count(self):
         """Test that server provides expected number of tools."""
         server = ExampleServer(name="test")
-        tools = server.get_tools()
+        tools = await server.list_tools()
         
         assert len(tools) == 3
         
@@ -52,11 +52,11 @@ class TestExamplePluginIntegration:
         
         assert all(name in tool_names for name in expected_names)
     
-    def test_example_schema_loading(self):
+    async def test_example_schema_loading(self):
         """Test schema loading from external file."""
         server = ExampleServer(name="test")
         
-        tools = server.get_tools()
+        tools = await server.list_tools()
         
         # Should have tools regardless of schema source
         assert len(tools) >= 3
@@ -66,11 +66,11 @@ class TestExamplePluginIntegration:
         assert calc_tool["function"]["name"] == "test_calculator"
         assert "arithmetic operations" in calc_tool["function"]["description"].lower()
     
-    def test_example_tools_naming_convention(self):
+    async def test_example_tools_naming_convention(self):
         """Test that tools follow modern naming conventions."""
         server = ExampleServer(name="test")
         
-        tools = server.get_tools()
+        tools = await server.list_tools()
         
         # Should have tools with proper names
         assert len(tools) >= 3
@@ -80,10 +80,10 @@ class TestExamplePluginIntegration:
         assert calc_tool["function"]["name"] == "test_calculator"
         assert "arithmetic operations" in calc_tool["function"]["description"].lower()
     
-    def test_example_tools_availability(self):
+    async def test_example_tools_availability(self):
         """Test tool availability and naming."""
         server = ExampleServer(name="test")
-        tools = server.get_tools()
+        tools = await server.list_tools()
         
         # Check we have the expected tools
         tool_names = [tool["function"]["name"] for tool in tools]
@@ -181,10 +181,10 @@ class TestExamplePluginIntegration:
         except ValueError as e:
             assert "invalid" in str(e).lower()
     
-    def test_example_template_variable_replacement(self):
+    async def test_example_template_variable_replacement(self):
         """Test that template variables are replaced correctly."""
         server = ExampleServer(name="myPlugin")
-        tools = server.get_tools()
+        tools = await server.list_tools()
         
         # All tool names should have the plugin name
         for tool in tools:

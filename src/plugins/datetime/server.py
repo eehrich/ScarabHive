@@ -29,34 +29,43 @@ class DateTimeServer(MCPServer):
         """Execute datetime operations."""
         status = params.get("_status")
 
+        if tool != "datetime_operations":
+            await status.error(f"Unknown tool: {tool}")
+            return {"status": "error", "error": f"Unknown tool: {tool}. Only 'datetime_operations' supported."}
+
+        operation = params.get("operation")
+        if not operation:
+            await status.error("Missing operation parameter")
+            return {"status": "error", "error": "Missing required parameter: operation"}
+
         # Publish status for operation start
-        await status.progress(f"Processing {tool} operation")
+        await status.progress(f"Processing {operation} datetime operation")
 
         try:
-            if tool == "current":
+            if operation == "current":
                 result = await self._get_current_datetime(params)
-            elif tool == "format":
+            elif operation == "format":
                 result = await self._format_datetime(params)
-            elif tool == "parse":
+            elif operation == "parse":
                 result = await self._parse_datetime(params)
-            elif tool == "add":
+            elif operation in ["add", "add_time"]:
                 result = await self._add_time(params)
-            elif tool == "subtract":
+            elif operation in ["subtract", "subtract_time"]:
                 result = await self._subtract_time(params)
-            elif tool == "convert_timezone":
+            elif operation == "convert_timezone":
                 result = await self._convert_timezone(params)
-            elif tool == "timestamp":
+            elif operation in ["timestamp", "to_timestamp"]:
                 result = await self._unix_timestamp(params)
-            elif tool == "calendar_info":
+            elif operation == "calendar_info":
                 result = await self._calendar_info(params)
-            elif tool == "business_days":
+            elif operation == "business_days":
                 result = await self._business_days(params)
-            elif tool == "day_of_week":
+            elif operation == "day_of_week":
                 result = await self._day_of_week(params)
-            elif tool == "days_until":
+            elif operation == "days_until":
                 result = await self._days_until(params)
             else:
-                result = {"status": "error", "error": f"Unknown action: {tool}"}
+                result = {"status": "error", "error": f"Unknown operation: {operation}"}
         except Exception as e:
             result = {"status": "error", "error": str(e)}
 
@@ -588,14 +597,18 @@ class DateTimeServer(MCPServer):
         except Exception as e:
             return {"status": "error", "error": str(e), "input": {"target_date": target_date, "start_date": start_date}}
 
-    def get_schema(self) -> dict[str, Any]:
-        """Return the OpenAI function schema for datetime operations."""
+    def get_tools(self) -> list[dict[str, Any]]:
+        """Return tools from schema.yaml - Multi-Tool format."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": Path(__file__).parent.name})
-        if not schema:
+        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": Path(__file__).parent.name})
+        if not schema_data:
             raise RuntimeError("Missing required schema.yaml for datetime plugin")
-        return schema
+        
+        if 'tools' in schema_data:
+            return schema_data['tools']
+        else:
+            raise RuntimeError("DateTime plugin schema.yaml must contain 'tools' array (Multi-Tool format required)")
 
     def get_default_action(self) -> str:
-        """Return the default action for datetime operations."""
-        return "current"
+        """Return the default tool for datetime operations."""
+        return "datetime_operations"

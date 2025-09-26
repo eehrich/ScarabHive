@@ -39,11 +39,11 @@ class LogViewerMCPServer(MCPServer):
         await status.progress(f"Processing {tool} operation")
 
         try:
-            if tool == "list_log_files":
+            if tool == "list_files":
                 result = await self._list_log_files(params)
-            elif tool == "get_log_tail":
+            elif tool == "get_tail":
                 result = await self._get_log_tail(params)
-            elif tool == "search_logs":
+            elif tool == "search":
                 result = await self._search_logs(params)
             else:
                 result = {"error": f"Unknown tool: {tool}"}

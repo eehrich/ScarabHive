@@ -11,19 +11,22 @@ class WeatherServer(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         status = params.get("_status")
 
-        # Publish status for operation start
-        location = params.get("location", "unknown")
-        await status.progress(f"Fetching weather for {location}")
-
-        supported_actions = ["forecast", "search", "query", "get", "check", "lookup"]
-        if tool not in supported_actions:
-            await status.error(f"Unknown tool: {tool}")
-            return {"status": "error", "error": f"Unknown tool: {tool}. Supported tools: {', '.join(supported_actions)}"}
+        if tool != "get_weather":
+            error_msg = f"Unknown tool: {tool}. Only 'get_weather' supported."
+            if status:
+                await status.error(error_msg)
+            return {"status": "error", "error": error_msg}
 
         location = params.get("location", "")
         if not location:
-            await status.error("Missing location parameter")
-            return {"status": "error", "error": "Missing required parameter: location"}
+            error_msg = "Missing required parameter: location"
+            if status:
+                await status.error(error_msg)
+            return {"status": "error", "error": error_msg}
+
+        # Publish status for operation start
+        if status:
+            await status.progress(f"Fetching weather for {location}")
 
         source = params.get("source", "met.no").lower()
         days = min(int(params.get("days", 3)), 7)
@@ -67,12 +70,18 @@ class WeatherServer(MCPServer):
                 "message": f"Failed to fetch weather data from {source}",
             }
 
-    def get_schema(self) -> dict[str, Any]:
+    def get_tools(self) -> list[dict[str, Any]]:
+        """Return tools from schema.yaml - modern Multi-Tool format."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema:
+        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
+        if not schema_data:
             raise RuntimeError("Missing required schema.yaml for weather plugin")
-        return schema
+        
+        # Extract tools array from schema
+        if 'tools' in schema_data:
+            return schema_data['tools']
+        else:
+            raise RuntimeError("Weather plugin schema.yaml must contain 'tools' array (Multi-Tool format required)")
 
     def get_default_action(self) -> str:
-        return "forecast"
+        return "get_weather"

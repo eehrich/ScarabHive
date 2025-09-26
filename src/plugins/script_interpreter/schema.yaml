@@ -1,17 +1,35 @@
-type: function
-function:
-  name: {{name}}
-  description: Execute Python code in a secure sandbox. Supports mathematical expressions, basic operations, and simple programming constructs.
-  parameters:
-    type: object
-    properties:
-      action:
-        type: string
-        enum: [eval, validate, reset]
-        default: eval
-        description: Action to perform - eval (execute code), validate (check syntax), or reset (clear sandbox)
-      code:
-        type: string
-        description: "Python code to execute. Examples: '(2+3)*4', 'x = 42; y = x * 2', 'abs(-15)'"
-    required: [code]
-    additionalProperties: true
+tools:
+  - type: function
+    function:
+      name: execute_python
+      description: Execute Python code in a secure sandbox environment. Supports mathematical expressions and basic programming.
+      parameters:
+        type: object
+        properties:
+          code:
+            type: string
+            description: "Python code to execute (e.g., '(2+3)*4', 'x = 42; y = x * 2', 'abs(-15)')"
+        required: [code]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: validate_python
+      description: Validate Python code syntax without executing it.
+      parameters:
+        type: object
+        properties:
+          code:
+            type: string
+            description: "Python code to validate for syntax errors"
+        required: [code]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: reset_sandbox
+      description: Reset the Python sandbox environment, clearing all variables and state.
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false

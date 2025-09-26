@@ -933,18 +933,8 @@ def main() -> None:
 
         # status action: show discovered plugins and whether they're enabled in config
         if getattr(args, "action", None) == "status":
-            # load config file to read enabled list
-            cfg_path = Path(args.config)
-            data: Dict[str, Any] = {}
-            if cfg_path.exists():
-                try:
-                    data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    data = {}
-            enabled = set((data.get("mcp") or {}).get("enabled_servers", []) or [])
+            # use the properly loaded config (with includes processed) instead of reading file directly
             listing = to_list()
-            for p in listing:
-                p["enabled"] = p["name"] in enabled
             print(json.dumps(listing, indent=2, ensure_ascii=False))
             return
 
@@ -1026,11 +1016,22 @@ def main() -> None:
             except Exception:
                 mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
 
-            mcp_integration = MCPIntegration(config={"mcp": mcp_block})
+            # Prepare full configuration including LLM system for plugins
+            payload = {"mcp": mcp_block}
+            # Include LLM system configuration for plugin parent_llm injection
+            if hasattr(config, 'llm_system') and config.llm_system:
+                if hasattr(config.llm_system, 'model_dump'):
+                    payload['llm_system'] = config.llm_system.model_dump()
+                else:
+                    payload['llm_system'] = config.llm_system
+            if hasattr(config, 'agent_llm_profiles') and config.agent_llm_profiles:
+                payload['agent_llm_profiles'] = config.agent_llm_profiles
+            
+            mcp_integration = MCPIntegration(config=payload)
             # Ensure MCPIntegration sets up external clients and plugins
             try:
                 try:
-                    await mcp_integration.initialize({"mcp": mcp_block})
+                    await mcp_integration.initialize(payload)
                 except Exception:
                     # Non-fatal: continue without live clients if initialization fails
                     pass

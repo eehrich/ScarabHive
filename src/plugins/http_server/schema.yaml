@@ -1,16 +1,20 @@
-type: function
-function:
-  name: {{name}}
-  description: HTTP adapter for MCP servers - exposes wrapped MCP servers via REST API endpoints
-  parameters:
-    type: object
-    properties:
-      action:
-        type: string
-        enum: [health, call]
-      tool:
-        type: string
-      params:
+tools:
+  - type: function
+    function:
+      name: http_server_ops
+      description: HTTP adapter for MCP servers - health checks and proxied tool calls via REST API endpoints.
+      parameters:
         type: object
-    required: [action]
-    additionalProperties: true
+        properties:
+          operation:
+            type: string
+            enum: [health, call]
+            description: "'health' for server status, 'call' to proxy MCP tool calls via HTTP"
+          tool:
+            type: string
+            description: "MCP tool name to call (required for 'call' operation)"
+          params:
+            type: object
+            description: "Parameters for MCP tool call (for 'call' operation)"
+        required: [operation]
+        additionalProperties: false

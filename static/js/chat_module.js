@@ -44,8 +44,18 @@
     // Process ordered list blocks first (preserve numbering)
     html = html.replace(/(^|\n)((?:[ \t]*\d+\.\s+.+(?:\n|$))+)/gm, function(_, pre, block) {
       const lines = block.trim().split(/\r?\n/).filter(Boolean);
-      const items = lines.map(l => l.replace(/^[ \t]*\d+\.\s+/, '').trim());
-      return pre + '<ol>' + items.map(i => `<li>${i}</li>`).join('') + '</ol>';
+      const items = lines.map(line => {
+        const match = line.match(/^[ \t]*(\d+)\.\s+(.+)$/);
+        if (match) {
+          return { number: parseInt(match[1]), content: match[2].trim() };
+        }
+        return { number: 1, content: line.trim() };
+      });
+      
+      // Use the first item's number as start attribute and preserve individual numbers
+      const startNum = items.length > 0 ? items[0].number : 1;
+      const liElements = items.map(item => `<li value="${item.number}">${item.content}</li>`).join('');
+      return pre + `<ol start="${startNum}">` + liElements + '</ol>';
     });
 
     // Then process unordered list blocks

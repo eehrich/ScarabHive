@@ -110,7 +110,7 @@ result = await plugin.call("example_status", {"verbose": True})
 
 ### 1. Plugin Structure
 - Inherit from `MCPServer` base class
-- Implement `get_tools()` for multi-tool support
+- Implement `async list_tools()` for multi-tool support
 - Use async methods for all operations
 
 ### 2. Schema Definition
@@ -139,15 +139,20 @@ result = await plugin.call("example_status", {"verbose": True})
 
 ## Configuration
 
-The plugin supports configuration via `config/agent.yaml`:
+Configure the Example plugin in `config/mcp.yaml`:
 
 ```yaml
-plugins:
+mcp:
+  enabled_servers:
+  - example
+
+servers:
   example:
-    # Plugin-specific configuration
-    precision: 2              # Decimal precision for calculations
-    max_text_length: 1000     # Maximum text length for formatting
-    enable_debug: false       # Enable debug logging
+    type: example
+    # Optional plugin-specific configuration
+    # precision: 2
+    # max_text_length: 1000
+    # enable_debug: false
 ```
 
 Environment variables:

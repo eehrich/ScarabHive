@@ -1,51 +1,49 @@
-# Log Viewer plugin schema
-# Provides MCP tools for log management and web UI for real-time log viewing
-
-# Web UI configuration for dynamic button registration and panel definition
 tools:
   - type: function
     function:
-      name: "{name}_list_log_files"
-      description: "List available log files and their status"
+      name: list_files
+      description: List all available log files in the configured log directory.
       parameters:
         type: object
         properties: {}
-        required: []
-  
+        additionalProperties: false
+
   - type: function
     function:
-      name: "{name}_get_log_tail"
-      description: "Get the last N lines from a log file"
+      name: get_tail
+      description: Get the most recent lines from a specified log file.
       parameters:
         type: object
         properties:
           log_file:
             type: string
-            description: "Path to the log file"
+            description: "Log file path"
           lines:
             type: integer
-            description: "Number of lines to retrieve (default: 50)"
             default: 50
+            description: "Number of recent lines to retrieve"
         required: ["log_file"]
-  
+        additionalProperties: false
+
   - type: function
     function:
-      name: "{name}_search_logs"
-      description: "Search for patterns in log files using regex"
+      name: search
+      description: Search for patterns in log files with regex support.
       parameters:
         type: object
         properties:
-          pattern:
-            type: string
-            description: "Search pattern (regex supported)"
           log_file:
             type: string
-            description: "Specific log file to search (optional, searches all if not specified)"
+            description: "Log file path to search in"
+          pattern:
+            type: string
+            description: "Search pattern with regex support"
           max_results:
             type: integer
-            description: "Maximum number of results (default: 100)"
             default: 100
-        required: ["pattern"]
+            description: "Maximum number of search results to return"
+        required: ["log_file", "pattern"]
+        additionalProperties: false
 
 # Web UI configuration
 web_ui:
