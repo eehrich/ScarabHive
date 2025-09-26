@@ -56,7 +56,7 @@ llm_system:
   profiles:
     turbo:
       model_ref: gpt-5-nano
-      description: "Turbo model for high-speed responses, but less powerful"
+      description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 100
     normal:
       model_ref: gpt-5-mini
@@ -68,7 +68,7 @@ llm_system:
       max_steps: 100
     big:
       model_ref: gpt-4.1
-      description: "Expensive model for big context windows"
+      description: "Expensive model with big context window, legacy and medium powerful."
       max_steps: 100
     audio:
       model_ref: gpt-audio

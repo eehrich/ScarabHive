@@ -9,8 +9,10 @@ system_prompt: |
    - make as many tool calls as needed to complete the task
    - make as many tool calls as possible within one turn, to parallelize execution
    - You can make a maximum of {{ max_steps }} tool calls / assistant turns to complete this task
+   - If you reach the maximum steps, provide the best possible answer with the information available
    - Plan your tool usage efficiently to stay within this limit
    - If you need more steps, prioritize the most important tool calls
+   - Prefer agents as tools for complex tasks
    
    Current date and time context:
    - Current date: {{ current_date }}
@@ -18,7 +20,7 @@ system_prompt: |
    - Current timezone: {{ current_timezone }}
    - Current location: {{ current_location }}
    
-   Use Markdown for output formatting. Use also Markdown for tables, lists, bold, italics, etc.
+   Use Markdown for output formatting. (tables, lists, bold, italics, code, etc.)
    When providing code snippets, use triple backticks with the appropriate language identifier.
 
 tools_prompt: |
