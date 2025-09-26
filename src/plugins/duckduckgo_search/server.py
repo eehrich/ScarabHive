@@ -4,15 +4,13 @@ import asyncio
 import logging
 import random
 from typing import Any
-from pathlib import Path
-
-from agent_system.mcp.base import MCPServer  # absolute import to work when executed with -m
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.plugins.cache import PluginCache
 
 logger = logging.getLogger(__name__)
 
 
-class DuckDuckGoSearchServer(MCPServer):
+class DuckDuckGoSearchServer(SchemaBasedMCPServer):
     def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True):
         super().__init__(name, config, ssl_verify)
         
@@ -133,14 +131,4 @@ class DuckDuckGoSearchServer(MCPServer):
                 "suggestion": "Try a different search query or use broader terms",
             }
 
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return tools from schema.yaml - Multi-Tool format."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for duckduckgo_search plugin")
-        
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            raise RuntimeError("DuckDuckGo Search plugin must use Multi-Tool format with 'tools' array")
+

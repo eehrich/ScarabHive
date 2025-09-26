@@ -3,18 +3,17 @@ from __future__ import annotations
 from typing import Any
 import re
 import urllib.parse
-from pathlib import Path
 import asyncio
 import random
 import logging
 
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.plugins.cache import PluginCache
 
 logger = logging.getLogger(__name__)
 
 
-class WebScraperServer(MCPServer):
+class WebScraperServer(SchemaBasedMCPServer):
     def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True):
         super().__init__(name, config, ssl_verify)
         
@@ -824,18 +823,6 @@ class WebScraperServer(MCPServer):
             lists.append(list_data)
 
         return lists
-
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return tools from schema.yaml - Multi-Tool format."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for web_scraper plugin")
-        
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            raise RuntimeError("Web Scraper plugin must use Multi-Tool format with 'tools' array")
 
     def get_default_action(self) -> str:
         """Return the default tool for web scraper."""

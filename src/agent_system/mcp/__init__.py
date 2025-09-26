@@ -20,6 +20,7 @@ from ..plugins.mcp_adapter import PluginMCPAdapter, plugin_mcp_registry
 from .core import MCPTool, MCPResource, MCPPrompt, MCPMessage, MCPError
 from .config import MCPConfig, MCPConfigManager, create_example_config
 from .security import MCPSecurityManager, configure_security
+from .schema_based import SchemaBasedMCPServer
 
 __all__ = [
     "MCPIntegration",
@@ -37,5 +38,6 @@ __all__ = [
     "MCPConfigManager",
     "create_example_config",
     "MCPSecurityManager",
-    "configure_security"
+    "configure_security",
+    "SchemaBasedMCPServer"
 ]

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
-from pathlib import Path
 
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 
-class TwitterSearchServer(MCPServer):
+class TwitterSearchServer(SchemaBasedMCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool != "search_tweets":
             return {"error": f"Unknown tool: {tool}. Only 'search_tweets' supported."}
@@ -29,15 +28,5 @@ class TwitterSearchServer(MCPServer):
                 "suggestion": f"Try searching for '{query}' using duckduckgo_search or yahoo_finance instead"
             }
 
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return tools from schema.yaml - Multi-Tool format."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for twitter_search plugin")
-        
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            raise RuntimeError("Twitter Search plugin must use Multi-Tool format with 'tools' array")
+
 

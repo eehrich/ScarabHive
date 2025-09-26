@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
-from pathlib import Path
 
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from . import sources
 
 
-class WeatherServer(MCPServer):
+class WeatherServer(SchemaBasedMCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         status = params.get("_status")
 
@@ -69,19 +68,6 @@ class WeatherServer(MCPServer):
                 "source": source,
                 "message": f"Failed to fetch weather data from {source}",
             }
-
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return tools from schema.yaml - modern Multi-Tool format."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for weather plugin")
-        
-        # Extract tools array from schema
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            raise RuntimeError("Weather plugin schema.yaml must contain 'tools' array (Multi-Tool format required)")
 
     def get_default_action(self) -> str:
         return "get_weather"
