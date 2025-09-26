@@ -6,8 +6,12 @@ import urllib.parse
 from pathlib import Path
 import asyncio
 import random
+import logging
 
 from agent_system.mcp.base import MCPServer
+from agent_system.plugins.cache import PluginCache, create_cache_key
+
+logger = logging.getLogger(__name__)
 
 
 class WebScraperServer(MCPServer):
@@ -57,6 +61,11 @@ class WebScraperServer(MCPServer):
         
         # Proxy configuration
         self._proxies = config.get("proxies", []) if config else []
+        
+        # Initialize cache system
+        cache_ttl = config.get("cache_ttl", 1800) if config else 1800  # 30 minutes default
+        self.cache = PluginCache(plugin_name="web_scraper", default_ttl=cache_ttl)
+        self.cache_enabled = config.get("cache_enabled", True) if config else True
 
     def _get_random_user_agent(self) -> str:
         """Get a random User-Agent from the pool"""
@@ -76,6 +85,40 @@ class WebScraperServer(MCPServer):
         """Add a single proxy URL"""
         if proxy_url not in self._proxies:
             self._proxies.append(proxy_url)
+    
+    def _create_cache_key(self, url: str, operation: str, max_chars: int, 
+                         extract_tables: bool, extract_forms: bool, 
+                         extract_lists: bool, include_html: bool) -> str:
+        """Create a cache key from request parameters."""
+        # Normalize URL (remove fragment, sort query params)
+        try:
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed = urlparse(url)
+            # Sort query parameters for consistent caching
+            if parsed.query:
+                query_params = parse_qs(parsed.query, keep_blank_values=True)
+                sorted_query = urlencode(sorted(query_params.items()), doseq=True)
+                normalized_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, 
+                                          parsed.params, sorted_query, ""))  # Remove fragment
+            else:
+                normalized_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, 
+                                          parsed.params, "", ""))  # Remove fragment and query
+        except Exception:
+            normalized_url = url
+        
+        # Create cache key from normalized URL and options
+        cache_data = {
+            "url": normalized_url,
+            "operation": operation,
+            "max_chars": max_chars,
+            "extract_tables": extract_tables,
+            "extract_forms": extract_forms,
+            "extract_lists": extract_lists,
+            "include_html": include_html
+        }
+        
+        import json
+        return json.dumps(cache_data, sort_keys=True, separators=(',', ':'))
     def _clean_text(self, text: str) -> str:
         """Clean up extracted text by removing excessive whitespace, normalizing newlines, and filtering invalid Unicode."""
         if not text:
@@ -389,6 +432,19 @@ class WebScraperServer(MCPServer):
         extract_tables = bool(params.get("extract_tables", False))
         extract_forms = bool(params.get("extract_forms", False))
         extract_lists = bool(params.get("extract_lists", False))
+        
+        # Create cache key from relevant parameters
+        cache_key = self._create_cache_key(url, operation, max_chars, extract_tables, 
+                                         extract_forms, extract_lists, include_html)
+        
+        # Try to get from cache first
+        if self.cache_enabled:
+            cached_result = await self.cache.get(cache_key)
+            if cached_result is not None:
+                if status:
+                    await status.end("Retrieved from cache")
+                logger.debug(f"Cache hit for URL: {url[:80]}...")
+                return cached_result
 
         # Links-specific options
         include_nofollow = bool(params.get("include_nofollow", False))
@@ -609,7 +665,14 @@ class WebScraperServer(MCPServer):
                     if max_links and len(links) >= max_links:
                         break
 
-            return {"url": url, "final_url": final_url, "status_code": status_code, "links": links}
+            links_result = {"url": url, "final_url": final_url, "status_code": status_code, "links": links}
+            
+            # Cache the result
+            if self.cache_enabled:
+                await self.cache.set(cache_key, links_result)
+                logger.debug(f"Cached links for URL: {url[:80]}...")
+                
+            return links_result
 
         # otherwise return full fetch-style result
 
@@ -641,6 +704,11 @@ class WebScraperServer(MCPServer):
                 await status.end(f"Completed fetch {url} (status={status_code})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
         except Exception:
             pass
+        
+        # Cache the result before returning
+        if self.cache_enabled:
+            await self.cache.set(cache_key, result)
+            logger.debug(f"Cached content for URL: {url[:80]}...")
         
         # Restore original proxy configuration if it was temporarily changed
         if original_proxies is not None:

@@ -7,11 +7,30 @@ from typing import Any
 from pathlib import Path
 
 from agent_system.mcp.base import MCPServer  # absolute import to work when executed with -m
+from agent_system.plugins.cache import PluginCache
 
 logger = logging.getLogger(__name__)
 
 
 class DuckDuckGoSearchServer(MCPServer):
+    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True):
+        super().__init__(name, config, ssl_verify)
+        
+        # Initialize cache system 
+        # Search results typically change more frequently, so shorter TTL (15 minutes default)
+        cache_ttl = config.get("cache_ttl", 900) if config else 900  
+        self.cache = PluginCache(plugin_name="duckduckgo_search", default_ttl=cache_ttl)
+        self.cache_enabled = config.get("cache_enabled", True) if config else True
+    
+    def _create_cache_key(self, query: str, max_results: int) -> str:
+        """Create a cache key from search parameters."""
+        import json
+        cache_data = {
+            "query": query.strip().lower(),  # Normalize query
+            "max_results": max_results
+        }
+        return json.dumps(cache_data, sort_keys=True, separators=(',', ':'))
+    
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool != "web_search":
             return {"error": f"Unknown tool: {tool}. Only 'web_search' supported."}
@@ -22,6 +41,17 @@ class DuckDuckGoSearchServer(MCPServer):
         
         if not query.strip():
             return {"engine": "duckduckgo", "query": query, "results": [], "package": "ddgs", "error": "Empty query"}
+        
+        # Create cache key and try to get cached result
+        cache_key = self._create_cache_key(query, max_results)
+        
+        if self.cache_enabled:
+            cached_result = await self.cache.get(cache_key)
+            if cached_result is not None:
+                if status:
+                    await status.end("Retrieved from cache")
+                logger.debug(f"Cache hit for query: {query[:50]}...")
+                return cached_result
             
         try:
             try:
@@ -70,12 +100,20 @@ class DuckDuckGoSearchServer(MCPServer):
             
             logger.debug("DuckDuckGo search returned %d results", len(results))
             
+            # Create result object
+            search_result = {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
+            
+            # Cache the successful result
+            if self.cache_enabled:
+                await self.cache.set(cache_key, search_result)
+                logger.debug(f"Cached search results for query: {query[:50]}...")
+            
             # Update status with success
             if status:
                 await status.end(f"Search completed: {query} ({len(results)} results)",
                                meta={"results": len(results)})
             
-            return {"engine": "duckduckgo", "query": query, "results": results, "package": pkg}
+            return search_result
         
         except Exception as e:
             logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))

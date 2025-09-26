@@ -36,7 +36,15 @@ servers:
     # Optional configuration
     # timeout: 15
     # default_max_results: 5
+    # cache_enabled: true
+    # cache_ttl: 900  # 15 minutes
 ```
+
+### Configuration Options
+- **timeout**: Request timeout in seconds (default: 15)
+- **default_max_results**: Default maximum search results (default: 5)
+- **cache_enabled**: Enable/disable caching (default: true)
+- **cache_ttl**: Cache lifetime in seconds (default: 900 = 15 minutes)
 
 ### Environment Variables
 - `DUCKDUCKGO_TIMEOUT`: Request timeout (default: 15 seconds)
@@ -123,6 +131,20 @@ servers:
   "search_time": 0.45
 }
 ```
+
+## Performance Features
+
+### Intelligent Caching
+- **Automatic Caching**: Search results cached in `.cache/duckduckgo_search/` directory  
+- **TTL-Based Expiration**: Default 15-minute cache lifetime (configurable)
+- **Cache Keys**: Based on search query and max_results parameter
+- **Performance Boost**: Avoid repeated API calls for identical searches
+- **Fresh Results**: Shorter TTL ensures reasonably current search results
+
+### Rate Limiting Protection
+- **Built-in Delays**: Automatic spacing between requests
+- **Retry Logic**: Handles temporary rate limits gracefully
+- **Error Recovery**: Fallback mechanisms for API issues
 
 ## Search Tips
 

@@ -38,7 +38,16 @@ servers:
     # Optional configuration
     # timeout: 20
     # max_chars: 8000
+    # cache_enabled: true
+    # cache_ttl: 1800  # 30 minutes
 ```
+
+### Configuration Options
+- **timeout**: Request timeout in seconds (default: 20)
+- **max_chars**: Default text truncation limit (default: 8000)
+- **cache_enabled**: Enable/disable caching (default: true)
+- **cache_ttl**: Cache lifetime in seconds (default: 1800 = 30 minutes)
+- **proxies**: List of proxy URLs for requests
 
 ### Environment Variables
 - `WEB_SCRAPER_TIMEOUT`: Default request timeout (default: 20 seconds)
@@ -239,6 +248,13 @@ When `extract_forms: true`:
 - **Retry Logic**: Automatic retry for transient failures
 - **User-Agent Rotation**: Avoid being blocked by websites
 - **Compression Support**: Accepts gzipped responses
+
+### Intelligent Caching
+- **Automatic Caching**: Results cached in `.cache/web_scraper/` directory
+- **TTL-Based Expiration**: Default 30-minute cache lifetime (configurable)
+- **Cache Keys**: Based on URL, operation type, and extraction options
+- **Performance Boost**: Avoid repeated requests for same content
+- **Cache Management**: Automatic cleanup of expired entries
 
 ## Error Handling
 
