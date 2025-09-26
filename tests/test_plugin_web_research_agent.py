@@ -37,14 +37,14 @@ async def test_plugin_discovery():
     assert len(tools) == 4  # web_research, verify_claim, analyze_sources, intelligent_research
     
     tool_names = [tool["function"]["name"] for tool in tools]
-    assert "web_research" in tool_names
-    assert "verify_claim" in tool_names
-    assert "analyze_sources" in tool_names
-    assert "intelligent_research" in tool_names
+    assert "research_agent" in tool_names
+    assert "fact_check_agent" in tool_names
+    assert "source_analysis_agent" in tool_names
+    assert "research_assistant_agent" in tool_names
 
     # Test default action
     default_action = server.get_default_action()
-    assert default_action == "web_research"
+    assert default_action == "research_agent"
 
 
 @pytest.mark.asyncio
@@ -68,16 +68,16 @@ async def test_plugin_call():
     server = factory("test_web_research", config, ssl_verify=False)
 
     # Test error handling for missing parameters
-    result = await server.call("research", {})
+    result = await server.call("research_agent", {})
     assert result["status"] == "error"
     assert "Missing required parameter 'topic'" in result["error"]
 
     # Test fact_check error handling
-    result = await server.call("fact_check", {})
+    result = await server.call("fact_check_agent", {})
     assert result["status"] == "error"
     assert "Missing required parameter 'claim'" in result["error"]
 
     # Test compare_sources error handling
-    result = await server.call("compare_sources", {})
+    result = await server.call("source_analysis_agent", {})
     assert result["status"] == "error"
     assert "Missing required parameter 'topic'" in result["error"]

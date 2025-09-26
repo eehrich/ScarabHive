@@ -405,23 +405,23 @@ class WebResearchAgent(Agent):
         request_id = params.get("request_id") or params.get("requestId")
         status = params.get("_status")   
 
-        if tool in ("research", "web_research"):
+        if tool == "research_agent":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
             max_results = params.get("max_results", 5)
             return await self.research(topic, max_results, request_id, status)
-        elif tool in ("fact_check", "verify_claim"):
+        elif tool == "fact_check_agent":
             claim = params.get("claim")
             if not claim:
                 return {"status": "error", "error": "Missing required parameter 'claim' for fact_check action"}
             return await self.fact_check(claim, request_id, status)
-        elif tool in ("compare_sources", "analyze_sources"):
+        elif tool == "source_analysis_agent":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for compare_sources action"}
             return await self.compare_sources(topic, request_id, status)
-        elif tool in ("run", "execute", "ask", "intelligent_research"):
+        elif tool == "research_assistant_agent":
             # Handle general task requests by routing to research with progress tracking
             task = params.get("task") or params.get("query") or params.get("prompt")
             if not task:
@@ -432,4 +432,4 @@ class WebResearchAgent(Agent):
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_default_action(self) -> str:
-        return "web_research"
+        return "research_agent"
