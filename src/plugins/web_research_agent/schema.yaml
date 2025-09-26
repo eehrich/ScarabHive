@@ -1,8 +1,8 @@
 tools:
   - type: function
     function:
-      name: research
-      description: "Comprehensive topic research with multiple sources"
+      name: web_research
+      description: "Advanced multi-source web research - automatically searches, scrapes, and synthesizes information from multiple websites into comprehensive reports with source citations. Superior to basic search for complex topics."
       parameters:
         type: object
         properties:
@@ -22,8 +22,8 @@ tools:
 
   - type: function
     function:
-      name: fact_check
-      description: "Verify claims against multiple reliable sources"
+      name: verify_claim
+      description: "Professional fact-checking service - searches authoritative sources, analyzes evidence, and provides verification status (True/False/Partially True) with detailed supporting evidence and source credibility assessment"
       parameters:
         type: object
         properties:
@@ -43,8 +43,8 @@ tools:
 
   - type: function
     function:
-      name: compare_sources
-      description: "Compare information across multiple sources for a topic"
+      name: analyze_sources
+      description: "Expert source analysis - compares information across multiple websites, identifies contradictions, assesses source reliability, and provides balanced perspective analysis. Essential for controversial or complex topics."
       parameters:
         type: object
         properties:
@@ -64,8 +64,8 @@ tools:
 
   - type: function
     function:
-      name: ask
-      description: "General research query with intelligent source selection"
+      name: intelligent_research
+      description: "AI-powered research assistant - intelligently selects the most relevant sources, performs deep analysis, and synthesizes findings into actionable insights. Perfect for research tasks requiring judgment and context understanding."
       parameters:
         type: object
         properties:

@@ -34,17 +34,17 @@ async def test_plugin_discovery():
     # Test tools (multi-tool format)
     tools = server.get_tools()
     assert isinstance(tools, list)
-    assert len(tools) == 4  # research, fact_check, compare_sources, ask
+    assert len(tools) == 4  # web_research, verify_claim, analyze_sources, intelligent_research
     
     tool_names = [tool["function"]["name"] for tool in tools]
-    assert "research" in tool_names
-    assert "fact_check" in tool_names
-    assert "compare_sources" in tool_names
-    assert "ask" in tool_names
+    assert "web_research" in tool_names
+    assert "verify_claim" in tool_names
+    assert "analyze_sources" in tool_names
+    assert "intelligent_research" in tool_names
 
     # Test default action
     default_action = server.get_default_action()
-    assert default_action == "research"
+    assert default_action == "web_research"
 
 
 @pytest.mark.asyncio
