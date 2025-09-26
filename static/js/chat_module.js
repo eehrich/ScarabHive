@@ -564,6 +564,7 @@
     // Also export to global window for older modules
     try { global.currentSessionId = currentSessionId; } catch (e) { /* ignore */ }
     let currentEventSource = null;
+    let currentStatusEventSource = null;
 
     if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {
       console.warn('Chat form elements not found');
@@ -668,10 +669,18 @@
         : `/events?task=${encodeURIComponent(task)}`;
       const es = new EventSource(eventUrl);
       currentEventSource = es; // Track current event source
+      
+      // Close any existing status event source before starting a new one
+      if (currentStatusEventSource) {
+        currentStatusEventSource.close();
+        currentStatusEventSource = null;
+      }
+      
       let statusEs = null;
 
       try {
         statusEs = new EventSource('/status/stream');
+        currentStatusEventSource = statusEs; // Track current status event source
         statusEs.onmessage = (ev) => {
           try {
             const statusData = JSON.parse(ev.data);
@@ -731,7 +740,8 @@
               break;
             case 'end':
               es.close();
-              if (statusEs) statusEs.close();
+              // Don't close statusEs here - let status updates continue after response completion
+              // statusEs will be closed when a new request starts or on explicit error
               runBtn.style.display = 'block'; // Show run button
               stopBtn.style.display = 'none'; // Hide stop button
               // Reset stop button state
@@ -745,7 +755,10 @@
               showSection(blk.t);
               blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
               es.close();
-              if (statusEs) statusEs.close();
+              if (statusEs) {
+                statusEs.close();
+                currentStatusEventSource = null;
+              }
               runBtn.style.display = 'block'; // Show run button
               stopBtn.style.display = 'none'; // Hide stop button
               // Reset stop button state
@@ -784,13 +797,19 @@
           // Keep currentRequestId and Request ID display visible
           currentEventSource = null;
           es.close();
-          if (statusEs) statusEs.close();
+          if (statusEs) {
+            statusEs.close();
+            currentStatusEventSource = null;
+          }
         }
       }, 1500);
 
       es.onerror = () => {
         es.close();
-        if (statusEs) statusEs.close();
+        if (statusEs) {
+          statusEs.close();
+          currentStatusEventSource = null;
+        }
         runBtn.style.display = 'block'; // Show run button
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
@@ -810,11 +829,27 @@
     }
   }
 
+  // Cleanup function to close all event sources
+  function cleanup() {
+    if (currentEventSource) {
+      currentEventSource.close();
+      currentEventSource = null;
+    }
+    if (currentStatusEventSource) {
+      currentStatusEventSource.close();
+      currentStatusEventSource = null;
+    }
+  }
+  
   // Expose functions for testing
   chatModule.addStatusEvent = addStatusEvent;
   chatModule.toggleTreeNode = toggleTreeNode;
+  chatModule.cleanup = cleanup;
   
   // attach to global
   global.chatModule = chatModule;
+  
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', cleanup);
 
 })(window);
