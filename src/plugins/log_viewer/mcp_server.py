@@ -9,12 +9,12 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 logger = logging.getLogger(__name__)
 
 
-class LogViewerMCPServer(MCPServer):
+class LogViewerMCPServer(SchemaBasedMCPServer):
     """MCP server component for log viewer plugin"""
     
     def __init__(self, name: str, config: Dict[str, Any], ssl_verify: bool = True):
@@ -39,11 +39,11 @@ class LogViewerMCPServer(MCPServer):
         await status.progress(f"Processing {tool} operation")
 
         try:
-            if tool == "list_files":
+            if tool == "list_log_files":
                 result = await self._list_log_files(params)
-            elif tool == "get_tail":
+            elif tool == "get_log_tail":
                 result = await self._get_log_tail(params)
-            elif tool == "search":
+            elif tool == "search_logs":
                 result = await self._search_logs(params)
             else:
                 result = {"error": f"Unknown tool: {tool}"}
@@ -60,70 +60,7 @@ class LogViewerMCPServer(MCPServer):
 
         return result
     
-    def get_tools(self) -> List[Dict[str, Any]]:
-        """Return available MCP tools"""
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "list_log_files",
-                    "description": "List available log files and their status",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_log_tail",
-                    "description": "Get the last N lines from a log file",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "log_file": {
-                                "type": "string",
-                                "description": "Path to the log file"
-                            },
-                            "lines": {
-                                "type": "integer",
-                                "description": "Number of lines to retrieve (default: 50)",
-                                "default": 50
-                            }
-                        },
-                        "required": ["log_file"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_logs",
-                    "description": "Search for patterns in log files",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "pattern": {
-                                "type": "string",
-                                "description": "Search pattern (regex supported)"
-                            },
-                            "log_file": {
-                                "type": "string",
-                                "description": "Specific log file to search (optional)"
-                            },
-                            "max_results": {
-                                "type": "integer",
-                                "description": "Maximum number of results (default: 100)",
-                                "default": 100
-                            }
-                        },
-                        "required": ["pattern"]
-                    }
-                }
-            }
-        ]
+
     
     async def _list_log_files(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List available log files and their status"""

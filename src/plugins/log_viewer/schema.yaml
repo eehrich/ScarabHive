@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: list_files
+      name: list_log_files
       description: List all available log files in the configured log directory.
       parameters:
         type: object
@@ -10,7 +10,7 @@ tools:
 
   - type: function
     function:
-      name: get_tail
+      name: get_log_tail
       description: Get the most recent lines from a specified log file.
       parameters:
         type: object
@@ -27,22 +27,22 @@ tools:
 
   - type: function
     function:
-      name: search
-      description: Search for patterns in log files with regex support.
+      name: search_logs
+      description: Search log files for patterns with regex support.
       parameters:
         type: object
         properties:
-          log_file:
-            type: string
-            description: "Log file path to search in"
           pattern:
             type: string
-            description: "Search pattern with regex support"
+            description: "Search pattern (regex supported)"
+          log_file:
+            type: string
+            description: "Specific log file to search (optional)"
           max_results:
             type: integer
             default: 100
-            description: "Maximum number of search results to return"
-        required: ["log_file", "pattern"]
+            description: "Maximum number of results (default: 100)"
+        required: ["pattern"]
         additionalProperties: false
 
 # Web UI configuration
