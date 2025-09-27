@@ -154,7 +154,6 @@ class LogViewerWebEndpoints(PluginWebInterface):
                 with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
                     # Get all lines for proper line number calculation
                     file_lines = f.readlines()
-                    total_file_lines = len(file_lines)
                     
                     parsed_lines = []
                     file_stat = log_path.stat()
