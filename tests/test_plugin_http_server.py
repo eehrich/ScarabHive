@@ -1,7 +1,7 @@
 """Tests for HTTP Server Plugin."""
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, Mock
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
 
@@ -31,12 +31,13 @@ class TestHTTPServer:
     def test_http_server_schema(self):
         """Test HTTP server schema generation."""
         server = HTTPServer("http_server", {}, True)
-        schema = server.get_schema()
+        tools = server.get_tools()
 
-        assert schema["type"] == "function"
-        assert schema["function"]["name"] == "http_server"
-        assert "health" in schema["function"]["parameters"]["properties"]["action"]["enum"]
-        assert "call" in schema["function"]["parameters"]["properties"]["action"]["enum"]
+        assert len(tools) == 1
+        assert tools[0]["type"] == "function"
+        assert tools[0]["function"]["name"] == "http_server_ops"
+        assert "health" in tools[0]["function"]["parameters"]["properties"]["operation"]["enum"]
+        assert "call" in tools[0]["function"]["parameters"]["properties"]["operation"]["enum"]
 
     def test_http_server_default_action(self):
         """Test HTTP server default action."""
@@ -47,13 +48,14 @@ class TestHTTPServer:
     async def test_http_server_call_without_wrapped_server(self):
         """Test HTTP server call without wrapped server."""
         server = HTTPServer("http_server", {}, True)
-        result = await server.call("test_tool", {})
+        result = await server.call("http_server_ops", {"operation": "call", "tool": "test_tool"})
         assert result["error"] == "No server wrapped - use wrap_server() first"
 
     @pytest.mark.asyncio
     async def test_http_server_call_with_wrapped_server(self):
         """Test HTTP server call with wrapped server."""
         # Create mock wrapped server
+
         mock_server = AsyncMock()
         mock_server.call.return_value = {"result": "success"}
 
@@ -61,8 +63,12 @@ class TestHTTPServer:
         server = HTTPServer("http_server", {}, True)
         server.wrap_server(mock_server)
 
-        # Test the call
-        result = await server.call("test_tool", {"param": "value"})
+        # Test the call via http_server_ops
+        result = await server.call("http_server_ops", {
+            "operation": "call", 
+            "tool": "test_tool",
+            "params": {"param": "value"}
+        })
 
         # Verify the call was forwarded
         mock_server.call.assert_called_once_with("test_tool", {"param": "value"})

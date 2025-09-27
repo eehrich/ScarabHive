@@ -76,11 +76,11 @@ class TestLLMRouterServerNew:
         assert len(tools) == 2
         
         tool_names = [tool["function"]["name"] for tool in tools]
-        assert "chat" in tool_names
+        assert "chat_agent" in tool_names
         assert "list_profiles" in tool_names
 
-        # Verify chat tool structure
-        chat_tool = next(tool for tool in tools if tool["function"]["name"] == "chat")
+        # Verify chat_agent tool structure
+        chat_tool = next(tool for tool in tools if tool["function"]["name"] == "chat_agent")
         assert chat_tool["type"] == "function"
         assert "description" in chat_tool["function"]
         
@@ -96,7 +96,7 @@ class TestLLMRouterServerNew:
         server = LLMRouterServer("llm_router", {}, True)
         mock_status = AsyncMock()
         
-        result = await server.call("chat", {"message": "Hello", "_status": mock_status})
+        result = await server.call("chat_agent", {"message": "Hello", "_status": mock_status})
         assert "error" in result
         assert "Profile parameter is required" in result["error"]
 
@@ -106,7 +106,7 @@ class TestLLMRouterServerNew:
         server = LLMRouterServer("llm_router", {}, True)
         mock_status = AsyncMock()
         
-        result = await server.call("chat", {"profile": "test", "_status": mock_status})
+        result = await server.call("chat_agent", {"profile": "test", "_status": mock_status})
         assert "error" in result
         assert "No message or messages provided" in result["error"]
 
@@ -152,7 +152,7 @@ class TestLLMRouterServerNew:
     async def test_default_action(self):
         """Test default action is chat."""
         server = LLMRouterServer("llm_router", {}, True)
-        assert server.get_default_action() == "chat"
+        assert server.get_default_action() == "chat_agent"
 
     @pytest.mark.asyncio
     async def test_chat_with_profile_success(self):
@@ -176,7 +176,7 @@ class TestLLMRouterServerNew:
         mock_client.model = "gpt-5-nano"
         
         with patch.object(server, '_make_client', return_value=mock_client):
-            result = await server.call("chat", {
+            result = await server.call("chat_agent", {
                 "message": "Hello world",
                 "profile": "test",
                 "_status": mock_status

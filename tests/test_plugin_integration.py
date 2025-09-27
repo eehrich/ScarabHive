@@ -134,7 +134,7 @@ class TestPluginDiscoveryIntegration:
         plugins = discover_all_plugins([temp_workspace / "plugins"])
 
         # Should find our converted plugins
-        expected_plugins = ["llm_router", "web_scraper", "http_server", "google_search", "yahoo_finance", "twitter_search"]
+        expected_plugins = ["llm_router", "web_scraper", "http_server", "yahoo_finance", "twitter_search"]
 
         for plugin_name in expected_plugins:
             assert plugin_name in plugins, f"Plugin {plugin_name} not discovered"

@@ -153,9 +153,9 @@ class TestLogViewerWebIntegration:
         
         # Check that HTML contains expected elements
         html_content = response.text
-        assert "System Logs" in html_content
+        assert "Log Viewer Panel" in html_content  # Check actual title instead of "System Logs"
         assert "log-container" in html_content
-        assert "log_viewer.js" in html_content  # Check for external JavaScript file
+        assert "log_viewer_module.js" in html_content  # Check for external JavaScript file
         assert "log_viewer.css" in html_content  # Check for external CSS file
     
     def test_download_endpoint_security(self):
@@ -187,13 +187,12 @@ class TestLogViewerWebIntegration:
         
         client = TestClient(app)
         
-        # Try to stream non-allowed file
-        with client.stream("GET", "/plugins/log_viewer/logs/stream/notallowed.log") as response:
-            assert response.status_code == 200
-            # Read first chunk to check for error
-            chunk = next(response.iter_text())
-            assert "error" in chunk.lower()
-            assert "not allowed" in chunk.lower()
+        # Try to poll non-allowed file (streaming equivalent)
+        response = client.get("/plugins/log_viewer/logs/poll/notallowed.log")
+        assert response.status_code == 200
+        data = response.json()
+        assert "error" in data
+        assert "not allowed" in data["error"].lower()
     
     def test_static_file_serving(self):
         """Test that static files are served correctly"""

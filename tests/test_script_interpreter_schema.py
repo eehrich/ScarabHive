@@ -22,20 +22,36 @@ sys.path.insert(0, str(src_path))
 from plugins.script_interpreter.server import ScriptInterpreterServer  # noqa: E402
 
 
+class MockStatus:
+    """Mock status object for tests."""
+    
+    async def progress(self, message: str):
+        """Mock progress method."""
+        pass
+    
+    async def error(self, message: str):
+        """Mock error method."""
+        pass
+    
+    async def end(self, message: str, meta=None):
+        """Mock end method."""
+        pass
+
+
 class TestSchemaCompliance:
     """Test schema file and MCP compliance."""
 
     @pytest.fixture
     def schema_data(self):
-        """Load mcp_schema.yaml file (MCP format)."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
+        """Load schema.yaml file (MCP format)."""
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         with open(schema_path, 'r') as f:
             return yaml.safe_load(f)
 
     def test_schema_file_exists(self):
-        """Test that mcp_schema.yaml exists."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
-        assert schema_path.exists(), "mcp_schema.yaml file must exist"
+        """Test that schema.yaml exists."""
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        assert schema_path.exists(), "schema.yaml file must exist"
 
     def test_schema_basic_structure(self, schema_data):
         """Test schema has required top-level fields."""
@@ -63,7 +79,7 @@ class TestSchemaCompliance:
 
     def test_eval_tool_schema(self, schema_data):
         """Test eval tool has proper schema."""
-        eval_tool = next(tool for tool in schema_data["tools"] if tool["name"] == "eval")
+        eval_tool = next(tool for tool in schema_data["tools"] if tool["function"]["name"] == "execute_python")
         
         # Check input schema
         input_schema = eval_tool["inputSchema"]
@@ -146,14 +162,15 @@ class TestMCPServerIntegration:
     async def test_mcpserver_call_method(self):
         """Test MCPServer call method."""
         server = ScriptInterpreterServer()
+        status = MockStatus()
         
         # Test validate tool (non-async)
-        result = await server.call("validate", {"code": "x = 2 + 3"})
+        result = await server.call("validate_python", {"code": "x = 2 + 3", "_status": status})
         assert "result" in result
         assert "✅" in result["result"]
         
         # Test reset tool
-        result = await server.call("reset", {})
+        result = await server.call("reset_sandbox", {"_status": status})
         assert "result" in result
         assert "🔄" in result["result"]
 
@@ -161,16 +178,19 @@ class TestMCPServerIntegration:
     async def test_mcpserver_call_eval(self):
         """Test MCPServer call method with eval tool."""
         server = ScriptInterpreterServer()
+        status = MockStatus()
         
         # Test eval tool - simple expression
-        result = await server.call("eval", {"code": "2 + 3"})
+        result = await server.call("execute_python", {"code": "2 + 3", "_status": status})
         assert "result" in result
         assert "5" in result["result"]
 
-    def test_mcpserver_get_schema_method(self):
-        """Test MCPServer get_schema method returns OpenAI function format."""
+    def test_mcpserver_get_tools_method(self):
+        """Test MCPServer get_tools method returns OpenAI function format."""
         server = ScriptInterpreterServer()
-        schema = server.get_schema()
+        tools = server.get_tools()
+        assert len(tools) > 0
+        schema = tools[0]  # Use first tool for schema validation
         
         assert "type" in schema
         assert schema["type"] == "function"
@@ -189,7 +209,8 @@ class TestMCPServerIntegration:
     async def test_mcpserver_handles_unknown_tool(self):
         """Test MCPServer handles unknown tools gracefully."""
         server = ScriptInterpreterServer()
-        result = await server.call("unknown_tool", {})
+        status = MockStatus()
+        result = await server.call("unknown_tool", {"_status": status})
         assert "error" in result
         assert "Unknown tool" in result["error"]
 
@@ -208,9 +229,9 @@ class TestMCPProtocolCompliance:
         assert len(tools) == 3
         
         tool_names = [tool["name"] for tool in tools]
-        assert "eval" in tool_names
-        assert "validate" in tool_names  
-        assert "reset" in tool_names
+        assert "execute_python" in tool_names
+        assert "validate_python" in tool_names  
+        assert "reset_sandbox" in tool_names
 
     @pytest.mark.asyncio
     async def test_eval_tool_input_validation(self):
@@ -302,17 +323,17 @@ class TestMCPProtocolCompliance:
             assert "Error" not in content
 
     def test_schema_yaml_is_valid(self):
-        """Test that mcp_schema.yaml is valid YAML."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
+        """Test that schema.yaml is valid YAML."""
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         try:
             with open(schema_path, 'r') as f:
                 yaml.safe_load(f)
         except yaml.YAMLError as e:
-            pytest.fail(f"mcp_schema.yaml is not valid YAML: {e}")
+            pytest.fail(f"schema.yaml is not valid YAML: {e}")
 
     def test_json_schema_validity(self):
         """Test that tool schemas are valid JSON Schema."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "mcp_schema.yaml"
+        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         with open(schema_path, 'r') as f:
             schema_data = yaml.safe_load(f)
             
