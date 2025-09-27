@@ -113,7 +113,8 @@ class LLMRouterServer(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         status = params.get("_status")
 
-        if tool == "chat":
+        # Only accept the new 'chat_agent' tool name
+        if tool == "chat_agent":
             # Handle both message formats first
             if "messages" in params:
                 messages = [ChatMessage(**m) for m in params["messages"]]
@@ -151,13 +152,13 @@ class LLMRouterServer(MCPServer):
                     "error": f"Chat failed with profile '{profile}': {str(e)}",
                     "profile": profile
                 }
-        
+
         elif tool == "list_profiles":
             try:
                 await status.progress("Retrieving available LLM profiles")
-                
+
                 profile_details = self._get_profile_details()
-                
+
                 await status.end(f"Retrieved {len(profile_details)} profile(s)")
                 return {
                     "profiles": profile_details,
@@ -165,7 +166,7 @@ class LLMRouterServer(MCPServer):
                 }
             except Exception as e:
                 return {"error": f"Failed to list profiles: {str(e)}"}
-        
+
         raise ValueError(f"Unknown tool: {tool}")
 
 
@@ -220,4 +221,4 @@ class LLMRouterServer(MCPServer):
 
     def get_default_action(self) -> str:
         """Return the default action for LLM router."""
-        return "chat"
+        return "chat_agent"

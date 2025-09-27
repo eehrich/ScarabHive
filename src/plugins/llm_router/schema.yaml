@@ -1,8 +1,8 @@
 tools:
   - type: function
     function:
-      name: chat
-      description: Route chat requests to different LLM providers using profiles for specialized tasks or alternative AI models.
+      name: chat_agent
+      description: "Consultant-style chat agent: routes requests to LLM profiles/providers. Acts like an expert consultant—asks clarifying questions, frames tasks, provides advice, and selects specialized profiles as needed."
       parameters:
         type: object
         properties:
