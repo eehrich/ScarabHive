@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from pathlib import Path
+
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
 
 from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 
 class CallRequest(BaseModel):
@@ -16,7 +17,7 @@ class CallRequest(BaseModel):
     params: dict[str, Any] = {}
 
 
-class HTTPServer(MCPServer):
+class HTTPServer(SchemaBasedMCPServer):
     """HTTP Server MCP adapter that wraps other MCP servers with FastAPI REST endpoints."""
 
     def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
@@ -57,13 +58,7 @@ class HTTPServer(MCPServer):
         else:
             return {"error": f"Unknown tool: {tool}"}
 
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return the MCP tools list for HTTP server."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema:
-            raise RuntimeError("Missing required schema.yaml for http_server plugin")
-        return schema["tools"]
+
 
     def get_default_action(self) -> str:
         """Return the default action for HTTP server."""

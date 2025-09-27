@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, cast
-from pathlib import Path
+
 import pytz
 import calendar
 
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 
-class DateTimeServer(MCPServer):
+class DateTimeServer(SchemaBasedMCPServer):
     """DateTime MCP Server that provides comprehensive date and time information.
 
     Supports:
@@ -597,17 +597,7 @@ class DateTimeServer(MCPServer):
         except Exception as e:
             return {"status": "error", "error": str(e), "input": {"target_date": target_date, "start_date": start_date}}
 
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return tools from schema.yaml - Multi-Tool format."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": Path(__file__).parent.name})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for datetime plugin")
-        
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            raise RuntimeError("DateTime plugin schema.yaml must contain 'tools' array (Multi-Tool format required)")
+
 
     def get_default_action(self) -> str:
         """Return the default tool for datetime operations."""

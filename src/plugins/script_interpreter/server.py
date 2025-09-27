@@ -3,21 +3,21 @@
 import asyncio
 import logging
 from typing import Any, Dict, Optional
-from pathlib import Path
+
 import sys
 import json
 
 # Add the src directory to the path so we can import our modules
 sys.path.insert(0, "/".join(__file__.split("/")[:-4]))
 
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from .executor import ScriptExecutor
 from .config import ScriptInterpreterConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ScriptInterpreterServer(MCPServer):
+class ScriptInterpreterServer(SchemaBasedMCPServer):
     """MCP Server for executing scripts in a secure sandbox."""
 
     def __init__(self, name: str = "script_interpreter", config: Optional[dict] = None, ssl_verify: bool = True):
@@ -102,14 +102,7 @@ class ScriptInterpreterServer(MCPServer):
         else:
             return {"error": f"Unknown tool: {tool}. Supported tools: execute_python, validate_python, reset_sandbox"}
 
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return the MCP tools list for script interpreter."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": "script_interpreter"})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for script_interpreter plugin")
-        return schema_data["tools"]
+
 
     def get_default_action(self) -> str:
         """Return the default action for the script interpreter."""
