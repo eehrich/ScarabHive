@@ -40,7 +40,8 @@ def mock_status():
 @pytest.mark.asyncio
 async def test_format_unix_timestamp_with_fractional_seconds(datetime_server, mock_status):
     """Test formatting Unix timestamp with fractional seconds (from log error)."""
-    result = await datetime_server.call("format", {
+    result = await datetime_server.call("datetime_operations", {
+        "operation": "format",
         "datetime": "1758826754.2517202",
         "format": "%Y-%m-%d %H:%M:%S",
         "_status": mock_status
@@ -57,7 +58,8 @@ async def test_format_unix_timestamp_with_fractional_seconds(datetime_server, mo
 @pytest.mark.asyncio
 async def test_format_unix_timestamp_integer(datetime_server, mock_status):
     """Test formatting Unix timestamp as integer (from log error)."""
-    result = await datetime_server.call("format", {
+    result = await datetime_server.call("datetime_operations", {
+        "operation": "format",
         "datetime": "1758826754",
         "format": "%Y-%m-%d %H:%M:%S",
         "_status": mock_status
@@ -71,7 +73,8 @@ async def test_format_unix_timestamp_integer(datetime_server, mock_status):
 @pytest.mark.asyncio
 async def test_parse_unix_timestamp_with_fractional_seconds(datetime_server, mock_status):
     """Test parsing Unix timestamp with fractional seconds."""
-    result = await datetime_server.call("parse", {
+    result = await datetime_server.call("datetime_operations", {
+        "operation": "parse",
         "datetime": "1758826754.2517202",
         "_status": mock_status
     })
@@ -88,7 +91,8 @@ async def test_parse_unix_timestamp_with_fractional_seconds(datetime_server, moc
 @pytest.mark.asyncio
 async def test_format_still_handles_iso_datetime(datetime_server, mock_status):
     """Test that format action still handles regular ISO datetime strings."""
-    result = await datetime_server.call("format", {
+    result = await datetime_server.call("datetime_operations", {
+        "operation": "format",
         "datetime": "2025-09-25T18:59:14",
         "format": "%d/%m/%Y %H:%M",
         "_status": mock_status
@@ -102,7 +106,8 @@ async def test_format_still_handles_iso_datetime(datetime_server, mock_status):
 @pytest.mark.asyncio
 async def test_parse_still_handles_iso_datetime(datetime_server, mock_status):
     """Test that parse action still handles regular ISO datetime strings."""
-    result = await datetime_server.call("parse", {
+    result = await datetime_server.call("datetime_operations", {
+        "operation": "parse",
         "datetime": "2025-09-25T18:59:14",
         "_status": mock_status
     })
@@ -116,7 +121,8 @@ async def test_parse_still_handles_iso_datetime(datetime_server, mock_status):
 @pytest.mark.asyncio
 async def test_invalid_unix_timestamp_still_errors_appropriately(datetime_server, mock_status):
     """Test that invalid timestamps still produce appropriate errors."""
-    result = await datetime_server.call("format", {
+    result = await datetime_server.call("datetime_operations", {
+        "operation": "format",
         "datetime": "invalid_timestamp",
         "format": "%Y-%m-%d %H:%M:%S",
         "_status": mock_status
@@ -131,7 +137,8 @@ async def test_invalid_unix_timestamp_still_errors_appropriately(datetime_server
 async def test_extreme_unix_timestamp_handling(datetime_server, mock_status):
     """Test handling of edge case Unix timestamps."""
     # Test timestamp 0 (Unix epoch)
-    result = await datetime_server.call("format", {
+    result = await datetime_server.call("datetime_operations", {
+        "operation": "format",
         "datetime": "0",
         "format": "%Y-%m-%d %H:%M:%S",
         "_status": mock_status

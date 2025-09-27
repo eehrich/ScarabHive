@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: "{name}_calculator"
+      name: "{{ name }}_calculator"
       description: Perform basic arithmetic operations on two numbers.
       parameters:
         type: object
@@ -21,7 +21,7 @@ tools:
 
   - type: function
     function:
-      name: "{name}_formatter"
+      name: "{{ name }}_formatter"
       description: Format text using various transformations.
       parameters:
         type: object
@@ -38,7 +38,7 @@ tools:
 
   - type: function
     function:
-      name: "{name}_status"
+      name: "{{ name }}_status"
       description: Get server status and system information.
       parameters:
         type: object

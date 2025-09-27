@@ -10,32 +10,56 @@ from plugins.web_research_agent.server import create_web_research_agent, WebRese
 def test_context_window_inheritance():
     """Test that web_research_agent inherits context window from config."""
 
-    # Test 1: Default context window (should be 32768)
-    agent1 = create_web_research_agent("test1")
+    # Helper function to create proper LLM config structure
+    def create_llm_config(context_window, model="gpt-4o-mini", provider="openai"):
+        return {
+            "parent_llm": {
+                "llm": {
+                    "provider": provider,
+                    "model": model,
+                    "context_window": context_window
+                },
+                "llm_system": {
+                    "default_provider": provider,
+                    "default_model": model,
+                    "models": {
+                        model: {
+                            "provider": provider,
+                            "model": model,
+                            "context_window": context_window
+                        }
+                    },
+                    "profiles": {
+                        "web_research": {
+                            "model_ref": model,
+                            "description": "Web research profile"
+                        }
+                    }
+                },
+                "agent_llm_profiles": {
+                    "web_research_agent": "web_research"
+                }
+            }
+        }
+
+    # Test 1: Default context window (32768)
+    config1 = create_llm_config(32768)
+    agent1 = create_web_research_agent("test1", config1)
     print(f"Default agent context window: {agent1.agent_config.llm.context_window}")
 
-    # Test 2: Custom context window via config
-    config_with_context = {
-        "context_window": 128000,
-        "model": "gpt-4",
-        "provider": "openai"
-    }
-    agent2 = create_web_research_agent("test2", config_with_context)
+    # Test 2: Custom context window (128000)
+    config2 = create_llm_config(128000)
+    agent2 = create_web_research_agent("test2", config2)
     print(f"Agent with custom context window: {agent2.agent_config.llm.context_window}")
 
-    # Test 3: Context window via parent_llm
-    config_with_parent = {
-        "parent_llm": {
-            "context_window": 400000,
-            "model": "gpt-4",
-            "provider": "openai"
-        }
-    }
-    agent3 = create_web_research_agent("test3", config_with_parent)
+    # Test 3: Different context window (400000)
+    config3 = create_llm_config(400000)
+    agent3 = create_web_research_agent("test3", config3)
     print(f"Agent with parent_llm context window: {agent3.agent_config.llm.context_window}")
 
-    # Test 4: WebResearchAgent class directly
-    agent4 = WebResearchAgent("test4", {"context_window": 256000})
+    # Test 4: WebResearchAgent class directly with different context window
+    config4 = create_llm_config(256000)
+    agent4 = WebResearchAgent("test4", config4)
     print(f"WebResearchAgent direct with context window: {agent4.agent_config.llm.context_window}")
 
     # Verify expected values

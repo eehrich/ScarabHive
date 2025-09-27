@@ -3,7 +3,7 @@ Integration tests for WebResearchAgent bootstrap functionality.
 """
 import pytest
 
-from agent_system.config.models import AgentConfig, MCPConfig
+from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 from plugins.web_research_agent.plugin import PLUGIN_FACTORY  # wrapper removed; using direct server
@@ -22,7 +22,13 @@ class TestWebResearchAgentBootstrap:
                     "description": "Test web research agent"
                 }
             },
-            network={"ssl_verify": True}
+            network={"ssl_verify": True},
+            llm_system=LLMSystemConfig(
+                models={"gpt-4o-mini": LLMModelConfig(provider="openai", model="gpt-4o-mini")},
+                profiles={"web_research": LLMProfile(model_ref="gpt-4o-mini", description="Web research profile")},
+                default_profile="web_research"
+            ),
+            agent_llm_profiles={"web_research_agent": "web_research"}
         )
 
         registry = MCPRegistry()
@@ -40,7 +46,13 @@ class TestWebResearchAgentBootstrap:
             servers={
                 "web_bot": {"type": "web_research_agent"}
             },
-            network={"ssl_verify": True}
+            network={"ssl_verify": True},
+            llm_system=LLMSystemConfig(
+                models={"gpt-4o-mini": LLMModelConfig(provider="openai", model="gpt-4o-mini")},
+                profiles={"web_research": LLMProfile(model_ref="gpt-4o-mini", description="Web research profile")},
+                default_profile="web_research"
+            ),
+            agent_llm_profiles={"web_research_agent": "web_research"}
         )
 
         registry = MCPRegistry()
@@ -60,7 +72,13 @@ class TestWebResearchAgentBootstrap:
                 "datetime": {"type": "datetime"},
                 "duckduckgo_search": {"type": "duckduckgo_search"}
             },
-            network={"ssl_verify": True}
+            network={"ssl_verify": True},
+            llm_system=LLMSystemConfig(
+                models={"gpt-4o-mini": LLMModelConfig(provider="openai", model="gpt-4o-mini")},
+                profiles={"web_research": LLMProfile(model_ref="gpt-4o-mini", description="Web research profile")},
+                default_profile="web_research"
+            ),
+            agent_llm_profiles={"web_research_agent": "web_research"}
         )
 
         registry = MCPRegistry()
@@ -81,7 +99,13 @@ class TestWebResearchAgentBootstrap:
             servers={
                 "research_agent": {"type": "web_research_agent"}
             },
-            network={"ssl_verify": True}
+            network={"ssl_verify": True},
+            llm_system=LLMSystemConfig(
+                models={"gpt-4o-mini": LLMModelConfig(provider="openai", model="gpt-4o-mini")},
+                profiles={"web_research": LLMProfile(model_ref="gpt-4o-mini", description="Web research profile")},
+                default_profile="web_research"
+            ),
+            agent_llm_profiles={"web_research_agent": "web_research"}
         )
 
         registry = MCPRegistry()
@@ -90,10 +114,10 @@ class TestWebResearchAgentBootstrap:
         agent = registry.get("research_agent")
         assert agent.__class__.__name__ == "WebResearchAgent"
 
-        schema = agent.get_schema()
-        actions = schema["function"]["parameters"]["properties"]["action"]["enum"]
-        assert "research" in actions
-        assert "fact_check" in actions
+        tools = agent.get_tools()
+        tool_names = [tool["function"]["name"] for tool in tools]
+        assert "web_research_agent" in tool_names
+        assert "fact_check_agent" in tool_names
 
     def test_web_research_agent_schema_has_specialized_actions(self):
         """Test that bootstrapped WebResearchAgent has enhanced schema."""
@@ -102,13 +126,19 @@ class TestWebResearchAgentBootstrap:
             servers={
                 "smart_researcher": {"type": "web_research_agent"}
             },
-            network={"ssl_verify": True}
+            network={"ssl_verify": True},
+            llm_system=LLMSystemConfig(
+                models={"gpt-4o-mini": LLMModelConfig(provider="openai", model="gpt-4o-mini")},
+                profiles={"web_research": LLMProfile(model_ref="gpt-4o-mini", description="Web research profile")},
+                default_profile="web_research"
+            ),
+            agent_llm_profiles={"web_research_agent": "web_research"}
         )
 
         registry = MCPRegistry()
         bootstrap_servers(config, registry)
 
         agent = registry.get("smart_researcher")
-        schema = agent.get_schema()
-        actions = schema["function"]["parameters"]["properties"]["action"]["enum"]
-        assert {"research", "fact_check", "compare_sources"}.issubset(set(actions))
+        tools = agent.get_tools()
+        tool_names = [tool["function"]["name"] for tool in tools]
+        assert {"web_research_agent", "fact_check_agent", "source_analysis_agent"}.issubset(set(tool_names))

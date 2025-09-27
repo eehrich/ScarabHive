@@ -8,67 +8,105 @@ from plugins.web_research_agent.server import WebResearchAgent, create_web_resea
 from agent_system.servers.agent.server import Agent
 
 
+@pytest.fixture
+def test_llm_config():
+    """Fixture providing LLM configuration for web research agent tests."""
+    return {
+        "parent_llm": {
+            "llm": {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "context_window": 4000
+            },
+            "llm_system": {
+                "default_provider": "openai",
+                "default_model": "gpt-4o-mini",
+                "models": {
+                    "gpt-4o-mini": {
+                        "provider": "openai",
+                        "model": "gpt-4o-mini",
+                        "context_window": 4000
+                    }
+                },
+                "profiles": {
+                    "web_research": {
+                        "model_ref": "gpt-4o-mini",
+                        "description": "Web research profile"
+                    }
+                }
+            },
+            "agent_llm_profiles": {
+                "web_research_agent": "web_research"
+            }
+        }
+    }
+
+
 class TestWebResearchAgent:
     """Test WebResearchAgent functionality."""
     
-    def test_create_web_research_agent(self):
+    def test_create_web_research_agent(self, test_llm_config):
         """Test web research agent creation."""
-        agent = create_web_research_agent("test_researcher")
+        agent = create_web_research_agent("test_researcher", test_llm_config)
         
         assert isinstance(agent, Agent)  # WebResearchAgent is now Agent directly
         assert agent.name == "test_researcher"
         assert "web research agent" in agent.config.get("description", "").lower()
         
-    def test_create_web_research_agent_custom_config(self):
+    def test_create_web_research_agent_custom_config(self, test_llm_config):
         """Test web research agent with custom configuration."""
-        config = {"description": "Custom research agent"}
+        config = {**test_llm_config, "description": "Custom research agent"}
         agent = create_web_research_agent("custom_researcher", config)
         
         assert agent.description == "Custom research agent"
         assert agent.name == "custom_researcher"
         
-    def test_web_research_agent_initialization(self):
+    def test_web_research_agent_initialization(self, test_llm_config):
         """Test WebResearchAgent initialization."""
-        agent = WebResearchAgent("test_web_researcher")
+        agent = WebResearchAgent("test_web_researcher", test_llm_config)
         
         assert isinstance(agent, Agent)  # WebResearchAgent extends Agent directly
         assert agent.name == "test_web_researcher"
         assert "web research" in agent.description.lower()
         
-    def test_web_research_agent_custom_name_and_config(self):
+    def test_web_research_agent_custom_name_and_config(self, test_llm_config):
         """Test WebResearchAgent with custom name and config."""
-        config = {"description": "Specialized research bot"}
+        config = {**test_llm_config, "description": "Specialized research bot"}
         agent = WebResearchAgent("research_bot", config)
         
         assert agent.name == "research_bot"
         assert agent.description == "Specialized research bot"
         
-    def test_get_enhanced_schema(self):
-        """Test that WebResearchAgent has enhanced schema with research actions."""
-        agent = WebResearchAgent("test_researcher")
-        schema = agent.get_schema()
+    def test_get_enhanced_schema(self, test_llm_config):
+        """Test that WebResearchAgent has MCP tools for research actions."""
+        agent = WebResearchAgent("test_researcher", test_llm_config)
+        tools = agent.get_tools()
         
-        assert schema["type"] == "function"
-        assert schema["function"]["name"] == "test_researcher"
+        assert isinstance(tools, list)
+        assert len(tools) == 4  # Four specialized research tools
         
-        # Check for specialized actions
-        actions = schema["function"]["parameters"]["properties"]["action"]["enum"]
-        assert "research" in actions
-        assert "fact_check" in actions
-        assert "compare_sources" in actions
-        assert "run" in actions  # Standard actions still available
+        # Check for specialized tools
+        tool_names = [tool["function"]["name"] for tool in tools]
+        assert "web_research_agent" in tool_names
+        assert "fact_check_agent" in tool_names
+        assert "source_analysis_agent" in tool_names  
+        assert "research_assistant_agent" in tool_names
         
-        # Check for specialized parameters
-        props = schema["function"]["parameters"]["properties"]
+        # Check that web_research_agent tool has expected parameters
+        web_tool = next(t for t in tools if t["function"]["name"] == "web_research_agent")
+        props = web_tool["function"]["parameters"]["properties"]
         assert "topic" in props
-        assert "claim" in props
-        assert "source_urls" in props
         assert "max_results" in props
         
+        # Check that fact_check_agent tool has expected parameters
+        fact_tool = next(t for t in tools if t["function"]["name"] == "fact_check_agent")
+        props = fact_tool["function"]["parameters"]["properties"]
+        assert "claim" in props
+        
     @pytest.mark.asyncio
-    async def test_research_action_success(self):
+    async def test_research_action_success(self, test_llm_config):
         """Test successful research action."""
-        agent = WebResearchAgent("test_researcher")
+        agent = WebResearchAgent("test_researcher", test_llm_config)
         
         # Mock the agent's _run_with_progress method instead of run
         agent._run_with_progress = AsyncMock()
@@ -92,9 +130,9 @@ class TestWebResearchAgent:
         assert "Researching 'artificial intelligence'" == call_args[1]  # operation_name
         
     @pytest.mark.asyncio
-    async def test_fact_check_action_success(self):
+    async def test_fact_check_action_success(self, test_llm_config):
         """Test successful fact-check action."""
-        agent = WebResearchAgent("fact_checker")
+        agent = WebResearchAgent("fact_checker", test_llm_config)
         
         # Mock the agent's _run_with_progress method
         agent._run_with_progress = AsyncMock()
@@ -118,9 +156,9 @@ class TestWebResearchAgent:
         assert "Fact-checking claim" == call_args[1]  # operation_name
         
     @pytest.mark.asyncio
-    async def test_compare_sources_action_success(self):
+    async def test_compare_sources_action_success(self, test_llm_config):
         """Test successful compare sources action."""
-        agent = WebResearchAgent("source_comparer")
+        agent = WebResearchAgent("source_comparer", test_llm_config)
         
         # Mock the agent's _run_with_progress method instead of run
         agent._run_with_progress = AsyncMock()
@@ -142,33 +180,33 @@ class TestWebResearchAgent:
         assert "Comparing sources for 'climate change'" == call_args[1]  # operation_name
         
     @pytest.mark.asyncio
-    async def test_call_research_action(self):
+    async def test_call_research_action(self, test_llm_config):
         """Test call method with research action."""
-        agent = WebResearchAgent("test_agent")
+        agent = WebResearchAgent("test_agent", test_llm_config)
         agent._run_with_progress = AsyncMock()
         agent._run_with_progress.return_value = {"summary": "research done"}
         
-        result = await agent.call("research", {"topic": "quantum computing", "max_results": 7})
+        result = await agent.call("web_research_agent", {"topic": "quantum computing", "max_results": 7})
         
         assert result["status"] == "success"
         agent._run_with_progress.assert_called_once()
         
     @pytest.mark.asyncio
-    async def test_call_fact_check_action(self):
+    async def test_call_fact_check_action(self, test_llm_config):
         """Test call method with fact_check action."""
-        agent = WebResearchAgent("fact_checker")
+        agent = WebResearchAgent("fact_checker", test_llm_config)
         agent._run_with_progress = AsyncMock()
         agent._run_with_progress.return_value = {"summary": "fact checked"}
         
-        result = await agent.call("fact_check", {"claim": "Test claim"})
+        result = await agent.call("fact_check_agent", {"claim": "Test claim"})
         
         assert result["status"] == "success"
         agent._run_with_progress.assert_called_once()
         
     @pytest.mark.asyncio
-    async def test_call_compare_sources_action(self):
+    async def test_call_compare_sources_action(self, test_llm_config):
         """Test call method with compare_sources action."""
-        agent = WebResearchAgent("comparer")
+        agent = WebResearchAgent("comparer", test_llm_config)
         agent._run_with_progress = AsyncMock()
         agent._run_with_progress.return_value = {"summary": "sources compared"}
         
@@ -176,15 +214,15 @@ class TestWebResearchAgent:
             "topic": "renewable energy",
             "source_urls": ["https://site1.com", "https://site2.com"]
         }
-        result = await agent.call("compare_sources", params)
+        result = await agent.call("source_analysis_agent", params)
         
         assert result["status"] == "success"
         agent._run_with_progress.assert_called_once()
         
     @pytest.mark.asyncio
-    async def test_call_standard_action_fallback(self):
+    async def test_call_standard_action_fallback(self, test_llm_config):
         """Test that standard actions fall back to parent implementation."""
-        agent = WebResearchAgent("standard_agent")
+        agent = WebResearchAgent("standard_agent", test_llm_config)
         
         # Mock the agent's run_events method instead
         original_run_events = agent.run_events
@@ -204,24 +242,24 @@ class TestWebResearchAgent:
             agent.run_events = original_run_events
             
     @pytest.mark.asyncio
-    async def test_call_research_missing_topic(self):
+    async def test_call_research_missing_topic(self, test_llm_config):
         """Test research action with missing topic parameter."""
-        agent = WebResearchAgent("error_agent")
+        agent = WebResearchAgent("error_agent", test_llm_config)
         
-        result = await agent.call("research", {})
+        result = await agent.call("web_research_agent", {})
         
         assert result["status"] == "error"
         assert "Missing required parameter 'topic'" in result["error"]
         
     @pytest.mark.asyncio
-    async def test_call_run_action_routing(self):
+    async def test_call_run_action_routing(self, test_llm_config):
         """Test that run action with task parameter routes to research method."""
-        agent = WebResearchAgent("task_router")
+        agent = WebResearchAgent("task_router", test_llm_config)
         agent._run_with_progress = AsyncMock()
         agent._run_with_progress.return_value = {"summary": "research done via routing"}
         
         # Test run action with task parameter (how main agent calls web_research_agent)
-        result = await agent.call("run", {"task": "research about quantum computing"})
+        result = await agent.call("research_assistant_agent", {"task": "research about quantum computing"})
         
         assert result["status"] == "success"
         assert result["agent"] == "task_router"
@@ -233,42 +271,42 @@ class TestWebResearchAgent:
         assert "Researching 'research about quantum computing'" == call_args[1]  # operation_name
         
     @pytest.mark.asyncio
-    async def test_call_fact_check_missing_claim(self):
+    async def test_call_fact_check_missing_claim(self, test_llm_config):
         """Test fact_check action with missing claim parameter."""
-        agent = WebResearchAgent("error_agent")
+        agent = WebResearchAgent("error_agent", test_llm_config)
         
-        result = await agent.call("fact_check", {})
+        result = await agent.call("fact_check_agent", {})
         
         assert result["status"] == "error"
         assert "Missing required parameter 'claim'" in result["error"]
         
     @pytest.mark.asyncio
-    async def test_call_compare_sources_missing_params(self):
+    async def test_call_compare_sources_missing_params(self, test_llm_config):
         """Test compare_sources action with missing parameters."""
-        agent = WebResearchAgent("error_agent")
+        agent = WebResearchAgent("error_agent", test_llm_config)
         
         # Missing both topic and source_urls
-        result = await agent.call("compare_sources", {})
+        result = await agent.call("source_analysis_agent", {})
         
         assert result["status"] == "error"
         assert "Missing required parameters" in result["error"]
         
         # Missing source_urls
-        result = await agent.call("compare_sources", {"topic": "test"})
+        result = await agent.call("source_analysis_agent", {"topic": "test"})
         
         assert result["status"] == "error"
         assert "Missing required parameters" in result["error"]
         
         # Missing topic
-        result = await agent.call("compare_sources", {"source_urls": ["http://example.com"]})
+        result = await agent.call("source_analysis_agent", {"source_urls": ["http://example.com"]})
         
         assert result["status"] == "error"
         assert "Missing required parameters" in result["error"]
         
     @pytest.mark.asyncio
-    async def test_research_with_agent_exception(self):
+    async def test_research_with_agent_exception(self, test_llm_config):
         """Test research action when underlying agent raises exception."""
-        agent = WebResearchAgent("error_agent")
+        agent = WebResearchAgent("error_agent", test_llm_config)
         agent._run_with_progress = AsyncMock()
         agent._run_with_progress.side_effect = RuntimeError("Agent failed")
         
@@ -277,13 +315,13 @@ class TestWebResearchAgent:
         assert result["status"] == "error"
         assert "Agent failed" in result["error"]
         
-    def test_specialized_agent_has_research_tools(self):
+    def test_specialized_agent_has_research_tools(self, test_llm_config):
         """Test that the specialized agent is configured with research tools."""
         # This test verifies the agent has the right tools configured
         # We can't easily test the actual bootstrap without integration test
         # But we can verify the factory function sets up the right configuration
         
-        agent = create_web_research_agent("tool_test")
+        agent = create_web_research_agent("tool_test", test_llm_config)
         
         # The agent should be an Agent with research tools configured
         assert isinstance(agent, Agent)
@@ -296,9 +334,9 @@ class TestWebResearchAgent:
 class TestWebResearchAgentIntegration:
     """Integration tests for WebResearchAgent with real components."""
     
-    def test_agent_tools_configuration(self):
+    def test_agent_tools_configuration(self, test_llm_config):
         """Test that WebResearchAgent has correct tools configured."""
-        agent = create_web_research_agent("integration_test")
+        agent = create_web_research_agent("integration_test", test_llm_config)
         
         # Check that the underlying agent has the expected tools
         tools = agent.registry.list()
@@ -306,9 +344,9 @@ class TestWebResearchAgentIntegration:
         assert "web_scraper" in tools
         assert len(tools) == 2  # Only research tools
         
-    def test_agent_configuration_values(self):
+    def test_agent_configuration_values(self, test_llm_config):
         """Test that WebResearchAgent has correct configuration."""
-        agent = create_web_research_agent("config_test")
+        agent = create_web_research_agent("config_test", test_llm_config)
         
         # Check max_steps is configured for complex research
         assert agent.agent_config.max_steps == 8

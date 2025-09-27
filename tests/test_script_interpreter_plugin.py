@@ -50,11 +50,11 @@ def test_plugin_factory_creates_working_server():
     server = PLUGIN_FACTORY()
     
     # Test basic server functionality
-    assert hasattr(server, "call")
-    assert hasattr(server, "get_schema") 
-    assert hasattr(server, "get_default_action")
+    assert hasattr(server, "handle_request")
+    assert hasattr(server, "get_tools") 
+    assert hasattr(server, "list_tools")
     
-    # Test schema method works
-    schema = server.get_schema()
-    assert "type" in schema
-    assert schema["type"] == "function"
+    # Test tools method works
+    tools = server.get_tools()
+    assert isinstance(tools, list)
+    assert len(tools) > 0

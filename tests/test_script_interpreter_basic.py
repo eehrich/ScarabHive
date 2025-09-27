@@ -2,6 +2,7 @@
 import pytest
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 # Add src to path
 src_path = Path(__file__).parent.parent / "src"
@@ -182,20 +183,29 @@ class TestScriptInterpreterBasic:
         tools = response["tools"]
         tool_names = [tool["name"] for tool in tools]
 
-        assert "eval" in tool_names
-        assert "validate" in tool_names
-        assert "reset" in tool_names
+        assert "execute_python" in tool_names
+        assert "validate_python" in tool_names
+        assert "reset_sandbox" in tool_names
 
     @pytest.mark.asyncio
     async def test_server_eval_tool(self):
         """Test MCP server eval tool."""
+        # Create mock status object
+        mock_status = AsyncMock()
+        mock_status.progress = AsyncMock()
+        mock_status.error = AsyncMock()
+        mock_status.end = AsyncMock()
+        
         server = ScriptInterpreterServer()
 
         request = {
             "method": "tools/call",
             "params": {
-                "name": "eval",
-                "arguments": {"code": "2 + 3"}
+                "name": "execute_python",
+                "arguments": {
+                    "code": "2 + 3",
+                    "_status": mock_status
+                }
             }
         }
 
@@ -214,7 +224,7 @@ class TestScriptInterpreterBasic:
         request = {
             "method": "tools/call",
             "params": {
-                "name": "validate",
+                "name": "validate_python",
                 "arguments": {"code": "x = 2 + 3"}
             }
         }
@@ -227,7 +237,7 @@ class TestScriptInterpreterBasic:
         request = {
             "method": "tools/call",
             "params": {
-                "name": "validate",
+                "name": "validate_python",
                 "arguments": {"code": "x = 2 +"}
             }
         }
@@ -240,13 +250,17 @@ class TestScriptInterpreterBasic:
     async def test_server_reset_tool(self):
         """Test MCP server reset tool."""
         server = ScriptInterpreterServer()
+        mock_status = Mock()
+        mock_status.progress = AsyncMock()
+        mock_status.end = AsyncMock()
+        mock_status.error = AsyncMock()
 
         # First set some variables
         await server.handle_request({
             "method": "tools/call",
             "params": {
-                "name": "eval",
-                "arguments": {"code": "x = 42"}
+                "name": "execute_python",
+                "arguments": {"code": "x = 42", "_status": mock_status}
             }
         })
 
@@ -254,8 +268,8 @@ class TestScriptInterpreterBasic:
         response = await server.handle_request({
             "method": "tools/call",
             "params": {
-                "name": "eval",
-                "arguments": {"code": "x + 1"}
+                "name": "execute_python",
+                "arguments": {"code": "x + 1", "_status": mock_status}
             }
         })
         assert "43" in response["content"][0]["text"]
@@ -264,8 +278,8 @@ class TestScriptInterpreterBasic:
         request = {
             "method": "tools/call",
             "params": {
-                "name": "reset",
-                "arguments": {}
+                "name": "reset_sandbox",
+                "arguments": {"_status": mock_status}
             }
         }
 
@@ -277,8 +291,8 @@ class TestScriptInterpreterBasic:
         response = await server.handle_request({
             "method": "tools/call",
             "params": {
-                "name": "eval",
-                "arguments": {"code": "x + 1"}
+                "name": "execute_python",
+                "arguments": {"code": "x + 1", "_status": mock_status}
             }
         })
         content = response["content"][0]["text"]

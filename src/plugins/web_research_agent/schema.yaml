@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: research_agent
+      name: web_research_agent
       description: "Advanced multi-source web research - automatically searches, scrapes, and synthesizes information from multiple websites into comprehensive reports with source citations. Superior to basic search for complex topics."
       parameters:
         type: object

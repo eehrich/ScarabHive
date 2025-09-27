@@ -12,7 +12,36 @@ class TestWebResearchAgentStatusEvents:
     @pytest.mark.asyncio
     async def test_research_status_events(self):
         """Test that research action uses status object correctly."""
-        agent = WebResearchAgent("test_research_agent")
+        config = {
+            "parent_llm": {
+                "llm": {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "context_window": 4000
+                },
+                "llm_system": {
+                    "default_provider": "openai",
+                    "default_model": "gpt-4o-mini",
+                    "models": {
+                        "gpt-4o-mini": {
+                            "provider": "openai",
+                            "model": "gpt-4o-mini",
+                            "context_window": 4000
+                        }
+                    },
+                    "profiles": {
+                        "web_research": {
+                            "model_ref": "gpt-4o-mini",
+                            "description": "Web research profile"
+                        }
+                    }
+                },
+                "agent_llm_profiles": {
+                    "web_research_agent": "web_research"
+                }
+            }
+        }
+        agent = WebResearchAgent("test_research_agent", config)
         
         # Create mock status object to track calls
         mock_status = AsyncMock()
@@ -27,7 +56,7 @@ class TestWebResearchAgentStatusEvents:
         agent._run_with_progress = mock_run_with_progress
         
         # Test with status object injected
-        result = await agent.call("research", {
+        result = await agent.call("web_research_agent", {
             "topic": "artificial intelligence",
             "request_id": "test-123",
             "_status": mock_status

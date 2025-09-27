@@ -526,6 +526,12 @@ class Agent(MCPServer):
 
             # Get all available tools including external MCP tools
             available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
+            
+            # Add tools from the local registry (for testing and direct registration)
+            if hasattr(self, 'registry') and self.registry:
+                for tool_name in self.registry.list():
+                    if tool_name not in available_tools:
+                        available_tools.append(tool_name)
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 

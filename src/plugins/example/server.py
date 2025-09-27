@@ -1,207 +1,57 @@
 """Example MCP Server implementation.
 
-This module provides a comprehensive example of how to implement an MCP server
-that exposes multiple tools. It demonstrates best practices for error handling,
-input validation, configuration management, and extensibility.
+This module demonstrates the simplest way to implement an MCP server
+using SchemaBasedMCPServer. All tools are defined in schema.yaml.
 """
 
 from __future__ import annotations
 
-import os
-import yaml
 import logging
 from typing import Any
 from decimal import Decimal, InvalidOperation
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 logger = logging.getLogger(__name__)
 
 
-class ExampleServer(MCPServer):
-    """Example multi-tool MCP server demonstrating best practices.
+class ExampleServer(SchemaBasedMCPServer):
+    """Example MCP server showing the modern way to implement plugins.
 
-    This server provides three demonstration tools:
-    1. Calculator - Basic arithmetic operations with configurable precision
-    2. Text Formatter - Text manipulation in various formats
-    3. Status Reporter - Plugin status and configuration information
-
-    The server demonstrates:
-    - External schema loading with template variables
-    - Comprehensive input validation and error handling
-    - Configurable behavior through plugin settings
-    - Structured logging and debugging support
-    - Type-safe operations with proper error messages
+    This server demonstrates:
+    - Schema-based tool definitions (tools defined in schema.yaml)
+    - Configuration-driven behavior
+    - Clean error handling and input validation
+    - Proper logging
+    
+    All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
     """
 
     def __init__(self, name: str, config: dict[str, Any] | None = None, ssl_verify: bool = True):
-        """Initialize the example server.
-        
-        Args:
-            name: Plugin instance name
-            config: Configuration dictionary
-            ssl_verify: SSL verification flag
-        """
+        """Initialize the example server."""
         super().__init__(name, config, ssl_verify)
-        self.logger = logging.getLogger(f"plugins.example.{name}")
         
-        # Extract configuration with defaults
+        # Extract configuration with sensible defaults
         self.precision = int(self.config.get("precision", 2))
         self.max_text_length = int(self.config.get("max_text_length", 1000))
-        self.debug_enabled = bool(self.config.get("enable_debug", False))
         
-        self.logger.info(f"Initialized example server '{name}' with precision={self.precision}, "
-                        f"max_text_length={self.max_text_length}")
-
-    async def list_tools(self) -> list[dict[str, Any]]:
-        """Return tool definitions, preferring external schema.yaml.
-        
-        Returns:
-            List of tool definitions in MCP function format
-        """
-        # Try to load external schema first
-        schema_path = os.path.join(os.path.dirname(__file__), "schema.yaml")
-        if os.path.exists(schema_path):
-            try:
-                with open(schema_path, "r", encoding="utf-8") as fh:
-                    doc = yaml.safe_load(fh)
-                tools = doc.get("tools", [])
-                
-                # Render template variables
-                rendered = []
-                for tool in tools:
-                    rendered_tool = self._render_template_variables(tool)
-                    rendered.append(rendered_tool)
-                
-                self.logger.debug(f"Loaded {len(rendered)} tools from schema.yaml")
-                return rendered
-                
-            except Exception as e:
-                self.logger.warning(f"Failed to load schema.yaml: {e}, falling back to inline schema")
-
-        # Fallback to inline definitions
-        return self._get_inline_tools()
-
-    def _render_template_variables(self, obj: Any) -> Any:
-        """Recursively render template variables in tool definitions.
-        
-        Args:
-            obj: Object to process (dict, list, or primitive)
-            
-        Returns:
-            Object with template variables replaced
-        """
-        if isinstance(obj, dict):
-            return {k: self._render_template_variables(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [self._render_template_variables(v) for v in obj]
-        elif isinstance(obj, str):
-            return obj.replace("{name}", self.name)
-        else:
-            return obj
-
-    def _get_inline_tools(self) -> list[dict[str, Any]]:
-        """Get inline tool definitions as fallback.
-        
-        Returns:
-            List of inline tool definitions
-        """
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": f"{self.name}_calculator",
-                    "description": f"Perform basic arithmetic operations with {self.precision} decimal precision",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "operation": {
-                                "type": "string",
-                                "enum": ["add", "subtract", "multiply", "divide"],
-                                "description": "The arithmetic operation to perform",
-                            },
-                            "a": {"type": "number", "description": "First number"},
-                            "b": {"type": "number", "description": "Second number"},
-                        },
-                        "required": ["operation", "a", "b"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": f"{self.name}_formatter",
-                    "description": f"Format text in various ways (max length: {self.max_text_length})",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "text": {
-                                "type": "string", 
-                                "description": f"Text to format (max {self.max_text_length} characters)",
-                                "maxLength": self.max_text_length
-                            },
-                            "format": {
-                                "type": "string",
-                                "enum": ["uppercase", "lowercase", "title", "reverse"],
-                                "description": "Format to apply",
-                            },
-                        },
-                        "required": ["text", "format"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": f"{self.name}_status",
-                    "description": "Get server status and configuration information",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "verbose": {
-                                "type": "boolean",
-                                "default": False,
-                                "description": "Include detailed configuration and debug information",
-                            }
-                        },
-                    },
-                },
-            },
-        ]
+        logger.info(f"Example server '{name}' initialized")
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        """Route tool calls to appropriate handlers.
+        """Route tool calls to appropriate handlers."""
+        logger.debug(f"Calling tool '{tool}' with params: {params}")
         
-        Args:
-            tool: Tool name to call
-            params: Parameters for the tool
-            
-        Returns:
-            Tool execution result
-            
-        Raises:
-            ValueError: If tool is unknown or parameters are invalid
-        """
-        self.logger.debug(f"Calling tool '{tool}' with params: {params}")
+        calculator_name = f"{self.name}_calculator"
+        formatter_name = f"{self.name}_formatter"
+        status_name = f"{self.name}_status"
         
-        try:
-            # Dynamic tool names based on plugin name
-            calculator_name = f"{self.name}_calculator"
-            formatter_name = f"{self.name}_formatter"
-            status_name = f"{self.name}_status"
-            
-            if tool == calculator_name:
-                return await self._handle_calculator(params)
-            elif tool == formatter_name:
-                return await self._handle_formatter(params)
-            elif tool == status_name:
-                return await self._handle_status(params)
-            else:
-                available = [calculator_name, formatter_name, status_name]
-                raise ValueError(f"Unknown tool '{tool}'. Available tools: {available}")
-                
-        except Exception as e:
-            self.logger.error(f"Error executing tool '{tool}': {e}")
-            raise
+        if tool == calculator_name:
+            return await self._handle_calculator(params)
+        elif tool == formatter_name:
+            return await self._handle_formatter(params)
+        elif tool == status_name:
+            return await self._handle_status(params)
+        else:
+            raise ValueError(f"Unknown tool '{tool}'. Available: {calculator_name}, {formatter_name}, {status_name}")
 
     async def _handle_calculator(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle calculator operations with high precision.
@@ -256,7 +106,7 @@ class ExampleServer(MCPServer):
             "precision": self.precision
         }
         
-        self.logger.debug(f"Calculator result: {response}")
+        logger.debug(f"Calculator result: {response}")
         return response
 
     async def _handle_formatter(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -307,24 +157,17 @@ class ExampleServer(MCPServer):
             "length": len(formatted)
         }
         
-        self.logger.debug(f"Formatter result: {len(text)} chars -> {len(formatted)} chars")
+        logger.debug(f"Formatter result: {len(text)} chars -> {len(formatted)} chars")
         return response
 
     async def _handle_status(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle status information requests.
-        
-        Args:
-            params: Parameters containing optional verbose flag
-            
-        Returns:
-            Dict with status information
-        """
+        """Handle status information requests."""
         verbose = params.get("verbose", False)
         
-        tools = await self.list_tools()
+        tools = self.get_tools()
         status = {
             "server_name": self.name,
-            "status": "active",
+            "status": "active", 
             "tools_count": len(tools),
             "version": "1.0.0"
         }
@@ -334,14 +177,10 @@ class ExampleServer(MCPServer):
                 "config": {
                     "precision": self.precision,
                     "max_text_length": self.max_text_length,
-                    "debug_enabled": self.debug_enabled,
                     "ssl_verify": self.ssl_verify
                 },
-                "available_tools": [tool["function"]["name"] for tool in tools],
-                "schema_source": "external" if os.path.exists(
-                    os.path.join(os.path.dirname(__file__), "schema.yaml")
-                ) else "inline"
+                "available_tools": [tool["function"]["name"] for tool in tools]
             })
         
-        self.logger.debug(f"Status request (verbose={verbose}): {len(status)} fields")
+        logger.debug(f"Status request (verbose={verbose}): {len(status)} fields")
         return status

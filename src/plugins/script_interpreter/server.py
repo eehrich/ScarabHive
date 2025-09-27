@@ -106,7 +106,7 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
 
     def get_default_action(self) -> str:
         """Return the default action for the script interpreter."""
-        return "eval"
+        return "execute_python"
 
     # Legacy MCP JSON-RPC interface (optional, for direct MCP clients)
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -131,7 +131,7 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         return {
             "tools": [
                 {
-                    "name": "eval",
+                    "name": "execute_python",
                     "description": "Execute Python code in a secure sandbox. Supports mathematical expressions, basic operations, and simple programming constructs.",
                     "inputSchema": {
                         "type": "object",
@@ -145,7 +145,7 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
                     }
                 },
                 {
-                    "name": "validate",
+                    "name": "validate_python",
                     "description": "Validate Python syntax without executing the code.",
                     "inputSchema": {
                         "type": "object",
@@ -159,7 +159,7 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
                     }
                 },
                 {
-                    "name": "reset",
+                    "name": "reset_sandbox",
                     "description": "Reset the sandbox environment, clearing all variables and state.",
                     "inputSchema": {
                         "type": "object",
@@ -176,11 +176,11 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         arguments = params.get("arguments", {})
 
         try:
-            if tool_name == "eval":
+            if tool_name == "execute_python":
                 return await self._eval_code(arguments)
-            elif tool_name == "validate":
+            elif tool_name == "validate_python":
                 return await self._validate_code(arguments)
-            elif tool_name == "reset":
+            elif tool_name == "reset_sandbox":
                 return await self._reset_sandbox(arguments)
             else:
                 return {

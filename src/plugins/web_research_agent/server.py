@@ -405,7 +405,7 @@ class WebResearchAgent(Agent):
         request_id = params.get("request_id") or params.get("requestId")
         status = params.get("_status")   
 
-        if tool == "research_agent":
+        if tool == "web_research_agent":
             topic = params.get("topic")
             if not topic:
                 return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
@@ -432,4 +432,4 @@ class WebResearchAgent(Agent):
         raise ValueError(f"Unknown tool: {tool}")
 
     def get_default_action(self) -> str:
-        return "research_agent"
+        return "web_research_agent"

@@ -64,10 +64,11 @@ def test_cli_plugins_status(monkeypatch, tmp_path, capsys):
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "st_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
 
     cfg_file = tmp_path / "agent.yaml"
-    # Write a config with the plugin enabled
-    cfg_file.write_text('{"mcp": {"enabled_servers": ["st_example"]}}')
+    # Write a config with the plugin enabled in YAML format
+    cfg_file.write_text('mcp:\n  enabled_servers:\n    - st_example')
 
     cfg = _make_cfg(tmp_path, [str(pdir)])
+    cfg.mcp.enabled_servers = ["st_example"]  # ensure the plugin is enabled in the config
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "status", "--config", str(cfg_file)])

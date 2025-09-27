@@ -14,7 +14,7 @@ from .server import ExampleServer
 logger = logging.getLogger(__name__)
 
 
-def PLUGIN_FACTORY(name: str, config: dict[str, Any] | None = None) -> ExampleServer:
+def PLUGIN_FACTORY(name: str, config: dict[str, Any] | None = None, ssl_verify: bool = True) -> ExampleServer:
     """Create and configure an example plugin server instance.
     
     Args:
@@ -23,6 +23,7 @@ def PLUGIN_FACTORY(name: str, config: dict[str, Any] | None = None) -> ExampleSe
             - precision (int): Decimal precision for calculations (default: 2)
             - max_text_length (int): Maximum text length for formatting (default: 1000)
             - enable_debug (bool): Enable debug logging (default: False)
+        ssl_verify: Enable SSL certificate verification (default: True)
     
     Returns:
         Configured ExampleServer instance
@@ -63,5 +64,5 @@ def PLUGIN_FACTORY(name: str, config: dict[str, Any] | None = None) -> ExampleSe
     logger.info(f"Example plugin '{name}' configured with precision={precision}, "
                 f"max_text_length={max_length}, debug={config['enable_debug']}")
     
-    return ExampleServer(name=name, config=config)
+    return ExampleServer(name=name, config=config, ssl_verify=ssl_verify)
 

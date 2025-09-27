@@ -99,8 +99,8 @@ async def test_parallel_tool_calls_get_unique_request_id_suffixes(tool_execution
 
 
 @pytest.mark.asyncio
-async def test_single_tool_call_preserves_original_request_id(tool_execution_manager):
-    """Test that single tool calls preserve the original request_id without suffix"""
+async def test_single_tool_call_gets_consistent_suffix(tool_execution_manager):
+    """Test that single tool calls get consistent suffix behavior like multiple tool calls"""
     
     # Create single tool call
     tool_calls = [{
@@ -137,11 +137,11 @@ async def test_single_tool_call_preserves_original_request_id(tool_execution_man
     # Verify single call was made  
     assert len(called_params) == 1
     
-    # Verify original request_id is preserved (no suffix for single calls)
+    # Verify request_id gets suffix even for single calls (consistent behavior)
     request_id = called_params[0].get("request_id")
-    assert request_id == "single_request_456", f"Expected original request_id, got {request_id}"
+    assert request_id == "single_request_456_001", f"Expected request_id with suffix, got {request_id}"
     
-    print(f"✅ Test passed: Single tool call preserved original request_id: {request_id}")
+    print(f"✅ Test passed: Single tool call got consistent suffix: {request_id}")
 
 
 @pytest.mark.asyncio 

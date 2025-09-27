@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from typing import Any
-from pathlib import Path
 
 from agent_system.llm.clients import ChatMessage, make_llm
-from agent_system.mcp.base import MCPServer
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.utils.text_sanitizer import sanitize_for_llm
 
 
-class LLMRouterServer(MCPServer):
+class LLMRouterServer(SchemaBasedMCPServer):
     def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
         super().__init__(name, config, ssl_verify=ssl_verify)
         self.config = config or {}
@@ -171,51 +170,60 @@ class LLMRouterServer(MCPServer):
 
 
 
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return the OpenAI function schemas for LLM router tools (multi-tool interface)."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
+    def _load_schema(self) -> dict[str, Any]:
+        """Override to provide custom template variables for LLM router schema."""
+        if self._schema_cache is not None:
+            return self._schema_cache
         
-        # Extract available profiles and models from parent LLM configuration
-        available_profiles = []
-        available_models = []
-        available_providers = []
-        
-        if isinstance(self.parent_llm, dict) and self.parent_llm.get('llm_system'):
-            llm_system = self.parent_llm.get('llm_system', {})
+        try:
+            from agent_system.plugins.schema_loader import load_schema_from_dir
             
-            # Get available profiles
-            profiles = llm_system.get('profiles', {})
-            available_profiles = list(profiles.keys())
+            # Extract available profiles and models from parent LLM configuration
+            available_profiles = []
+            available_models = []
+            available_providers = []
             
-            # Get available models 
-            models = llm_system.get('models', {})
-            available_models = list(models.keys())
+            if isinstance(self.parent_llm, dict) and self.parent_llm.get('llm_system'):
+                llm_system = self.parent_llm.get('llm_system', {})
+                
+                # Get available profiles
+                profiles = llm_system.get('profiles', {})
+                available_profiles = list(profiles.keys())
+                
+                # Get available models 
+                models = llm_system.get('models', {})
+                available_models = list(models.keys())
+                
+                # Get available providers from models
+                providers_set = set()
+                for model_config in models.values():
+                    if isinstance(model_config, dict) and 'provider' in model_config:
+                        providers_set.add(model_config['provider'])
+                available_providers = sorted(list(providers_set))
             
-            # Get available providers from models
-            providers_set = set()
-            for model_config in models.values():
-                if isinstance(model_config, dict) and 'provider' in model_config:
-                    providers_set.add(model_config['provider'])
-            available_providers = sorted(list(providers_set))
-        
-        # Pass configuration data to schema template
-        template_vars = {
-            "name": self.name,
-            "available_profiles": available_profiles,
-            "available_models": available_models, 
-            "available_providers": available_providers
-        }
-        
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars=template_vars)
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for llm_router plugin")
-        
-        # Extract tools array from schema
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            # Fallback for single-tool schemas
-            return [schema_data]
+            # Pass configuration data to schema template
+            template_vars = {
+                "name": self.name,
+                "available_profiles": available_profiles,
+                "available_models": available_models, 
+                "available_providers": available_providers
+            }
+            
+            plugin_dir = self._get_plugin_directory()
+            schema_data = load_schema_from_dir(plugin_dir, template_vars=template_vars)
+            
+            if not schema_data:
+                raise RuntimeError(
+                    f"Missing or invalid schema.yaml for {self.name} plugin in {plugin_dir}"
+                )
+            
+            self._schema_cache = schema_data
+            return schema_data
+            
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load schema for {self.name} plugin: {e}"
+            ) from e
 
 
 

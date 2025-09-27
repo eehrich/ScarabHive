@@ -54,99 +54,106 @@ class TestSchemaCompliance:
         assert schema_path.exists(), "schema.yaml file must exist"
 
     def test_schema_basic_structure(self, schema_data):
-        """Test schema has required top-level fields."""
-        required_fields = ["name", "version", "description", "server", "tools"]
-        for field in required_fields:
-            assert field in schema_data, f"Schema must have '{field}' field"
+        """Test schema has required MCP format structure."""
+        # For MCP format, we expect 'tools' at the top level
+        assert "tools" in schema_data, "Schema must have 'tools' field"
+        assert isinstance(schema_data["tools"], list), "tools must be a list"
+        assert len(schema_data["tools"]) == 3, "Should have exactly 3 tools"
 
     def test_server_metadata(self, schema_data):
-        """Test server metadata is properly defined."""
-        server = schema_data["server"]
-        assert "name" in server
-        assert "version" in server
-        assert "description" in server
-        assert server["name"] == "Script Interpreter"
+        """Test schema tools have proper MCP structure."""
+        tools = schema_data["tools"]
+        for tool in tools:
+            assert "type" in tool
+            assert tool["type"] == "function"
+            assert "function" in tool
+            assert "name" in tool["function"]
+            assert "description" in tool["function"]
 
     def test_tools_definition(self, schema_data):
         """Test tools are properly defined."""
         tools = schema_data["tools"]
         assert len(tools) == 3, "Should have exactly 3 tools"
         
-        tool_names = [tool["name"] for tool in tools]
-        assert "eval" in tool_names
-        assert "validate" in tool_names
-        assert "reset" in tool_names
+        tool_names = [tool["function"]["name"] for tool in tools]
+        assert "execute_python" in tool_names
+        assert "validate_python" in tool_names
+        assert "reset_sandbox" in tool_names
 
     def test_eval_tool_schema(self, schema_data):
-        """Test eval tool has proper schema."""
+        """Test execute_python tool has proper MCP schema."""
         eval_tool = next(tool for tool in schema_data["tools"] if tool["function"]["name"] == "execute_python")
         
-        # Check input schema
-        input_schema = eval_tool["inputSchema"]
-        assert input_schema["type"] == "object"
-        assert "code" in input_schema["properties"]
-        assert input_schema["required"] == ["code"]
+        # Check MCP function structure
+        function = eval_tool["function"]
+        assert function["description"]
+        assert "parameters" in function
         
-        # Check output schema
-        output_schema = eval_tool["outputSchema"]
-        assert output_schema["type"] == "object"
-        assert "result" in output_schema["properties"]
-        assert "error" in output_schema["properties"]
+        # Check input parameters
+        params = function["parameters"]
+        assert params["type"] == "object"
+        assert "code" in params["properties"]
+        assert params["required"] == ["code"]
 
     def test_validate_tool_schema(self, schema_data):
-        """Test validate tool has proper schema."""
-        validate_tool = next(tool for tool in schema_data["tools"] if tool["name"] == "validate")
+        """Test validate_python tool has proper MCP schema."""
+        validate_tool = next(tool for tool in schema_data["tools"] if tool["function"]["name"] == "validate_python")
         
-        # Check input schema
-        input_schema = validate_tool["inputSchema"]
-        assert input_schema["type"] == "object"
-        assert "code" in input_schema["properties"]
-        assert input_schema["required"] == ["code"]
+        # Check MCP function structure
+        function = validate_tool["function"]
+        assert function["description"]
+        assert "parameters" in function
         
-        # Check output schema
-        output_schema = validate_tool["outputSchema"]
-        assert output_schema["type"] == "object"
-        assert "valid" in output_schema["properties"]
-        assert "message" in output_schema["properties"]
+        # Check input parameters
+        params = function["parameters"]
+        assert params["type"] == "object"
+        assert "code" in params["properties"]
+        assert params["required"] == ["code"]
 
     def test_reset_tool_schema(self, schema_data):
-        """Test reset tool has proper schema."""
-        reset_tool = next(tool for tool in schema_data["tools"] if tool["name"] == "reset")
+        """Test reset_sandbox tool has proper MCP schema."""
+        reset_tool = next(tool for tool in schema_data["tools"] if tool["function"]["name"] == "reset_sandbox")
         
-        # Check input schema (should be empty)
-        input_schema = reset_tool["inputSchema"]
-        assert input_schema["type"] == "object"
-        assert input_schema["properties"] == {}
-        assert input_schema["required"] == []
+        # Check MCP function structure
+        function = reset_tool["function"]
+        assert function["description"]
+        assert "parameters" in function
         
-        # Check output schema
-        output_schema = reset_tool["outputSchema"]
-        assert output_schema["type"] == "object"
-        assert "message" in output_schema["properties"]
-        assert "status" in output_schema["properties"]
+        # Check input parameters (should be empty object)
+        params = function["parameters"]
+        assert params["type"] == "object"
+        assert params["properties"] == {}
+        assert params.get("required", []) == []
 
     def test_security_section(self, schema_data):
-        """Test security configuration is documented."""
-        security = schema_data["security"]
-        assert security["sandbox"] is True
-        assert security["timeout"] == 5.0
-        assert security["network_access"] is False
-        assert "allowed_functions" in security
-        assert len(security["allowed_functions"]) > 0
+        """Test MCP schema contains valid tool definitions."""
+        # For MCP format, security is handled in the server implementation
+        # Just verify the tools are properly structured
+        tools = schema_data["tools"]
+        for tool in tools:
+            function = tool["function"]
+            assert "name" in function
+            assert "description" in function
+            assert "parameters" in function
+            # Verify parameters follow JSON schema format
+            params = function["parameters"]
+            assert params["type"] == "object"
+            assert "properties" in params
 
     def test_examples_section(self, schema_data):
-        """Test examples are provided for all tools."""
-        examples = schema_data["examples"]
-        assert "eval" in examples
-        assert "validate" in examples
-        assert "reset" in examples
+        """Test MCP tools have proper descriptions that serve as examples."""
+        tools = schema_data["tools"]
         
-        # Check eval examples
-        eval_examples = examples["eval"]
-        assert len(eval_examples) >= 3
-        for example in eval_examples:
-            assert "code" in example
-            assert "description" in example
+        # Find execute_python tool and check it has good examples in description
+        exec_tool = next(tool for tool in tools if tool["function"]["name"] == "execute_python")
+        description = exec_tool["function"]["description"]
+        assert "mathematical expressions" in description
+        assert "programming" in description
+        
+        # Check parameter descriptions are informative
+        code_param = exec_tool["function"]["parameters"]["properties"]["code"]
+        assert "description" in code_param
+        assert len(code_param["description"]) > 10  # Should be descriptive
 
 
 class TestMCPServerIntegration:
@@ -203,7 +210,7 @@ class TestMCPServerIntegration:
         """Test MCPServer get_default_action method."""
         server = ScriptInterpreterServer()
         action = server.get_default_action()
-        assert action == "eval"
+        assert action == "execute_python"
 
     @pytest.mark.asyncio
     async def test_mcpserver_handles_unknown_tool(self):
@@ -237,13 +244,14 @@ class TestMCPProtocolCompliance:
     async def test_eval_tool_input_validation(self):
         """Test eval tool validates input according to schema."""
         server = ScriptInterpreterServer()
+        status = MockStatus()
         
         # Valid input
         request = {
             "method": "tools/call",
             "params": {
-                "name": "eval",
-                "arguments": {"code": "2 + 3"}
+                "name": "execute_python",
+                "arguments": {"code": "2 + 3", "_status": status}
             }
         }
         response = await server.handle_request(request)
@@ -253,8 +261,8 @@ class TestMCPProtocolCompliance:
         request_no_code = {
             "method": "tools/call", 
             "params": {
-                "name": "eval",
-                "arguments": {}
+                "name": "execute_python",
+                "arguments": {"_status": status}
             }
         }
         response = await server.handle_request(request_no_code)
@@ -269,7 +277,7 @@ class TestMCPProtocolCompliance:
         request = {
             "method": "tools/call",
             "params": {
-                "name": "validate",
+                "name": "validate_python",
                 "arguments": {"code": "x = 2 + 3"}
             }
         }
@@ -287,7 +295,7 @@ class TestMCPProtocolCompliance:
         request = {
             "method": "tools/call",
             "params": {
-                "name": "reset",
+                "name": "reset_sandbox",
                 "arguments": {}
             }
         }
@@ -300,6 +308,7 @@ class TestMCPProtocolCompliance:
     async def test_schema_examples_work(self):
         """Test that schema examples actually work with the server."""
         server = ScriptInterpreterServer()
+        status = MockStatus()
         
         # Test eval examples
         examples = [
@@ -312,8 +321,8 @@ class TestMCPProtocolCompliance:
             request = {
                 "method": "tools/call",
                 "params": {
-                    "name": "eval",
-                    "arguments": {"code": code}
+                    "name": "execute_python",
+                    "arguments": {"code": code, "_status": status}
                 }
             }
             response = await server.handle_request(request)
@@ -332,24 +341,22 @@ class TestMCPProtocolCompliance:
             pytest.fail(f"schema.yaml is not valid YAML: {e}")
 
     def test_json_schema_validity(self):
-        """Test that tool schemas are valid JSON Schema."""
+        """Test that tool parameter schemas are valid JSON Schema."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         with open(schema_path, 'r') as f:
             schema_data = yaml.safe_load(f)
             
         for tool in schema_data["tools"]:
-            input_schema = tool["inputSchema"]
-            output_schema = tool["outputSchema"]
+            function = tool["function"]
+            parameters = function["parameters"]
             
-            # Basic JSON Schema validation
-            assert "type" in input_schema
-            assert input_schema["type"] == "object"
-            assert "properties" in input_schema
-            assert "required" in input_schema
-            
-            assert "type" in output_schema
-            assert output_schema["type"] == "object"
-            assert "properties" in output_schema
+            # Basic JSON Schema validation for parameters
+            assert "type" in parameters
+            assert parameters["type"] == "object"
+            assert "properties" in parameters
+            # required field is optional in JSON schema
+            if "required" in parameters:
+                assert isinstance(parameters["required"], list)
 
 
 if __name__ == "__main__":

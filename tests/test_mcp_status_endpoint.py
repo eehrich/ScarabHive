@@ -35,6 +35,10 @@ class TestMCPStatusEndpoint:
         mock_integration = Mock()
         mock_integration.initialized = True
         mock_integration.configured_external_servers = {"test_external": Mock()}
+        # Mock http_server with empty servers dict so it falls back to registry
+        mock_http_server = Mock()
+        mock_http_server.servers = {}
+        mock_integration.http_server = mock_http_server
         mock_integration.get_server_info.return_value = {
             "plugins": {
                 "registered": ["test_plugin"],
@@ -93,6 +97,18 @@ class TestMCPStatusEndpoint:
                     'parameters': {'type': 'object'}
                 }
             }
+            # Add get_default_action for connection check
+            mock_server.get_default_action.return_value = "test_tool"
+            # Add async list_tools method for new MCP interface
+            class MockTool:
+                def __init__(self, name, description, input_schema):
+                    self.name = name
+                    self.description = description
+                    self.input_schema = input_schema
+            
+            mock_server.list_tools = AsyncMock(return_value=[
+                MockTool('test_tool', 'A test tool', {'type': 'object'})
+            ])
             mock_registry._servers = {'test_plugin': mock_server}
             
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

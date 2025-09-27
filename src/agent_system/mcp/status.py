@@ -302,60 +302,80 @@ class StatusScope:
         self.end_msg = end_msg or "completed"
         
     async def __aenter__(self):
-        # Send START message
-        await self.bus.publish(StatusEvent(
-            server=self.server,
-            request_id=self.request_id,
-            message=self.start_msg,
-            phase=StatusPhase.START
-        ))
+        # Send START message with error handling
+        try:
+            await self.bus.publish(StatusEvent(
+                server=self.server,
+                request_id=self.request_id,
+                message=self.start_msg,
+                phase=StatusPhase.START
+            ))
+        except Exception as e:
+            # Gracefully handle status publishing failures
+            # Don't let status publishing failures break the actual operation
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to publish status START event: {e}")
         self.ended = False
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if not self.ended:
             self.ended = True
-            if exc_type is not None:
-                # Error occurred - ensure we have a meaningful error message
-                error_msg = str(exc_val) if exc_val else "Unknown error"
-                if not error_msg or error_msg.strip() == "":
-                    error_msg = f"{exc_type.__name__} occurred"
-                
-                await self.bus.publish(StatusEvent(
-                    server=self.server,
-                    request_id=self.request_id,
-                    message=f"failed: {error_msg}",
-                    phase=StatusPhase.ERROR
-                ))
-            else:
-                # Success
-                await self.bus.publish(StatusEvent(
-                    server=self.server,
-                    request_id=self.request_id,
-                    message=self.end_msg,
-                    phase=StatusPhase.END
-                ))
+            try:
+                if exc_type is not None:
+                    # Error occurred - ensure we have a meaningful error message
+                    error_msg = str(exc_val) if exc_val else "Unknown error"
+                    if not error_msg or error_msg.strip() == "":
+                        error_msg = f"{exc_type.__name__} occurred"
+                    
+                    await self.bus.publish(StatusEvent(
+                        server=self.server,
+                        request_id=self.request_id,
+                        message=f"failed: {error_msg}",
+                        phase=StatusPhase.ERROR
+                    ))
+                else:
+                    # Success
+                    await self.bus.publish(StatusEvent(
+                        server=self.server,
+                        request_id=self.request_id,
+                        message=self.end_msg,
+                        phase=StatusPhase.END
+                    ))
+            except Exception as e:
+                # Gracefully handle status publishing failures
+                # Don't let status publishing failures break the actual operation
+                import logging
+                logging.getLogger(__name__).warning(f"Failed to publish status END event: {e}")
     
     async def progress(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Report a step or progress in the process"""
-        await self.bus.publish(StatusEvent(
-            server=self.server,
-            request_id=self.request_id,
-            message=message,
-            phase=StatusPhase.PROGRESS,
-            meta=meta
-        ))
+        try:
+            await self.bus.publish(StatusEvent(
+                server=self.server,
+                request_id=self.request_id,
+                message=message,
+                phase=StatusPhase.PROGRESS,
+                meta=meta
+            ))
+        except Exception:
+            # Gracefully handle status publishing failures
+            pass
     
     async def end(self, message: str = "completed", meta: Optional[Dict[str, Any]] = None) -> None:
         """Explicitly end the process (useful for early completion)"""
         self.ended = True
-        await self.bus.publish(StatusEvent(
-            server=self.server,
-            request_id=self.request_id,
-            message=message,
-            phase=StatusPhase.END,
-            meta=meta
-        ))
+        try:
+            await self.bus.publish(StatusEvent(
+                server=self.server,
+                request_id=self.request_id,
+                message=message,
+                phase=StatusPhase.END,
+                meta=meta
+            ))
+        except Exception:
+            # Gracefully handle status publishing failures
+            pass
         
     async def error(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Report an error in the process"""

@@ -9,10 +9,10 @@ from plugins.example.server import ExampleServer
 
 
 class SingleToolMockServer(MCPServer):
-    """Mock server implementing old single-tool interface for backward compatibility testing."""
+    """Mock server implementing single-tool interface using new list_tools() method."""
     
-    def get_schema(self) -> dict[str, Any]:
-        return {
+    async def list_tools(self) -> list[dict[str, Any]]:
+        return [{
             "type": "function",
             "function": {
                 "name": f"{self.name}_single",
@@ -25,9 +25,9 @@ class SingleToolMockServer(MCPServer):
                     "required": ["message"]
                 }
             }
-        }
+        }]
     
-    def _get_default_action_impl(self) -> str:
+    def get_default_action(self) -> str:
         return f"{self.name}_single"
     
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
@@ -35,10 +35,10 @@ class SingleToolMockServer(MCPServer):
 
 
 class OldStyleServer(MCPServer):
-    """Mock server implementing only the old abstract methods."""
+    """Mock server implementing the new interface with single tool."""
     
-    def get_schema(self) -> dict[str, Any]:
-        return {
+    async def list_tools(self) -> list[dict[str, Any]]:
+        return [{
             "type": "function", 
             "function": {
                 "name": "old_style",
@@ -49,9 +49,9 @@ class OldStyleServer(MCPServer):
                     "required": ["data"]
                 }
             }
-        }
+        }]
     
-    def _get_default_action_impl(self) -> str:
+    def get_default_action(self) -> str:
         return "old_style"
         
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
@@ -61,10 +61,10 @@ class OldStyleServer(MCPServer):
 class TestEnhancedMCPServer:
     """Test the enhanced MCPServer interface."""
     
-    def test_multi_tool_server_get_tools(self):
+    async def test_multi_tool_server_get_tools(self):
         """Test that multi-tool server returns multiple tools."""
         server = ExampleServer(name="test")
-        tools = server.get_tools()
+        tools = await server.list_tools()
         
         assert len(tools) == 3
         tool_names = [tool["function"]["name"] for tool in tools]
@@ -72,20 +72,21 @@ class TestEnhancedMCPServer:
         assert "test_formatter" in tool_names
         assert "test_status" in tool_names
     
-    def test_multi_tool_server_get_schema_backward_compat(self):
+    async def test_multi_tool_server_get_schema_backward_compat(self):
         """Test that get_schema() works for multi-tool servers (returns first tool)."""
         server = ExampleServer(name="test")
-        schema = server.get_schema()
+        tools = await server.list_tools()
+        schema = tools[0]  # Get first tool as schema
         
         assert schema["function"]["name"] == "test_calculator"
         assert "arithmetic operations" in schema["function"]["description"]
     
     def test_multi_tool_server_get_default_action(self):
-        """Test that get_default_action() extracts from first tool."""
+        """Test that get_default_action() returns the server name."""
         server = ExampleServer(name="test")
         default_action = server.get_default_action()
         
-        assert default_action == "test_calculator"
+        assert default_action == "test"
     
     async def test_multi_tool_server_calculator_call(self):
         """Test calling the calculator tool."""
@@ -144,18 +145,14 @@ class TestEnhancedMCPServer:
                 "b": 0
             })
     
-    def test_single_tool_backward_compatibility(self):
+    async def test_single_tool_backward_compatibility(self):
         """Test that single-tool servers still work."""
         server = SingleToolMockServer(name="single")
         
-        # Test get_tools() returns single tool
-        tools = server.get_tools()
+        # Test list_tools() returns single tool
+        tools = await server.list_tools()
         assert len(tools) == 1
         assert tools[0]["function"]["name"] == "single_single"
-        
-        # Test get_schema() works
-        schema = server.get_schema()
-        assert schema["function"]["name"] == "single_single"
         
         # Test get_default_action() works
         default_action = server.get_default_action()
@@ -170,20 +167,16 @@ class TestEnhancedMCPServer:
         assert result["message"] == "test"
         assert result["server"] == "single"
     
-    def test_old_style_server_compatibility(self):
+    async def test_old_style_server_compatibility(self):
         """Test old-style servers that only implement abstract methods."""
         server = OldStyleServer(name="old")
         
-        # Test get_tools() returns wrapped single tool
-        tools = server.get_tools()
+        # Test list_tools() returns single tool
+        tools = await server.list_tools()
         assert len(tools) == 1
         assert tools[0]["function"]["name"] == "old_style"
         
-        # Test get_schema() works
-        schema = server.get_schema()
-        assert schema["function"]["name"] == "old_style"
-        
-        # Test get_default_action() extracts from tool name
+        # Test get_default_action() works
         default_action = server.get_default_action()
         assert default_action == "old_style"
     
@@ -199,11 +192,11 @@ class TestEnhancedMCPServer:
 class TestErrorConditions:
     """Test error conditions and edge cases."""
     
-    def test_empty_tools_error(self):
-        """Test server with empty tools list raises error."""
+    async def test_empty_tools_error(self):
+        """Test server with empty tools list."""
         
         class EmptyToolsServer(MCPServer):
-            def get_tools(self) -> list[dict[str, Any]]:
+            async def list_tools(self) -> list[dict[str, Any]]:
                 return []
             
             async def call(self, tool: str, params: dict[str, Any]) -> Any:
@@ -211,11 +204,12 @@ class TestErrorConditions:
         
         server = EmptyToolsServer(name="empty")
         
-        with pytest.raises(NotImplementedError, match="must implement either get_schema"):
-            server.get_schema()
+        # Should return empty list, not raise error
+        tools = await server.list_tools()
+        assert tools == []
     
-    def test_missing_implementation_error(self):
-        """Test server missing both implementations raises error."""
+    async def test_missing_implementation_fallback(self):
+        """Test server missing implementations falls back to default tool."""
         
         class IncompleteServer(MCPServer):
             async def call(self, tool: str, params: dict[str, Any]) -> Any:
@@ -223,9 +217,11 @@ class TestErrorConditions:
         
         server = IncompleteServer(name="incomplete")
         
-        # This will recursively call itself and should raise NotImplementedError
-        with pytest.raises(NotImplementedError):
-            server.get_default_action()
+        # Should create a default tool using server name
+        tools = await server.list_tools()
+        assert len(tools) == 1
+        assert tools[0].name == "incomplete"
+        assert "Default action for incomplete" in tools[0].description
 
 
 if __name__ == "__main__":

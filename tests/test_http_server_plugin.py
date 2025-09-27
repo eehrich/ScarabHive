@@ -191,7 +191,7 @@ class TestHTTPServerPlugin:
         monkeypatch.setattr("agent_system.plugins.schema_loader.load_schema_from_dir", mock_load_schema)
         
         server = HTTPServer(name="Test Server")
-        with pytest.raises(RuntimeError, match="Missing required schema.yaml"):
+        with pytest.raises(RuntimeError, match="Failed to load schema for.*Missing or invalid schema.yaml"):
             server.get_tools()
 
     @pytest.mark.asyncio
