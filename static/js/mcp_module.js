@@ -70,11 +70,15 @@ window.AgentSystem.MCP = {
       const content = this.renderMCPContent(data);
       const body = panel.querySelector('.floating-panel-body');
       const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
-      contentDiv.innerHTML = content;    } catch (error) {
+      contentDiv.innerHTML = content;
+
+    } catch (error) {
       console.error('Failed to load MCP data:', error);
-  const body = panel.querySelector('.floating-panel-body');
-  const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
-  contentDiv.innerHTML = '<div class="error">Failed to load MCP servers</div>';
+      const body = panel.querySelector('.floating-panel-body');
+      const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
+      contentDiv.innerHTML = '<div class="error">Failed to load MCP servers</div>';
+
+      // No header badge element present anymore; UI will not display connected count in the header
     } finally {
       const refreshBtn = panel.querySelector('#mcpRefreshBtn');
       if (refreshBtn) {
