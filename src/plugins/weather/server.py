@@ -12,20 +12,17 @@ class WeatherServer(SchemaBasedMCPServer):
 
         if tool != "get_weather":
             error_msg = f"Unknown tool: {tool}. Only 'get_weather' supported."
-            if status:
-                await status.error(error_msg)
+            await status.error(error_msg)
             return {"status": "error", "error": error_msg}
 
         location = params.get("location", "")
         if not location:
             error_msg = "Missing required parameter: location"
-            if status:
-                await status.error(error_msg)
+            await status.error(error_msg)
             return {"status": "error", "error": error_msg}
 
-        # Publish status for operation start
-        if status:
-            await status.progress(f"Fetching weather for {location}")
+        # Publish status for operation progress
+        await status.progress(f"Fetching weather for {location}")
 
         source = params.get("source", "met.no").lower()
         days = min(int(params.get("days", 3)), 7)

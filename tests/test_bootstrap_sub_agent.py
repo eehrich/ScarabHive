@@ -1,15 +1,13 @@
 """
 Integration test for Agent bootstrap functionality.
 """
-import pytest
-
 from agent_system.config.models import AgentConfig, MCPConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.servers.agent.server import Agent
 
 
-class TestAgentBootstrap:
+class TestBootstrapSubAgent:
     """Test SubAgent integration with bootstrap system."""
     
     def test_bootstrap_sub_agent(self):

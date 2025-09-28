@@ -6,7 +6,7 @@ from src.agent_system.context.config import ContextConfig
 from src.agent_system.llm.clients import ChatMessage
 
 
-class TestImprovedTokenEstimation:
+class TestContextTokenEstimation:
     """Test the enhanced token estimation methods."""
 
     @pytest.fixture

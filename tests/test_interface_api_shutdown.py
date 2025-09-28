@@ -23,9 +23,11 @@ async def test_server_with_connection():
         cwd=Path(__file__).parent.parent,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        # Use bytes mode to avoid unicode decode errors in reader threads;
-        # decode with errors='replace' when reading output below.
-        text=False
+        # Open pipes in text mode with explicit encoding and errors policy
+        # to avoid UnicodeDecodeError inside subprocess reader threads.
+        text=True,
+        encoding='utf-8',
+        errors='replace'
     )
     
     # Wait for server to start with timeout and health check
@@ -34,13 +36,14 @@ async def test_server_with_connection():
     for i in range(start_timeout):
         if server_process.poll() is not None:
             logger.error(f"Server process exited early with code {server_process.returncode}")
-            stdout_b, stderr_b = server_process.communicate()
-            stdout = stdout_b.decode(errors='replace') if isinstance(stdout_b, (bytes, bytearray)) else str(stdout_b)
-            stderr = stderr_b.decode(errors='replace') if isinstance(stderr_b, (bytes, bytearray)) else str(stderr_b)
+            stdout, stderr = server_process.communicate()
+            # communicate() returns text strings because we opened pipes with text=True
+            stdout = stdout or ""
+            stderr = stderr or ""
             logger.error(f"Early exit stdout: {stdout}")
             logger.error(f"Early exit stderr: {stderr}")
             return False
-        
+
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=1)) as session:
                 async with session.get("http://127.0.0.1:8000/health") as response:
@@ -48,8 +51,9 @@ async def test_server_with_connection():
                         logger.info("Server is ready")
                         break
         except Exception:
-            pass  # Server not ready yet
-        
+            # Server not ready yet
+            pass
+
         await asyncio.sleep(1)
     else:
         logger.error("Server failed to start within timeout")
@@ -74,7 +78,12 @@ async def test_server_with_connection():
                             if asyncio.get_event_loop().time() - read_start > 5:  # 5 second timeout
                                 logger.info("Timeout reading stream lines, proceeding with shutdown test")
                                 break
-                            logger.debug(f"Received: {line.decode().strip()}")
+                            # response.content yields bytes even when session is text-mode; decode defensively
+                            try:
+                                text_line = line.decode('utf-8', errors='replace').strip()
+                            except Exception:
+                                text_line = str(line)
+                            logger.debug(f"Received: {text_line}")
                             lines_read += 1
                         
                         logger.info("Active connection established, sending SIGINT...")
@@ -114,9 +123,9 @@ async def test_server_with_connection():
         
         # Get the server output (only if process finished)
         try:
-            stdout_b, stderr_b = server_process.communicate(timeout=1)
-            stdout = stdout_b.decode(errors='replace') if isinstance(stdout_b, (bytes, bytearray)) else str(stdout_b)
-            stderr = stderr_b.decode(errors='replace') if isinstance(stderr_b, (bytes, bytearray)) else str(stderr_b)
+            stdout, stderr = server_process.communicate(timeout=1)
+            stdout = stdout or ""
+            stderr = stderr or ""
         except subprocess.TimeoutExpired:
             logger.warning("Timeout getting server output")
             stdout, stderr = "", ""

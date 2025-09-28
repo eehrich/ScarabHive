@@ -8,6 +8,22 @@ import signal
 import atexit
 from typing import List
 
+# Ensure any subprocess.Popen calls that open text streams default to UTF-8
+# to avoid UnicodeDecodeError in the subprocess reader threads on Windows
+# where the locale encoding can be cp1252. We wrap Popen early so it affects
+# tests that don't explicitly provide an encoding.
+_original_popen = subprocess.Popen
+
+def _popen_force_utf8(*args, **kwargs):
+    # If text mode is requested but no encoding provided, force UTF-8 with replace
+    if kwargs.get("text") and "encoding" not in kwargs:
+        kwargs["encoding"] = "utf-8"
+        kwargs.setdefault("errors", "replace")
+    return _original_popen(*args, **kwargs)
+
+# Replace subprocess.Popen with our wrapper for the test session
+subprocess.Popen = _popen_force_utf8
+
 
 def pytest_sessionfinish(session, exitstatus):
     """Hook that runs at the very end of pytest session."""

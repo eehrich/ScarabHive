@@ -9,7 +9,7 @@ from agent_system.mcp.status import (
 from agent_system.utils.tree_hierarchy import get_tree_builder
 
 
-class TestFrontendHierarchy:
+class TestStatusHierarchyFrontend:
     """Test hierarchical status tree functionality for frontend."""
     
     @pytest.mark.asyncio

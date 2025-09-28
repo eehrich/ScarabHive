@@ -303,7 +303,10 @@ class TestIndividualPluginClis:
             cwd=temp_workspace,
             env={"PYTHONPATH": str(temp_workspace / "src")},
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
         )
 
         # Give it more time to start
@@ -312,9 +315,9 @@ class TestIndividualPluginClis:
         # Check if it's still running
         if proc.poll() is not None:
             # Server exited, check stderr for error message
-            stdout_b, stderr_b = proc.communicate()
-            stdout = stdout_b.decode(errors='replace') if isinstance(stdout_b, (bytes, bytearray)) else str(stdout_b)
-            stderr = stderr_b.decode(errors='replace') if isinstance(stderr_b, (bytes, bytearray)) else str(stderr_b)
+            stdout, stderr = proc.communicate()
+            stdout = stdout or ""
+            stderr = stderr or ""
             pytest.fail(f"Server exited early with code {proc.returncode}. Stdout: {stdout}. Stderr: {stderr}")
 
         # Send SIGTERM to shut it down

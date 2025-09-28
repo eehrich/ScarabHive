@@ -154,22 +154,51 @@ class DateTimeServer(SchemaBasedMCPServer):
                     dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
                 except (ValueError, OSError):
                     # Not a valid Unix timestamp, try string formats
-                    formats = [
-                        "%Y-%m-%dT%H:%M:%S",
-                        "%Y-%m-%dT%H:%M:%S.%f",
-                        "%Y-%m-%d %H:%M:%S",
-                        "%Y-%m-%d",
-                        "%d.%m.%Y",
-                        "%d/%m/%Y",
-                        "%m/%d/%Y"
-                    ]
                     dt = None
-                    for fmt in formats:
-                        try:
-                            dt = datetime.strptime(datetime_str, fmt)
-                            break
-                        except ValueError:
-                            continue
+                    
+                    # First try ISO 8601 with proper timezone handling
+                    try:
+                        if datetime_str.endswith('Z'):
+                            # Handle UTC timezone marker
+                            dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+                        elif '+' in datetime_str[-6:] or datetime_str[-6] == '-':
+                            # Handle timezone offset (e.g., +01:00, -05:00)
+                            dt = datetime.fromisoformat(datetime_str)
+                        else:
+                            # Try with standard strptime formats
+                            formats = [
+                                "%Y-%m-%dT%H:%M:%S",
+                                "%Y-%m-%dT%H:%M:%S.%f",
+                                "%Y-%m-%d %H:%M:%S",
+                                "%Y-%m-%d",
+                                "%d.%m.%Y",
+                                "%d/%m/%Y",
+                                "%m/%d/%Y"
+                            ]
+                            for fmt in formats:
+                                try:
+                                    dt = datetime.strptime(datetime_str, fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                    except ValueError:
+                        # If fromisoformat fails, try strptime formats
+                        formats = [
+                            "%Y-%m-%dT%H:%M:%S",
+                            "%Y-%m-%dT%H:%M:%S.%f",
+                            "%Y-%m-%d %H:%M:%S",
+                            "%Y-%m-%d",
+                            "%d.%m.%Y",
+                            "%d/%m/%Y",
+                            "%m/%d/%Y"
+                        ]
+                        for fmt in formats:
+                            try:
+                                dt = datetime.strptime(datetime_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                    
                     if dt is None:
                         raise ValueError(f"Could not parse datetime: {datetime_str}")
             else:
@@ -178,7 +207,7 @@ class DateTimeServer(SchemaBasedMCPServer):
             return {
                 "status": "success",
                 "original": datetime_str,
-                "formatted": dt.strftime(format_str),
+                "formatted_time": dt.strftime(format_str),
                 "parsed_datetime": dt.isoformat(),
                 "year": dt.year,
                 "month": dt.month,

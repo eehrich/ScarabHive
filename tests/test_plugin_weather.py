@@ -1,3 +1,227 @@
+"""Consolidated tests for the Weather plugin.
+
+This file merges tests that used to be split across
+`test_weather_simple.py`, `test_weather_sources.py`,
+`test_weather_status_phases.py` and the original
+`test_plugin_weather.py` into a single plugin-prefixed file
+so plugin tests appear first when running the test suite.
+"""
+
+import pytest
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
+import json
+
+from plugins.weather.server import WeatherServer
+from plugins.weather import sources
+from agent_system.mcp.status import status_bus, StatusPhase
+
+
+def _get_tool_name(tool):
+    """Extract the function.name from either a dict or an MCPTool-like object."""
+    if isinstance(tool, dict):
+        func = tool.get("function") or {}
+        return func.get("name")
+    func = getattr(tool, "function", None)
+    if func is None:
+        return getattr(tool, "name", None)
+    if isinstance(func, dict):
+        return func.get("name")
+    return getattr(func, "name", None)
+
+
+def _get_tool_function(tool):
+    """Extract the function object from either a dict or an MCPTool-like object."""
+    if isinstance(tool, dict):
+        return tool.get("function", {})
+    return getattr(tool, "function", None)
+
+
+class TestWeatherServerBasic:
+    """Basic unit tests for WeatherServer."""
+
+    def test_weather_server_initialization(self):
+        server = WeatherServer("weather", {}, True)
+        assert server.name == "weather"
+        assert server.ssl_verify is True
+
+    def test_weather_server_default_action(self):
+        server = WeatherServer("weather", {}, True)
+        assert server.get_default_action() == "get_weather"
+
+    def test_weather_server_schema(self):
+        server = WeatherServer("weather", {}, True)
+        tools = server.get_tools()
+
+        assert isinstance(tools, list)
+        assert len(tools) == 1
+        tool = tools[0]
+        assert tool["function"]["name"] == "get_weather"
+        params = tool["function"]["parameters"]
+        assert "location" in params["properties"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_wttr_parsing():
+    # Mock httpx AsyncClient.get and response
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json = lambda: {
+        "current_condition": [{
+            "temp_C": "20",
+            "FeelsLikeC": "20",
+            "humidity": "50",
+            "windspeedKmph": "5",
+            "winddir16Point": "N",
+            "pressure": "1010",
+            "visibility": "10",
+            "weatherDesc": [{"value": "Sunny"}],
+            "observation_time": "10:00 AM"
+        }],
+        "weather": [
+            {"date": "2025-08-26", "maxtempC": "22", "mintempC": "12", "avgtempC": "17", "hourly": []}
+        ]
+    }
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, url):
+            return mock_resp
+
+    with patch('httpx.AsyncClient', return_value=DummyClient()):
+        res = await sources.fetch_wttr("Berlin", 3, "metric", ssl_verify=True)
+        assert res["location"] == "Berlin"
+        assert res["source"] == "wttr.in"
+        assert "current" in res
+        assert "forecast" in res
+
+
+@pytest.mark.asyncio
+async def test_fetch_met_no_parsing():
+    mock_timeseries = [
+        {"time": "2025-08-26T00:00:00Z", "data": {"instant": {"details": {"air_temperature": 20}}}},
+        {"time": "2025-08-27T00:00:00Z", "data": {"instant": {"details": {"air_temperature": 22}}}},
+    ]
+
+    mock_weather = {"properties": {"timeseries": mock_timeseries}}
+
+    mock_resp_geo = Mock()
+    mock_resp_geo.status_code = 200
+    mock_resp_geo.json = lambda: [{"lat": "52.52", "lon": "13.405"}]
+
+    mock_resp_weather = Mock()
+    mock_resp_weather.status_code = 200
+    mock_resp_weather.json = lambda: mock_weather
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, url, params=None):
+            if 'nominatim' in url:
+                return mock_resp_geo
+            if 'met.no' in url:
+                return mock_resp_weather
+            raise RuntimeError("Unexpected URL")
+
+    with patch('httpx.AsyncClient', return_value=DummyClient()):
+        res = await sources.fetch_met_no("Berlin", 2, "metric", ssl_verify=True)
+        assert res["location"] == "Berlin"
+        assert res["source"] == "met.no"
+        assert "forecast" in res
+
+
+@pytest.mark.anyio
+async def test_weather_status_phases():
+    server = WeatherServer("weather_test")
+    queue = await status_bus.subscribe(server="weather_test")
+    try:
+        from agent_system.mcp.status import StatusScope
+        async with StatusScope(status_bus, "weather_test") as status:
+            result = await server.call("get_weather", {"location": "Munich, Germany", "_status": status})
+        await asyncio.sleep(0.1)
+        events = []
+        while True:
+            try:
+                event = queue.get_nowait()
+                events.append(event)
+            except asyncio.QueueEmpty:
+                break
+        phases = [event.phase for event in events]
+        assert StatusPhase.START in phases
+        if result.get("status") == "success":
+            assert StatusPhase.END in phases
+        else:
+            assert StatusPhase.ERROR in phases
+        start_index = None
+        end_or_error_index = None
+        for i, phase in enumerate(phases):
+            if phase == StatusPhase.START and start_index is None:
+                start_index = i
+            elif phase in [StatusPhase.END, StatusPhase.ERROR] and end_or_error_index is None:
+                end_or_error_index = i
+        assert start_index is not None
+        assert end_or_error_index is not None
+        assert start_index < end_or_error_index
+    finally:
+        status_bus.unsubscribe(queue)
+
+
+@pytest.mark.anyio
+async def test_weather_error_status_phases():
+    server = WeatherServer("weather_test_error")
+    queue = await status_bus.subscribe(server="weather_test_error")
+    try:
+        from agent_system.mcp.status import StatusScope
+        async with StatusScope(status_bus, "weather_test_error") as status:
+            result = await server.call("get_weather", {"_status": status})
+        await asyncio.sleep(0.1)
+        events = []
+        while True:
+            try:
+                event = queue.get_nowait()
+                events.append(event)
+            except asyncio.QueueEmpty:
+                break
+        phases = [event.phase for event in events]
+        assert StatusPhase.ERROR in phases
+        assert result["status"] == "error"
+    finally:
+        status_bus.unsubscribe(queue)
+
+
+class TestWeatherCLIAndFactory:
+    def test_weather_plugin_discovered(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        default_dir = repo_root / 'plugins'
+        if not default_dir.exists():
+            alt = repo_root / 'src' / 'plugins'
+            if alt.exists():
+                default_dir = alt
+        from agent_system.plugins import discover_all_plugins
+        plugins = discover_all_plugins([default_dir])
+        assert 'weather' in plugins
+        factory = plugins['weather']
+        inst = factory('weather', {})
+        assert inst is not None
+
+    def test_build_parser_basic_args(self):
+        from plugins.weather.__main__ import build_parser, main
+        parser = build_parser()
+        args = parser.parse_args(['--location', 'Berlin'])
+        assert args.location == 'Berlin'
+        assert args.days == 3
+
+    def test_plugin_factory_basic(self):
+        from plugins.weather.plugin import PLUGIN_FACTORY
+        server = PLUGIN_FACTORY("weather")
+        assert server.name == "weather"
+
 from pathlib import Path
 import pytest
 import json
@@ -164,9 +388,11 @@ class TestWeatherServer:
     @pytest.mark.asyncio
     async def test_weather_server_missing_location(self):
         """Test weather server with missing location."""
+        from unittest.mock import AsyncMock
         server = WeatherServer("weather", {}, True)
+        status = AsyncMock()
 
-        result = await server.call("get_weather", {"_status": None})
+        result = await server.call("get_weather", {"_status": status})
         assert result["status"] == "error"
         assert "Missing required parameter: location" in result["error"]
 
@@ -175,7 +401,8 @@ class TestWeatherServer:
         """Test weather server with invalid tool name."""
         server = WeatherServer("weather", {}, True)
 
-        result = await server.call("invalid_tool", {"location": "Berlin", "_status": None})
+        mock_status = AsyncMock()
+        result = await server.call("invalid_tool", {"location": "Berlin", "_status": mock_status})
         assert result["status"] == "error"
         assert "Unknown tool" in result["error"]
         assert "invalid_tool" in result["error"]
