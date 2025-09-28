@@ -3,3 +3,5 @@ author: "Enrico Ehrich"
 version: 0.1.0
 description: "Weather MCP server plugin (wttr.in, met.no, weather.gov, marine.weather.gov)"
 entrypoint: plugin:PLUGIN_FACTORY
+type: mcp_only
+category: data

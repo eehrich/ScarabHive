@@ -3,13 +3,5 @@ author: "Enrico Ehrich"
 version: 0.1.0
 description: "Date/time utilities optimized for MCP usage"
 entrypoint: plugin:PLUGIN_FACTORY
-capabilities:
-  - datetime
-  - parse
-  - format
-  - add
-  - subtract
-  - timezone
-config:
-  timeout: 5
-  retries: 1
+type: mcp_only
+category: utilities

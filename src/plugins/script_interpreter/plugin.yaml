@@ -3,18 +3,8 @@ author: "AgentSystem"
 version: "1.0.0"  
 description: "Secure Python script execution plugin with sandboxed environment for mathematical expressions, basic operations, and simple programming constructs"
 entrypoint: plugin:PLUGIN_FACTORY
+type: mcp_only
+category: utilities
 license: MIT
 dependencies:
   - sandboxed-python>=0.1.0
-capabilities:
-  - mathematical_expressions
-  - variable_assignment
-  - basic_control_flow
-  - function_calls_whitelisted
-  - error_handling
-  - syntax_validation
-  - sandbox_reset
-security:
-  sandbox: true
-  timeout: 5.0
-  network_access: false

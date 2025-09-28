@@ -3,3 +3,5 @@ version: 0.1.0
 author: Enrico Ehrich
 description: "Fetch and extract readable text and structured data (tables/forms/lists) from web pages."
 entrypoint: plugin:PLUGIN_FACTORY
+type: mcp_only
+category: tools

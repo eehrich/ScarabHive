@@ -263,7 +263,84 @@ tools:
             maximum: 100
             default: 10
         required: ["query"]
+    additionalProperties: false
+```
+
+### Schema Template Variables
+
+Schema files support Jinja2 template variables that are resolved when the schema is loaded. This allows you to create dynamic tool names and configuration-based constraints.
+
+**Available Template Variables:**
+- `{{ name }}`: Plugin instance name (useful for namespacing tools)
+- Custom variables provided by your server (via `_load_schema` override)
+
+**Example with Plugin Name:**
+```yaml
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_calculator"  # Becomes "example_calculator" for plugin instance "example"
+      description: Perform basic arithmetic operations
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: [add, subtract, multiply, divide]
+        required: ["operation"]
         additionalProperties: false
+```
+
+**Example with Custom Configuration Variables:**
+```yaml
+tools:
+  - type: function
+    function:
+      name: "wait"
+      description: Wait for specified seconds
+      parameters:
+        type: object
+        properties:
+          seconds:
+            type: number
+            minimum: 0.1
+            maximum: {{ max_wait_seconds }}  # Resolved from server configuration
+            description: "Number of seconds to wait (0.1 to {{ max_wait_seconds }} seconds)"
+        required: ["seconds"]
+        additionalProperties: false
+```
+
+**Custom Template Variables in Server:**
+```python
+class MyServer(SchemaBasedMCPServer):
+    def _load_schema(self) -> dict[str, Any]:
+        """Override to provide custom template variables."""
+        if self._schema_cache is not None:
+            return self._schema_cache
+        
+        from agent_system.plugins.schema_loader import load_schema_from_dir
+        
+        plugin_dir = self._get_plugin_directory()
+        schema_data = load_schema_from_dir(
+            plugin_dir,
+            template_vars={
+                "name": self.name,
+                "max_wait_seconds": self.max_wait_seconds,
+                "available_models": self.get_available_models()
+            }
+        )
+        
+        self._schema_cache = schema_data
+        return schema_data
+```
+
+**Template Best Practices:**
+- Keep numeric template variables unquoted so they render with correct types
+- Use `{{ name }}` for tool name prefixing to avoid conflicts between plugin instances
+- Validate template variables in your server initialization
+- Document custom template variables in your plugin's README
+
+### Web UI Configuration (For Hybrid/Web Plugins)
 ```
 
 ### Parameter Types and Validation

@@ -254,10 +254,12 @@ class TestBasicOperationsPlugin:
         from plugins.basic_operations.plugin import PLUGIN_INFO
         
         assert PLUGIN_INFO["name"] == "basic_operations"
-        assert PLUGIN_INFO["version"] == "1.0.0"
+        assert PLUGIN_INFO["version"] == "1.0.0" 
         assert "description" in PLUGIN_INFO
-        assert "tools" in PLUGIN_INFO
-        assert len(PLUGIN_INFO["tools"]) == 2
+        assert "type" in PLUGIN_INFO
+        assert "category" in PLUGIN_INFO
+        assert PLUGIN_INFO["type"] == "mcp_only"
+        assert PLUGIN_INFO["category"] == "utilities"
 
 
 class TestBasicOperationsIntegration:

@@ -2,9 +2,6 @@ name: basic_operations
 version: 1.0.0
 description: Basic utility operations including wait and ping
 author: AgentSystem Team
-
-tools:
-  - name: wait
-    description: "Wait for specified seconds with countdown status"
-  - name: ping
-    description: "Simple connectivity test with timestamp"
+entrypoint: server:BasicOperationsServer
+type: mcp_only
+category: utilities
