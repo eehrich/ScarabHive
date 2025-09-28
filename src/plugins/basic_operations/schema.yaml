@@ -1,0 +1,33 @@
+tools:
+  - type: function
+    function:
+      name: "wait"
+      description: Wait for a specified number of seconds with countdown status updates.
+      parameters:
+        type: object
+        properties:
+          seconds:
+            type: number
+            minimum: 0.1
+            maximum: {{ max_wait_seconds }}
+            description: "Number of seconds to wait (0.1 to {{ max_wait_seconds }} seconds)"
+          # update_interval removed: plugin uses server-side `default_update_interval`
+          message:
+            type: string
+            maxLength: 100
+            description: "Optional message to display during wait"
+        required: ["seconds"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "ping"
+      description: Simple ping operation that returns current timestamp and server status.
+      parameters:
+        type: object
+        properties:
+          include_details:
+            type: boolean
+            default: false
+            description: "Include detailed system information in response"
+        additionalProperties: false
