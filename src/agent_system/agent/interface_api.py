@@ -113,16 +113,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 mcp_block = getattr(config.mcp, "__dict__", {})
                 logger.warning("Failed to get MCP config with model_dump, using __dict__")
 
-            # Prepare full configuration including LLM system for plugin parent_llm injection
-            payload = {"mcp": mcp_block}
-            # Include LLM system configuration for plugin parent_llm injection
-            if hasattr(config, 'llm_system') and config.llm_system:
-                if hasattr(config.llm_system, 'model_dump'):
-                    payload['llm_system'] = config.llm_system.model_dump()
-                else:
-                    payload['llm_system'] = config.llm_system
-            if hasattr(config, 'agent_llm_profiles') and config.agent_llm_profiles:
-                payload['agent_llm_profiles'] = config.agent_llm_profiles
+            # Use centralized configuration building to ensure consistency with CLI
+            from ..config.loader import build_mcp_payload
+            payload = build_mcp_payload(config)
+            
+            logger.debug(f"Built MCP payload with keys: {list(payload.keys())}")
+            if 'servers' in payload:
+                logger.debug(f"Added servers config to payload: {list(payload['servers'].keys())}")
             
             mcp_integration = await initialize_mcp(payload, app)
             # Ensure configured_external_servers includes any entries provided by the

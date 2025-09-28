@@ -1016,17 +1016,9 @@ def main() -> None:
             except Exception:
                 mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
 
-            # Prepare full configuration including LLM system for plugins
-            payload = {"mcp": mcp_block}
-            # Include LLM system configuration for plugin parent_llm injection
-            if hasattr(config, 'llm_system') and config.llm_system:
-                if hasattr(config.llm_system, 'model_dump'):
-                    payload['llm_system'] = config.llm_system.model_dump()
-                else:
-                    payload['llm_system'] = config.llm_system
-            if hasattr(config, 'agent_llm_profiles') and config.agent_llm_profiles:
-                payload['agent_llm_profiles'] = config.agent_llm_profiles
-            
+            # Use centralized configuration building to ensure consistency with API
+            from .config.loader import build_mcp_payload
+            payload = build_mcp_payload(config)
             mcp_integration = MCPIntegration(config=payload)
             # Ensure MCPIntegration sets up external clients and plugins
             try:

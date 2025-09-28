@@ -172,9 +172,17 @@ class PluginMCPRegistry:
         if name not in self.plugin_factories:
             raise Exception(f"Unknown plugin: {name}")
 
+        # Check if already registered and log for debugging  
+        if name in self.plugin_servers:
+            logger.warning(f"Plugin {name} already registered in MCP registry. Re-registering with new config: {config}")
+            # Continue to re-register instead of skipping
+
         # Create plugin instance with parent config injection
         factory = self.plugin_factories[name]
-        plugin_config = config or {}
+        plugin_config = dict(config or {})  # copy to avoid mutating original
+        # Remove reserved keys coming from mcp.yaml server definitions (e.g., 'type')
+        if 'type' in plugin_config:
+            plugin_config.pop('type', None)
         
         # Inject parent_llm configuration if available and not already present
         if parent_config and isinstance(plugin_config, dict) and 'parent_llm' not in plugin_config:
@@ -191,6 +199,7 @@ class PluginMCPRegistry:
                 logger.debug(f"Injected parent_llm configuration into plugin {name}")
         
         try:
+            logger.info(f"MCP registry creating plugin {name} with config: {plugin_config}")
             plugin_server = factory(name, plugin_config, ssl_verify=True)
         except Exception as e:
             logger.error(f"Failed to create plugin {name}: {e}")
@@ -266,9 +275,11 @@ class PluginMCPRegistry:
 
     async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any], parent_config: Optional[Dict[str, Any]] = None) -> None:
         """Register plugins from configuration"""
+        logger.debug(f"MCP register_from_config - servers_config keys: {list(servers_config.keys())}")
         for server_name in enabled_servers:
             if server_name in self.plugin_factories:
                 config = servers_config.get(server_name, {})
+                logger.debug(f"MCP register_from_config - plugin {server_name} config: {config}")
                 try:
                     await self.register_plugin(server_name, config, parent_config)
                 except Exception as e:

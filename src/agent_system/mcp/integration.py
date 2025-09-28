@@ -73,7 +73,11 @@ class MCPIntegration:
 
         # Register enabled plugins as MCP servers
         enabled_servers = mcp_config.get('enabled_servers', [])
-        servers_config = mcp_config.get('servers', {})
+        # Read servers config from the servers section of mcp.yaml, not from mcp_config
+        # which only contains external_servers config
+        servers_config = config.get('servers', {})
+        logger.debug(f"MCP integration - config keys: {list(config.keys())}")
+        logger.debug(f"MCP integration - servers_config: {servers_config}")
         
         # Extract parent configuration for plugin inheritance
         parent_config = {}

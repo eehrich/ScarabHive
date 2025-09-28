@@ -34,6 +34,15 @@ class MCPIntegrationManager:
                     
                     if hasattr(self.agent_config, 'agent_llm_profiles'):
                         full_config['agent_llm_profiles'] = self.agent_config.agent_llm_profiles
+                    
+                    # Add servers configuration for MCP plugin initialization
+                    if hasattr(self.agent_config, 'servers'):
+                        if hasattr(self.agent_config.servers, 'model_dump'):
+                            full_config['servers'] = self.agent_config.servers.model_dump()
+                        elif isinstance(self.agent_config.servers, dict):
+                            full_config['servers'] = self.agent_config.servers
+                        else:
+                            full_config['servers'] = getattr(self.agent_config.servers, '__dict__', {})
                         
                     await self.mcp_integration.initialize(full_config)
                     self.mcp_initialized_locally = True

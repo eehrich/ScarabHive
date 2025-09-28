@@ -47,6 +47,7 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
 
     for key in config.mcp.enabled_servers:
         server_cfg: dict[str, Any] = config.servers.get(key, {})
+        logger.debug(f"Bootstrap server '{key}': server_cfg={server_cfg}")
         typ = server_cfg.get("type", key)
         # If a plugin provides this type, use it
         if typ in plugins:
