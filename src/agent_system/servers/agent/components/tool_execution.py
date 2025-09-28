@@ -360,8 +360,8 @@ class ToolExecutionManager:
         # For multi-tool plugins, the openai_tool_name contains the actual tool name to call
         # The tool_name is the plugin registry name that was mapped back
         # So we should call the server with the original tool name, not an action
-        if hasattr(server, 'get_tools') and openai_tool_name != tool_name:
-            # Multi-tool plugin: call with the specific tool name
+        if hasattr(server, 'get_tools'):
+            # Multi-tool plugin: call with the specific tool name (regardless of name equality)
             action_name = openai_tool_name
         else:
             # Legacy single-tool plugin: use action parameter
