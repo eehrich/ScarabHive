@@ -78,6 +78,17 @@ class SchemaBasedMCPServer(MCPServer):
             f"Module: {module}. Please ensure the plugin follows standard directory structure."
         )
     
+    def get_template_vars(self) -> dict[str, Any]:
+        """Get template variables for schema rendering.
+        
+        Override this method in subclasses to provide custom template variables
+        for schema.yaml rendering. The base implementation provides the plugin name.
+        
+        Returns:
+            Dictionary of template variables to pass to Jinja2 rendering.
+        """
+        return {"name": self.name}
+    
     def _load_schema(self) -> dict[str, Any]:
         """Load and cache the plugin's schema.yaml file.
         
@@ -94,9 +105,11 @@ class SchemaBasedMCPServer(MCPServer):
             from agent_system.plugins.schema_loader import load_schema_from_dir
             
             plugin_dir = self._get_plugin_directory()
+            template_vars = self.get_template_vars()
+            
             schema_data = load_schema_from_dir(
                 plugin_dir,
-                template_vars={"name": self.name}
+                template_vars=template_vars
             )
             
             if not schema_data:
@@ -105,7 +118,7 @@ class SchemaBasedMCPServer(MCPServer):
                 )
             
             self._schema_cache = schema_data
-            logger.debug(f"Loaded schema for {self.name} plugin from {plugin_dir}")
+            logger.debug(f"Loaded schema for {self.name} plugin from {plugin_dir} with template_vars={template_vars}")
             return schema_data
             
         except Exception as e:

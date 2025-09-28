@@ -54,36 +54,12 @@ class BasicOperationsServer(SchemaBasedMCPServer):
             f"default_update_interval={self.default_update_interval}"
         )
 
-    def _load_schema(self) -> dict[str, Any]:
-        """Load schema with custom template variables including max_wait_seconds."""
-        if self._schema_cache is not None:
-            return self._schema_cache
-        
-        try:
-            from agent_system.plugins.schema_loader import load_schema_from_dir
-            
-            plugin_dir = self._get_plugin_directory()
-            schema_data = load_schema_from_dir(
-                plugin_dir,
-                template_vars={
-                    "name": self.name,
-                    "max_wait_seconds": self.max_wait_seconds
-                }
-            )
-            
-            if not schema_data:
-                raise RuntimeError(
-                    f"Missing or invalid schema.yaml for {self.name} plugin in {plugin_dir}"
-                )
-            
-            self._schema_cache = schema_data
-            logger.debug(f"Loaded schema for {self.name} plugin from {plugin_dir}")
-            return schema_data
-            
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load schema for {self.name} plugin: {e}"
-            ) from e
+    def get_template_vars(self) -> dict[str, Any]:
+        """Provide custom template variables for schema rendering."""
+        return {
+            "name": self.name,
+            "max_wait_seconds": self.max_wait_seconds
+        }
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Route tool calls to appropriate handlers."""

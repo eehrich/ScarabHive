@@ -175,60 +175,37 @@ class LLMRouterServer(SchemaBasedMCPServer):
 
 
 
-    def _load_schema(self) -> dict[str, Any]:
-        """Override to provide custom template variables for LLM router schema."""
-        if self._schema_cache is not None:
-            return self._schema_cache
+    def get_template_vars(self) -> dict[str, Any]:
+        """Provide custom template variables for LLM router schema."""
+        # Extract available profiles and models from parent LLM configuration
+        available_profiles = []
+        available_models = []
+        available_providers = []
         
-        try:
-            from agent_system.plugins.schema_loader import load_schema_from_dir
+        if isinstance(self.parent_llm, dict) and self.parent_llm.get('llm_system'):
+            llm_system = self.parent_llm.get('llm_system', {})
             
-            # Extract available profiles and models from parent LLM configuration
-            available_profiles = []
-            available_models = []
-            available_providers = []
+            # Get available profiles
+            profiles = llm_system.get('profiles', {})
+            available_profiles = list(profiles.keys())
             
-            if isinstance(self.parent_llm, dict) and self.parent_llm.get('llm_system'):
-                llm_system = self.parent_llm.get('llm_system', {})
-                
-                # Get available profiles
-                profiles = llm_system.get('profiles', {})
-                available_profiles = list(profiles.keys())
-                
-                # Get available models 
-                models = llm_system.get('models', {})
-                available_models = list(models.keys())
-                
-                # Get available providers from models
-                providers_set = set()
-                for model_config in models.values():
-                    if isinstance(model_config, dict) and 'provider' in model_config:
-                        providers_set.add(model_config['provider'])
-                available_providers = sorted(list(providers_set))
+            # Get available models 
+            models = llm_system.get('models', {})
+            available_models = list(models.keys())
             
-            # Pass configuration data to schema template
-            template_vars = {
-                "name": self.name,
-                "available_profiles": available_profiles,
-                "available_models": available_models, 
-                "available_providers": available_providers
-            }
-            
-            plugin_dir = self._get_plugin_directory()
-            schema_data = load_schema_from_dir(plugin_dir, template_vars=template_vars)
-            
-            if not schema_data:
-                raise RuntimeError(
-                    f"Missing or invalid schema.yaml for {self.name} plugin in {plugin_dir}"
-                )
-            
-            self._schema_cache = schema_data
-            return schema_data
-            
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load schema for {self.name} plugin: {e}"
-            ) from e
+            # Get available providers from models
+            providers_set = set()
+            for model_config in models.values():
+                if isinstance(model_config, dict) and 'provider' in model_config:
+                    providers_set.add(model_config['provider'])
+            available_providers = sorted(list(providers_set))
+        
+        return {
+            "name": self.name,
+            "available_profiles": available_profiles,
+            "available_models": available_models, 
+            "available_providers": available_providers
+        }
 
 
 

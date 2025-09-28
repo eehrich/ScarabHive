@@ -313,32 +313,29 @@ tools:
 **Custom Template Variables in Server:**
 ```python
 class MyServer(SchemaBasedMCPServer):
-    def _load_schema(self) -> dict[str, Any]:
+    def get_template_vars(self) -> dict[str, Any]:
         """Override to provide custom template variables."""
-        if self._schema_cache is not None:
-            return self._schema_cache
-        
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        
-        plugin_dir = self._get_plugin_directory()
-        schema_data = load_schema_from_dir(
-            plugin_dir,
-            template_vars={
-                "name": self.name,
-                "max_wait_seconds": self.max_wait_seconds,
-                "available_models": self.get_available_models()
-            }
-        )
-        
-        self._schema_cache = schema_data
-        return schema_data
+        return {
+            "name": self.name,
+            "max_wait_seconds": self.max_wait_seconds,
+            "available_models": self.get_available_models()
+        }
 ```
+
+
 
 **Template Best Practices:**
 - Keep numeric template variables unquoted so they render with correct types
 - Use `{{ name }}` for tool name prefixing to avoid conflicts between plugin instances
 - Validate template variables in your server initialization
 - Document custom template variables in your plugin's README
+- **Prefer `get_template_vars()` override** over `_load_schema()` override for custom variables
+
+**Why use `get_template_vars()` instead of overriding `_load_schema()`?**
+- **Cleaner code**: Just return a dictionary instead of duplicating schema loading logic
+- **Less error-prone**: Base class handles caching, error handling, and directory resolution
+- **Better maintainability**: Your code focuses only on the template variables, not infrastructure
+- **Future-proof**: Benefits from base class improvements automatically
 
 ### Web UI Configuration (For Hybrid/Web Plugins)
 ```
