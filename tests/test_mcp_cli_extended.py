@@ -115,6 +115,45 @@ def mock_extended_mcp_integration():
         }
     })()
     
+    # Add configured_external_servers for runtime operations (only enabled servers)
+    integration.configured_external_servers = {
+        'server1': {
+            'url': 'http://localhost:8001/mcp',
+            'enabled': True,
+            'description': 'Test server 1',
+            'transport_type': 'http'
+        },
+        'server2': {
+            'url': 'http://localhost:8002/mcp',
+            'enabled': True,
+            'description': 'Test server 2',
+            'transport_type': 'smithery'
+        }
+        # disabled_server is excluded since enabled=False
+    }
+    
+    # Add all_configured_external_servers for CLI management (all servers)
+    integration.all_configured_external_servers = {
+        'server1': {
+            'url': 'http://localhost:8001/mcp',
+            'enabled': True,
+            'description': 'Test server 1',
+            'transport_type': 'http'
+        },
+        'server2': {
+            'url': 'http://localhost:8002/mcp',
+            'enabled': True,
+            'description': 'Test server 2',
+            'transport_type': 'smithery'
+        },
+        'disabled_server': {
+            'url': 'http://localhost:8003/mcp',
+            'enabled': False,
+            'description': 'Disabled test server',
+            'transport_type': 'http'
+        }
+    }
+    
     # Mock client manager
     integration.client_manager = AsyncMock()
     

@@ -100,18 +100,19 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
     """List configured external MCP servers."""
     servers = []
 
-    # List servers from configuration
-    for name, server_config in mcp_integration.mcp_config.servers.items():
+    # List servers from configuration - use all_configured_external_servers for CLI management
+    # This includes both enabled and disabled servers for management operations
+    for name, server_config in mcp_integration.all_configured_external_servers.items():
         # Check if there's a connected client
         client = await _maybe_await_get_client(mcp_integration, name)
         is_connected = client is not None
 
         server_info = {
             "name": name,
-            "address": server_config.url,
+            "address": server_config.get("url", ""),
             "connected": is_connected,
-            "enabled": server_config.enabled,
-            "description": server_config.description or ""
+            "enabled": server_config.get("enabled", False),
+            "description": server_config.get("description", "")
         }
         servers.append(server_info)
 
@@ -429,6 +430,13 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
 
 async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
     """Add a tool to the allowed_tools list for a server."""
+    # Use MCP integration's all configured servers (including disabled) for management operations
+    # This ensures consistency with the list command and works regardless of working directory
+    if server_name not in mcp_integration.all_configured_external_servers:
+        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
+        return
+    
+    # Still need to modify the config file, so read it for updates
     cfg_path = Path("config/mcp.yaml")
     if not cfg_path.exists():
         print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
@@ -443,7 +451,7 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     mcp_block = raw.get("mcp", raw)
     servers = mcp_block.get("external_servers", {})
     if server_name not in servers:
-        print(json.dumps({"error": f"Server {server_name} not found in config"}, ensure_ascii=False))
+        print(json.dumps({"error": f"Server {server_name} not found in config file"}, ensure_ascii=False))
         return
 
     server_cfg = servers[server_name] or {}
@@ -479,6 +487,13 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
 
 async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
     """Add a tool to the blocked_tools list for a server."""
+    # Use MCP integration's all configured servers (including disabled) for management operations
+    # This ensures consistency with the list command and works regardless of working directory
+    if server_name not in mcp_integration.all_configured_external_servers:
+        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
+        return
+    
+    # Still need to modify the config file, so read it for updates
     cfg_path = Path("config/mcp.yaml")
     if not cfg_path.exists():
         print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
@@ -493,7 +508,7 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     mcp_block = raw.get("mcp", raw)
     servers = mcp_block.get("external_servers", {})
     if server_name not in servers:
-        print(json.dumps({"error": f"Server {server_name} not found in config"}, ensure_ascii=False))
+        print(json.dumps({"error": f"Server {server_name} not found in config file"}, ensure_ascii=False))
         return
 
     server_cfg = servers[server_name] or {}
@@ -1004,7 +1019,9 @@ def main() -> None:
                 else:
                     mcp_file = Path(str(config_path))
                 if not mcp_file.is_absolute():
-                    mcp_file = Path("config") / mcp_file.name
+                    # Keep the relative path as-is, don't modify it
+                    # This allows the CLI to find config/mcp.yaml relative to current working directory
+                    pass
                 if mcp_file.exists():
                     try:
                         raw = yaml.safe_load(mcp_file.read_text(encoding="utf-8")) or {}

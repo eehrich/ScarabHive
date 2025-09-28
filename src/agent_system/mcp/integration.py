@@ -96,10 +96,14 @@ class MCPIntegration:
 
         # Connect to external MCP servers (using old format for backward compatibility)
         external_servers = mcp_config.get('external_servers', {})
-        # Only store enabled servers for status endpoint
+        # Only store enabled servers for runtime connections and status endpoint
         self.configured_external_servers = {
             name: config for name, config in external_servers.items()
             if config.get('enabled', True)
+        }
+        # Store all configured servers (enabled + disabled) for CLI management operations
+        self.all_configured_external_servers = {
+            name: config for name, config in external_servers.items()
         }
         for server_name, server_config in external_servers.items():
             # Only connect to enabled servers

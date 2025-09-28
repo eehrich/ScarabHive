@@ -67,6 +67,22 @@ def mock_mcp_integration():
         'servers': {'test_server': test_server}
     })()
     
+    # Fix: Add configured_external_servers for runtime operations and CLI management
+    integration.configured_external_servers = {
+        'test_server': {
+            'url': 'http://localhost:8001/mcp',
+            'enabled': True,
+            'description': 'Test MCP server'
+        }
+    }
+    integration.all_configured_external_servers = {
+        'test_server': {
+            'url': 'http://localhost:8001/mcp',
+            'enabled': True,
+            'description': 'Test MCP server'
+        }
+    }
+    
     integration.client_manager = AsyncMock()
     integration.client_manager.get_client.return_value = None  # Not connected by default
     
@@ -83,9 +99,11 @@ class TestCLIMCP:
         """Test mcp list command when no servers are configured."""
         mock_load_settings.return_value = mock_config
         
-        # Mock integration with no servers
+        # Mock integration with no external servers
         mock_integration = AsyncMock()
         mock_integration.mcp_config.servers = {}
+        mock_integration.configured_external_servers = {}  # Runtime enabled servers
+        mock_integration.all_configured_external_servers = {}  # CLI management (all servers)
         mock_integration_class.return_value = mock_integration
         
         # Test the command
