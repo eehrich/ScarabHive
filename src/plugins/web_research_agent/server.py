@@ -114,6 +114,20 @@ def create_web_research_agent(
         network={"ssl_verify": ssl_verify}
     )
 
+    # Attempt to load a plugin-local system prompt (in-memory) so the
+    # WebResearchAgent uses a tailored prompt without depending on global config.
+    try:
+        prompts_path = Path(__file__).parent.joinpath('prompts', 'system_prompt.yaml')
+        if prompts_path.exists():
+            from types import SimpleNamespace
+            # Read raw template and attach as system_prompt on the prompts object
+            raw = prompts_path.read_text(encoding='utf-8')
+            # store as simple namespace to avoid pydantic restrictions
+            research_config.prompts = SimpleNamespace(system_template=str(prompts_path), system_prompt=raw)
+    except Exception:
+        # Non-fatal: continue with default prompts in research_config
+        pass
+
     # Create registry and bootstrap the research tools
     research_registry = MCPRegistry()
     bootstrap_servers(research_config, research_registry)
