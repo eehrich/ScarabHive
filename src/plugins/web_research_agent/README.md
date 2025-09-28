@@ -341,3 +341,26 @@ General research query with intelligent source selection.
 - **Source Access**: Check for connectivity and access issues  
 - **Rate Limiting**: Implement delays between requests
 - **API Limits**: Monitor and manage API usage quotas
+
+## Cancellation and graceful shutdown
+
+This plugin supports cooperative cancellation via the AgentSystem cancellation contract. When the agent requests cancellation the plugin will receive a `_cancellation_token` in the call `params`. Long-running operations should check `token.is_cancelled` and abort early, and may register short cleanup callbacks using `token.add_cleanup_callback()`.
+
+Example (check token in a long-running loop):
+
+```python
+token = params.get("_cancellation_token")
+if token and token.is_cancelled:
+  return {"status": "cancelled", "request_id": request_id, "forced": token.is_forced}
+
+# register cleanup
+async def _cleanup():
+  ...
+if token:
+  token.add_cleanup_callback(_cleanup)
+
+# inside loop
+if token and token.is_cancelled:
+  await token.cleanup()
+  return {"status": "cancelled", "request_id": request_id, "forced": token.is_forced}
+```

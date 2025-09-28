@@ -82,12 +82,3 @@ web_ui:
     - path: "/static/{file_path}"
       method: "GET"
       description: "Static assets (CSS, JS, images)"
-
-# Plugin metadata
-metadata:
-  type: "hybrid"  # Both MCP and web capabilities
-  category: "monitoring"
-  description: "Polling-based log viewer with search capabilities (prevents infinite logging loops)"
-  version: "1.0.0"
-  requires_auth: false
-  rate_limit: "30/minute"

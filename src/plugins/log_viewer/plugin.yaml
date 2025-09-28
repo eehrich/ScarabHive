@@ -4,3 +4,4 @@ author: AgentSystem Team
 description: Real-time log streaming and viewing plugin with web UI
 entrypoint: plugin:PLUGIN_FACTORY
 type: hybrid
+category: monitoring
