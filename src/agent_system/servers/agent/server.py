@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ...config.models import AgentConfig
+from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...llm.clients import ChatMessage
@@ -122,6 +123,16 @@ class Agent(MCPServer):
         # Initialize context management system
         self._init_context_management()
 
+        # Configure cancellation system with agent config values
+        if hasattr(config, 'cancellation') and config.cancellation:
+            configure_cancellation_manager(
+                cleanup_timeout=config.cancellation.cleanup_timeout,
+                monitor_interval=config.cancellation.monitor_interval
+            )
+        else:
+            # Use defaults if no cancellation config is provided
+            configure_cancellation_manager()
+
         # Centralized internal tool-call counter (used to generate per-tool suffixes)
         self._internal_tool_counter = 0
         self._internal_tool_counter_lock = asyncio.Lock()
@@ -150,6 +161,9 @@ class Agent(MCPServer):
         self._tool_execution_manager = ToolExecutionManager(self.registry, self)
         self._status_event_forwarder = StatusEventForwarder()
         self._context_management_handler = ContextManagementHandler(self.context_manager, self.token_optimizer, self)
+        
+        # Set agent reference in MCP integration for cancellation support
+        self._set_agent_reference_in_mcp()
 
         # Track emergency context management attempts to prevent loops
         self._emergency_context_attempts = 0
@@ -310,6 +324,18 @@ class Agent(MCPServer):
             self.token_optimizer = None
 
 
+    def _set_agent_reference_in_mcp(self) -> None:
+        """Set agent reference in MCP integration for cancellation support."""
+        try:
+            # Set agent reference in MCP integration manager
+            self._mcp_integration_manager._agent_ref = self
+            
+            # Try to set agent reference in MCP integration when it's available
+            if hasattr(self._mcp_integration_manager, 'mcp_integration') and self._mcp_integration_manager.mcp_integration:
+                self._mcp_integration_manager.mcp_integration.main_agent_ref = self
+        except Exception as e:
+            logger.debug("Failed to set agent reference in MCP integration: %s", e)
+    
     @property
     def description(self) -> str:
         """Get the agent description."""
@@ -318,6 +344,8 @@ class Agent(MCPServer):
     async def cancel_request(self, request_id: str) -> bool:
         """
         Cancel an active request by setting its cancellation event.
+        Also uses the new cancellation manager for graceful/forced tool cancellation.
+        Uses prefix matching to cancel all related tool requests.
 
         Args:
             request_id: The unique ID of the request to cancel
@@ -325,19 +353,37 @@ class Agent(MCPServer):
         Returns:
             True if the request was found and cancelled, False otherwise
         """
+        logger.info("Cancelling request %s", request_id)
+        
+        # Use new cancellation manager for tool-level cancellation with prefix matching
+        cancellation_manager = get_cancellation_manager()
+        tool_cancelled = cancellation_manager.cancel_request(request_id)
+        
+        # Don't force-cancel tasks immediately - let timeout monitor handle it
+        # Only check if we have matching tasks for logging
+        task_cancelled_count = 0
+        for task_id in cancellation_manager._tasks.keys():
+            if task_id == request_id or task_id.startswith(request_id + "_"):
+                task_cancelled_count += 1
+        
+        # Also cancel in the legacy agent system
         async with self._request_lock:
+            agent_cancelled = False
             if request_id in self._active_requests:
-                logger.info("Cancelling request %s", request_id)
                 try:
                     self._active_requests[request_id]["cancel"].set()
+                    agent_cancelled = True
                 except Exception:
                     # Defensive: if structure unexpected, try old-style event
                     if isinstance(self._active_requests[request_id], asyncio.Event):
                         self._active_requests[request_id].set()
-                return True
-            else:
-                logger.warning("Request %s not found for cancellation", request_id)
-                return False
+                        agent_cancelled = True
+            
+            if not agent_cancelled:
+                logger.warning("Request %s not found in active requests", request_id)
+            
+            # Return True if any system found and cancelled something
+            return tool_cancelled or agent_cancelled or (task_cancelled_count > 0)
 
     def _is_cancelled(self, request_id: Optional[str]) -> bool:
         """
@@ -349,12 +395,25 @@ class Agent(MCPServer):
         Returns:
             True if the request has been cancelled, False otherwise
         """
-        if request_id and request_id in self._active_requests:
-            entry = self._active_requests[request_id]
-            if isinstance(entry, dict) and 'cancel' in entry:
-                return bool(entry['cancel'].is_set())
-            if isinstance(entry, asyncio.Event):
-                return entry.is_set()
+        if request_id:
+            # Check the cancellation token first
+            cancellation_manager = get_cancellation_manager()
+            token = cancellation_manager.get_token(request_id)
+            if token and token.is_cancelled:
+                logger.debug("Request %s is cancelled (cancellation token)", request_id)
+                return True
+            elif token:
+                logger.debug("Request %s has token but not cancelled", request_id)
+            else:
+                logger.debug("Request %s has no cancellation token", request_id)
+                
+            # Also check legacy internal cancellation event
+            if request_id in self._active_requests:
+                entry = self._active_requests[request_id]
+                if isinstance(entry, dict) and 'cancel' in entry:
+                    return bool(entry['cancel'].is_set())
+                if isinstance(entry, asyncio.Event):
+                    return entry.is_set()
         return False
 
     async def append_user_message(self, request_id: str, content: str) -> bool:
@@ -469,6 +528,11 @@ class Agent(MCPServer):
                 yield event
 
     async def _run_events(self, task: str, request_id: str, session_id: str, status_coordinator: StatusScope, status_worker: StatusScope):
+        # Create cancellation token for the main request
+        cancellation_manager = get_cancellation_manager()
+        main_token = cancellation_manager.create_token(request_id)
+        logger.debug("Created main cancellation token for request %s", request_id)
+        
         # Register this request for potential cancellation and appended messages
         async with self._request_lock:
             self._active_requests[request_id] = {
@@ -913,6 +977,16 @@ class Agent(MCPServer):
 
                 # Execute ALL tool calls with immediate streaming
                 if tool_calls:
+                    # Check for cancellation before executing tools
+                    if self._is_cancelled(request_id):
+                        logger.info("Request %s cancelled before tool execution at step %d", request_id, step + 1)
+                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                        await status_worker.error(f"cancelled before tool execution at step {step + 1}", 
+                                              meta={"step": step + 1, "reason": "cancelled"})
+                        await status_coordinator.error(f"cancelled before tool execution at step {step + 1}",
+                                                    meta={"step": step + 1, "reason": "cancelled"})
+                        yield {"type": "end"}
+                        return
 
                     await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
 
@@ -980,6 +1054,10 @@ class Agent(MCPServer):
         except Exception as e:
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
         finally:
+            # Clean up cancellation token
+            cancellation_manager = get_cancellation_manager()
+            cancellation_manager.unregister_request(request_id)
+            
             # Clean up request tracking but preserve session data
             async with self._request_lock:
                 if request_id in self._active_requests:

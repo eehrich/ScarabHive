@@ -114,6 +114,11 @@ class LLMRouterServer(SchemaBasedMCPServer):
 
         # Only accept the new 'chat_agent' tool name
         if tool == "chat_agent":
+            # Check for cancellation before LLM routing
+            cancellation_token = params.get("_cancellation_token")
+            if cancellation_token and cancellation_token.is_cancelled:
+                return {"error": "LLM routing request cancelled by user", "cancelled": True}
+
             # Handle both message formats first
             if "messages" in params:
                 messages = [ChatMessage(**m) for m in params["messages"]]

@@ -95,14 +95,20 @@ class ContextConfig(BaseModel):
 
 class ContextManagementConfig(BaseModel):
     enabled: bool = True
-    strategy: str = "SUMMARIZE_OLDEST"
-    preserve_recent_messages: int = 10
+    strategy: Literal["TRUNCATE_OLDEST", "SUMMARIZE_OLDEST", "SLIDING_WINDOW", "SMART_COMPRESSION"] = "SUMMARIZE_OLDEST"
+    preserve_recent_messages: int = 5
     prediction_threshold: float = 0.90
     summarization_threshold: float | int = 0.80
     max_summary_words: int = 500
     tool_result_preview_chars: int = 200
     warning_levels: dict[str, float] = {"yellow": 0.7, "orange": 0.85, "red": 0.95}
     optimization: dict | None = None
+
+
+class CancellationConfig(BaseModel):
+    """Configuration for the cancellation system"""
+    cleanup_timeout: float = 10.0  # Seconds to wait for graceful cleanup before forcing termination
+    monitor_interval: float = 1.0  # Seconds between timeout checks
 
 
 class AgentConfig(BaseModel):
@@ -116,5 +122,6 @@ class AgentConfig(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     prompts: PromptsConfig = PromptsConfig()
     context: ContextConfig = ContextConfig()
+    cancellation: CancellationConfig = CancellationConfig()
     # Maximum planning/tool-calling steps before stopping
     max_steps: int = Field(default=6, ge=1)

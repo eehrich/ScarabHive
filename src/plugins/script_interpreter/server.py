@@ -39,6 +39,11 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
             if not code:
                 return {"error": "Missing required parameter 'code'"}
 
+            # Check for cancellation before execution
+            cancellation_token = params.get("_cancellation_token")
+            if cancellation_token and cancellation_token.is_cancelled:
+                return {"error": "Python execution cancelled by user", "cancelled": True}
+
             # Publish start status
             await status.progress("Python execution started")
             await status.progress("Executing code")

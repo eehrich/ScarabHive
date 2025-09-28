@@ -254,11 +254,15 @@ class WebScraperServer(SchemaBasedMCPServer):
         
         return False, ""
 
-    async def _fetch_with_retry(self, target_url: str, user_agent: str, timeout: float, max_retries: int = 3) -> tuple[str, int, str, str]:
+    async def _fetch_with_retry(self, target_url: str, user_agent: str, timeout: float, max_retries: int = 3, params: dict = None) -> tuple[str, int, str, str]:
         """Fetch URL with retry logic for rate limiting and temporary failures."""
         last_exception = None
         
         for attempt in range(max_retries + 1):
+            # Check for cancellation before each retry attempt
+            cancellation_token = params.get("_cancellation_token") if params else None
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise RuntimeError(f"Web scraper fetch cancelled for {target_url}")
             # Add random delay before each request (except first) to avoid rate limiting
             if attempt > 0:
                 delay = random.uniform(1.0, 3.0)  # 1-3 second random delay
@@ -471,7 +475,7 @@ class WebScraperServer(SchemaBasedMCPServer):
             # status publishing must not break functionality
             pass
 
-        html, status_code, final_url, content_type = await self._fetch_with_retry(url, user_agent, timeout)
+        html, status_code, final_url, content_type = await self._fetch_with_retry(url, user_agent, timeout, params=params)
 
         # Sanitize HTML before processing to remove problematic characters
         html = self._sanitize_html(html)

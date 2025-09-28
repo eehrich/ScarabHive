@@ -2,11 +2,13 @@
 Tool Execution Manager for Agent Server
 Handles execution of both internal plugin tools and external MCP tools.
 """
+import asyncio
 import json
 import logging
 import time
 from typing import Dict, List, Any
 
+from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
 from ....llm.clients import ChatMessage
 from ....utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....mcp.integration import get_mcp_integration
@@ -44,6 +46,7 @@ class ToolExecutionManager:
 
     async def _invoke_tool(self, tool_name: str, params: Dict[str, Any], action_name: str = None):
         """Execute a tool call against the registry and return results."""
+            
         # Get plugin adapter from MCP integration plugin registry  
         plugin_adapter = None
         if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
@@ -195,12 +198,89 @@ class ToolExecutionManager:
     async def _execute_single_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a single tool and return the result message, events, and results."""
-        if "." in tool_name:
-            # External tool - call via MCP integration
-            return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+        # Use cancellation system if request_id is available
+        if request_id:
+            return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id)
         else:
-            # Plugin tool - use existing logic
-            return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+            # Legacy execution without cancellation
+            if "." in tool_name:
+                return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+            else:
+                return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+    
+    async def _execute_with_cancellation(self, tc: Dict, tool_name: str, openai_tool_name: str,
+                                       params: Dict[str, Any], step: int, request_id: str) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+        """Execute tool with cancellation support."""
+        cancellation_manager = get_cancellation_manager()
+        
+        # Check if already cancelled (main request token)
+        main_token = cancellation_manager.get_token(request_id)
+        if main_token and main_token.is_cancelled:
+            logger.info("Tool %s cancelled before execution (main request %s already cancelled)", tool_name, request_id)
+            return self._create_cancelled_response(tc, tool_name, openai_tool_name, request_id, forced=main_token.is_forced)
+        elif not main_token:
+            logger.debug("No main token found for request %s when starting tool %s", request_id, tool_name)
+        
+        # Create tool-specific request ID for tool-level cancellation
+        tool_request_id = f"{request_id}_{step:03d}"
+        
+        # Create cancellation context with tool-specific ID
+        async with cancellable_operation(tool_request_id, cleanup_timeout=30.0) as tool_token:
+            # If main request is cancelled during tool execution, cancel tool token too
+            if main_token and main_token.is_cancelled and not tool_token.is_cancelled:
+                tool_token.cancel()
+            
+            # Add cancellation token to params for tools that support it
+            params_with_token = params.copy()
+            params_with_token["_cancellation_token"] = tool_token
+            
+            # Execute the tool
+            try:
+                if "." in tool_name:
+                    task = asyncio.create_task(
+                        self._execute_external_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id)
+                    )
+                else:
+                    task = asyncio.create_task(
+                        self._execute_plugin_tool(tc, tool_name, openai_tool_name, params_with_token, step, request_id)
+                    )
+                
+                # Register task for forced cancellation with tool-specific ID
+                cancellation_manager.register_task(tool_request_id, task)
+                
+                # Wait for completion or cancellation
+                try:
+                    return await task
+                except asyncio.CancelledError:
+                    # Task was force-cancelled
+                    logger.warning("Tool %s force-cancelled (request_id: %s)", tool_name, request_id)
+                    return self._create_cancelled_response(tc, tool_name, openai_tool_name, request_id, forced=True)
+                
+            except CancellationError as e:
+                # Tool gracefully cancelled itself
+                logger.info("Tool %s gracefully cancelled (request_id: %s)", tool_name, request_id)
+                return self._create_cancelled_response(tc, tool_name, openai_tool_name, request_id, forced=e.forced)
+    
+    def _create_cancelled_response(self, tc: Dict, tool_name: str, openai_tool_name: str, 
+                                 request_id: str, forced: bool = False) -> tuple[ChatMessage, List[Dict], List[Dict]]:
+        """Create a cancelled tool response."""
+        tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
+        cancel_type = "force-cancelled" if forced else "cancelled"
+        error_content = json.dumps({
+            "error": f"Tool '{tool_name}' was {cancel_type}.",
+            "cancelled": True,
+            "forced": forced
+        })
+
+        message = ChatMessage(
+            role="tool", 
+            tool_call_id=tool_call_id,
+            name=sanitize_for_llm(openai_tool_name),
+            content=sanitize_json_content(error_content)
+        )
+        
+        event_type = "tool_force_cancelled" if forced else "tool_cancelled"
+        return message, [{"type": event_type, "tool": tool_name, "request_id": request_id}], []
 
     async def _execute_external_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                    params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:

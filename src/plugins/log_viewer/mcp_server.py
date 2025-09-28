@@ -68,6 +68,11 @@ class LogViewerMCPServer(SchemaBasedMCPServer):
     
     async def _get_log_tail(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Get the last N lines from a log file"""
+        # Check for cancellation before log file access
+        cancellation_token = params.get("_cancellation_token")
+        if cancellation_token and cancellation_token.is_cancelled:
+            return {"error": "Log tail request cancelled by user", "cancelled": True}
+
         log_file = params.get("log_file")
         lines = params.get("lines", 50)
         

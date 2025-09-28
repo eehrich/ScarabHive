@@ -45,6 +45,9 @@ class MCPIntegration:
         self._tools_cache: Optional[Dict[str, Dict[str, List[Any]]]] = None
         self._tools_cache_time = 0.0
         self._tools_cache_ttl = 30.0  # Cache for 30 seconds
+        
+        # Reference to main agent for cancellation support
+
 
     async def initialize(self, config: Dict[str, Any]) -> None:
         """Initialize MCP integration from configuration"""

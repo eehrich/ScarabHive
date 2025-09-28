@@ -74,6 +74,11 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
             # Retry logic for rate limiting and temporary failures
             max_retries = 3
             for attempt in range(max_retries + 1):
+                # Check for cancellation before each attempt
+                cancellation_token = params.get("_cancellation_token")
+                if cancellation_token and cancellation_token.is_cancelled:
+                    return {"error": "Search cancelled by user", "results": [], "cancelled": True}
+                
                 try:
                     # Add delay before retry attempts (not before first attempt)
                     if attempt > 0:

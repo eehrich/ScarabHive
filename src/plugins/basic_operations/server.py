@@ -120,6 +120,18 @@ class BasicOperationsServer(SchemaBasedMCPServer):
             
             logger.info(f"Starting wait for {seconds} seconds with message: '{message}' using update_interval: {update_interval}")
             
+            # Check for cancellation before starting the wait
+            cancellation_token = params.get("_cancellation_token")
+            if cancellation_token and cancellation_token.is_cancelled:
+                await status.error(f"{message}: cancelled before start")
+                return {
+                    "status": "cancelled", 
+                    "requested_seconds": seconds,
+                    "actual_seconds": 0,
+                    "user_message": message,
+                    "cancelled": True
+                }
+            
             # Initial status update (English) - always include message (user message or "Waiting")
             await status.progress(f"{message}: starting countdown - {seconds:.1f}s")
             
@@ -130,17 +142,69 @@ class BasicOperationsServer(SchemaBasedMCPServer):
                 if remaining <= 0:
                     break
                 
+                # Check for cancellation using the new cancellation token system
+                cancellation_token = params.get("_cancellation_token")
+                if cancellation_token and cancellation_token.is_cancelled:
+                    elapsed = time.time() - start_time
+                    await status.error(f"{message}: cancelled after {elapsed:.1f}s")
+                    return {
+                        "status": "cancelled", 
+                        "requested_seconds": seconds,
+                        "actual_seconds": elapsed,
+                        "user_message": message,
+                        "cancelled": True
+                    }
+                
                 # Update status with countdown (English) - always include message
                 await status.progress(f"{message}: {remaining:.1f}s remaining")
                 
                 # Sleep for update interval or remaining time, whichever is smaller
                 sleep_time = min(update_interval, remaining)
+                
+                # For responsive cancellation, break sleep into smaller chunks (max 1 second)
+                # This allows more frequent cancellation checks during long waits
+                max_chunk = 1.0
+                if sleep_time > max_chunk:
+                    # Sleep in chunks, checking for cancellation between each chunk
+                    chunks = int(sleep_time / max_chunk)
+                    remainder = sleep_time % max_chunk
+                    
+                    for i in range(chunks):
+                        # Check for cancellation before each sleep chunk
+                        if cancellation_token and cancellation_token.is_cancelled:
+                            elapsed = time.time() - start_time
+                            await status.error(f"{message}: cancelled after {elapsed:.1f}s")
+                            return {
+                                "status": "cancelled", 
+                                "requested_seconds": seconds,
+                                "actual_seconds": elapsed,
+                                "user_message": message,
+                                "cancelled": True
+                            }
+                        await asyncio.sleep(max_chunk)
+                    
+                    # Sleep the remainder if any
+                    if remainder > 0:
+                        if cancellation_token and cancellation_token.is_cancelled:
+                            elapsed = time.time() - start_time
+                            await status.error(f"{message}: cancelled after {elapsed:.1f}s")
+                            return {
+                                "status": "cancelled", 
+                                "requested_seconds": seconds,
+                                "actual_seconds": elapsed,
+                                "user_message": message,
+                                "cancelled": True
+                            }
+                        await asyncio.sleep(remainder)
+                else:
+                    # Short sleep, no need to chunk
+                    await asyncio.sleep(sleep_time)
+                
                 # Debug log to show the effective sleep_time and configured update_interval
                 logger.debug(
                     "BasicOperations '%s' sleeping for %.3fs (update_interval=%.3fs, remaining=%.3fs)",
                     self.name, sleep_time, update_interval, remaining
                 )
-                await asyncio.sleep(sleep_time)
             
             # Final status update (English) - always include message
             elapsed = time.time() - start_time

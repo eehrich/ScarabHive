@@ -17,6 +17,7 @@ class MCPIntegrationManager:
         self.agent_config = agent_config
         self.mcp_integration = None
         self.mcp_initialized_locally = False
+        self._agent_ref = None  # Will be set by Agent after creation
 
     async def setup_mcp_integration(self) -> None:
         """Initialize MCP integration if needed."""
@@ -47,6 +48,10 @@ class MCPIntegrationManager:
                     await self.mcp_integration.initialize(full_config)
                     self.mcp_initialized_locally = True
                     logger.debug("Initialized MCP integration for agent with full configuration")
+                    
+                    # Set agent reference for cancellation support if available
+                    if hasattr(self, '_agent_ref') and self._agent_ref:
+                        self.mcp_integration.main_agent_ref = self._agent_ref
         except Exception as e:
             logger.debug("Failed to initialize MCP integration: %s", e)
 

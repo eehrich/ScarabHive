@@ -33,6 +33,11 @@ class MCPServer(ABC):
         async with status_scope(status_bus, self.name, request_id=request_id) as status:
             # Inject status object for the plugin to use
             params["_status"] = status
+            
+            # Inject request_id into status for plugins to check cancellation
+            if request_id:
+                params["_request_id"] = request_id
+            
             return await self.call(action, params)
 
     async def list_tools(self) -> List["MCPTool"]:

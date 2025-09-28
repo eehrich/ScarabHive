@@ -37,6 +37,11 @@ class HTTPServer(SchemaBasedMCPServer):
             operation = params.get("operation")
             
             if operation == "health":
+                # Check for cancellation before health check
+                cancellation_token = params.get("_cancellation_token")
+                if cancellation_token and cancellation_token.is_cancelled:
+                    return {"error": "HTTP health check cancelled by user", "cancelled": True}
+
                 if not self.wrapped_server:
                     return {"error": "No server wrapped - use wrap_server() first"}
                 return {"status": "ok", "server": self.name}

@@ -21,6 +21,11 @@ class WeatherServer(SchemaBasedMCPServer):
             await status.error(error_msg)
             return {"status": "error", "error": error_msg}
 
+        # Check for cancellation before weather fetch
+        cancellation_token = params.get("_cancellation_token")
+        if cancellation_token and cancellation_token.is_cancelled:
+            return {"status": "error", "error": "Weather request cancelled by user", "cancelled": True}
+
         # Publish status for operation progress
         await status.progress(f"Fetching weather for {location}")
 
