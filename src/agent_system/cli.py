@@ -1274,7 +1274,52 @@ def main() -> None:
     bootstrap_servers(config, registry)
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
-    agent = MainAgent("cli_agent", config, registry=registry)
+    # Create a CLI-specific AgentConfig at runtime by loading the global
+    # system prompt, appending a one-line hint, and keeping it in-memory
+    # on the `prompts.system_prompt` attribute so we don't write any files.
+    try:
+        import copy
+        cli_agent_config = copy.deepcopy(config)
+        # Read the global prompt template path and try to load the file.
+        template_path = getattr(config.prompts, 'system_template', None)
+        original = None
+        if template_path:
+            try:
+                # template_path may be a pathlib.Path or string
+                tp = Path(template_path)
+                if not tp.is_absolute():
+                    # Preserve any subdirectory structure in relative paths
+                    tp = Path.cwd().joinpath(tp)
+                if tp.exists():
+                    original = tp.read_text(encoding='utf-8')
+            except Exception:
+                original = None
+
+        # Append the CLI-only hint in English as an extra sentence. Keep in-memory only.
+        hint = "\nNote: No follow-up questions are allowed. Please answer the request directly without asking clarifying questions.\n"
+
+        if original is not None:
+            # Store the combined prompt template string on the runtime config.
+            combined = original + "\n" + hint
+            # The PromptsConfig may be a pydantic model that disallows arbitrary
+            # attributes. Replace the prompts object with a lightweight namespace
+            # that has both `system_template` (for fallback) and `system_prompt`
+            # (the raw in-memory template) so server rendering picks it up.
+            try:
+                from types import SimpleNamespace
+                cli_agent_config.prompts = SimpleNamespace(system_template=config.prompts.system_template, system_prompt=combined)
+            except Exception:
+                # If that fails for any reason, fallback to leaving prompts unchanged
+                cli_agent_config = config
+        else:
+            # Couldn't read original template; leave config unchanged and fallback to file-based behavior
+            cli_agent_config = config
+
+    except Exception:
+        # Fallback to original config if anything fails
+        cli_agent_config = config
+
+    agent = MainAgent("cli_agent", cli_agent_config, registry=registry)
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)

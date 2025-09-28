@@ -12,7 +12,8 @@ from ...config.models import AgentConfig
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...llm.clients import ChatMessage
-from ...utils.prompt_renderer import render_prompts
+from ...utils.prompt_renderer import render_prompts, get_datetime_context
+from jinja2 import Template
 from ...utils.text_sanitizer import sanitize_for_llm
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
 from ...context.agent_tracker import register_agent_for_tracking
@@ -535,16 +536,35 @@ class Agent(MCPServer):
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
-            # Render prompts
-            rendered = render_prompts(
-                self.agent_config.prompts.system_template,
-                {"tools": available_tools, "max_steps": max_steps-1},
-                auto_datetime=self.agent_config.context.auto_datetime,
-                timezone=self.agent_config.context.timezone,
-                location=self.agent_config.context.location
-            )
-            system_msg = rendered.get("system_prompt") or "You are an assistant agent."
-            tools_msg = rendered.get("tools_prompt")
+            # Render prompts. Support either a path-based template (prompts.system_template)
+            # or an in-memory raw template string (prompts.system_prompt) provided in agent_config.
+            prompts_cfg = getattr(self.agent_config, 'prompts', None)
+            system_msg = None
+            tools_msg = None
+            if prompts_cfg and getattr(prompts_cfg, 'system_prompt', None):
+                # Render raw system prompt string using Jinja2 with same automatic context
+                context = {"tools": available_tools, "max_steps": max_steps-1}
+                if getattr(self.agent_config, 'context', None) and self.agent_config.context.auto_datetime:
+                    dt_ctx = get_datetime_context(self.agent_config.context.timezone, self.agent_config.context.location)
+                    context = {**context, **dt_ctx}
+                try:
+                    system_msg = Template(prompts_cfg.system_prompt).render(**context)
+                except Exception:
+                    # Fallback to a safe default
+                    system_msg = "You are an assistant agent."
+                # There may be no tools_prompt when using raw system_prompt
+                tools_msg = None
+            else:
+                # Path-based rendering (backwards-compatible)
+                rendered = render_prompts(
+                    self.agent_config.prompts.system_template,
+                    {"tools": available_tools, "max_steps": max_steps-1},
+                    auto_datetime=self.agent_config.context.auto_datetime,
+                    timezone=self.agent_config.context.timezone,
+                    location=self.agent_config.context.location
+                )
+                system_msg = rendered.get("system_prompt") or "You are an assistant agent."
+                tools_msg = rendered.get("tools_prompt")
 
             # Initialize conversation from persisted session history
             async with self._request_lock:
