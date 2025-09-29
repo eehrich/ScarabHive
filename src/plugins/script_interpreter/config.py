@@ -17,6 +17,7 @@ class ScriptInterpreterConfig:
     max_memory_mb: int = 50  # MB (where possible to enforce)
     max_output_length: int = 10000  # characters
     max_loop_iterations: int = 100000  # safety cap for loops/range()
+    loop_timeout_seconds: float = 2.0  # timeout for individual loops
 
     # Security settings
     allowed_functions: Optional[List[str]] = None
@@ -31,8 +32,21 @@ class ScriptInterpreterConfig:
             self.allowed_functions = [
                 # Basic math functions
                 "abs", "min", "max", "round", "sum",
-                "int", "float", "str", "bool",
-                "len", "range",
+                "int", "float", "str", "bool", "type",
+                "len", "range", "sorted", "enumerate",
+                # Advanced math functions
+                "sqrt", "sin", "cos", "tan", "log", "log10", "exp", "floor", "ceil", "pow", 
+                "pi", "e", "degrees", "radians", "asin", "acos", "atan", "sinh", "cosh", "tanh",
+                # I/O functions
+                "print",
+                # Statistics functions (built-in)
+                "mean", "median", "mode", "stdev",
+                # Collection constructors
+                "list", "tuple", "dict", "set",
+                # String/number formatting functions
+                "format", "hex", "bin", "oct", "chr", "ord",
+                # Exception constructors
+                "ValueError", "RuntimeError", "TypeError",
                 # Math operations are handled by operators, not functions
             ]
 
@@ -55,6 +69,8 @@ class ScriptInterpreterConfig:
             "max_execution_time": self.max_execution_time,
             "max_memory_mb": self.max_memory_mb,
             "max_output_length": self.max_output_length,
+            "max_loop_iterations": self.max_loop_iterations,
+            "loop_timeout_seconds": self.loop_timeout_seconds,
             "allowed_functions": self.allowed_functions,
             "allowed_modules": self.allowed_modules,
             "enable_variables": self.enable_variables,

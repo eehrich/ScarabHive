@@ -9,11 +9,12 @@ import ast
 
 from .config import ScriptInterpreterConfig
 from .security import create_safe_sandbox
+from .safe_executor import SafeExecutor
 from .errors import (
     ExecutionTimeoutError,
-    SyntaxError,
     RuntimeError,
     SecurityViolationError,
+    UnsupportedFeatureError,
     format_error_for_llm,
 )
 
@@ -57,6 +58,11 @@ class ScriptExecutor:
     def __init__(self, config: Optional[ScriptInterpreterConfig] = None):
         self.config = config or ScriptInterpreterConfig()
         self.sandbox = create_safe_sandbox(self.config)
+        # Use SafeExecutor when loops/advanced features are enabled
+        if self.config.enable_loops or self.config.enable_functions:
+            self.safe_executor = SafeExecutor(self.config)
+        else:
+            self.safe_executor = None
 
     def execute(self, code: str, reset_sandbox: bool = False) -> Dict[str, Any]:
         """Execute Python code in a secure sandbox.
@@ -68,6 +74,26 @@ class ScriptExecutor:
         Returns:
             Dict containing result, output, and metadata
         """
+        # Try SafeExecutor first if available (supports loops and if statements)
+        if self.safe_executor:
+            if reset_sandbox:
+                self.safe_executor.reset()
+            try:
+                return self.safe_executor.execute(code)
+            except UnsupportedFeatureError as e:
+                # UnsupportedFeatureError should be returned as an error, not fallback
+                # Only fallback for specific features that SafeExecutor intentionally doesn't handle
+                error_message = str(e)
+                if any(keyword in error_message.lower() for keyword in ['import', 'global', '__name__']):
+                    # These are security restrictions, not missing features - return as error
+                    return self._format_unsupported_error(e, code)
+                else:
+                    # Other unsupported features can fallback to sandboxed_python
+                    logger.debug(f"SafeExecutor fallback: {e}")
+            except Exception as e:
+                # Unexpected error - log and fall back
+                logger.debug(f"SafeExecutor error, falling back to sandboxed_python: {e}")
+        
         # Optionally clear previous state
         if reset_sandbox:
             self.sandbox.reset()
@@ -127,9 +153,9 @@ class ScriptExecutor:
             }
 
         except FPyException as e:
-            # Handle sandboxed-python syntax/runtime errors
-            error_info = format_error_for_llm(SyntaxError(str(e)), code)
-            logger.warning(f"Syntax error in code: {e}")
+            # Handle sandboxed-python syntax/runtime errors - pass the FPyException directly
+            error_info = format_error_for_llm(e, code)
+            logger.warning(f"Sandboxed-python error in code: {e}")
             return {
                 "success": False,
                 "output": "",
@@ -174,34 +200,6 @@ class ScriptExecutor:
         finally:
             timeout_handler.stop()
 
-    def validate_syntax(self, code: str) -> Dict[str, Any]:
-        """Validate Python syntax without executing.
-
-        Args:
-            code: Python code to validate
-
-        Returns:
-            Dict with validation results
-        """
-        try:
-            # Try to compile with sandboxed-python to check syntax
-            # This is a basic check - full validation happens during execution
-            compile(code, '<string>', 'exec')
-            return {
-                "valid": True,
-                "error": None
-            }
-        except SyntaxError as e:
-            return {
-                "valid": False,
-                "error": format_error_for_llm(SyntaxError(str(e)), code)
-            }
-        except Exception as e:
-            return {
-                "valid": False,
-                "error": format_error_for_llm(RuntimeError(str(e)), code)
-            }
-
     def get_sandbox_state(self) -> Dict[str, Any]:
         """Get current sandbox state (variables, etc.)."""
         return {
@@ -209,7 +207,26 @@ class ScriptExecutor:
             "config": self.config.to_dict()
         }
 
+    def _format_unsupported_error(self, error: Exception, code: str) -> Dict[str, Any]:
+        """Format UnsupportedFeatureError as proper error result."""
+        return {
+            "success": False,
+            "output": "",
+            "variables": {},
+            "execution_time": 0,
+            "error": {
+                "type": type(error).__name__,
+                "message": str(error),
+                "category": "unsupported_feature",
+                "line_number": 1,  # Could be improved to find actual line
+                "stack_trace": "",
+                "code": code
+            }
+        }
+
     def reset_sandbox(self) -> None:
         """Reset sandbox to clean state."""
         self.sandbox.reset()
+        if self.safe_executor:
+            self.safe_executor.reset()
         logger.debug("Sandbox reset")

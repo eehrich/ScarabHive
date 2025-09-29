@@ -36,9 +36,19 @@ class SecureSandbox(PySandbox):
             if func_name == "abs":
                 return abs(args[0])
             elif func_name == "min":
-                return min(args)
+                if len(args) == 1:
+                    # min([1,2,3]) -> min of list
+                    return min(args[0])
+                else:
+                    # min(1,2,3) -> min of arguments
+                    return min(args)
             elif func_name == "max":
-                return max(args)
+                if len(args) == 1:
+                    # max([1,2,3]) -> max of list
+                    return max(args[0])
+                else:
+                    # max(1,2,3) -> max of arguments
+                    return max(args)
             elif func_name == "round":
                 if len(args) == 1:
                     return round(args[0])
@@ -86,6 +96,75 @@ class SecureSandbox(PySandbox):
                     raise
                 except Exception as e:
                     raise SecurityViolationError(f"Error evaluating range(): {e}")
+            elif func_name == "print":
+                # Handle print function - capture output to buffer
+                if not args:
+                    output = ""
+                else:
+                    # Convert all args to strings and join with spaces (like Python print)
+                    str_args = [str(arg) for arg in args]
+                    output = " ".join(str_args)
+                
+                self.output_buffer.append(output)
+                
+                # Check output size limit
+                total_output = "\n".join(self.output_buffer)
+                if len(total_output) > self.config.max_output_length:
+                    from .errors import OutputTooLargeError
+                    raise OutputTooLargeError("Output exceeds maximum allowed length")
+                
+                return None  # print() returns None
+            elif func_name == "sorted":
+                if len(args) == 1:
+                    return sorted(args[0])
+                else:
+                    # sorted() with key or reverse - simplified for safety
+                    raise SecurityViolationError("sorted() with additional arguments not supported")
+            elif func_name == "mean":
+                # Built-in statistics function
+                if len(args) != 1:
+                    raise SecurityViolationError("mean() takes exactly one argument")
+                values = args[0]
+                if not values:
+                    raise SecurityViolationError("mean() requires non-empty sequence")
+                return sum(values) / len(values)
+            elif func_name == "median":
+                # Built-in statistics function
+                if len(args) != 1:
+                    raise SecurityViolationError("median() takes exactly one argument")
+                values = sorted(args[0])
+                n = len(values)
+                if n == 0:
+                    raise SecurityViolationError("median() requires non-empty sequence")
+                if n % 2 == 1:
+                    return values[n // 2]
+                else:
+                    return (values[n // 2 - 1] + values[n // 2]) / 2
+            elif func_name == "mode":
+                # Built-in statistics function - most frequent value
+                if len(args) != 1:
+                    raise SecurityViolationError("mode() takes exactly one argument")
+                values = args[0]
+                if not values:
+                    raise SecurityViolationError("mode() requires non-empty sequence")
+                # Count frequencies
+                counts = {}
+                for value in values:
+                    counts[value] = counts.get(value, 0) + 1
+                # Find most frequent
+                max_count = max(counts.values())
+                modes = [k for k, v in counts.items() if v == max_count]
+                return modes[0]  # Return first mode found
+            elif func_name == "stdev":
+                # Built-in standard deviation function
+                if len(args) != 1:
+                    raise SecurityViolationError("stdev() takes exactly one argument")
+                values = args[0]
+                if len(values) < 2:
+                    raise SecurityViolationError("stdev() requires at least 2 values")
+                mean_val = sum(values) / len(values)
+                variance = sum((x - mean_val) ** 2 for x in values) / (len(values) - 1)
+                return variance ** 0.5
             else:
                 raise SecurityViolationError(f"Function '{func_name}' is not implemented")
 
@@ -137,14 +216,16 @@ class SecureSandbox(PySandbox):
 
     def display(self, value: Any) -> None:
         """Handle display output (e.g., from expressions at the end of lines)."""
-        output = str(value)
-        self.output_buffer.append(output)
+        # Don't display None values (e.g., from print() function calls)
+        if value is not None:
+            output = str(value)
+            self.output_buffer.append(output)
 
-        # Check output size limit
-        total_output = "\\n".join(self.output_buffer)
-        if len(total_output) > self.config.max_output_length:
-            from .errors import OutputTooLargeError
-            raise OutputTooLargeError("Output exceeds maximum allowed length")
+            # Check output size limit
+            total_output = "\\n".join(self.output_buffer)
+            if len(total_output) > self.config.max_output_length:
+                from .errors import OutputTooLargeError
+                raise OutputTooLargeError("Output exceeds maximum allowed length")
 
     def exception_to_message(self, exception: Exception) -> str:
         """Convert exception to user-friendly message."""

@@ -224,6 +224,11 @@ class TokenOptimizer:
         if not content.strip():
             return ""
 
+        # Check if content looks like Python code (has indented blocks)
+        if self._is_python_code(content):
+            logger.debug("🐍 Detected Python code - preserving indentation")
+            return self._optimize_python_code(content)
+
         # Normalize newlines and line endings
         text = content.replace('\r\n', '\n').replace('\r', '\n')
 
@@ -251,7 +256,71 @@ class TokenOptimizer:
         content = self._optimize_json_in_text(content)
 
         return content
-    
+
+    def _is_python_code(self, content: str) -> bool:
+        """Check if content appears to be Python code with indentation."""
+        # Look for Python keywords followed by indented blocks
+        python_indicators = [
+            r'\bdef\s+\w+\s*\(',          # function definitions
+            r'\bclass\s+\w+\s*\(',        # class definitions  
+            r'\bif\s+.*:',                # if statements
+            r'\bwhile\s+.*:',             # while loops
+            r'\bfor\s+.*:',               # for loops
+            r'\btry\s*:',                 # try blocks
+            r'\bexcept\s*.*:',            # except blocks
+            r'\bwith\s+.*:',              # context managers
+            r'\bprint\s*\(',              # print statements
+        ]
+        
+        # Check if we have Python keywords followed by indented lines
+        lines = content.split('\n')
+        has_python_keywords = any(re.search(pattern, content, re.MULTILINE) for pattern in python_indicators)
+        has_indented_lines = any(line.startswith(('    ', '\t')) for line in lines)
+        
+        # Special case: if we have multiple Python indicators, treat as Python even without indentation
+        python_keyword_count = sum(1 for pattern in python_indicators if re.search(pattern, content, re.MULTILINE))
+        
+        # Also check for Python-specific patterns that strongly suggest code
+        strong_python_indicators = [
+            r'=\s*\[.*\]',                    # list assignments
+            r'=\s*\{.*\}',                    # dict assignments  
+            r'\w+\s*\(\s*\w+\s*\)',          # function calls
+            r'f".*\{.*\}"',                   # f-strings
+            r"f'.*\{.*\}'",                   # f-strings with single quotes
+        ]
+        has_strong_indicators = any(re.search(pattern, content, re.MULTILINE) for pattern in strong_python_indicators)
+        
+        return (has_python_keywords and has_indented_lines) or \
+               (python_keyword_count >= 2) or \
+               (has_python_keywords and has_strong_indicators)
+
+    def _optimize_python_code(self, content: str) -> str:
+        """Optimize Python code while preserving indentation."""
+        # Normalize newlines and line endings
+        text = content.replace('\r\n', '\n').replace('\r', '\n')
+        
+        lines = text.split('\n')
+        
+        # Remove leading and trailing empty lines
+        while lines and lines[0].strip() == "":
+            lines.pop(0)
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        
+        # For Python code, preserve indentation but clean up trailing whitespace
+        cleaned_lines = []
+        for line in lines:
+            # Remove trailing whitespace but preserve leading indentation
+            cleaned_line = line.rstrip()
+            
+            # Only include non-empty lines or lines that are just whitespace in certain contexts
+            if cleaned_line or (cleaned_lines and not cleaned_lines[-1].strip()):
+                # Don't add multiple consecutive empty lines
+                if not (cleaned_line == "" and cleaned_lines and cleaned_lines[-1] == ""):
+                    cleaned_lines.append(cleaned_line)
+        
+        return '\n'.join(cleaned_lines)
+
     def _is_content_already_optimized(self, content: str) -> bool:
         """Detect if content is already well-optimized and should be left alone."""
         # Short content should still be considered optimized for tiny values

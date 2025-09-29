@@ -155,11 +155,10 @@ class TestScriptInterpreterBasic:
         
         tools = server.get_tools()
         assert isinstance(tools, list)
-        assert len(tools) >= 3  # eval, validate, reset
+        assert len(tools) >= 2  # eval, reset
         
         tool_names = [tool["function"]["name"] for tool in tools]
         assert "execute_python" in tool_names
-        assert "validate_python" in tool_names
         assert "reset_sandbox" in tool_names
 
     @pytest.mark.asyncio
@@ -169,17 +168,6 @@ class TestScriptInterpreterBasic:
         
         mock_status = AsyncMock()
         result = await server.call("execute_python", {"code": "2 + 3", "_status": mock_status})
-        
-        assert "error" not in result
-        assert "result" in result
-
-    @pytest.mark.asyncio
-    async def test_server_validate_tool(self):
-        """Test server validate tool."""
-        server = ScriptInterpreterServer("test", {}, True)
-        
-        mock_status = AsyncMock()
-        result = await server.call("validate_python", {"code": "2 + 3", "_status": mock_status})
         
         assert "error" not in result
         assert "result" in result
@@ -481,11 +469,10 @@ class TestSchemaCompliance:
         
         tools = schema["tools"]
         assert isinstance(tools, list)
-        assert len(tools) >= 3  # Should have eval, validate, reset at minimum
+        assert len(tools) >= 2  # Should have eval, reset at minimum
         
         tool_names = [tool["function"]["name"] for tool in tools]
         assert "execute_python" in tool_names
-        assert "validate_python" in tool_names
         assert "reset_sandbox" in tool_names
 
     def test_eval_tool_schema(self):
@@ -506,23 +493,6 @@ class TestSchemaCompliance:
         assert "name" in eval_tool["function"]
         assert "description" in eval_tool["function"]
         assert "parameters" in eval_tool["function"]
-
-    def test_validate_tool_schema(self):
-        """Test validate tool schema structure."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
-        
-        with open(schema_path, "r", encoding="utf-8") as f:
-            schema = yaml.safe_load(f)
-        
-        validate_tool = None
-        for tool in schema["tools"]:
-            if tool["function"]["name"] == "validate_python":
-                validate_tool = tool
-                break
-        
-        assert validate_tool is not None
-        assert "function" in validate_tool
-        assert "parameters" in validate_tool["function"]
 
     def test_reset_tool_schema(self):
         """Test reset tool schema structure."""

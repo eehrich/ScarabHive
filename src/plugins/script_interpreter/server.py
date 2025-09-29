@@ -6,13 +6,16 @@ from typing import Any, Dict, Optional
 
 import sys
 import json
-
-# Add the src directory to the path so we can import our modules
-sys.path.insert(0, "/".join(__file__.split("/")[:-4]))
+from pathlib import Path
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from .executor import ScriptExecutor
 from .config import ScriptInterpreterConfig
+
+# Add the project src directory to the path so we can import our modules when running
+# as a script (this is a no-op when package imports are already configured).
+src_path = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(src_path))
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +56,30 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
 
                 if not result.get("success", False) or result.get("error"):
                     # Publish error status
-                    await status.error(f"Execution failed: {result.get('error')}")
-                    return {"error": result["error"] or "Execution failed", "suggestion": result.get("suggestion", "")}
+                    error_info = result.get("error")
+                    
+                    if isinstance(error_info, dict):
+                        # Structured error from SafeExecutor
+                        if 'line_number' in error_info:
+                            if error_info.get('category') == 'syntax':
+                                error_msg = f"Syntax error on line {error_info['line_number']}: {error_info['message']}"
+                            else:
+                                error_msg = f"Runtime error on line {error_info['line_number']}: {error_info['message']}"
+                        else:
+                            error_msg = f"{error_info.get('type', 'Error')}: {error_info['message']}"
+                        
+                        if 'code_context' in error_info:
+                            error_msg += f"\n\nCode context:\n{error_info['code_context']}"
+                        
+                        if 'stack_trace' in error_info:
+                            error_msg += f"\n\nStack trace:\n{error_info['stack_trace']}"
+                            
+                        await status.error(f"Execution failed: {error_msg}")
+                        return {"error": error_info, "error_message": error_msg, "error_details": error_info}
+                    else:
+                        # Simple string error (legacy format)
+                        await status.error(f"Execution failed: {error_info}")
+                        return {"error": error_info or "Execution failed", "suggestion": result.get("suggestion", "")}
                 else:
                     # Publish end status with execution metadata
                     meta = {
@@ -77,24 +102,6 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
                 await status.error(f"Execution failed: {str(e)}")
                 return {"error": f"Execution failed: {str(e)}"}
 
-        elif tool == "validate_python":
-            code = params.get("code", "")
-            if not code:
-                return {"error": "Missing required parameter 'code'"}
-
-            await status.progress("Validating Python syntax")
-            try:
-                validation_result = self.executor.validate_syntax(code)
-                if validation_result["valid"]:
-                    await status.end("Validation completed - syntax is valid")
-                    return {"result": "✅ Python syntax is valid"}
-                else:
-                    await status.error("Validation failed - syntax error detected")
-                    return {"error": f"❌ {validation_result['error']}"}
-            except Exception as e:
-                await status.error("Validation failed")
-                return {"error": f"❌ Syntax error: {str(e)}", "suggestion": "Check Python syntax - parentheses, indentation, operators"}
-
         elif tool == "reset_sandbox":
             await status.progress("Resetting Python sandbox")
             try:
@@ -105,7 +112,7 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
                 await status.error("Reset failed")
                 return {"error": f"Reset failed: {str(e)}"}
         else:
-            return {"error": f"Unknown tool: {tool}. Supported tools: execute_python, validate_python, reset_sandbox"}
+            return {"error": f"Unknown tool: {tool}. Supported tools: execute_python, reset_sandbox"}
 
 
 
@@ -150,20 +157,6 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
                     }
                 },
                 {
-                    "name": "validate_python",
-                    "description": "Validate Python syntax without executing the code.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "Python code to validate"
-                            }
-                        },
-                        "required": ["code"]
-                    }
-                },
-                {
                     "name": "reset_sandbox",
                     "description": "Reset the sandbox environment, clearing all variables and state.",
                     "inputSchema": {
@@ -183,8 +176,6 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         try:
             if tool_name == "execute_python":
                 return await self._eval_code(arguments)
-            elif tool_name == "validate_python":
-                return await self._validate_code(arguments)
             elif tool_name == "reset_sandbox":
                 return await self._reset_sandbox(arguments)
             else:
@@ -251,43 +242,6 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
             error_info = result["error"]
             await status.error(f"Execution failed: {error_info}")
             error_text = f"Error ({error_info['category']}): {error_info['message']}"
-            if "suggestion" in error_info:
-                error_text += f"\\nSuggestion: {error_info['suggestion']}"
-
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": error_text
-                    }
-                ]
-            }
-
-    async def _validate_code(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate Python syntax."""
-        code = arguments.get("code")
-        if not code:
-            return {
-                "error": {
-                    "code": -32602,
-                    "message": "Missing required argument: code"
-                }
-            }
-
-        result = self.executor.validate_syntax(code)
-
-        if result["valid"]:
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "✅ Syntax is valid"
-                    }
-                ]
-            }
-        else:
-            error_info = result["error"]
-            error_text = f"❌ Syntax error: {error_info['message']}"
             if "suggestion" in error_info:
                 error_text += f"\\nSuggestion: {error_info['suggestion']}"
 

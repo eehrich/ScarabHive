@@ -2,26 +2,15 @@ tools:
   - type: function
     function:
       name: execute_python
-      description: Execute Python code in a secure sandbox environment. Supports mathematical expressions and basic programming.
+      description: |
+        Execute Python code in a secure sandbox. Supports built-in types, math/stats, control flow, functions and f-strings. No imports or global dunders allowed.
+        Note: Avoid __name__ (use direct function calls instead of if __name__ == "__main__").
       parameters:
         type: object
         properties:
           code:
             type: string
-            description: "Python code to execute (e.g., '(2+3)*4', 'x = 42; y = x * 2', 'abs(-15)')"
-        required: [code]
-        additionalProperties: false
-
-  - type: function
-    function:
-      name: validate_python
-      description: Validate Python code syntax without executing it.
-      parameters:
-        type: object
-        properties:
-          code:
-            type: string
-            description: "Python code to validate for syntax errors"
+            description: "Python code with proper formatting (e.g., 'def double(x):\\n    return x * 2\\n\\nresult = double(5)\\nprint(f\"Result: {result}\")')"
         required: [code]
         additionalProperties: false
 
