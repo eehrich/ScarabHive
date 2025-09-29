@@ -1,0 +1,22 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_execute_task"
+      description: Execute tasks using a basic agent with LLM capabilities and access to all available tools
+      parameters:
+        type: object
+        properties:
+          task:
+            type: string
+            description: "The task or question to execute"
+        required: ["task"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_tools"
+      description: List all available tools that the agent can access (returns only tool names and descriptions)
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false

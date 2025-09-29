@@ -1,0 +1,22 @@
+name: basic_agent
+version: 1.0.0
+author: "AgentSystem Team"
+description: "Basic agent plugin providing agent execution capabilities as MCP tools"
+entrypoint: plugin:PLUGIN_FACTORY
+type: mcp_only
+category: tools
+tags:
+  - agent
+  - execution
+  - llm
+  - task
+  - basic
+
+# Dependencies (automatically installed)
+dependencies:
+  - pydantic>=2.0.0
+
+# Minimum requirements
+requires:
+  python: ">=3.11"
+  agent_system: ">=1.0.0"

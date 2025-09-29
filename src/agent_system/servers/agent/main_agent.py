@@ -17,13 +17,3 @@ class MainAgent(Agent):
     def __init__(self, name: str, config: Any, registry: Any, ssl_verify: bool = True):
         """Initialize MainAgent."""
         super().__init__(name, config, registry, None, ssl_verify)
-
-    async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None):
-        """
-        Override run_events to publish operation status at the right time.
-        This is called by the CLI instead of run().
-        """
-        
-        # Now call the parent run_events method
-        async for event in super().run_events(task, request_id=request_id, session_id=session_id):
-            yield event

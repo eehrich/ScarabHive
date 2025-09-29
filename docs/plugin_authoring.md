@@ -10,6 +10,7 @@ This document explains how to create plugins (MCP servers) for AgentSystem. It w
 - [Defining Schema (`schema.yaml`)](#defining-schema-schemayaml)
 - [Defining Metadata (`plugin.yaml`)](#defining-metadata-pluginyaml)
 - [Implementing the Server](#implementing-the-server)
+  - [Agent-Based Plugins](#agent-based-plugins)
   - [Plugin Types Summary](#plugin-types-summary)
 - [Tools and Parameters](#tools-and-parameters)
 - [Advanced Features](#advanced-features)
@@ -832,10 +833,197 @@ class MyHybridPlugin:
 PLUGIN_FACTORY = MyHybridPlugin
 ```
 
+## Agent-Based Plugins
+
+For plugins that need full agent execution capabilities (conversation, LLM integration, multi-turn interactions), inherit from the `Agent` class instead of implementing MCP server interfaces manually.
+
+### When to Use Agent Plugins
+
+Agent-based plugins are ideal for:
+- Multi-step reasoning tasks
+- Complex workflows requiring conversation history
+- Tasks needing LLM integration (planning, summarization, code generation)
+- Interactive capabilities with back-and-forth communication
+- Execution of other agent tools within the plugin
+
+### Creating an Agent Plugin
+
+**File Structure:**
+```
+src/plugins/my_agent/
+├── plugin.yaml          # Metadata
+├── schema.yaml          # Tool definitions  
+├── server.py           # Agent class implementation
+└── plugin.py           # Factory function
+```
+
+**1. Plugin Metadata (`plugin.yaml`):**
+```yaml
+name: my_agent
+version: 1.0.0
+description: "Agent-based plugin for complex tasks"
+type: mcp_only
+entrypoint: plugin:PLUGIN_FACTORY
+dependencies:
+  - agent_system>=0.1.0
+```
+
+**2. Tool Schema (`schema.yaml`):**
+```yaml
+{{ name }}_execute_task:
+  description: "Execute a complex task using agent capabilities"
+  parameters:
+    type: object
+    properties:
+      task:
+        type: string
+        description: "Task description for the agent to execute"
+      context:
+        type: string
+        description: "Optional context for the task"
+        default: ""
+    required:
+      - task
+
+{{ name }}_list_tools:
+  description: "List available tools in this agent"
+  parameters:
+    type: object
+    properties: {}
+    required: []
+```
+
+**3. Agent Implementation (`server.py`):**
+```python
+from agent_system.agent.agent import Agent
+from agent_system.plugins.schema_loader import SchemaBasedMCPServer
+
+
+class MyAgent(Agent):
+    """Agent-based plugin with full conversation capabilities."""
+    
+    def __init__(self, name: str, config: dict, ssl_verify: bool = True):
+        super().__init__(name=name, config=config, ssl_verify=ssl_verify)
+        self.schema_server = SchemaBasedMCPServer(name, schema_file="schema.yaml")
+        
+    async def get_tools(self):
+        """Return available tools from schema."""
+        return await self.schema_server.list_tools()
+    
+    async def call(self, tool: str, params: dict):
+        """Handle tool calls with agent context."""
+        # Extract runtime parameters
+        status = params.get("_status")
+        token = params.get("_cancellation_token")
+        request_id = params.get("request_id") or params.get("requestId")
+        
+        if status:
+            await status.update(f"Executing {tool}")
+        
+        # Route to appropriate handler
+        if tool.endswith("_execute_task"):
+            return await self._execute_task(params, status, token, request_id)
+        elif tool.endswith("_list_tools"):
+            return await self._list_available_tools()
+        else:
+            raise ValueError(f"Unknown tool: {tool}")
+    
+    async def _execute_task(self, params: dict, status, token, request_id: str):
+        """Execute complex task using agent capabilities."""
+        task = params["task"]
+        context = params.get("context", "")
+        
+        if status:
+            await status.update(f"Planning task: {task}")
+        
+        # Use agent's conversation capabilities
+        prompt = f"Execute this task: {task}"
+        if context:
+            prompt += f"\n\nContext: {context}"
+        
+        # Process through agent conversation
+        message = {"content": prompt, "role": "user"}
+        response = await self.run_conversation([message])
+        
+        if status:
+            await status.update("Task completed")
+        
+        return {
+            "success": True,
+            "result": response[-1]["content"] if response else "No response",
+            "task": task
+        }
+    
+    async def _list_available_tools(self):
+        """List all available tools."""
+        tools = await self.get_tools()
+        return {
+            "tools": [tool["function"]["name"] for tool in tools]
+        }
+```
+
+**4. Factory Function (`plugin.py`):**
+```python
+from typing import Optional
+from agent_system.agent.config import AgentConfig
+from agent_system.mcp.registry import MCPRegistry
+from .server import MyAgent
+
+
+def PLUGIN_FACTORY(
+    name: str,
+    config: dict,
+    registry: MCPRegistry,
+    parent_llm: Optional[dict] = None,
+    **kwargs
+) -> MyAgent:
+    """Create and configure the agent plugin."""
+    
+    # Use parent_llm config if available
+    if parent_llm:
+        config = config.copy()
+        config["llm"] = parent_llm
+    
+    # Create agent config
+    agent_config = AgentConfig(**config)
+    
+    # Create and register agent
+    agent = MyAgent(name=name, config=agent_config.model_dump())
+    
+    # Bootstrap with registry (gives access to other agents/tools)
+    agent.bootstrap_servers(registry)
+    
+    return agent
+```
+
+### Agent vs Schema-Based Plugins
+
+| Aspect | Agent Plugin | Schema-Based Plugin |
+|--------|-------------|-------------------|
+| **Base Class** | `Agent` | `SchemaBasedMCPServer` |
+| **Complexity** | High - full agent capabilities | Low - simple tool execution |
+| **LLM Access** | ✅ Built-in conversation | ❌ Manual integration needed |
+| **Multi-turn** | ✅ Conversation history | ❌ Stateless calls |
+| **Tool Access** | ✅ Can use other agent tools | ❌ Limited to own tools |
+| **Use Cases** | Complex reasoning, planning | Simple utilities, API calls |
+
+### Agent Plugin Best Practices
+
+1. **Status Updates**: Always use `status.update()` for long-running tasks
+2. **Cancellation**: Check `token.is_cancelled()` in loops
+3. **Error Handling**: Wrap agent calls in try/catch blocks
+4. **Resource Management**: Properly clean up agent resources
+5. **Tool Naming**: Use descriptive tool names with plugin prefix
+
+### Configuration Requirements
+
+tbd.
+
 ### Plugin Types Summary
 
 | Plugin Type | MCP Server | Web Endpoints | CLI | Use Cases |
 |-------------|------------|---------------|-----|-----------|
+| **Agent** | ✅ Required (Agent class) | ❌ Optional | ✅ Recommended | Complex reasoning, multi-turn tasks |
 | **MCP-only** | ✅ Required | ❌ Optional | ✅ Recommended | Agent tools, API integrations |
 | **Web-only** | ❌ None | ✅ Required | ✅ Recommended | Dashboards, monitoring, admin tools |
 | **Hybrid** | ✅ Required | ✅ Required | ✅ Required | Full-featured plugins (like log_viewer) |
