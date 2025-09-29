@@ -63,28 +63,67 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
             # web_research_agent) can inherit without duplicating credentials.
             # Now includes full config for new LLM system support.
             try:  # pragma: no cover - defensive
-                if isinstance(server_cfg, dict) and 'parent_llm' not in server_cfg:
-                    parent_config = {}
-                    # Only include modern LLM system configuration
-                    if getattr(config, 'llm_system', None):
-                        parent_config['llm_system'] = config.llm_system.model_dump()
-                    if getattr(config, 'agent_llm_profiles', None):
-                        parent_config['agent_llm_profiles'] = config.agent_llm_profiles
-                    # Include minimal LLM config for backwards compatibility (empty dict)
-                    parent_config['llm'] = {}
-                    if parent_config:
+                if isinstance(server_cfg, dict):
+                    # Volle Parent AgentConfig für Plugins bereitstellen, damit keine Teil-Rekonstruktion nötig ist
+                    if 'parent_agent_config' not in server_cfg:
+                        server_cfg['parent_agent_config'] = config
+                    # Behalte parent_llm als Legacy-Fallback für bestehende Plugins
+                    if 'parent_llm' not in server_cfg:
+                        parent_config = {}
+                        if getattr(config, 'llm_system', None):
+                            parent_config['llm_system'] = config.llm_system.model_dump()
+                        if getattr(config, 'agent_llm_profiles', None):
+                            parent_config['agent_llm_profiles'] = config.agent_llm_profiles
+                        parent_config['llm'] = {}
                         server_cfg['parent_llm'] = parent_config
             except Exception:
                 pass
             try:
                 inst = factory(key, server_cfg, ssl_verify=config.network.ssl_verify)
                 registry.register(key, inst)
+                # Apply per-server agent_config overrides (allowed/blocked tools) without mutating the shared
+                # global AgentConfig reference. We deep-copy only when overrides are present so most plugins stay cheap.
+                try:  # pragma: no cover - defensive
+                    from agent_system.servers.agent.server import Agent as _Agent
+                    overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
+                    if isinstance(inst, _Agent) and isinstance(overrides, dict) and overrides:
+                        needs_copy = any(k in overrides for k in ('allowed_tools', 'blocked_tools', 'max_steps'))
+                        if needs_copy:
+                            import copy
+                            new_cfg = copy.deepcopy(inst.agent_config)
+                            if 'allowed_tools' in overrides and overrides.get('allowed_tools') is not None:
+                                try:
+                                    new_cfg.allowed_tools = list(overrides.get('allowed_tools') or [])  # type: ignore[attr-defined]
+                                except Exception:
+                                    pass
+                            if 'blocked_tools' in overrides and overrides.get('blocked_tools') is not None:
+                                try:
+                                    new_cfg.blocked_tools = list(overrides.get('blocked_tools') or [])  # type: ignore[attr-defined]
+                                except Exception:
+                                    pass
+                            # Optional: allow per-server max_steps override (outside of strict AgentConfig.agent_config block)
+                            if 'max_steps' in server_cfg and isinstance(server_cfg.get('max_steps'), int):
+                                try:
+                                    new_cfg.max_steps = int(server_cfg.get('max_steps'))  # type: ignore[attr-defined]
+                                except Exception:
+                                    pass
+                            inst.agent_config = new_cfg  # type: ignore[attr-defined]
+                            logger.debug("Applied per-server agent_config overrides to %s", key)
+                except Exception:
+                    logger.debug("Failed to apply per-server overrides for %s", key)
+                # Nach erfolgreicher Instanzierung: Schwergewichtige Vererbungs-Hilfsfelder entfernen,
+                # damit spätere Dumps (API Payload / Logging) keine rekursiven oder extrem großen
+                # Strukturen erzeugen.
+                try:
+                    if isinstance(server_cfg, dict):
+                        server_cfg.pop('parent_agent_config', None)
+                        server_cfg.pop('parent_llm', None)
+                except Exception:  # pragma: no cover - defensiv
+                    pass
             except Exception as e:
                 logger.exception("Failed to instantiate/register plugin '%s' for server '%s': %s", typ, key, e)
-                # For debugging, re-raise in tests
-                if "test" in str(Path.cwd()):
+                if "test" in str(Path.cwd()):  # Re-raise in Testumgebung für schnellere Fehlerdiagnose
                     raise
-                # continue to try other servers
             continue
 
         # google_search migrated to plugins; discovery will provide the factory.

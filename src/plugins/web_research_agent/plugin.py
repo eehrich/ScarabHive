@@ -1,22 +1,15 @@
-"""Web research agent plugin entrypoint.
-
-Provides a PLUGIN_FACTORY with historical (name, cfg, ssl_verify) signature
-so bootstrap discovery and tests can instantiate consistently.
-"""
+"""Web research agent plugin entrypoint (unified minimal pattern)."""
 
 from __future__ import annotations
-from typing import Any
 
-from .server import WebResearchAgent as WebResearchAgentServer
+from .server import WebResearchAgent
+from agent_system.plugins.factory_utils import make_agent_plugin_factory
 
+# Generic factory (expects full AgentConfig via bootstrap like basic_agent now)
+PLUGIN_FACTORY = make_agent_plugin_factory(WebResearchAgent)
 
-def _factory(name: str, cfg: dict[str, Any] | None = None, ssl_verify: bool = True):
-	return WebResearchAgentServer(name, config=cfg, ssl_verify=ssl_verify)
-
-PLUGIN_FACTORY = _factory  # discovery export
-
-# Backwards compatibility: some tests import PLUGIN_FACTORY and call with (name, cfg, ssl_verify)
-def factory(name: str, cfg: dict[str, Any] | None = None, ssl_verify: bool = True):  # pragma: no cover
-	return _factory(name, cfg=cfg, ssl_verify=ssl_verify)
+# Legacy alias exports
+WebResearchAgentServer = WebResearchAgent
+__all__ = ["PLUGIN_FACTORY", "WebResearchAgentServer", "WebResearchAgent"]
 
 

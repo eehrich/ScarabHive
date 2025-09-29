@@ -347,6 +347,89 @@ class Agent(MCPServer):
             self.context_manager = None
             self.token_optimizer = None
 
+    # ------------------------------------------------------------------
+    # Prompt customization hook
+    # ------------------------------------------------------------------
+    def get_custom_system_prompt(self, context: Dict[str, Any]) -> Optional[str]:  # pragma: no cover - default noop
+        """Subclass hook: return a fully rendered system prompt string or None.
+
+        If a subclass returns a non-empty string here, that prompt is used as the
+        primary system prompt and configuration driven template / raw prompt
+        logic is skipped (except tools prompt injection which still occurs).
+
+        Args:
+            context: Dict containing keys like 'tools', 'max_steps', plus any
+                     auto datetime context if enabled.
+
+        Returns:
+            The custom system prompt string or None to fall back to config logic.
+        """
+        return None
+
+    # ------------------------------------------------------------------
+    # Central prompt rendering utilities (restored)
+    # ------------------------------------------------------------------
+    def _render_prompts(self, available_tools: List[str], max_steps: int) -> tuple[str, Optional[str]]:
+        """Render (system_prompt, tools_prompt) applying hook, raw prompt, or template.
+
+        Order of precedence:
+          1. Subclass hook `get_custom_system_prompt`
+          2. In-memory raw `prompts.system_prompt`
+          3. File/template based `prompts.system_template` (render_prompts)
+
+        Returns:
+            (system_prompt, tools_prompt_or_None)
+        """
+        prompts_cfg = getattr(self.agent_config, 'prompts', None)
+        context_vals = {"tools": available_tools, "max_steps": max_steps-1}
+        if getattr(self.agent_config, 'context', None) and self.agent_config.context.auto_datetime:
+            dt_ctx = get_datetime_context(self.agent_config.context.timezone, self.agent_config.context.location)
+            context_vals.update(dt_ctx)
+
+        # Subclass custom hook
+        try:
+            custom_prompt = self.get_custom_system_prompt(context_vals)
+        except Exception as e:  # pragma: no cover
+            logger.warning("Custom system prompt hook failed for agent %s: %s", self.name, e)
+            custom_prompt = None
+
+        if custom_prompt:
+            logger.debug("Agent %s using subclass custom system prompt (len=%d)", self.name, len(custom_prompt))
+            return custom_prompt, None
+
+        if prompts_cfg and getattr(prompts_cfg, 'system_prompt', None):
+            logger.debug("Agent %s using in-memory system_prompt (length=%s)", self.name, len(getattr(prompts_cfg, 'system_prompt', '') or ''))
+            try:
+                rendered_system = Template(prompts_cfg.system_prompt).render(**context_vals)
+            except Exception:
+                rendered_system = "You are an assistant agent."
+            return rendered_system, None
+
+        # Template based
+        logger.debug(
+            "Agent %s rendering system_template from path: %s",
+            self.name, getattr(getattr(self.agent_config, 'prompts', object()), 'system_template', 'N/A'))
+        rendered = render_prompts(
+            self.agent_config.prompts.system_template,
+            context_vals,
+            auto_datetime=self.agent_config.context.auto_datetime,
+            timezone=self.agent_config.context.timezone,
+            location=self.agent_config.context.location
+        )
+        system_msg = rendered.get("system_prompt") or "You are an assistant agent."
+        tools_msg = rendered.get("tools_prompt")
+        return system_msg, tools_msg
+
+    async def get_current_system_prompt(self) -> str:
+        """Async: render current system prompt (diagnostics endpoint)."""
+        try:
+            available_tools = await self.list_allowed_tool_servers()
+        except Exception:
+            available_tools = []
+        max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
+        system_msg, _ = self._render_prompts(available_tools, max_steps)
+        return system_msg
+
 
     def _set_agent_reference_in_mcp(self) -> None:
         """Set agent reference in MCP integration for cancellation support."""
@@ -505,6 +588,140 @@ class Agent(MCPServer):
                         pass
         return messages
 
+    # ------------------------------------------------------------------
+    # Tool filtering helpers
+    # ------------------------------------------------------------------
+    def _is_tool_allowed(self, tool_name: str, patterns: list[str]) -> bool:
+        """Return True if tool_name matches any allowed pattern.
+
+        Patterns may be:
+          plugin            -> matches exact tool/plugin name
+          plugin/*          -> matches all functions of plugin and plugin itself
+          plugin/function   -> matches one function inside multi-tool plugin
+          external.tool     -> exact external tool name
+          external.*        -> all tools of an external server (dot form)
+        Uses fnmatch for flexible wildcard support.
+        """
+        if not patterns:
+            return True
+        # Fast path: global wildcard grants all
+        if '*' in patterns:
+            return True
+        from fnmatch import fnmatch
+        for pat in patterns:
+            # Normalize common shorthand
+            if pat.endswith('/*'):
+                base = pat[:-2]
+                if tool_name == base or tool_name.startswith(base + '.'):
+                    return True
+            # Allow pattern "plugin" to match plugin and any function (added later) via startswith
+            if '/' not in pat and '*' not in pat and '.' not in pat:
+                if tool_name == pat or tool_name.startswith(pat + '.'):
+                    return True
+            # Support dot wildcards: external_server.*
+            if pat.endswith('.*'):
+                base = pat[:-2]
+                if tool_name.startswith(base + '.'):
+                    return True
+            # Direct fnmatch (covers explicit names and wildcards)
+            if fnmatch(tool_name, pat):
+                return True
+        return False
+
+    def _filter_available_tools(self, tools: list[str], patterns: list[str]) -> list[str]:
+        """Filter list of tools by allow patterns.
+
+        Logs any pattern that matches nothing for visibility, but continues.
+        """
+        matched = []
+        for t in tools:
+            if self._is_tool_allowed(t, patterns):
+                matched.append(t)
+        # Log patterns with zero matches (diagnostic)
+        unmatched = []
+        if patterns and patterns != ['*'] and not (len(patterns) > 1 and '*' in patterns):
+            for pat in patterns:
+                if pat == '*':
+                    continue
+                if not any(self._is_tool_allowed(t, [pat]) for t in tools):
+                    unmatched.append(pat)
+        if unmatched:
+            logger.debug("Agent %s allowed_tools patterns with no matches: %s", self.name, unmatched)
+        return matched
+
+    async def list_allowed_tool_servers(self) -> list[str]:
+        """Collect all available tool server names (plugins + external + registry) applying per-agent allow list.
+
+        This centralizes tool discovery so that both the LLM prompt construction and any
+        user-facing listing endpoints / plugin helper tools obtain a consistent filtered
+        view. Previously the collection logic lived inline in `_run_events`; extracting
+        it here avoids divergence.
+        """
+        # Initialize MCP integration (idempotent)
+        await self._mcp_integration_manager.setup_mcp_integration()
+
+        # Determine patterns first (deny-all baseline if not configured)
+        try:
+            allowed_patterns = getattr(self.agent_config, 'allowed_tools', None)
+        except Exception:
+            allowed_patterns = None
+        # If no allow list -> deny all (explicit policy change)
+        if not allowed_patterns:
+            logger.debug("Agent %s: no allowed_tools configured -> deny-all (0 tools)", self.name)
+            return []
+
+        # Gather plugin provided tool servers
+        plugin_tools: list[str] = []
+        if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
+            plugin_tools = self._mcp_integration_manager.mcp_integration.plugin_registry.list_servers()
+
+        # External + plugin + adapter tools via integration manager helper
+        available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
+
+        # Local registry (directly registered mock/test servers)
+        if hasattr(self, 'registry') and self.registry:
+            for tool_name in self.registry.list():
+                if tool_name not in available_tools:
+                    available_tools.append(tool_name)
+
+        # Apply allow-list (guaranteed non-empty here)
+        try:
+            blocked_patterns = getattr(self.agent_config, 'blocked_tools', None)
+        except Exception:
+            blocked_patterns = None
+
+        available_tools = self._filter_available_tools(available_tools, allowed_patterns)
+        logger.debug("Filtered available tools for agent %s (allow list) -> %s", self.name, available_tools)
+        if not available_tools:
+            logger.warning("Agent %s allow list patterns produced an empty tool set", self.name)
+            # Fallback: if a global wildcard '*' was specified but nothing matched (e.g. discovery timing)
+            # attempt a second pass pulling plugin server names directly from the MCP plugin registry.
+            try:
+                if any(p == '*' for p in allowed_patterns):
+                    if (self._mcp_integration_manager.mcp_integration and
+                            self._mcp_integration_manager.mcp_integration.initialized):
+                        plugin_registry = self._mcp_integration_manager.mcp_integration.plugin_registry
+                        plugin_names = []
+                        try:
+                            plugin_names = list(plugin_registry.list_servers())
+                        except Exception:
+                            plugin_names = []
+                        if plugin_names:
+                            logger.debug("Wildcard fallback adding plugin servers for agent %s: %s", self.name, plugin_names)
+                            available_tools = plugin_names
+            except Exception:
+                pass
+
+        if blocked_patterns:
+            before_block = list(available_tools)
+            available_tools = [t for t in available_tools if not self._is_tool_allowed(t, blocked_patterns)]
+            removed = set(before_block) - set(available_tools)
+            if removed:
+                logger.debug("Agent %s blocked_tools removed: %s", self.name, sorted(removed))
+            if not available_tools:
+                logger.warning("Agent %s blocked_tools removed all tools", self.name)
+        return available_tools
+
     def _estimate_token_count(self, messages: List[ChatMessage]) -> int:
         """Rough token count estimation for debugging context window usage."""
         total_chars = 0
@@ -608,51 +825,13 @@ class Agent(MCPServer):
             # Initialize MCP integration
             await self._mcp_integration_manager.setup_mcp_integration()
 
-            # Get tools from the MCP integration plugin registry (not the empty local registry)
-            plugin_tools = []
-            if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
-                plugin_tools = self._mcp_integration_manager.mcp_integration.plugin_registry.list_servers()
-
-            # Get all available tools including external MCP tools
-            available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
-            
-            # Add tools from the local registry (for testing and direct registration)
-            if hasattr(self, 'registry') and self.registry:
-                for tool_name in self.registry.list():
-                    if tool_name not in available_tools:
-                        available_tools.append(tool_name)
+            # Unified tool server discovery (filtered)
+            available_tools = await self.list_allowed_tool_servers()
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
-            # Render prompts. Support either a path-based template (prompts.system_template)
-            # or an in-memory raw template string (prompts.system_prompt) provided in agent_config.
-            prompts_cfg = getattr(self.agent_config, 'prompts', None)
-            system_msg = None
-            tools_msg = None
-            if prompts_cfg and getattr(prompts_cfg, 'system_prompt', None):
-                # Render raw system prompt string using Jinja2 with same automatic context
-                context = {"tools": available_tools, "max_steps": max_steps-1}
-                if getattr(self.agent_config, 'context', None) and self.agent_config.context.auto_datetime:
-                    dt_ctx = get_datetime_context(self.agent_config.context.timezone, self.agent_config.context.location)
-                    context = {**context, **dt_ctx}
-                try:
-                    system_msg = Template(prompts_cfg.system_prompt).render(**context)
-                except Exception:
-                    # Fallback to a safe default
-                    system_msg = "You are an assistant agent."
-                # There may be no tools_prompt when using raw system_prompt
-                tools_msg = None
-            else:
-                # Path-based rendering (backwards-compatible)
-                rendered = render_prompts(
-                    self.agent_config.prompts.system_template,
-                    {"tools": available_tools, "max_steps": max_steps-1},
-                    auto_datetime=self.agent_config.context.auto_datetime,
-                    timezone=self.agent_config.context.timezone,
-                    location=self.agent_config.context.location
-                )
-                system_msg = rendered.get("system_prompt") or "You are an assistant agent."
-                tools_msg = rendered.get("tools_prompt")
+            # Centralized prompt rendering (system + optional tools) using helper.
+            system_msg, tools_msg = self._render_prompts(available_tools, max_steps)
 
             # Initialize conversation from persisted session history
             async with self._request_lock:
@@ -789,6 +968,15 @@ class Agent(MCPServer):
                 # Get LLM response - handle context length exceeded errors
                 try:
                     llm_out = await self.llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
+                except asyncio.CancelledError:  # pragma: no cover - explicit cancellation path
+                    # Treat as graceful cancellation (user cancel or upstream timeout cancellation)
+                    logger.info("Request %s received asyncio.CancelledError during LLM call at step %d", request_id, step + 1)
+                    # Signal cancellation using status contexts
+                    await status_worker.error("cancelled during LLM call (asyncio.CancelledError)", meta={"step": step + 1, "reason": "cancelled"})
+                    await status_coordinator.error("cancelled during LLM call", meta={"step": step + 1, "reason": "cancelled"})
+                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": "asyncio.CancelledError"}
+                    yield {"type": "end"}
+                    return
                 except Exception as e:
                     # Check if this is a context length exceeded error
                     from agent_system.context.exceptions import ContextLengthExceededError

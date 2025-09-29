@@ -25,7 +25,6 @@ from .mcp.integration import MCPIntegration
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
-from .servers.agent.main_agent import MainAgent
 
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
@@ -1328,7 +1327,78 @@ def main() -> None:
         # Fallback to original config if anything fails
         cli_agent_config = config
 
-    agent = MainAgent("cli_agent", cli_agent_config, registry=registry)
+    # Determine CLI agent name: prefer configured entry_agent so CLI runs through same primary agent
+    # unless user explicitly wants an isolated cli_agent (future flag could control). For now we align
+    # with dynamic entry agent selection to ensure consistent allowed_tools filtering & behavior.
+    entry_name = getattr(config, 'entry_agent', None) or 'agent'
+
+    # If the entry agent already exists in the registry (bootstrapped plugin or core), reuse it.
+    # Otherwise create a new core Agent under that name. Maintain backward compatibility alias
+    # 'cli_agent' ONLY when entry_agent differs, so existing scripts expecting cli_agent still work.
+    try:
+        from .servers.agent.server import Agent as _Agent
+        if entry_name in registry.list():
+            existing = registry.get(entry_name)
+            if isinstance(existing, _Agent):
+                agent = existing
+                # Ensure the existing agent's registry reference points to the full CLI registry
+                try:
+                    agent.registry = registry  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                # If the CLI layer constructed an in-memory system_prompt (cli_agent_config.prompts.system_prompt)
+                # propagate it into the reused agent's agent_config (without mutating shared object unless needed).
+                try:  # pragma: no cover - defensive
+                    raw_cli_prompt = getattr(getattr(cli_agent_config, 'prompts', object()), 'system_prompt', None)
+                    if raw_cli_prompt and not getattr(getattr(agent.agent_config, 'prompts', object()), 'system_prompt', None):
+                        import copy
+                        # Deep-copy agent_config to avoid side effects on other references (e.g. API process)
+                        new_cfg = copy.deepcopy(agent.agent_config)
+                        # Replace prompts with a lightweight namespace carrying both system_template & system_prompt
+                        from types import SimpleNamespace
+                        new_cfg.prompts = SimpleNamespace(system_template=getattr(agent.agent_config.prompts, 'system_template', None),
+                                                           system_prompt=raw_cli_prompt)
+                        agent.agent_config = new_cfg  # type: ignore[attr-defined]
+                        logger.debug("Injected CLI system_prompt into reused agent '%s'", entry_name)
+                except Exception:
+                    logger.debug("Failed to inject CLI system_prompt into reused agent '%s'", entry_name)
+                # Merge/propagate server agent_config patterns if present and not already set
+                try:
+                    server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
+                    server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
+                    if isinstance(server_agent_cfg, dict):
+                        # Only apply if agent currently has no allow list (keeps runtime modifications intact)
+                        if getattr(agent.agent_config, 'allowed_tools', None) is None and server_agent_cfg.get('allowed_tools'):
+                            agent.agent_config.allowed_tools = list(server_agent_cfg.get('allowed_tools'))  # type: ignore[attr-defined]
+                        if getattr(agent.agent_config, 'blocked_tools', None) is None and server_agent_cfg.get('blocked_tools'):
+                            agent.agent_config.blocked_tools = list(server_agent_cfg.get('blocked_tools'))  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            else:
+                # Not an Agent instance -> create a dedicated Agent wrapper
+                agent = Agent(entry_name, cli_agent_config, registry=registry, agent_config={})
+        else:
+            # Create new Agent with server-level patterns if defined
+            try:
+                server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
+                server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
+            except Exception:
+                server_agent_cfg = {}
+            base_agent_cfg = {}
+            if isinstance(server_agent_cfg, dict):
+                # Pass patterns through via agent_config parameter (kept minimal)
+                if server_agent_cfg.get('allowed_tools'):
+                    base_agent_cfg['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
+                if server_agent_cfg.get('blocked_tools'):
+                    base_agent_cfg['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
+            agent = Agent(entry_name, cli_agent_config, registry=registry, agent_config=base_agent_cfg)
+            registry.register(entry_name, agent)
+    except Exception:
+        # Fallback to legacy dedicated cli_agent if anything unexpected happens
+        agent = Agent("cli_agent", cli_agent_config, registry=registry, agent_config={})
+
+    # Removed legacy alias registration for 'cli_agent'. Historical scripts should be updated to
+    # reference the configured entry agent directly.
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)

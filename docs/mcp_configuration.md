@@ -16,14 +16,10 @@ mcp:
 
   # Local server settings
   expose_local_server: true
-  local_server_port: 8000
-  local_server_host: "localhost"
 
   # Global settings
   default_timeout: 30.0
   max_concurrent_requests: 10
-  enable_health_checks: true
-  health_check_interval: 300.0  # 5 minutes
 
   # Security
   require_auth: false
@@ -271,6 +267,77 @@ mcp:
         prefix: "analytics_"
       priority: 30
 ```
+
+## Entry Agent Selection (Dynamic)
+
+The system no longer relies on a hard-coded `MainAgent`. Instead you can choose which
+registered agent server acts as the primary entry point for `/run` and `/events` calls.
+
+Add to your top-level configuration (e.g. `agent.yaml` or merged config):
+
+```yaml
+entry_agent: basic_agent
+```
+
+Behavior:
+* If `entry_agent` matches a plugin-provided agent (e.g. `basic_agent`), that instance is used.
+* If it does not exist, a core `Agent` is created under that name.
+* For backward compatibility an alias `agent` is also registered pointing to the chosen entry agent.
+* Legacy module `main_agent.py` has been deprecated and replaced by this dynamic selection.
+
+## Per-Agent Tool Allow / Deny Lists
+
+Each agent can define which tool servers it may use via an allow list (and optional block list):
+
+```yaml
+servers:
+  basic_agent:
+    type: basic_agent
+    agent_config:
+      allowed_tools:
+        - "web_scraper/*"
+        - "web_research_agent/*"
+      blocked_tools:
+        - "web_scraper.experimental_*"
+```
+
+Policy:
+* Default is DENY-ALL if `allowed_tools` is absent or empty.
+* `allowed_tools` patterns support:
+  * `plugin` or `plugin/*` – all tools from a plugin
+  * `plugin.function` – single function
+  * `external_server/*` or `external_server.tool`
+  * `*` – allow everything (use cautiously)
+* `blocked_tools` (if present) is applied after allow filtering and subtracts matches.
+* Unmatched patterns are logged at DEBUG level to help diagnose typos.
+
+Diagnostics Endpoints:
+* `GET /agents` – list agent servers.
+* `GET /agents/{name}/allowed-tools` – effective filtered list (already filtered, default deny may yield empty list).
+* `GET /agents/{name}/allowed-tools/debug` – includes which patterns matched each tool.
+
+Examples:
+
+| Configuration | Effective result |
+|---------------|------------------|
+| (no allowed_tools) | No tools available to that agent |
+| allowed_tools: ["*"] | All discovered tool servers available |
+| allowed_tools: ["web_scraper/*", "datetime.*"], blocked_tools: ["datetime.legacy_*"] | Only web_scraper tools and datetime.* minus legacy_* |
+
+## Migration Notes
+
+| Legacy | New Approach |
+|--------|--------------|
+| `MainAgent` class | Removed; use `entry_agent` selection |
+| Implicit all tools available | Default deny-all until explicitly allowed |
+| Ad-hoc tool filtering in code | Centralized in `Agent.list_allowed_tool_servers()` |
+
+To migrate existing deployments:
+1. Add an explicit `entry_agent` if you relied on a custom main agent.
+2. Add `allowed_tools` lists for each agent that should have tool access.
+3. (Optional) Use `*` temporarily while phasing in tighter allow lists.
+4. Verify via `/agents/{entry_agent}/allowed-tools/debug`.
+
 
 ## Usage Examples
 

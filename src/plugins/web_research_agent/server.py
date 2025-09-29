@@ -1,324 +1,53 @@
-"""
-WebResearchAgent - Specialized agent for web research tasks.
-Combines DuckDuckGo search with web scraping capabilities.
+"""WebResearchAgent - simplified: relies on global AgentConfig inheritance.
+
+All legacy reconstruction (parent_llm, create_web_research_agent, bespoke
+bootstrap, context tracking noise) removed. The generic plugin factory now
+provides a full AgentConfig + empty registry; enabled_servers / filtering
+handled centrally.
 """
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict
+from typing import Dict, Any
 from pathlib import Path
+import logging
 
-from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig
-from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
-from agent_system.servers.bootstrap import bootstrap_servers
-from agent_system.mcp.status import (
-    StatusScope
-)
-from agent_system.context.agent_tracker import update_agent_context_usage
 
 logger = logging.getLogger(__name__)
 
-def create_web_research_agent(
-    name: str = "web_researcher",
-    config: dict | None = None,
-    ssl_verify: bool = True
-) -> Agent:
-    """
-    Create a specialized WebResearchAgent.
-
-    This agent combines DuckDuckGo search with web scraping to perform
-    comprehensive web research tasks.
-
-    Args:
-        name: Name for the web research agent
-        config: Optional configuration dict
-        ssl_verify: SSL verification setting
-
-    Returns:
-        Agent configured for web research
-    """
-    # Create specialized agent configuration
-    # Allow server-provided LLM overrides (e.g., default_provider/model) via `config`
-    server_cfg = config or {}
-    llm_kwargs: dict = {}
-    # accept either 'default_provider' or 'provider' keys from server config
-    if server_cfg.get("default_provider"):
-        llm_kwargs["provider"] = server_cfg.get("default_provider")
-    elif server_cfg.get("provider"):
-        llm_kwargs["provider"] = server_cfg.get("provider")
-    if server_cfg.get("model"):
-        llm_kwargs["model"] = server_cfg.get("model")
-    if server_cfg.get("openai_api_key"):
-        llm_kwargs["openai_api_key"] = server_cfg.get("openai_api_key")
-    if server_cfg.get("ollama_url"):
-        llm_kwargs["ollama_url"] = server_cfg.get("ollama_url")
-    if server_cfg.get("ollama_mode"):
-        llm_kwargs["ollama_mode"] = server_cfg.get("ollama_mode")
-    if server_cfg.get("request_timeout") is not None:
-        llm_kwargs["request_timeout"] = server_cfg.get("request_timeout")
-    if server_cfg.get("context_window") is not None:
-        llm_kwargs["context_window"] = server_cfg.get("context_window")
-
-    # Inherit missing LLM fields from a provided parent/global config dict (if caller
-    # passed a reference containing top-level llm info under 'parent_llm'). This avoids
-    # forcing duplication of openai_api_key or model in server-specific config.
-    parent_llm = server_cfg.get("parent_llm") if isinstance(server_cfg, dict) else None
-    
-    # Use profile-based LLM resolution
-    if isinstance(parent_llm, dict) and parent_llm.get('llm_system'):
-        try:
-            # Create AgentConfig from parent_llm dictionary
-            temp_config = AgentConfig(
-                llm_system=LLMSystemConfig(**(parent_llm.get('llm_system', {}))),
-                agent_llm_profiles=parent_llm.get('agent_llm_profiles', {}),
-            )
-            
-            # Use agent name to resolve LLM profile (just for logging)
-            from agent_system.llm.factory import resolve_llm_config_for_agent
-            resolved_kwargs = resolve_llm_config_for_agent(temp_config, name)
-            logger.info(f"WebResearchAgent '{name}' using LLM profile resolution: provider={resolved_kwargs['provider']}, model={resolved_kwargs['model']}")
-        except Exception as e:
-            logger.error(f"Failed to resolve LLM profile for {name}: {e}")
-            raise ValueError(f"WebResearchAgent requires proper LLM profile configuration: {e}")
-    else:
-        raise ValueError("WebResearchAgent requires LLM system configuration with profiles")
-
-    # Allow server config to override max_steps (fall back to default 50)
-    resolved_max_steps = int(server_cfg.get("max_steps", 50)) if isinstance(server_cfg, dict) else 50
-
-    research_config = AgentConfig(
-        llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
-        agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
-        mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
-        servers={
-            "duckduckgo_search": {
-                "type": "duckduckgo_search"
-            },
-            "web_scraper": {
-                "type": "web_scraper"
-            }
-        },
-        max_steps=resolved_max_steps,  # More steps for complex research tasks
-        network={"ssl_verify": ssl_verify}
-    )
-
-    # Attempt to load a plugin-local system prompt (in-memory) so the
-    # WebResearchAgent uses a tailored prompt without depending on global config.
-    try:
-        prompts_path = Path(__file__).parent.joinpath('prompts', 'system_prompt.yaml')
-        if prompts_path.exists():
-            from types import SimpleNamespace
-            # Read raw template and attach as system_prompt on the prompts object
-            raw = prompts_path.read_text(encoding='utf-8')
-            # store as simple namespace to avoid pydantic restrictions
-            research_config.prompts = SimpleNamespace(system_template=str(prompts_path), system_prompt=raw)
-    except Exception:
-        # Non-fatal: continue with default prompts in research_config
-        pass
-
-    # Create registry and bootstrap the research tools
-    research_registry = MCPRegistry()
-    bootstrap_servers(research_config, research_registry)
-
-    # Create the agent directly with research-specific configuration
-    agent_config = config or {}
-    agent_config.setdefault("description",
-        "Specialized web research agent that can search the web and scrape content from websites")
-
-    research_agent = Agent(name, research_config, research_registry, agent_config, ssl_verify)
-    # Backwards compatibility: some tests expect a plain dict of original config
-    # accessible as .cfg (mirroring legacy plugin servers).
-    try:  # pragma: no cover - defensive
-        setattr(research_agent, "cfg", server_cfg)
-    except Exception:
-        pass
-
-    logger.info("Created WebResearchAgent '%s' with tools: %s",
-                name, research_registry.list())
-
-    return research_agent
-
 
 class WebResearchAgent(Agent):
-    """Specialized Agent for web research tasks (search + scraping)."""
+    """Lean web research agent (search + scraping via configured MCP servers)."""
 
-    def __init__(self, name: str = "web_research_agent", config: dict | None = None, ssl_verify: bool = True):
-        # Import needed models at the top
-        from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig
-        from agent_system.llm.factory import resolve_llm_config_for_agent
-        
-        server_cfg = config or {}
-        parent_llm = server_cfg.get("parent_llm") if isinstance(server_cfg, dict) else None
-        
-        # Parent config must have the new LLM system
-        if isinstance(parent_llm, dict) and parent_llm.get("llm_system"):
-            # Build a full config from parent_llm for LLM resolution
-            temp_config = AgentConfig(
-                llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
-                agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
-            )
-            
-            # Resolve LLM config for this specific agent name (for logging)
-            llm_kwargs = resolve_llm_config_for_agent(temp_config, name)
-            
-            logger.info("WebResearchAgent '%s' using LLM profile resolution: provider=%s, model=%s", 
-                       name, llm_kwargs["provider"], llm_kwargs["model"])
-        else:
-            # Profile-based configuration is required
-            raise ValueError(f"WebResearchAgent '{name}' requires LLM system configuration with profiles")
+    # No custom __init__: base Agent handles config/LLM initialization.
+    # Tools come from enabled MCP servers (duckduckgo_search, web_scraper) in config.
 
-        # Allow server config to override max_steps (fall back to default 50)
-        resolved_max_steps = int(server_cfg.get("max_steps", 50)) if isinstance(server_cfg, dict) else 50
-
-        research_config = AgentConfig(
-            llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
-            agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
-            mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
-            servers={
-                "duckduckgo_search": {"type": "duckduckgo_search"},
-                "web_scraper": {"type": "web_scraper"},
-            },
-            max_steps=resolved_max_steps,
-            network={"ssl_verify": ssl_verify},
-        )
-
-        research_registry = MCPRegistry()
-        bootstrap_servers(research_config, research_registry)
-
-        agent_config = config or {}
-        agent_config.setdefault(
-            "description",
-            "Specialized web research agent that can search the web and scrape content from websites",
-        )
-
-        super().__init__(name, research_config, research_registry, agent_config, ssl_verify)
-        self.cfg = server_cfg  # legacy compatibility expected by tests
-        logger.info("Created WebResearchAgent '%s' with tools: %s", name, research_registry.list())
-
-    async def _run_with_progress(self, task_prompt: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
-        """Run agent task with progress updates published as status events."""
-        results = {"task": task_prompt, "calls": []}
-        step_count = 0
-        total_messages = 0
-
+    async def _execute_task(self, prompt: str, request_id: str, status) -> Dict[str, Any]:  # type: ignore[override]
+        """Run a task by streaming base Agent events; simplified result extraction."""
+        result: Dict[str, Any] = {"task": prompt, "calls": []}
         try:
-            # Pass the request_id to run_events so coordinator/worker messages have correct correlation
-            # Consume all events but don't break early to let base Agent.run_events complete
-            events_generator = self.run_events(task_prompt, request_id=request_id)
-            async for event in events_generator:
-                event_type = event.get("type")
-
-                if event_type == "start":
-                    step_count += 1
-                    await status.progress("Starting analysis...")
-
-                elif event_type == "thinking":
-                    # Track LLM conversation activity
-                    total_messages += 1
-                    await status.progress(f"Processing {total_messages} ...")
-                    try:
-                        # Get conversation context for tracking
-                        if hasattr(self, '_current_messages'):
-                            message_count = len(self._current_messages)
-                            # Estimate tokens from current conversation
-                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
-
-                            # Update agent context tracker
-                            update_agent_context_usage(
-                                self.name,
-                                current_tokens=estimated_tokens,
-                                predicted_tokens=estimated_tokens,
-                                message_count=message_count
-                            )
-                    except Exception as e:
-                        logger.debug("Failed to update agent context stats: %s", e)
-
-                elif event_type == "mcp_call":
-                    step_count += 1
-                    tool_name = event.get("server", "unknown")
-                    action = event.get("action", "unknown")
-                    await status.progress(f"Step {step_count} - Using {tool_name} ({action})")
-                    
-                    # Store tool calls in results - convert to expected format
-                    if "calls" not in results:
-                        results["calls"] = []
-                    # Filter out internal parameters like _status before storing
+            async for event in self.run_events(prompt, request_id=request_id):
+                et = event.get("type")
+                if et == "mcp_call":
                     filtered_params = {k: v for k, v in event.get("params", {}).items() if not k.startswith('_')}
-                    results["calls"].append({
-                        "function": {"name": tool_name},
-                        "server": tool_name,
-                        "action": action,
+                    result["calls"].append({
+                        "function": {"name": event.get("server", "unknown")},
+                        "server": event.get("server", "unknown"),
+                        "action": event.get("action", "unknown"),
                         "params": filtered_params
                     })
-
-                elif event_type == "mcp_result":
-                    tool_name = event.get("server", "unknown")
-                    await status.progress(f"Processing results from {tool_name}...")
-
-                elif event_type == "final":
-                    results["summary"] = event.get("summary", "")
-                    await status.progress("Finalizing results...")
-
-                    # Final agent tracking update
-                    try:
-                        if hasattr(self, '_current_messages'):
-                            message_count = len(self._current_messages)
-                            estimated_tokens = self._estimate_token_count(self._current_messages) if hasattr(self, '_estimate_token_count') else 0
-
-                            # Check if LLM usage data is available in the event
-                            actual_tokens = event.get("usage", {}).get("total_tokens", 0) if event.get("usage") else 0
-
-                            update_agent_context_usage(
-                                self.name,
-                                current_tokens=estimated_tokens,
-                                predicted_tokens=estimated_tokens,
-                                message_count=message_count,
-                                actual_tokens=actual_tokens if actual_tokens > 0 else None
-                            )
-                    except Exception as e:
-                        logger.debug("Failed to update final agent context stats: %s", e)
-
-                    # Continue consuming events to let base Agent.run_events complete 
-                    # and publish final coordinator/worker status messages
-
-                elif event_type == "error":
-                    error_msg = event.get("message", "Unknown error")
-                    if not error_msg or error_msg.strip() == "":
-                        error_msg = "Agent error occurred without details"
-                    results.setdefault("errors", []).append(error_msg)
-                    await status.error(f"Error - {error_msg}")
-                    raise Exception(error_msg)
-
-                elif event_type == "end":
-                    # Mark that we've seen the end event but continue consuming
-                    # to let base Agent.run_events complete and publish final status
-                    # Continue loop to let generator finish naturally
-                    pass
-
-            # Let the generator complete naturally to ensure final status publishing
-            # The async for loop will exit when the generator is exhausted
-            # status_scope will automatically publish coordinator/worker END messages
-            return results
-
-        except Exception as e:
-            # Error handling - status_scope will still publish proper END status
-            logger.error(f"WebResearchAgent task failed: {e}")
-            results.setdefault("errors", []).append(str(e))
-            raise
-
-    async def _execute_task(self, prompt: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
-        """Execute a research task with common error handling and result formatting."""
-        try:
-            res = await self._run_with_progress(prompt, request_id, status)
-            # Add status and agent info to match expected format
-            res["status"] = "success"
-            res["agent"] = self.name
-            return res
-        except Exception as e:
+                elif et == "final":
+                    result["summary"] = event.get("summary", "")
+                elif et == "error":
+                    msg = event.get("message", "error")
+                    return {"status": "error", "error": msg, "agent": self.name}
+            result["status"] = "success"
+            result["agent"] = self.name
+            return result
+        except Exception as e:  # pragma: no cover - defensive
             return {"status": "error", "error": str(e), "agent": self.name}
 
-    async def research(self, topic: str, max_results: int, request_id: str, status: StatusScope) -> Dict[str, Any]:
+    async def research(self, topic: str, max_results: int, request_id: str, status) -> Dict[str, Any]:
         research_prompt = f"""
         Perform comprehensive research on: {topic}
 
@@ -336,7 +65,7 @@ class WebResearchAgent(Agent):
         """
         return await self._execute_task(research_prompt, request_id, status)
 
-    async def fact_check(self, claim: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
+    async def fact_check(self, claim: str, request_id: str, status) -> Dict[str, Any]:
         fact_check_prompt = f"""
         Fact-check this claim: "{claim}"
 
@@ -354,7 +83,7 @@ class WebResearchAgent(Agent):
         """
         return await self._execute_task(fact_check_prompt, request_id, status)
 
-    async def compare_sources(self, topic: str, request_id: str, status: StatusScope) -> Dict[str, Any]:
+    async def compare_sources(self, topic: str, request_id: str, status) -> Dict[str, Any]:
         compare_prompt = f"""
         Compare information about this topic across multiple sources: "{topic}"
 
@@ -422,3 +151,35 @@ class WebResearchAgent(Agent):
 
     def get_default_action(self) -> str:
         return "web_research_agent"
+
+    # ------------------------------------------------------------------
+    # Custom system prompt hook override
+    # ------------------------------------------------------------------
+    def get_custom_system_prompt(self, context: Dict[str, Any]):  # type: ignore[override]
+        """Load system_prompt from plugin-local YAML to allow Jinja rendering in base class.
+
+        Returning None would fall back to generic config logic; instead we read the
+        file so that subclass control is explicit while content lives in the template.
+        """
+        try:
+            prompt_file = Path(__file__).parent / "prompts" / "system_prompt.yaml"
+            if prompt_file.exists():
+                # We only need the raw system_prompt block; reuse simple YAML parse
+                import yaml  # Local import to avoid global dependency at import time
+                data = yaml.safe_load(prompt_file.read_text(encoding="utf-8")) or {}
+                raw_prompt = data.get("system_prompt")
+                if isinstance(raw_prompt, str) and raw_prompt.strip():
+                    return raw_prompt
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Failed loading custom system_prompt YAML: %s", e)
+        return None
+
+
+# Backward compatibility for legacy tests importing create_web_research_agent
+def create_web_research_agent(name: str, config: Any, registry: Any, ssl_verify: bool = True):  # pragma: no cover - legacy shim
+    """Legacy factory kept for test compatibility.
+
+    Older tests import create_web_research_agent expecting the previous factory
+    signature. We now just instantiate WebResearchAgent directly.
+    """
+    return WebResearchAgent(name, config, registry, None, ssl_verify)

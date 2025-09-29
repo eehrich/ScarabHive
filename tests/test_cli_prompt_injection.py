@@ -20,10 +20,10 @@ class DummyAgent:
 
 
 def test_cli_injects_german_hint_in_memory(monkeypatch):
-    # Capture the config passed to MainAgent
+    # Capture the config passed to entry agent factory (basic_agent)
     captured = {}
 
-    def fake_main_agent(name, cfg, registry=None, **kwargs):
+    def fake_entry_agent(name, cfg, registry=None, **kwargs):  # matches factory signature
         captured['name'] = name
         captured['cfg'] = cfg
         return DummyAgent()
@@ -37,7 +37,8 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
         )
     )
     monkeypatch.setattr(cli, "load_settings", lambda path=None: mock_config)
-    monkeypatch.setattr(cli, 'MainAgent', fake_main_agent)
+    # Patch the basic_agent factory symbol the CLI resolves (simulate entry agent creation)
+    monkeypatch.setattr(cli, 'make_entry_agent', lambda config, registry=None: fake_entry_agent('basic_agent', config, registry))
     # Run CLI in raw mode to take the non-streaming path (simpler output)
     monkeypatch.setattr('sys.argv', ['agent-cli', '--raw', 'run', 'do it'])
 
@@ -48,7 +49,7 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
     cli.main()
 
     # Ensure MainAgent was called and the runtime prompts.system_prompt exists
-    assert 'cfg' in captured, "MainAgent was not invoked by CLI"
+    assert 'cfg' in captured, "Entry agent factory was not invoked by CLI"
     prompts = getattr(captured['cfg'], 'prompts', None)
     assert prompts is not None, "captured config has no prompts attribute"
 

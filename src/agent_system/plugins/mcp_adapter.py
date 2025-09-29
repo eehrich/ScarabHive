@@ -198,6 +198,23 @@ class PluginMCPRegistry:
                 plugin_config['parent_llm'] = parent_llm
                 logger.debug(f"Injected parent_llm configuration into plugin {name}")
         
+        # Ensure generic Agent plugin factories receive a full AgentConfig via parent_agent_config.
+        # bootstrap() already injects this, but the CLI MCP adapter path builds its own instances.
+        try:  # pragma: no cover - defensive
+            if 'parent_agent_config' not in plugin_config and parent_config is not None:
+                try:
+                    from agent_system.config.models import AgentConfig  # local import
+                    if isinstance(parent_config, AgentConfig):
+                        plugin_config['parent_agent_config'] = parent_config
+                    elif isinstance(parent_config, dict):
+                        # Attempt to reconstruct AgentConfig from dict (expects llm_system key)
+                        if 'llm_system' in parent_config:
+                            plugin_config['parent_agent_config'] = AgentConfig.model_validate(parent_config)  # type: ignore[arg-type]
+                except Exception:
+                    logger.debug(f"Could not reconstruct AgentConfig for plugin {name} parent injection")
+        except Exception:
+            pass
+
         try:
             logger.info(f"MCP registry creating plugin {name} with config: {plugin_config}")
             plugin_server = factory(name, plugin_config, ssl_verify=True)

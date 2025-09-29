@@ -118,5 +118,17 @@ class AgentConfig(BaseModel):
     prompts: PromptsConfig = PromptsConfig()
     context: ContextConfig = ContextConfig()
     cancellation: CancellationConfig = CancellationConfig()
+    # Per-agent allow list of tools (patterns). Patterns support forms like
+    #   plugin_name            -> allow the plugin (all its functions)
+    #   plugin_name/*          -> allow the plugin (explicit wildcard)
+    #   plugin_name/function   -> allow a single function of a multi-tool plugin
+    #   external_server/*      -> allow all tools from an external MCP server
+    #   external_server/tool   -> allow a specific external MCP server tool
+    # Wildcards using fnmatch syntax (*) are supported across segments.
+    allowed_tools: list[str] | None = None
+    # Deny list patterns applied after allow list (if any) to subtract tools
+    blocked_tools: list[str] | None = None
+    # Name of the agent server to expose as primary entry point (default: 'agent').
+    entry_agent: str | None = None
     # Maximum planning/tool-calling steps before stopping
     max_steps: int = Field(default=6, ge=1)

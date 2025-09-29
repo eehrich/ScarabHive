@@ -131,34 +131,46 @@ class BasicAgent(Agent):
     async def _list_available_tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List all available tools that the agent can access (simplified: only names and descriptions)."""
         try:
-            # Extract status for progress updates
             status = params.get("_status")
-                        
-            # Get tools from all registered servers in the registry
-            all_tools = []
-            
+            all_tools: list[Dict[str, Any]] = []
+
+            # Determine allow-list patterns (may be absent)
+            try:
+                allowed_patterns = getattr(self.agent_config, "allowed_tools", None)
+            except Exception:
+                allowed_patterns = None
+            # Guard against non-iterable / MagicMock truthy values in tests
+            if allowed_patterns and not isinstance(allowed_patterns, (list, tuple, set)):
+                allowed_patterns = None
+
             if self.registry:
-                server_names = self.registry.list()
-                                
-                for server_name in server_names:
+                server_names = list(self.registry.list())
+
+                # Apply server-level filtering when allow patterns defined
+                if allowed_patterns:
+                    filtered_server_names = [s for s in server_names if self._is_tool_allowed(s, allowed_patterns)]
+                else:
+                    filtered_server_names = server_names
+
+                for server_name in filtered_server_names:
                     try:
                         server = self.registry.get(server_name)
-                        if server and hasattr(server, 'get_tools'):
-                            tools = server.get_tools()
-                            for tool in tools:
-                                tool_info = {
-                                    "name": tool.get("function", {}).get("name", "unknown"),
-                                    "description": tool.get("function", {}).get("description", "")
-                                }
-                                all_tools.append(tool_info)
+                        if not server or not hasattr(server, 'get_tools'):
+                            continue
+                        tools = server.get_tools()
+                        for tool in tools:
+                            name = tool.get("function", {}).get("name", "unknown")
+                            description = tool.get("function", {}).get("description", "")
+                            # If patterns include plugin/* we already filtered by server_name; if more granular
+                            # function-level filtering is desired later we can extend here.
+                            all_tools.append({"name": name, "description": description})
                     except Exception as e:
                         logger.debug(f"Could not get tools from server '{server_name}': {e}")
-            
+
             if status:
                 await status.end(f"Listed available tools ({len(all_tools)} tools)")
-            
+
             return all_tools
-            
         except Exception as e:
             logger.error(f"Failed to list tools: {e}")
             return []

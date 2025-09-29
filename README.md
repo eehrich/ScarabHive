@@ -16,6 +16,19 @@ This README is a concise developer and user guide matching this repository layou
 - Ticketsystem/Backlog: `backlog.md`
 - Python-ProjectSetup: `pyenvironment.toml`
 
+## Features
+* Modular agent core with MCP integration (consume & expose tool servers)
+* Pluggable plugin system (local + external MCP servers)
+* Backlog & status management
+* Context window management (summarization / truncation strategies)
+* Streaming events API (SSE)
+* Per-agent tool allow / deny lists (secure default: deny-all until explicitly allowed)
+* Configurable entry agent (no more hard-coded MainAgent; uses `entry_agent` setting)
+* Diagnostics endpoints for tool filtering (`/agents/{name}/allowed-tools[ /debug]`)
+* Structured configuration with include support and environment overrides
+* Test-first design with extensive pytest suite
+* Simplified CLI entrypoint (legacy `cli_agent` alias removed; use the configured `entry_agent` name)
+
 ## Requirements
 - Python 3.11+
 - Git (for development)
@@ -172,6 +185,56 @@ Plugin discovery can be customized via environment variables:
 - `AGENT_PLUGIN_DIR`: Single directory to search for plugins (overrides config).
 - `AGENT_PLUGIN_DIRS`: Comma-separated list of directories (overrides config).
 - If not set, falls back to `mcp.plugin_dirs` in config, then repository `plugins/` directory.
+
+### Selecting the Entry Agent (Dynamic)
+
+You can choose which agent instance acts as the primary entry point for `/run` and `/events` by setting `entry_agent` in the top-level config (e.g. `config/agent.yaml`):
+
+```yaml
+entry_agent: basic_agent
+```
+
+Behavior:
+* The named agent server must either be defined under `servers:` (plugin / custom) or will be instantiated as a core `Agent`.
+* An alias `agent` is automatically registered for backward compatibility.
+* Legacy `MainAgent` has been deprecated and replaced by this mechanism.
+* Legacy `cli_agent` alias has been removed. Scripts that previously targeted `cli_agent` should now target the configured `entry_agent` (e.g. `basic_agent`). Remove any profile overrides keyed by `cli_agent` / `cli_agent_summarizer` from `agent_llm_profiles`.
+
+### Per-Agent Tool Allow / Deny Lists
+
+Each agent has zero tool access unless explicitly granted through `allowed_tools` patterns. (Secure by default — no silent broad access.)
+
+Example:
+
+```yaml
+servers:
+  basic_agent:
+    type: basic_agent
+    agent_config:
+      allowed_tools:
+        - "web_scraper/*"      # all tools from web_scraper plugin/server
+        - "datetime.*"         # any datetime.* tool
+      blocked_tools:
+        - "datetime.legacy_*"  # remove deprecated subset
+```
+
+Pattern rules:
+* `plugin` or `plugin/*` — all tools from that plugin/server
+* `plugin.function` — a single tool function
+* `external_server/*` — all tools from an external MCP server
+* `*` — allow everything (only for experimentation; tighten later)
+* `blocked_tools` is applied after allow filtering to subtract matches
+
+Diagnostics:
+* `GET /agents` — list registered agents
+* `GET /agents/{name}/allowed-tools` — effective allowed list (may be empty if deny-all)
+* `GET /agents/{name}/allowed-tools/debug` — includes which patterns matched or were skipped
+
+Migration tips:
+1. Start with `allowed_tools: ["*"]` while auditing actual tool usage.
+2. Narrow to specific plugins / functions.
+3. Add `blocked_tools` for carve-outs (experimental / unsafe tools).
+4. Use the `/debug` endpoint to validate pattern intent.
 
 ## Plugins
 Plugins live under `plugins/<name>/` and should expose a package-style layout with `plugin.py` and optional `plugin.yaml` for metadata. The loader also supports legacy single-file plugins.

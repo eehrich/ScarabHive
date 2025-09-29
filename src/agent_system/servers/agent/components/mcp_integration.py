@@ -59,6 +59,16 @@ class MCPIntegrationManager:
         """Get all available tools including external MCP tools."""
         available_tools = plugin_tools.copy()
 
+        # Also treat plugin tool server names themselves as callable namespaces so high-level
+        # patterns like '*' or 'plugin' or 'plugin/*' can match even if no external tools expanded yet.
+        try:
+            if self.mcp_integration and self.mcp_integration.initialized:
+                for srv in self.mcp_integration.plugin_registry.list_servers():
+                    if srv not in available_tools:
+                        available_tools.append(srv)
+        except Exception:
+            pass
+
         if self.mcp_integration and self.mcp_integration.initialized:
             try:
                 all_tools = await self.mcp_integration.list_all_tools()

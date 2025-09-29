@@ -101,7 +101,7 @@ class TestStatusBusHierarchy:
         
         # Publish parent first
         parent_event = StatusEvent(
-            server="main_agent",
+            server="root_agent",
             request_id="main_001",
             message="Parent process"
         )
@@ -180,7 +180,7 @@ class TestSSEHierarchy:
         
         # Publish hierarchical events
         await status_bus.publish(StatusEvent(
-            server="main_agent",
+            server="root_agent",
             request_id="task_001",
             message="Main task"
         ))
@@ -230,7 +230,7 @@ class TestPublishStatusHierarchy:
         get_status_bus().add_handler(handler)
         
         # Publish hierarchical statuses
-        await publish_status("main_agent", "Starting process", "workflow_001")
+        await publish_status("root_agent", "Starting process", "workflow_001")
         await publish_status("coordinator", "Delegating tasks", "workflow_001_001")
         await publish_status("worker_a", "Processing A", "workflow_001_001_001")
         await publish_status("worker_b", "Processing B", "workflow_001_001_002")

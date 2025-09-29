@@ -19,7 +19,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 # Response is not needed here; FastAPI/Starlette response classes are imported where required
 
-from ..servers.agent.main_agent import MainAgent
 from ..config.loader import load_config
 from ..config.models import AgentConfig
 from api.endpoints import router as api_router
@@ -240,11 +239,87 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         os.environ.setdefault("CURL_CA_BUNDLE", "")
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
 
-    # Initialize agent and registry
+    # Initialize agent registry and bootstrap plugin servers
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
-    agent = MainAgent("main_agent", config, registry)
-    registry.register("agent", agent)
+
+    # Determine desired entry agent name (configured or default)
+    entry_name = getattr(config, 'entry_agent', None) or 'agent'
+
+    # If an agent with that key already exists (plugin provided), reuse it.
+    selected_agent = None
+    try:
+        if entry_name in registry.list():
+            candidate = registry.get(entry_name)
+            from ..servers.agent.server import Agent as _Agent
+            if isinstance(candidate, _Agent):
+                selected_agent = candidate
+                # Apply server-level overrides (allowed_tools, blocked_tools, max_steps) without mutating shared config
+                try:  # pragma: no cover - defensive
+                    server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
+                    overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
+                    import copy
+                    if isinstance(overrides, dict) and overrides:
+                        needs_copy = any(k in overrides for k in ('allowed_tools', 'blocked_tools')) or 'max_steps' in server_cfg
+                        if needs_copy:
+                            new_cfg = copy.deepcopy(selected_agent.agent_config)
+                            if overrides.get('allowed_tools') is not None and getattr(new_cfg, 'allowed_tools', None) is None:
+                                try:
+                                    new_cfg.allowed_tools = list(overrides.get('allowed_tools') or [])  # type: ignore[attr-defined]
+                                except Exception:
+                                    pass
+                            if overrides.get('blocked_tools') is not None and getattr(new_cfg, 'blocked_tools', None) is None:
+                                try:
+                                    new_cfg.blocked_tools = list(overrides.get('blocked_tools') or [])  # type: ignore[attr-defined]
+                                except Exception:
+                                    pass
+                            if 'max_steps' in server_cfg and isinstance(server_cfg.get('max_steps'), int):
+                                try:
+                                    new_cfg.max_steps = int(server_cfg.get('max_steps'))  # type: ignore[attr-defined]
+                                except Exception:
+                                    pass
+                            selected_agent.agent_config = new_cfg  # type: ignore[attr-defined]
+                            logging.getLogger(__name__).debug("Applied entry agent server overrides for %s", entry_name)
+                except Exception:
+                    logging.getLogger(__name__).debug("Failed to apply entry agent overrides for %s", entry_name)
+    except Exception:
+        selected_agent = None
+
+    # If not present, create a new core Agent server under the desired name (attach to main registry)
+    if selected_agent is None:
+        from ..servers.agent.server import Agent as CoreAgent
+        try:
+            server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
+            server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
+            if isinstance(server_agent_cfg, dict):
+                if server_agent_cfg.get('allowed_tools') and not getattr(config, 'allowed_tools', None):
+                    try:
+                        config.allowed_tools = list(server_agent_cfg.get('allowed_tools'))  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                if server_agent_cfg.get('blocked_tools') and not getattr(config, 'blocked_tools', None):
+                    try:
+                        config.blocked_tools = list(server_agent_cfg.get('blocked_tools'))  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        selected_agent = CoreAgent(entry_name, config, registry, {}, ssl_verify=config.network.ssl_verify)
+        registry.register(entry_name, selected_agent)
+    else:
+        # Ensure reused agent is bound to current registry (in case plugin created with isolated one)
+        try:
+            selected_agent.registry = registry  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    # Backward compatibility: also register 'agent' alias if different name
+    if entry_name != 'agent':
+        try:
+            registry.register('agent', selected_agent)
+        except Exception:
+            pass
+    agent = selected_agent
 
     # Store registry and config globally for MCP endpoint access
     global _app_registry, _app_config
@@ -282,6 +357,93 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/config")
     def get_config():
         return config.model_dump()
+
+    @app.get("/agents")
+    def list_agents():
+        """List registered agent-like servers (those extending Agent)."""
+        agents = []
+        try:
+            for name in _app_registry.list():  # type: ignore[attr-defined]
+                try:
+                    srv = _app_registry.get(name)  # type: ignore[attr-defined]
+                    from ..servers.agent.server import Agent as _Agent
+                    if isinstance(srv, _Agent):
+                        agents.append(name)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return {"agents": agents}
+
+    @app.get("/agents/{agent_name}/allowed-tools")
+    async def get_agent_allowed_tools(agent_name: str):
+        """Return the effective allowed tools list for an agent after pattern filtering."""
+        try:
+            srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+        except Exception:
+            return {"error": "agent not found", "agent": agent_name}
+        from ..servers.agent.server import Agent as _Agent
+        if not isinstance(srv, _Agent):
+            return {"error": "not an agent", "agent": agent_name}
+        # Use unified discovery so API shows same filtered set as runtime
+        try:
+            available = await srv.list_allowed_tool_servers()
+            patterns = getattr(srv.agent_config, 'allowed_tools', None)
+            return {"agent": agent_name, "patterns": patterns or [], "available": sorted(available), "effective": sorted(available)}
+        except Exception as e:
+            return {"agent": agent_name, "error": str(e)}
+
+    @app.get("/agents/{agent_name}/allowed-tools/debug")
+    async def get_agent_allowed_tools_debug(agent_name: str):
+        """Return detailed pattern match diagnostics for an agent's allowed tools.
+
+        Provides for each available tool server which allow pattern(s) matched.
+        If no allow list configured, returns an informational note.
+        """
+        try:
+            srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+        except Exception:
+            return {"error": "agent not found", "agent": agent_name}
+        from ..servers.agent.server import Agent as _Agent
+        if not isinstance(srv, _Agent):
+            return {"error": "not an agent", "agent": agent_name}
+        try:
+            patterns = getattr(srv.agent_config, 'allowed_tools', None)
+            available = await srv.list_allowed_tool_servers() if patterns else await srv.list_allowed_tool_servers()
+            diagnostics = []
+            if patterns:
+                for tool in available:
+                    matched_by = []
+                    for pat in patterns:
+                        if srv._is_tool_allowed(tool, [pat]):  # type: ignore[attr-defined]
+                            matched_by.append(pat)
+                    diagnostics.append({"tool": tool, "matched_patterns": matched_by})
+            else:
+                diagnostics = [{"tool": t, "matched_patterns": ["<implicit:all>"]} for t in available]
+            return {"agent": agent_name, "patterns": patterns or [], "diagnostics": diagnostics}
+        except Exception as e:
+            return {"agent": agent_name, "error": str(e)}
+
+    @app.get("/agents/{agent_name}/system-prompt")
+    async def get_agent_system_prompt(agent_name: str):
+        """Return the currently rendered system & tools prompt for the agent.
+
+        Renders on demand using the same logic as execution, including:
+          - allowed tool filtering
+          - max_steps (minus one for planning budget inside prompt)
+          - datetime context (if enabled)
+        """
+        try:
+            srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+        except Exception:
+            return {"error": "agent not found", "agent": agent_name}
+        from ..servers.agent.server import Agent as _Agent
+        if not isinstance(srv, _Agent):
+            return {"error": "not an agent", "agent": agent_name}
+        try:
+            return await srv.get_current_system_prompt()
+        except Exception as e:  # pragma: no cover - defensive
+            return {"error": str(e), "agent": agent_name}
 
     @app.post("/run")
     async def run(task: str, traceparent: Optional[str] = Header(default=None)):
