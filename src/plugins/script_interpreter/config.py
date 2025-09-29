@@ -32,7 +32,7 @@ class ScriptInterpreterConfig:
             self.allowed_functions = [
                 # Basic math functions
                 "abs", "min", "max", "round", "sum",
-                "int", "float", "str", "bool", "type",
+                "int", "float", "str", "bool", "type", "isinstance",
                 "len", "range", "sorted", "enumerate",
                 # Advanced math functions
                 "sqrt", "sin", "cos", "tan", "log", "log10", "exp", "floor", "ceil", "pow", 

@@ -158,8 +158,8 @@ class TestScriptInterpreterBasic:
         assert len(tools) >= 2  # eval, reset
         
         tool_names = [tool["function"]["name"] for tool in tools]
-        assert "execute_python" in tool_names
-        assert "reset_sandbox" in tool_names
+        assert "execute_python_sandbox" in tool_names
+        assert "reset_python_sandbox" in tool_names
 
     @pytest.mark.asyncio
     async def test_server_eval_tool(self):
@@ -167,7 +167,7 @@ class TestScriptInterpreterBasic:
         server = ScriptInterpreterServer("test", {}, True)
         
         mock_status = AsyncMock()
-        result = await server.call("execute_python", {"code": "2 + 3", "_status": mock_status})
+        result = await server.call("execute_python_sandbox", {"code": "2 + 3", "_status": mock_status})
         
         assert "error" not in result
         assert "result" in result
@@ -179,10 +179,10 @@ class TestScriptInterpreterBasic:
         
         # Execute something first
         mock_status = AsyncMock()
-        await server.call("execute_python", {"code": "x = 42", "_status": mock_status})
+        await server.call("execute_python_sandbox", {"code": "x = 42", "_status": mock_status})
         
         # Reset
-        result = await server.call("reset_sandbox", {"_status": mock_status})
+        result = await server.call("reset_python_sandbox", {"_status": mock_status})
         assert "error" not in result
         assert "result" in result
 
@@ -472,8 +472,8 @@ class TestSchemaCompliance:
         assert len(tools) >= 2  # Should have eval, reset at minimum
         
         tool_names = [tool["function"]["name"] for tool in tools]
-        assert "execute_python" in tool_names
-        assert "reset_sandbox" in tool_names
+        assert "execute_python_sandbox" in tool_names
+        assert "reset_python_sandbox" in tool_names
 
     def test_eval_tool_schema(self):
         """Test eval tool schema structure."""
@@ -484,7 +484,7 @@ class TestSchemaCompliance:
         
         eval_tool = None
         for tool in schema["tools"]:
-            if tool["function"]["name"] == "execute_python":
+            if tool["function"]["name"] == "execute_python_sandbox":
                 eval_tool = tool
                 break
         
@@ -503,7 +503,7 @@ class TestSchemaCompliance:
         
         reset_tool = None
         for tool in schema["tools"]:
-            if tool["function"]["name"] == "reset_sandbox":
+            if tool["function"]["name"] == "reset_python_sandbox":
                 reset_tool = tool
                 break
         
@@ -549,7 +549,7 @@ class TestMCPServerIntegration:
         server = ScriptInterpreterServer("test", {}, True)
         
         mock_status = AsyncMock()
-        result = await server.call("execute_python", {"code": "1 + 1", "_status": mock_status})
+        result = await server.call("execute_python_sandbox", {"code": "1 + 1", "_status": mock_status})
         
         assert isinstance(result, dict)
         assert "result" in result or "error" in result
@@ -560,7 +560,7 @@ class TestMCPServerIntegration:
         server = ScriptInterpreterServer("test", {}, True)
         
         mock_status = AsyncMock()
-        result = await server.call("execute_python", {"code": "2 * 3", "_status": mock_status})
+        result = await server.call("execute_python_sandbox", {"code": "2 * 3", "_status": mock_status})
         
         assert "result" in result or "error" in result
 
@@ -578,7 +578,7 @@ class TestMCPServerIntegration:
         
         default_action = server.get_default_action()
         assert isinstance(default_action, str)
-        assert default_action == "execute_python"
+        assert default_action == "execute_python_sandbox"
 
     @pytest.mark.asyncio
     async def test_mcpserver_handles_unknown_tool(self):

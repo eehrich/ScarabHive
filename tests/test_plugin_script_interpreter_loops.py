@@ -43,7 +43,7 @@ else:
     result = "small"
 print("Result:", result)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Result: big" in result["result"]
@@ -61,7 +61,7 @@ else:
     result = "small"
 print("Result:", result)
 """
-    result1 = await server.call("execute_python", {"code": code1, "_status": mock_status})
+    result1 = await server.call("execute_python_sandbox", {"code": code1, "_status": mock_status})
     assert "Result: small" in result1["result"]
 
 
@@ -73,7 +73,7 @@ temp = 25.5
 category = "hot" if temp > 25 else "cool"
 print("Category:", category)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Category: hot" in result["result"]
@@ -89,7 +89,7 @@ for num in numbers:
     total = total + num
 print("Total:", total)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Total: 15" in result["result"]
@@ -104,7 +104,7 @@ for i in range(5):
     squares.append(i * i)
 print("Squares:", squares)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Squares: [0, 1, 4, 9, 16]" in result["result"]
@@ -121,7 +121,7 @@ for num in numbers:
         evens.append(num)
 print("Even numbers:", evens)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Even numbers: [2, 4, 6]" in result["result"]
@@ -135,7 +135,7 @@ names = ["Alice", "Bob", "Charlie"]
 for i in range(len(names)):
     print("Index", i, ":", names[i])
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Index 0 : Alice" in result["result"]
@@ -163,7 +163,7 @@ for i in range(len(times)):
     bar = "#" * length
     print(times[i], str(round(temp, 1)) + "°C", bar)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "ASCII Chart:" in result["result"]
@@ -182,7 +182,7 @@ for i in range(1000):  # Should complete quickly
     count = count + 1
 print("Count:", count)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Count: 1000" in result["result"]
@@ -197,7 +197,7 @@ while count < 5:
     count = count + 1
 print("Final count:", count)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Final count: 5" in result["result"]
@@ -231,7 +231,7 @@ print(result1)
 fib_seq = fibonacci(8)
 print(fib_seq)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -268,7 +268,7 @@ number = -5
 status_msg = f"Number {number} is {get_status(number)}"
 print(status_msg)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result

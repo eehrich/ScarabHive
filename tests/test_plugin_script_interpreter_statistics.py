@@ -40,7 +40,7 @@ result2 = mean([10.5, 20.5])
 print("Mean of [1,2,3,4,5]:", result1)
 print("Mean of [10.5,20.5]:", result2)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Mean of [1,2,3,4,5]: 3.0" in result["result"]
@@ -58,7 +58,7 @@ median_even = median(even_list)
 print("Median odd:", median_odd)
 print("Median even:", median_even)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Median odd: 5" in result["result"]
@@ -73,7 +73,7 @@ data = [1, 2, 2, 3, 4, 4, 4, 5]
 mode_val = mode(data)
 print("Mode:", mode_val)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Mode: 4" in result["result"]
@@ -87,7 +87,7 @@ data = [2, 4, 4, 4, 5, 5, 7, 9]
 stdev_val = stdev(data)
 print("StdDev:", round(stdev_val, 2))
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "StdDev:" in result["result"]
@@ -108,7 +108,7 @@ print("Max:", round(maxv, 1), "°C")
 print("Mean:", round(meanv, 1), "°C")
 print("Median:", round(medianv, 1), "°C")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Min: 7.8 °C" in result["result"]
@@ -121,7 +121,7 @@ print("Median:", round(medianv, 1), "°C")
 async def test_empty_list_errors(server, mock_status):
     """Test that statistics functions handle empty lists gracefully."""
     code = "mean([])"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Error can be a dict or string from SafeExecutor
@@ -133,7 +133,7 @@ async def test_empty_list_errors(server, mock_status):
 async def test_stdev_insufficient_data(server, mock_status):
     """Test stdev with insufficient data points."""
     code = "stdev([1])"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Error can be a dict or string from SafeExecutor

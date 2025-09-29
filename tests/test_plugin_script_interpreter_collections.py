@@ -56,7 +56,7 @@ popped_index = numbers.pop(1)
 print(f"Popped index 1: {popped_index}, List: {numbers}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Original: [1, 2, 3]" in result["result"]
@@ -86,7 +86,7 @@ except ValueError:
     print("ValueError caught for missing index")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Count of 2: 3" in result["result"]
@@ -118,7 +118,7 @@ data_copy.clear()
 print(f"After clear: {data_copy}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Original: [1, 2, 3, 2, 4]" in result["result"]
@@ -150,7 +150,7 @@ numbers_rev_sort.sort(reverse=True)
 print(f"Reverse sorted: {numbers_rev_sort}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Original: [3, 1, 4, 1, 5, 9, 2]" in result["result"]
@@ -179,7 +179,7 @@ print(f"Get 'a': {get_a}")
 print(f"Get 'missing': {get_missing}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Keys: ['a', 'b', 'c']" in result["result"]
@@ -212,7 +212,7 @@ data_copy = data.copy()
 print(f"Copy keys: {sorted(data_copy.keys())}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "After update:" in result["result"]
@@ -245,7 +245,7 @@ data_copy.clear()
 print(f"After clear: {data_copy}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Popped 'b': 2" in result["result"]
@@ -276,7 +276,7 @@ set1.discard(999)  # Should not raise error
 print(f"After discard(999): {sorted(list(set1))}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Set 1: [1, 2, 3, 4]" in result["result"]
@@ -303,7 +303,7 @@ print(f"Difference: {difference_result}")
 print(f"Symmetric diff: {sym_diff_result}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Union: [1, 2, 3, 4, 5, 6]" in result["result"]
@@ -329,7 +329,7 @@ print(f"Is superset: {is_superset}")
 print(f"Is disjoint: {is_disjoint}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Is subset: True" in result["result"]
@@ -379,7 +379,7 @@ print(f"Skill counts: {skill_counts}")
 print(f"Names by age: {names_by_age}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "go" in result["result"]
@@ -435,7 +435,7 @@ except ValueError as e:
     print(f"Caught ValueError: {e}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     

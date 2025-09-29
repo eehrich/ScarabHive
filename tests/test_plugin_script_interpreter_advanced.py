@@ -34,7 +34,7 @@ print(f"Evens: {evens}")
 matrix = [[i*j for j in range(3)] for i in range(3)]
 print(f"Matrix: {matrix}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -60,7 +60,7 @@ names = ["Alice", "Bob", "Charlie"]
 name_lengths = {name: len(name) for name in names}
 print(f"Name lengths: {name_lengths}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -91,7 +91,7 @@ numbers = [1, 2, 2, 3, 3, 3, 4]
 unique = set(numbers)
 print(f"Unique: {unique}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -126,7 +126,7 @@ def get_name_age():
 name, age = get_name_age()
 print(f"Person: {name}, age {age}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -152,7 +152,7 @@ print(f"Chain result: a={a}, b={b}")
 p = q = (100, 200)
 print(f"Tuple assignment: p={p}, q={q}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -182,7 +182,7 @@ print(f"Squared numbers: {squared}")
 abs_diff = lambda a, b: a - b if a > b else b - a
 print(f"Absolute difference |3-8|: {abs_diff(3, 8)}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -225,7 +225,7 @@ def safe_operation(a, b):
 print(f"Safe op 1: {safe_operation(10, 2)}")
 print(f"Safe op 2: {safe_operation(10, 0)}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -272,7 +272,7 @@ nums, letters = [x for x, y in pairs], [y for x, y in pairs]
 print(f"Numbers: {nums}")
 print(f"Letters: {letters}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -344,7 +344,7 @@ print(f"Class Average: {analysis['class_average']}")
 for name, data in analysis['detailed_report'].items():
     print(f"{name}: {data['grade']} ({data['average']}) - {data['status']}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result

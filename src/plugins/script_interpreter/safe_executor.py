@@ -22,7 +22,17 @@ class SafeExecutor:
     def __init__(self, config):
         self.config = config
         self.allowed_functions = set(config.allowed_functions)
-        self.variables = {}
+        # Initialize variables with built-in types for isinstance() usage
+        self.variables = {
+            'int': int,
+            'str': str,
+            'float': float,
+            'bool': bool,
+            'list': list,
+            'dict': dict,
+            'tuple': tuple,
+            'set': set,
+        }
         self.user_functions = {}  # Store user-defined functions
         self.output_buffer = []
         self.start_time = None
@@ -214,6 +224,12 @@ class SafeExecutor:
                 return type(args[0])
             else:
                 raise ValueError("type() takes exactly 1 argument")
+        elif func_name == "isinstance":
+            if len(args) == 2:
+                obj, class_or_tuple = args
+                return isinstance(obj, class_or_tuple)
+            else:
+                raise ValueError("isinstance() takes exactly 2 arguments")
         # Math constants
         elif func_name == "pi":
             if len(args) != 0:
@@ -360,7 +376,8 @@ class SafeExecutor:
         if isinstance(target, ast.Name):
             # Simple variable assignment with security check
             var_name = target.id
-            if var_name.startswith('_') or var_name in ['__builtins__', '__import__', 'eval', 'exec']:
+            # Allow single underscore '_' as throwaway variable, but block other underscore patterns
+            if (var_name.startswith('_') and var_name != '_') or var_name in ['__builtins__', '__import__', 'eval', 'exec']:
                 raise RuntimeError(f"Variable name '{var_name}' is not allowed")
             self.variables[var_name] = value
             
@@ -568,11 +585,20 @@ class SafeExecutor:
             if func_name.startswith('_') or func_name in ['__builtins__', '__import__', 'eval', 'exec']:
                 raise RuntimeError(f"Function name '{func_name}' is not allowed")
             
-            # Store function definition (AST node and parameter names)
+            # Store function definition (AST node and parameter names with defaults)
             param_names = [arg.arg for arg in node.args.args]
+            # Handle default values for parameters
+            defaults = []
+            if node.args.defaults:
+                # Evaluate default values
+                for default_node in node.args.defaults:
+                    defaults.append(self.eval_expression(default_node))
+            
             self.user_functions[func_name] = {
                 'node': node,
-                'params': param_names
+                'params': param_names,
+                'defaults': defaults,
+                'num_required': len(param_names) - len(defaults)  # number of required parameters
             }
             return None
             
@@ -1353,6 +1379,12 @@ class SafeExecutor:
                     return lambda other: obj.isdisjoint(other)
                 else:
                     raise RuntimeError(f"Method '{attr_name}' not allowed on set")
+            elif isinstance(obj, type):
+                # Allow access to common type attributes
+                if attr_name == "__name__":
+                    return obj.__name__
+                else:
+                    raise RuntimeError(f"Attribute '{attr_name}' not allowed on type")
             else:
                 raise RuntimeError(f"Attribute access not allowed on {type(obj).__name__}")
             
@@ -1421,18 +1453,31 @@ class SafeExecutor:
         func_def = self.user_functions[func_name]
         func_node = func_def['node']
         param_names = func_def['params']
+        defaults = func_def.get('defaults', [])
+        num_required = func_def.get('num_required', len(param_names))
         
-        # Check argument count
-        if len(args) != len(param_names):
-            raise RuntimeError(f"Function '{func_name}' takes {len(param_names)} arguments but {len(args)} were given")
+        # Check argument count - must have at least required args, at most total params
+        if len(args) < num_required or len(args) > len(param_names):
+            if defaults:
+                raise RuntimeError(f"Function '{func_name}' takes {num_required}-{len(param_names)} arguments but {len(args)} were given")
+            else:
+                raise RuntimeError(f"Function '{func_name}' takes {len(param_names)} arguments but {len(args)} were given")
         
         # Save current variable state
         saved_vars = self.variables.copy()
         
         try:
             # Set function parameters as local variables
-            for param_name, arg_value in zip(param_names, args):
-                self.variables[param_name] = arg_value
+            # First set provided arguments
+            for i, arg_value in enumerate(args):
+                self.variables[param_names[i]] = arg_value
+            
+            # Then set default values for remaining parameters
+            if len(args) < len(param_names):
+                for i in range(len(args), len(param_names)):
+                    default_index = i - num_required
+                    if default_index >= 0 and default_index < len(defaults):
+                        self.variables[param_names[i]] = defaults[default_index]
             
             # Execute function body
             for stmt in func_node.body:
@@ -1452,6 +1497,17 @@ class SafeExecutor:
     def reset(self):
         """Reset the executor state."""
         self.variables.clear()
+        # Re-add built-in types after clearing
+        self.variables.update({
+            'int': int,
+            'str': str,
+            'float': float,
+            'bool': bool,
+            'list': list,
+            'dict': dict,
+            'tuple': tuple,
+            'set': set,
+        })
         self.user_functions.clear()
         self.output_buffer.clear()
         self.start_time = None

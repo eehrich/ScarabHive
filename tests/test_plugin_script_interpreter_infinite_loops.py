@@ -47,7 +47,7 @@ while True:
     i += 1
     # This should timeout before completing
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error_message = extract_error_message(result).lower()
@@ -64,7 +64,7 @@ for i in range(10**9):  # 1 billion iterations
     total += i
 print(f"Total: {total}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should either timeout or hit iteration limit
@@ -81,7 +81,7 @@ def recursive_function(n):
 
 result = recursive_function(0)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should timeout or hit recursion limit
@@ -97,7 +97,7 @@ async def test_infinite_recursion_with_lambda(server, mock_status):
 f = lambda x: f(x + 1)
 result = f(0)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error_message = extract_error_message(result).lower()
@@ -115,7 +115,7 @@ for i in range(10000):
             total += 1
 print(f"Total: {total}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error_message = extract_error_message(result).lower()
@@ -130,7 +130,7 @@ async def test_list_comprehension_infinite_behavior(server, mock_status):
 big_list = [i * 2 for i in range(10**7)]  # 10 million elements
 print(f"List length: {len(big_list)}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # This should either work (if memory allows) or timeout/fail gracefully
     if "error" in result:
@@ -150,7 +150,7 @@ import itertools  # This should fail due to import restrictions anyway
 gen = (i for i in itertools.count())  # Infinite generator
 result = sum(itertools.islice(gen, 10**6))  # Try to sum first million
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail due to import restrictions or timeout
@@ -168,7 +168,7 @@ while x > 0:
     if x > 1000000:
         break  # Safety break, but should timeout before this
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should either timeout or complete with the break
     if "error" in result:
@@ -195,7 +195,7 @@ def function_b(n):
 
 result = function_a(100)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error_message = extract_error_message(result).lower()
@@ -220,7 +220,7 @@ while n > 0:
 print(f"Sum 1-999: {total}")
 print(f"10 factorial: {factorial}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -248,7 +248,7 @@ fact_10 = factorial(10)
 print(f"Fibonacci(10): {fib_10}")
 print(f"Factorial(10): {fact_10}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -267,7 +267,7 @@ for i in range(10000):  # This might use too much memory
     
 print(f"String length: {len(base_string)}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # This might timeout, fail due to memory, or succeed depending on system
     if "error" in result:

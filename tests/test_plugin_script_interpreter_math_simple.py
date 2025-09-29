@@ -43,7 +43,7 @@ print(f"Pi: {pi_val}")
 print(f"E: {e_val}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Pi: 3.141592" in result["result"]
@@ -64,7 +64,7 @@ print(f"floor(4.7) = {result_floor}")
 print(f"ceil(4.2) = {result_ceil}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "sqrt(16) = 4.0" in result["result"]
@@ -85,7 +85,7 @@ print(f"cos(0) = {cos_0}")
 print(f"tan(0) = {tan_0}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "sin(0) = 0.0" in result["result"]
@@ -106,7 +106,7 @@ print(f"log10(100) = {log10_100}")
 print(f"exp(1) = {exp_1}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "log(e) = 1.0" in result["result"]
@@ -122,7 +122,7 @@ pow_result = pow(2, 3)
 print(f"pow(2, 3) = {pow_result}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "pow(2, 3) = 8.0" in result["result"]
@@ -139,7 +139,7 @@ print(f"degrees(pi) = {degrees_pi}")
 print(f"radians(180) = {radians_180}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "degrees(pi) = 180.0" in result["result"]
@@ -162,7 +162,7 @@ distance = sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2))
 print(f"Distance from ({x1},{y1}) to ({x2},{y2}): {distance}")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Area of circle" in result["result"]
@@ -182,7 +182,7 @@ except ValueError as e:
     print("Correctly caught ValueError")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Correctly caught ValueError" in result["result"]

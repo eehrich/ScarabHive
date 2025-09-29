@@ -35,7 +35,7 @@ def mock_status():
 async def test_import_error_message(server, mock_status):
     """Test helpful error message for unsupported imports."""
     code = "import statistics"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -53,7 +53,7 @@ async def test_import_error_message(server, mock_status):
 async def test_fstring_now_works(server, mock_status):
     """Test that f-strings now work correctly with SafeExecutor."""
     code = 'print(f"Value: {42}")'
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -64,7 +64,7 @@ async def test_fstring_now_works(server, mock_status):
 async def test_if_expression_now_works(server, mock_status):
     """Test that if expressions now work correctly with SafeExecutor."""
     code = "result = 10 if True else 5"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed now with SafeExecutor
     assert "error" not in result
@@ -80,7 +80,7 @@ async def test_for_loop_now_works(server, mock_status):
 for i in range(3):
     print(i)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed now with SafeExecutor
     assert "error" not in result
@@ -95,7 +95,7 @@ async def test_security_violation_error(server, mock_status):
     # This would require modifying config to disallow a function
     # For now, test with a function that doesn't exist
     code = "unknown_function()"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
 
@@ -104,7 +104,7 @@ async def test_security_violation_error(server, mock_status):
 async def test_error_includes_available_functions(server, mock_status):
     """Test that error messages include available functions list."""
     code = "import os"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -125,7 +125,7 @@ y = 2
 print('missing quote
 z = 4"""
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -143,7 +143,7 @@ async def test_runtime_error_stack_trace(server, mock_status):
 
 divide_by_zero()"""
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -162,7 +162,7 @@ y = 2
 invalid_syntax =
 z = 4"""
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -187,7 +187,7 @@ def level3():
 
 level1()"""
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -209,7 +209,7 @@ def test_bitshift():
     return x >> 1
 test_bitshift()
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -230,7 +230,7 @@ def test_lshift():
     return x << 2
 test_lshift()
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -252,7 +252,7 @@ def calculate_sum(a, b):
 result = calculate_sum(5, 3)
 print(f"Sum: {result}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed - def is supported
     assert "error" not in result
@@ -269,7 +269,7 @@ for i in range(5):
     total += i
 print(f"Total: {total}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed - for loops are supported
     assert "error" not in result
@@ -286,7 +286,7 @@ while count < 3:
     print(f"Count: {count}")
     count += 1
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed - while loops are supported
     assert "error" not in result
@@ -308,7 +308,7 @@ elif x == 5:
 else:
     print("x is less than 5")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed - if statements are supported
     assert "error" not in result
@@ -324,7 +324,7 @@ x = [1, 2, 3]
 result = repr(x)
 print(result)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -343,7 +343,7 @@ data = [True, True, False]
 result = all(data)
 print(result)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -361,7 +361,7 @@ async def test_forbidden_builtin_globals_error(server, mock_status):
 g = globals()
 print(g)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -379,7 +379,7 @@ async def test_underscore_variable_name_error(server, mock_status):
 _private_var = 42
 print(_private_var)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -397,7 +397,7 @@ async def test_dunder_variable_name_error(server, mock_status):
 __special__ = "test"
 print(__special__)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -422,7 +422,7 @@ print(f"camel: {camelCase}")
 print(f"snake: {snake_case}")
 print(f"caps: {VAR123}")
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed - these variable names are allowed
     assert "error" not in result
@@ -442,7 +442,7 @@ y = 10
 result = x >> 2  # This should fail on line 4
 z = 20
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -467,7 +467,7 @@ async def test_comprehensive_error_structure(server, mock_status):
     code = """
 bad_var = _forbidden_name = 42
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -493,7 +493,7 @@ _bad_name = 5  # First error: bad variable name
 result = _bad_name >> 2  # Would be second error: bitshift
 print(result)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -519,7 +519,7 @@ def fibonacci_fast(n):
 
 result = fibonacci_fast(10)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -540,7 +540,7 @@ def outer_function(data):
 
 result = outer_function([1, 2, 3])
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -562,7 +562,7 @@ async def test_error_message_consistency(server, mock_status):
     ]
     
     for code, expected_message in test_cases:
-        result = await server.call("execute_python", {"code": code, "_status": mock_status})
+        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
         
         assert "error" in result, f"Expected error for code: {code}"
         error = result["error"]
@@ -613,7 +613,7 @@ print(f"Function result: {output}")
 print("Basic constructs work!")
 """
     
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # Should succeed without any errors
     assert "error" not in result, f"Unexpected error in basic Python constructs: {result.get('error', {})}"

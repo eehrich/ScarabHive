@@ -34,7 +34,7 @@ def mock_status():
 async def test_os_module_blocked(server, mock_status):
     """Test that os module import is blocked."""
     code = "import os"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -47,7 +47,7 @@ async def test_os_module_blocked(server, mock_status):
 async def test_subprocess_module_blocked(server, mock_status):
     """Test that subprocess module import is blocked."""
     code = "import subprocess"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -59,7 +59,7 @@ async def test_subprocess_module_blocked(server, mock_status):
 async def test_sys_module_blocked(server, mock_status):
     """Test that sys module import is blocked."""
     code = "import sys"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -71,7 +71,7 @@ async def test_sys_module_blocked(server, mock_status):
 async def test_file_operations_blocked_open(server, mock_status):
     """Test that file operations using open() are blocked."""
     code = "open('test.txt', 'w')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail because open() is not in allowed functions
@@ -84,7 +84,7 @@ async def test_file_operations_blocked_with(server, mock_status):
 with open('test.txt', 'w') as f:
     f.write('test')
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail because open() is not allowed
@@ -94,7 +94,7 @@ with open('test.txt', 'w') as f:
 async def test_exec_function_blocked(server, mock_status):
     """Test that exec() function is blocked."""
     code = "exec('print(\"dangerous\")')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # exec is not in allowed functions
@@ -104,7 +104,7 @@ async def test_exec_function_blocked(server, mock_status):
 async def test_eval_function_blocked(server, mock_status):
     """Test that eval() function is blocked."""
     code = "eval('1+1')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # eval is not in allowed functions
@@ -114,7 +114,7 @@ async def test_eval_function_blocked(server, mock_status):
 async def test_compile_function_blocked(server, mock_status):
     """Test that compile() function is blocked."""
     code = "compile('print(1)', '<string>', 'exec')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # compile is not in allowed functions
@@ -124,7 +124,7 @@ async def test_compile_function_blocked(server, mock_status):
 async def test_globals_function_blocked(server, mock_status):
     """Test that globals() function is blocked."""
     code = "globals()"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # globals is not in allowed functions
@@ -134,7 +134,7 @@ async def test_globals_function_blocked(server, mock_status):
 async def test_locals_function_blocked(server, mock_status):
     """Test that locals() function is blocked."""
     code = "locals()"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # locals is not in allowed functions
@@ -144,7 +144,7 @@ async def test_locals_function_blocked(server, mock_status):
 async def test_vars_function_blocked(server, mock_status):
     """Test that vars() function is blocked."""
     code = "vars()"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # vars is not in allowed functions
@@ -154,7 +154,7 @@ async def test_vars_function_blocked(server, mock_status):
 async def test_dir_function_blocked(server, mock_status):
     """Test that dir() function is blocked."""
     code = "dir()"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # dir is not in allowed functions
@@ -164,7 +164,7 @@ async def test_dir_function_blocked(server, mock_status):
 async def test_getattr_blocked(server, mock_status):
     """Test that getattr() function is blocked."""
     code = "getattr(int, '__name__')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # getattr is not in allowed functions
@@ -174,7 +174,7 @@ async def test_getattr_blocked(server, mock_status):
 async def test_setattr_blocked(server, mock_status):
     """Test that setattr() function is blocked."""
     code = "setattr(object(), 'test', 'value')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # setattr is not in allowed functions
@@ -184,7 +184,7 @@ async def test_setattr_blocked(server, mock_status):
 async def test_delattr_blocked(server, mock_status):
     """Test that delattr() function is blocked."""
     code = "delattr(object(), 'test')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # delattr is not in allowed functions
@@ -194,7 +194,7 @@ async def test_delattr_blocked(server, mock_status):
 async def test_hasattr_blocked(server, mock_status):
     """Test that hasattr() function is blocked."""
     code = "hasattr(int, '__name__')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # hasattr is not in allowed functions
@@ -204,7 +204,7 @@ async def test_hasattr_blocked(server, mock_status):
 async def test_import_inside_string_blocked(server, mock_status):
     """Test that imports hidden in strings are still blocked."""
     code = "__import__('os')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # __import__ is not in allowed functions
@@ -219,7 +219,7 @@ class Test:
         import os
         self.os = os
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail due to import inside class
@@ -236,7 +236,7 @@ def dangerous():
 # Call the function to trigger the security violation
 dangerous()
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail due to import inside function when called
@@ -246,7 +246,7 @@ dangerous()
 async def test_lambda_with_dangerous_operations(server, mock_status):
     """Test that lambda functions can't bypass security."""
     code = "f = lambda: __import__('os')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail due to __import__ call
@@ -256,7 +256,7 @@ async def test_lambda_with_dangerous_operations(server, mock_status):
 async def test_list_comprehension_security(server, mock_status):
     """Test that list comprehensions can't bypass security."""
     code = "[__import__('os') for i in range(1)]"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail due to __import__ in list comprehension
@@ -266,7 +266,7 @@ async def test_list_comprehension_security(server, mock_status):
 async def test_generator_expression_security(server, mock_status):
     """Test that generator expressions can't bypass security."""
     code = "list(__import__('os') for i in range(1))"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail due to __import__ in generator
@@ -276,7 +276,7 @@ async def test_generator_expression_security(server, mock_status):
 async def test_nested_function_calls_security(server, mock_status):
     """Test that nested dangerous function calls are blocked."""
     code = "print(exec('import os'))"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail due to exec call
@@ -297,7 +297,7 @@ for x in numbers:
         squared.append(x * x)
 print("Average: " + str(average) + ", Squared: " + str(squared))
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # This should work fine
     assert "error" not in result
@@ -316,7 +316,7 @@ joined = "-".join(words)
 # Use string concatenation instead of f-strings
 print("Upper: " + upper_text + ", Joined: " + joined)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # This should work fine
     assert "error" not in result
@@ -348,7 +348,7 @@ print("Float:", float("3.14"))
 print("Str:", str(123))
 print("Bool:", bool(1))
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # This should work fine
     assert "error" not in result
@@ -367,7 +367,7 @@ print("Median:", median(data))
 print("Mode:", mode([1, 1, 2, 2, 2, 3]))
 print("Stdev:", round(stdev(data), 2))
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # This should work fine
     assert "error" not in result
@@ -380,7 +380,7 @@ print("Stdev:", round(stdev(data), 2))
 async def test_io_module_blocked(server, mock_status):
     """Test that io module is blocked."""
     code = "import io"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -392,7 +392,7 @@ async def test_io_module_blocked(server, mock_status):
 async def test_pathlib_module_blocked(server, mock_status):
     """Test that pathlib module is blocked."""
     code = "import pathlib"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -404,7 +404,7 @@ async def test_pathlib_module_blocked(server, mock_status):
 async def test_shutil_module_blocked(server, mock_status):
     """Test that shutil module is blocked."""
     code = "import shutil"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -416,7 +416,7 @@ async def test_shutil_module_blocked(server, mock_status):
 async def test_socket_module_blocked(server, mock_status):
     """Test that socket module is blocked."""
     code = "import socket"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -428,7 +428,7 @@ async def test_socket_module_blocked(server, mock_status):
 async def test_urllib_module_blocked(server, mock_status):
     """Test that urllib module is blocked."""
     code = "import urllib"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -440,7 +440,7 @@ async def test_urllib_module_blocked(server, mock_status):
 async def test_requests_module_blocked(server, mock_status):
     """Test that requests module (if available) is blocked."""
     code = "import requests"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -452,7 +452,7 @@ async def test_requests_module_blocked(server, mock_status):
 async def test_threading_module_blocked(server, mock_status):
     """Test that threading module is blocked."""
     code = "import threading"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -464,7 +464,7 @@ async def test_threading_module_blocked(server, mock_status):
 async def test_multiprocessing_module_blocked(server, mock_status):
     """Test that multiprocessing module is blocked."""
     code = "import multiprocessing"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -476,7 +476,7 @@ async def test_multiprocessing_module_blocked(server, mock_status):
 async def test_pickle_module_blocked(server, mock_status):
     """Test that pickle module is blocked."""
     code = "import pickle"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -488,7 +488,7 @@ async def test_pickle_module_blocked(server, mock_status):
 async def test_dunder_import_blocked(server, mock_status):
     """Test that __import__ builtin is blocked."""
     code = "__import__('sys')"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail because __import__ is not in allowed functions
@@ -498,7 +498,7 @@ async def test_dunder_import_blocked(server, mock_status):
 async def test_builtins_access_blocked(server, mock_status):
     """Test that accessing builtins module is blocked."""
     code = "import builtins"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -510,7 +510,7 @@ async def test_builtins_access_blocked(server, mock_status):
 async def test_importlib_blocked(server, mock_status):
     """Test that importlib module is blocked."""
     code = "import importlib"
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     error = result["error"]
@@ -525,7 +525,7 @@ async def test_code_injection_via_string_blocked(server, mock_status):
 dangerous_code = "import os"
 exec(dangerous_code)
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail because exec() is not allowed
@@ -539,7 +539,7 @@ async def test_attribute_access_on_types_safe(server, mock_status):
 text = "hello"
 print("Length method exists:", hasattr(text, 'upper'))
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     assert "error" in result
     # Should fail because hasattr is not allowed
@@ -564,7 +564,7 @@ print("Total:", total)
 print("Average:", round(average, 2))
 print("Std Dev:", round(std_dev, 2))
 """
-    result = await server.call("execute_python", {"code": code, "_status": mock_status})
+    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
     
     # This should work fine
     assert "error" not in result
