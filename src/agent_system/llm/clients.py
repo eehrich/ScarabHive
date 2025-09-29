@@ -635,20 +635,21 @@ class OllamaNativeAsyncClient(LLMClient):
         return {"assistant": out}
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None) -> LLMClient:
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
+    - provider=openai_httpx: use HTTPX-based OpenAI client (better cancellation/timeout control).
     - provider=ollama: use Ollama (native or openai-compat) depending on mode.
     """
     import os
     logger = logging.getLogger(__name__)
     try:
-        logger.debug("make_llm called provider=%s model=%s openai_key_set=%s ollama_url=%s ollama_mode=%s request_timeout=%s ssl_verify=%s", provider, model, bool(openai_api_key), ollama_url, ollama_mode, request_timeout, ssl_verify)
+        logger.debug("make_llm called provider=%s model=%s openai_key_set=%s ollama_url=%s ollama_mode=%s request_timeout=%s ssl_verify=%s client_type=%s httpx_timeouts=%s", provider, model, bool(openai_api_key), ollama_url, ollama_mode, request_timeout, ssl_verify, client_type, httpx_timeouts)
     except Exception:
         pass
 
-    if provider == "openai":
+    if provider == "openai" or provider == "openai_httpx":
         # Prefer an explicit api key passed in, otherwise honor the
         # OPENAI_API_KEY environment variable.
         if not openai_api_key:
@@ -656,12 +657,41 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when provider=openai")
 
-        return OpenAIAsyncClient(
-            model=model,
-            api_key=openai_api_key,
-            timeout=float(request_timeout) if request_timeout else None,
-            verify=ssl_verify,
-        )
+        if provider == "openai_httpx":
+            # Use HTTPX-based client for better cancellation/timeout control
+            from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
+            
+            # Use provided httpx_timeouts or fallback to defaults
+            if httpx_timeouts:
+                timeout_config = HTTPXTimeoutConfig(
+                    connect=httpx_timeouts.get('connect', 10.0),
+                    read=httpx_timeouts.get('read', float(request_timeout) if request_timeout else 180.0),
+                    write=httpx_timeouts.get('write', 10.0),
+                    pool=httpx_timeouts.get('pool', 5.0)
+                )
+            else:
+                timeout_config = HTTPXTimeoutConfig(
+                    connect=10.0,
+                    read=float(request_timeout) if request_timeout else 180.0,
+                    write=10.0,
+                    pool=5.0
+                )
+            
+            return HTTPXOpenAIClient(
+                model=model,
+                api_key=openai_api_key,
+                timeout_config=timeout_config,
+                max_retries=3,
+                retry_backoff=1.0
+            )
+        else:
+            # Use standard OpenAI client
+            return OpenAIAsyncClient(
+                model=model,
+                api_key=openai_api_key,
+                timeout=float(request_timeout) if request_timeout else None,
+                verify=ssl_verify,
+            )
 
     if provider == "ollama":
         mode = (ollama_mode or "openai_compat").lower()

@@ -8,7 +8,7 @@ import logging
 from typing import Any, Dict
 from pathlib import Path
 
-from agent_system.config.models import AgentConfig, MCPConfig, LLMConfig
+from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
 from agent_system.servers.bootstrap import bootstrap_servers
@@ -65,40 +65,29 @@ def create_web_research_agent(
     # forcing duplication of openai_api_key or model in server-specific config.
     parent_llm = server_cfg.get("parent_llm") if isinstance(server_cfg, dict) else None
     
-    # Try new profile-based LLM resolution first
-    research_llm = None
+    # Use profile-based LLM resolution
     if isinstance(parent_llm, dict) and parent_llm.get('llm_system'):
-        from agent_system.llm.factory import resolve_llm_config_for_agent
-        
         try:
-            # Convert dictionary to AgentConfig-like object for resolve_llm_config_for_agent
-            from agent_system.config.models import LLMSystemConfig
-            from agent_system.config.models import LLMConfig as BaseLLMConfig
-            
             # Create AgentConfig from parent_llm dictionary
             temp_config = AgentConfig(
-                llm=BaseLLMConfig(**(parent_llm.get('llm', {}))),
                 llm_system=LLMSystemConfig(**(parent_llm.get('llm_system', {}))),
                 agent_llm_profiles=parent_llm.get('agent_llm_profiles', {}),
             )
             
-            # Use agent name to resolve LLM profile
+            # Use agent name to resolve LLM profile (just for logging)
+            from agent_system.llm.factory import resolve_llm_config_for_agent
             resolved_kwargs = resolve_llm_config_for_agent(temp_config, name)
             logger.info(f"WebResearchAgent '{name}' using LLM profile resolution: provider={resolved_kwargs['provider']}, model={resolved_kwargs['model']}")
-            research_llm = LLMConfig(**resolved_kwargs)
         except Exception as e:
             logger.error(f"Failed to resolve LLM profile for {name}: {e}")
             raise ValueError(f"WebResearchAgent requires proper LLM profile configuration: {e}")
-
-    # Profile resolution should have succeeded
-    if research_llm is None:
-        raise ValueError(f"WebResearchAgent LLM configuration failed for {name}")
+    else:
+        raise ValueError(f"WebResearchAgent requires LLM system configuration with profiles")
 
     # Allow server config to override max_steps (fall back to default 50)
     resolved_max_steps = int(server_cfg.get("max_steps", 50)) if isinstance(server_cfg, dict) else 50
 
     research_config = AgentConfig(
-        llm=research_llm,
         llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
         agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
         mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),
@@ -156,38 +145,25 @@ class WebResearchAgent(Agent):
 
     def __init__(self, name: str = "web_research_agent", config: dict | None = None, ssl_verify: bool = True):
         # Import needed models at the top
-        from agent_system.config.models import AgentConfig, MCPConfig, LLMConfig, LLMSystemConfig
+        from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig
         from agent_system.llm.factory import resolve_llm_config_for_agent
         
         server_cfg = config or {}
         parent_llm = server_cfg.get("parent_llm") if isinstance(server_cfg, dict) else None
         
-        # If parent config has the new LLM system, use it
+        # Parent config must have the new LLM system
         if isinstance(parent_llm, dict) and parent_llm.get("llm_system"):
             # Build a full config from parent_llm for LLM resolution
             temp_config = AgentConfig(
-                llm=LLMConfig(**(parent_llm.get("llm", {}))),
                 llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
                 agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
             )
             
-            # Resolve LLM config for this specific agent name
+            # Resolve LLM config for this specific agent name (for logging)
             llm_kwargs = resolve_llm_config_for_agent(temp_config, name)
-            
-            # Create LLMConfig from resolved kwargs
-            research_llm = LLMConfig(
-                provider=llm_kwargs["provider"],
-                model=llm_kwargs["model"],
-                openai_api_key=llm_kwargs["openai_api_key"],
-                ollama_url=llm_kwargs["ollama_url"],
-                context_window=llm_kwargs["context_window"],
-                ollama_mode=llm_kwargs["ollama_mode"],
-                request_timeout=llm_kwargs["request_timeout"],
-            )
             
             logger.info("WebResearchAgent '%s' using LLM profile resolution: provider=%s, model=%s", 
                        name, llm_kwargs["provider"], llm_kwargs["model"])
-        
         else:
             # Profile-based configuration is required
             raise ValueError(f"WebResearchAgent '{name}' requires LLM system configuration with profiles")
@@ -196,7 +172,6 @@ class WebResearchAgent(Agent):
         resolved_max_steps = int(server_cfg.get("max_steps", 50)) if isinstance(server_cfg, dict) else 50
 
         research_config = AgentConfig(
-            llm=research_llm,
             llm_system=LLMSystemConfig(**(parent_llm.get("llm_system", {}))),
             agent_llm_profiles=parent_llm.get("agent_llm_profiles", {}),
             mcp=MCPConfig(enabled_servers=["duckduckgo_search", "web_scraper"]),

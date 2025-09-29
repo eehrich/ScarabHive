@@ -1,0 +1,465 @@
+"""
+Comprehensive tests for HTTPX-based LLM client.
+
+Tests cover:
+1. Basic functionality (chat, chat_tools)
+2. Cancellation handling (immediate, during request) 
+3. Timeout behavior (connect, read, write)
+4. Error handling (HTTP errors, network errors)
+5. Retry logic (429 rate limits, 5xx errors)
+6. Performance comparison with OpenAI client
+"""
+
+import asyncio
+import pytest
+from unittest.mock import AsyncMock, Mock, patch
+
+import httpx
+
+from agent_system.llm.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
+from agent_system.core.cancellation import CancellationToken
+
+
+# Test fixtures and helper data
+def create_test_client():
+    """Create test client with short timeouts for fast tests."""
+    timeout_config = HTTPXTimeoutConfig(
+        connect=1.0,
+        read=2.0, 
+        write=1.0,
+        pool=0.5
+    )
+    return HTTPXOpenAIClient(
+        model="gpt-3.5-turbo",
+        api_key="test-key",
+        timeout_config=timeout_config,
+        max_retries=2,
+        retry_backoff=0.1
+    )
+
+def get_sample_messages():
+    """Sample message list for testing."""
+    return [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello, world!"}
+    ]
+
+def get_sample_tools():
+    """Sample tool list for testing."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather information",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string"}
+                    },
+                    "required": ["location"]
+                }
+            }
+        }
+    ]
+
+def get_mock_openai_response():
+    """Mock OpenAI API response."""
+    return {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 1677652288,
+        "model": "gpt-3.5-turbo",
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15
+        },
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello! How can I help you today?"
+                },
+                "finish_reason": "stop"
+            }
+        ]
+    }
+
+def get_mock_openai_tools_response():
+    """Mock OpenAI API response with tool calls."""
+    return {
+        "id": "chatcmpl-test-tools",
+        "object": "chat.completion", 
+        "created": 1677652288,
+        "model": "gpt-3.5-turbo",
+        "usage": {
+            "prompt_tokens": 15,
+            "completion_tokens": 10,
+            "total_tokens": 25
+        },
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_test123",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"location": "San Francisco"}'
+                            }
+                        }
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }
+        ]
+    }
+
+
+class TestHTTPXOpenAIClient:
+    """Test suite for HTTPX-based OpenAI client."""
+
+
+class TestBasicFunctionality:
+    """Test basic chat and chat_tools functionality."""
+    
+    @pytest.mark.asyncio
+    async def test_chat_success(self):
+        """Test successful chat completion."""
+        client = create_test_client()
+        sample_messages = get_sample_messages()
+        mock_openai_response = get_mock_openai_response()
+        
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = mock_openai_response
+            mock_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat(sample_messages)
+            
+            assert result == "Hello! How can I help you today?"
+            mock_client.post.assert_called_once()
+            call_args = mock_client.post.call_args
+            assert "https://api.openai.com/v1/chat/completions" in call_args.kwargs["url"]
+    
+    @pytest.mark.asyncio
+    async def test_chat_tools_success(self, client, sample_messages, sample_tools, mock_openai_tools_response):
+        """Test successful chat completion with tools."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = mock_openai_tools_response
+            mock_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat_tools(sample_messages, sample_tools)
+            
+            assert "assistant" in result
+            assert result["assistant"]["role"] == "assistant"
+            assert "tool_calls" in result["assistant"]
+            assert len(result["assistant"]["tool_calls"]) == 1
+            
+            # Verify tools were included in request
+            call_args = mock_client.post.call_args
+            request_json = call_args.kwargs["json"]
+            assert "tools" in request_json
+            assert request_json["tool_choice"] == "auto"
+    
+    @pytest.mark.asyncio
+    async def test_usage_tracking(self, client, sample_messages, mock_openai_response):
+        """Test that token usage is properly tracked."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = mock_openai_response
+            mock_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat_tools(sample_messages, [])
+            
+            assert "usage" in result
+            assert result["usage"]["prompt_tokens"] == 10
+            assert result["usage"]["completion_tokens"] == 5
+            assert result["usage"]["total_tokens"] == 15
+
+
+class TestCancellationHandling:
+    """Test cancellation behavior - the key improvement over OpenAI client."""
+    
+    @pytest.mark.asyncio
+    async def test_immediate_cancellation(self, client, sample_messages):
+        """Test that pre-cancelled token raises CancelledError immediately."""
+        token = CancellationToken()
+        token.cancel()
+        
+        with pytest.raises(asyncio.CancelledError):
+            await client.chat(sample_messages, cancellation_token=token)
+    
+    @pytest.mark.asyncio
+    async def test_cancellation_during_request(self, client, sample_messages):
+        """Test cancellation while HTTP request is in progress."""
+        token = CancellationToken()
+        
+        async def slow_post(*args, **kwargs):
+            # Cancel after request starts but before completion
+            await asyncio.sleep(0.1)
+            token.cancel()
+            await asyncio.sleep(0.1)  # Simulate slow response
+            raise httpx.TimeoutException("Cancelled")
+        
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = slow_post
+            mock_async_client.return_value = mock_client
+            
+            with pytest.raises(asyncio.CancelledError):
+                await client.chat(sample_messages, cancellation_token=token)
+    
+    @pytest.mark.asyncio
+    async def test_no_cancellation_overhead(self, client, sample_messages, mock_openai_response):
+        """Test that requests without cancellation tokens work normally."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = mock_openai_response
+            mock_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_async_client.return_value = mock_client
+            
+            # Should work fine without cancellation token
+            result = await client.chat(sample_messages, cancellation_token=None)
+            assert result == "Hello! How can I help you today?"
+
+
+class TestErrorHandling:
+    """Test error handling and retry logic."""
+    
+    @pytest.mark.asyncio
+    async def test_http_404_error(self, client, sample_messages):
+        """Test handling of HTTP 404 client errors."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_response = Mock()
+            mock_response.status_code = 404
+            mock_response.text = "Not Found"
+            mock_response.json.return_value = {"error": {"message": "Model not found"}}
+            
+            error = httpx.HTTPStatusError("404", request=Mock(), response=mock_response)
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = error
+            mock_async_client.return_value = mock_client
+            
+            with pytest.raises(Exception) as exc_info:
+                await client.chat(sample_messages)
+            
+            assert "404" in str(exc_info.value)
+            assert "Model not found" in str(exc_info.value)
+    
+    @pytest.mark.asyncio  
+    async def test_429_retry_logic(self, client, sample_messages, mock_openai_response):
+        """Test retry logic for 429 rate limit errors."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            # First request: 429 rate limit
+            mock_429_response = Mock()
+            mock_429_response.status_code = 429
+            mock_429_response.headers = {"retry-after": "0.1"}
+            error_429 = httpx.HTTPStatusError("429", request=Mock(), response=mock_429_response)
+            
+            # Second request: success
+            mock_success_response = Mock()
+            mock_success_response.status_code = 200
+            mock_success_response.json.return_value = mock_openai_response
+            mock_success_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = [error_429, mock_success_response]
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat(sample_messages)
+            
+            assert result == "Hello! How can I help you today?"
+            assert mock_client.post.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_500_server_error_retry(self, client, sample_messages, mock_openai_response):
+        """Test retry logic for 500 server errors."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            # First request: 500 server error
+            mock_500_response = Mock()
+            mock_500_response.status_code = 500
+            mock_500_response.text = "Internal Server Error"
+            error_500 = httpx.HTTPStatusError("500", request=Mock(), response=mock_500_response)
+            
+            # Second request: success
+            mock_success_response = Mock()
+            mock_success_response.status_code = 200
+            mock_success_response.json.return_value = mock_openai_response
+            mock_success_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = [error_500, mock_success_response]
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat(sample_messages)
+            
+            assert result == "Hello! How can I help you today?"
+            assert mock_client.post.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_timeout_error_retry(self, client, sample_messages, mock_openai_response):
+        """Test retry logic for timeout errors."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            # First request: timeout
+            timeout_error = httpx.TimeoutException("Read timeout")
+            
+            # Second request: success  
+            mock_success_response = Mock()
+            mock_success_response.status_code = 200
+            mock_success_response.json.return_value = mock_openai_response
+            mock_success_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = [timeout_error, mock_success_response]
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat(sample_messages)
+            
+            assert result == "Hello! How can I help you today?"
+            assert mock_client.post.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_max_retries_exceeded(self, client, sample_messages):
+        """Test that max retries are respected."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            timeout_error = httpx.TimeoutException("Read timeout")
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = timeout_error  # Always timeout
+            mock_async_client.return_value = mock_client
+            
+            with pytest.raises(Exception) as exc_info:
+                await client.chat(sample_messages)
+            
+            assert "timed out" in str(exc_info.value).lower()
+            # Should try max_retries + 1 times (2 + 1 = 3)
+            assert mock_client.post.call_count == 3
+
+
+class TestTimeoutConfiguration:
+    """Test fine-grained timeout configuration."""
+    
+    def test_timeout_config_creation(self):
+        """Test timeout configuration object."""
+        config = HTTPXTimeoutConfig(
+            connect=5.0,
+            read=30.0,
+            write=10.0,
+            pool=2.0
+        )
+        assert config.connect == 5.0
+        assert config.read == 30.0
+        assert config.write == 10.0
+        assert config.pool == 2.0
+    
+    def test_timeout_config_defaults(self):
+        """Test default timeout values."""
+        config = HTTPXTimeoutConfig()
+        assert config.connect == 10.0
+        assert config.read == 180.0
+        assert config.write == 10.0
+        assert config.pool == 5.0
+    
+    def test_client_timeout_integration(self):
+        """Test that timeout config is properly integrated into client."""
+        timeout_config = HTTPXTimeoutConfig(connect=1.0, read=2.0)
+        client = HTTPXOpenAIClient(
+            model="gpt-3.5-turbo",
+            api_key="test-key",
+            timeout_config=timeout_config
+        )
+        
+        assert client._timeout.connect == 1.0
+        assert client._timeout.read == 2.0
+
+
+class TestPerformanceComparison:
+    """Performance and reliability comparison tests."""
+    
+    @pytest.mark.asyncio
+    async def test_concurrent_requests(self, client, sample_messages, mock_openai_response):
+        """Test handling multiple concurrent requests."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = mock_openai_response
+            mock_response.raise_for_status.return_value = None
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_async_client.return_value = mock_client
+            
+            # Run 10 concurrent requests
+            tasks = [client.chat(sample_messages) for _ in range(10)]
+            results = await asyncio.gather(*tasks)
+            
+            assert len(results) == 10
+            assert all(r == "Hello! How can I help you today!" for r in results)
+            # Each request should create its own client instance 
+            assert mock_async_client.call_count == 10
+    
+    @pytest.mark.asyncio
+    async def test_cancellation_cleanup(self, client, sample_messages):
+        """Test that cancellation properly cleans up resources."""
+        token = CancellationToken()
+        
+        async def cancel_after_start(*args, **kwargs):
+            token.cancel()
+            raise asyncio.CancelledError()
+        
+        with patch("httpx.AsyncClient") as mock_async_client:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.post.side_effect = cancel_after_start
+            mock_async_client.return_value = mock_client
+            
+            with pytest.raises(asyncio.CancelledError):
+                await client.chat(sample_messages, cancellation_token=token)
+            
+            # Verify client context manager was properly exited
+            mock_client.__aexit__.assert_called_once()
+
+
+if __name__ == "__main__":
+    # Run tests with pytest when executed directly
+    pytest.main([__file__, "-v"])

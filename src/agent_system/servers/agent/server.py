@@ -84,28 +84,29 @@ class Agent(MCPServer):
                     logger.warning("LLM factory creation failed: %s", e)
                     self.llm = None
             else:
-                # Fallback: attempt to create LLM using the new profile-based system
+                # Create LLM using the new profile-based system (now required)
                 try:
                     # Lazy import to avoid circular imports when testing
                     from ...llm.factory import resolve_llm_config_for_agent
-                    if getattr(config, "llm", None):
-                        # Use new profile-based resolution with agent name
-                        llm_kwargs = resolve_llm_config_for_agent(config, name)
-                        
-                        # Store profile information for status display
-                        self.llm_profile_info = self._extract_profile_info(config, name, llm_kwargs)
-                        
-                        from ...llm.clients import make_llm
-                        self.llm = make_llm(
-                            llm_kwargs["provider"],
-                            llm_kwargs["model"], 
-                            llm_kwargs["openai_api_key"],
-                            llm_kwargs["ollama_url"],
-                            llm_kwargs["context_window"],
-                            llm_kwargs["ollama_mode"],
-                            llm_kwargs["request_timeout"],
-                            ssl_verify=getattr(config, "network").ssl_verify if getattr(config, "network", None) else None,
-                        )
+                    
+                    # Use new profile-based resolution with agent name
+                    llm_kwargs = resolve_llm_config_for_agent(config, name)
+                    
+                    # Store profile information for status display
+                    self.llm_profile_info = self._extract_profile_info(config, name, llm_kwargs)
+                    
+                    from ...llm.clients import make_llm
+                    self.llm = make_llm(
+                        llm_kwargs["provider"],
+                        llm_kwargs["model"], 
+                        llm_kwargs["openai_api_key"],
+                        llm_kwargs["ollama_url"],
+                        llm_kwargs["context_window"],
+                        llm_kwargs["ollama_mode"],
+                        llm_kwargs["request_timeout"],
+                        ssl_verify=getattr(config, "network").ssl_verify if getattr(config, "network", None) else None,
+                        httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
+                    )
                 except Exception as e:
                     # Missing API key is an expected situation in test/dev
                     # environments; avoid noisy warnings for that case.
@@ -287,6 +288,7 @@ class Agent(MCPServer):
                         summarizer_kwargs["ollama_mode"],
                         summarizer_kwargs["request_timeout"],
                         ssl_verify=getattr(self.agent_config, "network").ssl_verify if getattr(self.agent_config, "network", None) else None,
+                        httpx_timeouts=summarizer_kwargs.get("httpx_timeouts"),
                     )
                     
                     # Store profile info for summarizer

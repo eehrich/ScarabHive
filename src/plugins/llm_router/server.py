@@ -31,12 +31,11 @@ class LLMRouterServer(SchemaBasedMCPServer):
             if src_path not in sys.path:
                 sys.path.insert(0, src_path)
                 
-            from agent_system.config.models import AgentConfig, LLMConfig, LLMSystemConfig
+            from agent_system.config.models import AgentConfig, LLMSystemConfig
             from agent_system.llm.factory import resolve_llm_config_for_agent
             
             # Create AgentConfig from parent_llm dictionary  
             temp_config = AgentConfig(
-                llm=LLMConfig(**(self.parent_llm.get('llm', {}))),
                 llm_system=LLMSystemConfig(**(self.parent_llm.get('llm_system', {}))),
                 agent_llm_profiles={f"llm_router_{profile_name}": profile_name},
             )
@@ -105,6 +104,7 @@ class LLMRouterServer(SchemaBasedMCPServer):
                 llm_kwargs["ollama_mode"],
                 llm_kwargs["request_timeout"],
                 ssl_verify=self.ssl_verify,
+                httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
             )
         except Exception as e:
             raise ValueError(f"Failed to create LLM client for profile '{profile}': {e}")

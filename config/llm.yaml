@@ -1,4 +1,12 @@
 llm_system:
+  # Default HTTPX timeout configuration for all models
+  # These can be overridden per model if needed
+  httpx_timeouts:
+    connect: 10.0      # Connection establishment timeout (seconds)
+    read: 180.0        # Read timeout - waiting for response data (seconds) 
+    write: 10.0        # Write timeout - sending request data (seconds)
+    pool: 5.0          # Pool timeout - getting connection from pool (seconds)
+
   models:
 
     gpt-4.1:
@@ -6,7 +14,7 @@ llm_system:
       model: gpt-4.1
       openai_api_key: ***REMOVED***
       context_window: 1000000
-      request_timeout: 60  
+      request_timeout: 60
 
     gpt-5-nano:
       provider: openai
@@ -16,11 +24,16 @@ llm_system:
       request_timeout: 60
 
     gpt-5-mini:
-      provider: openai
+      provider: openai_httpx
       model: gpt-5-mini
       openai_api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
+      httpx_timeouts:
+        connect: 15.0     # Longer connection timeout for complex requests
+        read: 300.0       # Extended read timeout for long responses
+        write: 15.0       # Extended write timeout for large payloads
+        pool: 10.0        # Extended pool timeout
 
     gpt-5:
       provider: openai
@@ -28,6 +41,7 @@ llm_system:
       openai_api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
+
 
     gpt-realtime:
       provider: openai

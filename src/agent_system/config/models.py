@@ -4,15 +4,24 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional, Dict
 
 
+class HTTPXTimeoutConfig(BaseModel):
+    """HTTPX timeout configuration"""
+    connect: float = 10.0      # Connection establishment timeout
+    read: float = 180.0        # Read timeout (waiting for response data)
+    write: float = 10.0        # Write timeout (sending request data)  
+    pool: float = 5.0          # Pool timeout (getting connection from pool)
+
+
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
-    provider: Literal["ollama", "openai"] = "ollama"
+    provider: Literal["ollama", "openai", "openai_httpx"] = "ollama"
     model: str
     openai_api_key: Optional[str] = None
     ollama_url: Optional[str] = None  # e.g. http://remote-host:11434
     context_window: int = 32768  # default num_ctx for Ollama-compatible models
     ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
     request_timeout: int = 120  # seconds for LLM API calls
+    httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides
 
 
 class LLMProfile(BaseModel):
@@ -25,23 +34,10 @@ class LLMProfile(BaseModel):
 
 class LLMSystemConfig(BaseModel):
     """Complete LLM system configuration with models and profiles"""
+    httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
     models: Dict[str, LLMModelConfig] = {}
     profiles: Dict[str, LLMProfile] = {}
-    default_profile: str = "fast"
-
-
-class LLMConfig(BaseModel):
-    """Legacy LLM config - kept for backwards compatibility"""
-    provider: Literal["ollama", "openai"] = "ollama"
-    model: str = "gpt-oss:20b"
-    openai_api_key: Optional[str] = None
-    ollama_url: Optional[str] = None  # e.g. http://remote-host:11434
-    context_window: int = 32768  # default num_ctx for Ollama-compatible models
-    ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
-    request_timeout: int = 120  # seconds for LLM API calls
-    
-    # New field for profile-based configuration
-    profile: Optional[str] = None  # Reference to profile name
+    default_profile: str = "normal"
 
 
 class MCPServerRef(BaseModel):
@@ -112,8 +108,7 @@ class CancellationConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    llm: LLMConfig = LLMConfig()
-    llm_system: Optional[LLMSystemConfig] = None  # New LLM system configuration
+    llm_system: LLMSystemConfig  # New LLM system configuration (now required)
     agent_llm_profiles: Optional[Dict[str, str]] = None  # Agent-specific LLM profile assignments
     mcp: MCPConfig = MCPConfig()
     network: NetworkConfig = NetworkConfig()
