@@ -102,7 +102,7 @@ class ContextManagementConfig(BaseModel):
     max_summary_words: int = 500
     tool_result_preview_chars: int = 200
     warning_levels: dict[str, float] = {"yellow": 0.7, "orange": 0.85, "red": 0.95}
-    optimization: dict | None = None
+    token_optimization: dict | None = None
 
 
 class CancellationConfig(BaseModel):

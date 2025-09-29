@@ -247,6 +247,8 @@ class Agent(MCPServer):
             summarization_threshold = context_mgmt_settings.get("summarization_threshold", 0.80)
             # If percentage (0..1) leave as-is; ContextConfig.from_dict handles translation to tokens
 
+            # Use the new 'token_optimization' key exclusively.
+            optimization_settings = context_mgmt_settings.get("token_optimization", {})
             self.context_config = ContextConfig(
                 context_window=int(context_window),
                 summarization_threshold=summarization_threshold,
@@ -255,8 +257,8 @@ class Agent(MCPServer):
                 strategy=strategy,
                 max_summary_words=context_mgmt_settings.get("max_summary_words", 500),
                 tool_result_preview_chars=context_mgmt_settings.get("tool_result_preview_chars", 200),
-                enable_compression=context_mgmt_settings.get("optimization", {}).get("enabled", True),
-                compress_tool_results=context_mgmt_settings.get("optimization", {}).get("compress_tool_results", True)
+                enable_compression=optimization_settings.get("enabled", True),
+                compress_tool_results=optimization_settings.get("compress_tool_results", True)
             )
 
             # Initialize context manager with agent-specific tracking
@@ -299,8 +301,15 @@ class Agent(MCPServer):
             summarizer = ConversationSummarizer(summarizer_llm, profile_info=summarizer_profile)
             self.context_manager.set_summarizer(summarizer)
 
-            # Initialize optimizer
-            self.token_optimizer = TokenOptimizer()
+            # Initialize optimizer only when compression/optimization is enabled
+            try:
+                if getattr(self.context_config, 'enable_compression', False):
+                    self.token_optimizer = TokenOptimizer()
+                else:
+                    self.token_optimizer = None
+            except Exception:
+                # Defensive fallback - do not initialize optimizer on any error
+                self.token_optimizer = None
 
             # Optimizer run guard: avoid repeated optimizer runs when token usage
             # hasn't increased significantly since the last run.
