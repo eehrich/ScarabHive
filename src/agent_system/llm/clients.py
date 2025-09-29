@@ -81,7 +81,7 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
                 timeout=float(request_timeout) if request_timeout else None,
             )
         base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
-        api_key = "ollama"
+        api_key = openai_api_key or "ollama"
         return OpenAIAsyncClient(
             model=model,
             api_key=api_key,
