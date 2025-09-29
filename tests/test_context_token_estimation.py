@@ -3,7 +3,7 @@
 import pytest
 from src.agent_system.context.manager import ContextManager
 from src.agent_system.context.config import ContextConfig
-from src.agent_system.llm.clients import ChatMessage
+from src.agent_system.llm.models import ChatMessage
 
 
 class TestContextTokenEstimation:

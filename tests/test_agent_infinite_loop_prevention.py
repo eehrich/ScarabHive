@@ -1,9 +1,25 @@
 import pytest
 
 from agent_system.servers.agent.server import Agent
-from agent_system.config.models import AgentConfig
+from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry
 from test_agent_comprehensive import MockMCPServer
+
+
+def create_test_config():
+    """Create a test configuration with the new LLM system structure."""
+    return AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={
+                "test-model": LLMModelConfig(provider="openai", model="test-model")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="test-model")
+            },
+            default_profile="normal"
+        ),
+        max_steps=10
+    )
 
 
 class MockLLMClient:
@@ -31,7 +47,7 @@ class MockLLMClient:
 @pytest.mark.asyncio
 async def test_agent_prevents_infinite_loop_empty_responses():
     """Test that agent breaks out of loop when getting consecutive empty responses."""
-    config = AgentConfig(max_steps=10)
+    config = create_test_config()
     registry = MCPRegistry()
     
     # Mock LLM that returns empty responses
@@ -58,7 +74,7 @@ async def test_agent_prevents_infinite_loop_empty_responses():
 @pytest.mark.asyncio
 async def test_agent_prevents_infinite_loop_no_tool_calls():
     """Test that agent breaks out of loop when getting consecutive responses without tool calls."""
-    config = AgentConfig(max_steps=10)
+    config = create_test_config()
     registry = MCPRegistry()
     
     # Mock LLM that returns content but no tool calls
@@ -89,7 +105,7 @@ async def test_agent_prevents_infinite_loop_no_tool_calls():
 @pytest.mark.asyncio 
 async def test_agent_normal_execution_not_affected():
     """Test that normal agent execution with tool calls is not affected by the safeguards."""
-    config = AgentConfig(max_steps=10)
+    config = create_test_config()
     registry = MCPRegistry()
     
     # Add a mock tool to registry

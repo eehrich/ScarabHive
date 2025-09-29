@@ -124,9 +124,34 @@ def get_mock_openai_tools_response():
 
 class TestHTTPXOpenAIClient:
     """Test suite for HTTPX-based OpenAI client."""
+    
+    @pytest.fixture
+    def client(self):
+        """Create test client fixture."""
+        return create_test_client()
+    
+    @pytest.fixture
+    def sample_messages(self):
+        """Sample messages fixture."""
+        return get_sample_messages()
+    
+    @pytest.fixture
+    def sample_tools(self):
+        """Sample tools fixture."""
+        return get_sample_tools()
+    
+    @pytest.fixture
+    def mock_openai_response(self):
+        """Mock OpenAI response fixture."""
+        return get_mock_openai_response()
+    
+    @pytest.fixture
+    def mock_openai_tools_response(self):
+        """Mock OpenAI tools response fixture."""
+        return get_mock_openai_tools_response()
 
 
-class TestBasicFunctionality:
+class TestBasicFunctionality(TestHTTPXOpenAIClient):
     """Test basic chat and chat_tools functionality."""
     
     @pytest.mark.asyncio
@@ -203,13 +228,13 @@ class TestBasicFunctionality:
             assert result["usage"]["total_tokens"] == 15
 
 
-class TestCancellationHandling:
+class TestCancellationHandling(TestHTTPXOpenAIClient):
     """Test cancellation behavior - the key improvement over OpenAI client."""
     
     @pytest.mark.asyncio
     async def test_immediate_cancellation(self, client, sample_messages):
         """Test that pre-cancelled token raises CancelledError immediately."""
-        token = CancellationToken()
+        token = CancellationToken(request_id="test-request-1")
         token.cancel()
         
         with pytest.raises(asyncio.CancelledError):
@@ -218,7 +243,7 @@ class TestCancellationHandling:
     @pytest.mark.asyncio
     async def test_cancellation_during_request(self, client, sample_messages):
         """Test cancellation while HTTP request is in progress."""
-        token = CancellationToken()
+        token = CancellationToken(request_id="test-request-2")
         
         async def slow_post(*args, **kwargs):
             # Cancel after request starts but before completion
@@ -255,7 +280,7 @@ class TestCancellationHandling:
             assert result == "Hello! How can I help you today?"
 
 
-class TestErrorHandling:
+class TestErrorHandling(TestHTTPXOpenAIClient):
     """Test error handling and retry logic."""
     
     @pytest.mark.asyncio
@@ -284,11 +309,11 @@ class TestErrorHandling:
     async def test_429_retry_logic(self, client, sample_messages, mock_openai_response):
         """Test retry logic for 429 rate limit errors."""
         with patch("httpx.AsyncClient") as mock_async_client:
-            # First request: 429 rate limit
+            # First request: 429 rate limit (return response, don't throw error)
             mock_429_response = Mock()
             mock_429_response.status_code = 429
             mock_429_response.headers = {"retry-after": "0.1"}
-            error_429 = httpx.HTTPStatusError("429", request=Mock(), response=mock_429_response)
+            mock_429_response.text = "Rate limit exceeded"
             
             # Second request: success
             mock_success_response = Mock()
@@ -298,7 +323,7 @@ class TestErrorHandling:
             
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
-            mock_client.post.side_effect = [error_429, mock_success_response]
+            mock_client.post.side_effect = [mock_429_response, mock_success_response]
             mock_async_client.return_value = mock_client
             
             result = await client.chat(sample_messages)
@@ -374,7 +399,7 @@ class TestErrorHandling:
             assert mock_client.post.call_count == 3
 
 
-class TestTimeoutConfiguration:
+class TestTimeoutConfiguration(TestHTTPXOpenAIClient):
     """Test fine-grained timeout configuration."""
     
     def test_timeout_config_creation(self):
@@ -411,7 +436,7 @@ class TestTimeoutConfiguration:
         assert client._timeout.read == 2.0
 
 
-class TestPerformanceComparison:
+class TestPerformanceComparison(TestHTTPXOpenAIClient):
     """Performance and reliability comparison tests."""
     
     @pytest.mark.asyncio
@@ -433,14 +458,16 @@ class TestPerformanceComparison:
             results = await asyncio.gather(*tasks)
             
             assert len(results) == 10
-            assert all(r == "Hello! How can I help you today!" for r in results)
+            # Use the exact same string from the mock response
+            expected_content = mock_openai_response["choices"][0]["message"]["content"]
+            assert all(r == expected_content for r in results)
             # Each request should create its own client instance 
             assert mock_async_client.call_count == 10
     
     @pytest.mark.asyncio
     async def test_cancellation_cleanup(self, client, sample_messages):
         """Test that cancellation properly cleans up resources."""
-        token = CancellationToken()
+        token = CancellationToken(request_id="test-request-3")
         
         async def cancel_after_start(*args, **kwargs):
             token.cancel()

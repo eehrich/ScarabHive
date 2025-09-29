@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from agent_system.mcp.base import MCPRegistry, MCPServer
-from agent_system.config.models import AgentConfig, LLMConfig, ContextConfig, PromptsConfig
+from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile, ContextConfig, PromptsConfig
 from agent_system.servers.agent.server import Agent
 
 
@@ -130,7 +130,15 @@ class TestAgent:
     def create_test_config(self) -> AgentConfig:
         """Create a test configuration."""
         return AgentConfig(
-            llm=LLMConfig(provider="openai", model="gpt-3.5-turbo"),
+            llm_system=LLMSystemConfig(
+                models={
+                    "gpt-3.5-turbo": LLMModelConfig(provider="openai", model="gpt-3.5-turbo")
+                },
+                profiles={
+                    "normal": LLMProfile(model_ref="gpt-3.5-turbo")
+                },
+                default_profile="normal"
+            ),
             context=ContextConfig(auto_datetime=False),  # Disable for testing
             prompts=PromptsConfig(system_template="config/prompts/system_prompt.yaml"),
             max_steps=3,
@@ -188,7 +196,15 @@ class TestAgentEventStream:
     def create_test_config(self) -> AgentConfig:
         """Create a test configuration."""
         return AgentConfig(
-            llm=LLMConfig(provider="openai", model="gpt-3.5-turbo"),
+            llm_system=LLMSystemConfig(
+                models={
+                    "gpt-3.5-turbo": LLMModelConfig(provider="openai", model="gpt-3.5-turbo")
+                },
+                profiles={
+                    "normal": LLMProfile(model_ref="gpt-3.5-turbo")
+                },
+                default_profile="normal"
+            ),
             context=ContextConfig(auto_datetime=False),
             prompts=PromptsConfig(system_template="config/prompts/system_prompt.yaml"),
             max_steps=2,
@@ -221,7 +237,15 @@ class TestAgentValidation:
     def create_test_config(self) -> AgentConfig:
         """Create a test configuration."""
         return AgentConfig(
-            llm=LLMConfig(provider="openai", model="gpt-3.5-turbo"),
+            llm_system=LLMSystemConfig(
+                models={
+                    "gpt-3.5-turbo": LLMModelConfig(provider="openai", model="gpt-3.5-turbo")
+                },
+                profiles={
+                    "normal": LLMProfile(model_ref="gpt-3.5-turbo")
+                },
+                default_profile="normal"
+            ),
             context=ContextConfig(auto_datetime=False),
             max_steps=2,
             servers={}
@@ -305,7 +329,15 @@ def mock_registry():
 def test_config():
     """Fixture providing a test configuration."""
     return AgentConfig(
-        llm=LLMConfig(provider="openai", model="gpt-3.5-turbo"),
+        llm_system=LLMSystemConfig(
+            models={
+                "gpt-3.5-turbo": LLMModelConfig(provider="openai", model="gpt-3.5-turbo")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="gpt-3.5-turbo")
+            },
+            default_profile="normal"
+        ),
         context=ContextConfig(auto_datetime=False),
         max_steps=3,
         servers={}

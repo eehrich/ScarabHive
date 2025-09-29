@@ -7,6 +7,15 @@ from agent_system.config.settings import load_settings
 def test_logging_explicit(tmp_path, monkeypatch):
     # Create a minimal config with explicit file_cli and file_api
     cfg_text = """
+llm_system:
+  models:
+    test-model:
+      provider: openai
+      model: test-model
+  profiles:
+    normal:
+      model_ref: test-model
+  default_profile: normal
 logging:
   enabled: true
   level: DEBUG
@@ -25,6 +34,15 @@ logging:
 def test_logging_fallback(tmp_path):
     # Create a minimal config with only single file set
     cfg_text = """
+llm_system:
+  models:
+    test-model:
+      provider: openai
+      model: test-model
+  profiles:
+    normal:
+      model_ref: test-model
+  default_profile: normal
 logging:
   enabled: true
   level: DEBUG

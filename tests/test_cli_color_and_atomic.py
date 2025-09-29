@@ -26,8 +26,13 @@ def test_enable_atomic_write(tmp_path, monkeypatch, capsys):
     managed.write_text('{"mcp": {"enabled_servers": []}}')
     cfg.write_text('{"includes": ["mcp.yaml"]}')
     # monkeypatch load_settings to minimal config with no plugin_dirs (we won't discover plugins here)
-    from agent_system.config.models import AgentConfig, MCPConfig
-    cfg_model = AgentConfig()
+    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    cfg_model = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_model="test-model"
+        )
+    )
     cfg_model.mcp = MCPConfig(plugin_dirs=[])
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg_model)
 

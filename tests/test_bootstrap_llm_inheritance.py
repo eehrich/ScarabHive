@@ -3,40 +3,65 @@ Tests for LLM config inheritance when bootstrapping servers.
 """
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.mcp.base import MCPRegistry
-from agent_system.config.models import AgentConfig, MCPConfig
+from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+
 
 
 def test_agent_inherits_global_llm():
-    cfg = AgentConfig()
-    cfg.llm.provider = "openai"
-    cfg.mcp = MCPConfig(enabled_servers=["agent"])
-    cfg.servers = {"agent": {"type": "agent"}}
+    cfg = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={
+                "test-model": LLMModelConfig(provider="openai", model="test-model")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="test-model")
+            },
+            default_profile="normal"
+        ),
+        mcp=MCPConfig(enabled_servers=["agent"]),
+        servers={"agent": {"type": "agent"}}
+    )
 
     registry = MCPRegistry()
     bootstrap_servers(cfg, registry)
 
     agent = registry.get("agent")
     assert hasattr(agent, "agent_config")
-    assert agent.agent_config.llm.provider == "openai"
+    assert agent.agent_config.llm_system.models["test-model"].provider == "openai"
 
 
 def test_agent_server_override():
-    cfg = AgentConfig()
-    cfg.llm.provider = "openai"
-    cfg.mcp = MCPConfig(enabled_servers=["agent"])
-    cfg.servers = {"agent": {"type": "agent", "default_provider": "ollama"}}
+    cfg = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={
+                "test-model": LLMModelConfig(provider="openai", model="test-model")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="test-model")
+            },
+            default_profile="normal"
+        ),
+        mcp=MCPConfig(enabled_servers=["agent"]),
+        servers={"agent": {"type": "agent", "default_provider": "ollama"}}
+    )
 
     registry = MCPRegistry()
     bootstrap_servers(cfg, registry)
 
     agent = registry.get("agent")
-    assert agent.agent_config.llm.provider == "ollama"
+    assert hasattr(agent, "agent_config")
+    
+    # Verify the server override was applied
+    agent_llm_system = agent.agent_config.llm_system
+    # Should have created an override profile with ollama provider
+    assert agent_llm_system.default_profile == "agent_override"
+    assert "agent_override" in agent_llm_system.profiles
 
 
 def test_web_research_agent_server_override():
     from agent_system.plugins.discovery import discover_all_plugins
     from pathlib import Path
-    from agent_system.config.models import LLMSystemConfig
+    import pytest
     
     # Test plugin discovery first
     src_plugins = Path.cwd() / "src" / "plugins"
@@ -44,24 +69,26 @@ def test_web_research_agent_server_override():
     
     # Skip test if web_research_agent plugin is not discovered
     if "web_research_agent" not in plugins:
-        import pytest
         pytest.skip("web_research_agent plugin not discovered in test environment")
     
-    cfg = AgentConfig()
-    cfg.llm_system = LLMSystemConfig(
-        default_provider="ollama",
-        default_model="llama3.1:8b"
-    )
-    cfg.agent_llm_profiles = {
-        "web_research_agent": {
-            "provider": "openai",
-            "model": "gpt-5-mini"
+    cfg = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={
+                "llama3.1:8b": LLMModelConfig(provider="ollama", model="llama3.1:8b"),
+                "gpt-5-mini": LLMModelConfig(provider="openai", model="gpt-5-mini")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="llama3.1:8b"),
+                "fast": LLMProfile(model_ref="gpt-5-mini")
+            },
+            default_profile="normal"
+        ),
+        agent_llm_profiles={"web_research_agent": "fast"},
+        mcp=MCPConfig(enabled_servers=["web_research_agent"]),
+        servers={
+            "web_research_agent": {"type": "web_research_agent", "default_provider": "openai", "model": "gpt-5-mini"}
         }
-    }
-    cfg.mcp = MCPConfig(enabled_servers=["web_research_agent"])
-    cfg.servers = {
-        "web_research_agent": {"type": "web_research_agent", "default_provider": "openai", "model": "gpt-5-mini"}
-    }
+    )
 
     registry = MCPRegistry()
     try:

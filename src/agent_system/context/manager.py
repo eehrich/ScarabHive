@@ -3,7 +3,7 @@
 import logging
 import time
 from typing import List, Optional, Tuple
-from ..llm.clients import ChatMessage
+from ..llm.models import ChatMessage
 from .config import ContextConfig, WarningLevel
 from .tracker import record_context_usage
 from .agent_tracker import record_agent_summarization

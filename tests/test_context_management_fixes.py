@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from agent_system.context.manager import ContextManager
 from agent_system.context.config import ContextConfig, ContextStrategy
 from agent_system.context.summarizer import ConversationSummarizer
-from agent_system.llm.clients import ChatMessage
+from agent_system.llm.models import ChatMessage
 
 
 @pytest.fixture

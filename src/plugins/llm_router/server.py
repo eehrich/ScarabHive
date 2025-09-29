@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_system.llm.clients import ChatMessage, make_llm
+from agent_system.llm.models import ChatMessage
+from agent_system.llm.clients import make_llm
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.utils.text_sanitizer import sanitize_for_llm
 

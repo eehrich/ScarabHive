@@ -1,10 +1,27 @@
 """
 Integration test for Agent bootstrap functionality.
 """
-from agent_system.config.models import AgentConfig, MCPConfig
+from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.servers.agent.server import Agent
+
+
+def create_test_config(**overrides):
+    """Create a test configuration with proper LLM system setup."""
+    base_config = {
+        "llm_system": LLMSystemConfig(
+            models={
+                "test-model": LLMModelConfig(provider="openai", model="test-model", openai_api_key="fake-key")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="test-model")
+            },
+            default_profile="normal"
+        )
+    }
+    base_config.update(overrides)
+    return AgentConfig(**base_config)
 
 
 class TestBootstrapSubAgent:
@@ -12,7 +29,7 @@ class TestBootstrapSubAgent:
     
     def test_bootstrap_sub_agent(self):
         """Test that agent type can be bootstrapped."""
-        config = AgentConfig(
+        config = create_test_config(
             mcp=MCPConfig(enabled_servers=["test_sub"]),
             servers={
                 "test_sub": {
@@ -36,7 +53,7 @@ class TestBootstrapSubAgent:
         
     def test_bootstrap_sub_agent_default_description(self):
         """Test agent bootstrap with default description."""
-        config = AgentConfig(
+        config = create_test_config(
             mcp=MCPConfig(enabled_servers=["my_sub"]),
             servers={
                 "my_sub": {
@@ -54,7 +71,7 @@ class TestBootstrapSubAgent:
         
     def test_bootstrap_mixed_servers_with_sub_agent(self):
         """Test bootstrap with mix of regular servers and agents."""
-        config = AgentConfig(
+        config = create_test_config(
             mcp=MCPConfig(enabled_servers=["datetime", "test_sub", "duckduckgo_search"]),
             servers={
                 "test_sub": {

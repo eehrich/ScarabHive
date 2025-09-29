@@ -11,8 +11,15 @@ def test_load_config_merges_includes_and_prefers_included(tmp_path):
 
     master.write_text(
         """
-llm:
-  model: master-model
+llm_system:
+  models:
+    master-model:
+      provider: "openai"
+      model: "master-model"
+  profiles:
+    normal:
+      model_ref: "master-model"
+  default_profile: "normal"
 includes:
   - mcp.yaml
 """,
@@ -34,7 +41,10 @@ servers:
     cfg = load_config(str(master))
 
     # The included mcp.yaml should be merged into the returned config
-    assert cfg.llm.model == "master-model"
+    # Check the model through the new llm_system structure
+    default_profile = cfg.llm_system.default_profile
+    model_ref = cfg.llm_system.profiles[default_profile].model_ref
+    assert cfg.llm_system.models[model_ref].model == "master-model"
     assert isinstance(cfg.mcp.enabled_servers, list)
     assert cfg.mcp.enabled_servers == ["custom_plugin"]
     assert "custom_plugin" in cfg.servers

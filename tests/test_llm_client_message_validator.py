@@ -11,7 +11,7 @@ from agent_system.core.message_validator import (
     MessageValidator,
     validate_messages_before_llm
 )
-from agent_system.llm.clients import ChatMessage
+from agent_system.llm.models import ChatMessage
 
 
 class TestMessageValidator:

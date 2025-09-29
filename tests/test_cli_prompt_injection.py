@@ -28,6 +28,15 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
         captured['cfg'] = cfg
         return DummyAgent()
 
+    # Monkeypatch load_settings to provide a proper config
+    from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig
+    mock_config = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_model="test-model"
+        )
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda path=None: mock_config)
     monkeypatch.setattr(cli, 'MainAgent', fake_main_agent)
     # Run CLI in raw mode to take the non-streaming path (simpler output)
     monkeypatch.setattr('sys.argv', ['agent-cli', '--raw', 'run', 'do it'])

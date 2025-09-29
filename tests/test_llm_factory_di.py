@@ -4,12 +4,20 @@ from unittest.mock import MagicMock
 from agent_system.llm.factory import LLMFactory
 from agent_system.servers.agent.server import Agent
 from agent_system.mcp.base import MCPRegistry
-from agent_system.config.models import AgentConfig, LLMConfig, ContextConfig, PromptsConfig
+from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile, ContextConfig, PromptsConfig
 
 
 def make_config():
     return AgentConfig(
-        llm=LLMConfig(provider="openai", model="gpt-test", openai_api_key=None),
+        llm_system=LLMSystemConfig(
+            models={
+                "gpt-test": LLMModelConfig(provider="openai", model="gpt-test", openai_api_key=None)
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="gpt-test")
+            },
+            default_profile="normal"
+        ),
         context=ContextConfig(auto_datetime=False),
         prompts=PromptsConfig(system_template="config/prompts/system_prompt.yaml"),
         max_steps=1,

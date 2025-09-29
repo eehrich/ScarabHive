@@ -38,9 +38,19 @@ def test_api_initializes_mcp(tmp_path, monkeypatch):
             "enabled": True,
             "level": "INFO"
         },
-        "llm": {
-            "provider": "openai",
-            "model": "gpt-4"
+        "llm_system": {
+            "models": {
+                "gpt-4": {
+                    "provider": "openai",
+                    "model": "gpt-4"
+                }
+            },
+            "profiles": {
+                "normal": {
+                    "model_ref": "gpt-4"
+                }
+            },
+            "default_profile": "normal"
         }
     }
     agent_yaml.write_text(yaml.safe_dump(agent_config), encoding="utf-8")

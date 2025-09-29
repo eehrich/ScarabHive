@@ -15,12 +15,15 @@ async def test_plugin_discovery():
             "llm": {"provider": "openai", "model": "gpt-5-nano"},
             "llm_system": {
                 "profiles": {
+                    "normal": {"model_ref": "gpt-5-nano"},
+                    "fast": {"model_ref": "gpt-5-nano"},
                     "research": {"model_ref": "gpt-5-nano"},
                     "turbo": {"model_ref": "gpt-5-nano"}
                 },
                 "models": {
                     "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
-                }
+                },
+                "default_profile": "normal"
             }
         }
     }
@@ -55,12 +58,15 @@ async def test_plugin_call():
             "llm": {"provider": "openai", "model": "gpt-5-nano"},
             "llm_system": {
                 "profiles": {
+                    "normal": {"model_ref": "gpt-5-nano"},
+                    "fast": {"model_ref": "gpt-5-nano"},
                     "research": {"model_ref": "gpt-5-nano"},
                     "turbo": {"model_ref": "gpt-5-nano"}
                 },
                 "models": {
                     "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
-                }
+                },
+                "default_profile": "normal"
             }
         }
     }

@@ -10,7 +10,7 @@ import logging
 from typing import List, Dict, Any, Set
 from dataclasses import dataclass
 
-from agent_system.llm.clients import ChatMessage
+from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 

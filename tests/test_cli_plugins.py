@@ -22,9 +22,14 @@ def test_cli_plugins_list(monkeypatch, tmp_path, capsys):
     meta_file.write_text('description: "Example plugin"\nversion: "0.1"\n')
 
     # Monkeypatch config to point to a minimal AgentConfig with plugin_dirs
-    from agent_system.config.models import AgentConfig, MCPConfig
+    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
 
-    cfg = AgentConfig()
+    cfg = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_model="test-model"
+        )
+    )
     cfg.mcp = MCPConfig(plugin_dirs=[str(pdir)])
 
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)

@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import Mock, patch
 from agent_system.context.config import ContextConfig, ContextStrategy
 from agent_system.context.manager import ContextManager
-from agent_system.llm.clients import ChatMessage
+from agent_system.llm.models import ChatMessage
 
 
 class TestDualTriggerContextManagement:

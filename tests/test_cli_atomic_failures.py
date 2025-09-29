@@ -18,8 +18,13 @@ def test_atomic_write_replace_failure(monkeypatch, tmp_path, capsys):
     cfg = _make_cfg_file(tmp_path)
 
     # monkeypatch load_settings so plugin discovery doesn't affect test
-    from agent_system.config.models import AgentConfig, MCPConfig
-    cfg_model = AgentConfig()
+    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    cfg_model = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_model="test-model"
+        )
+    )
     cfg_model.mcp = MCPConfig(plugin_dirs=[])
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg_model)
 
@@ -41,8 +46,13 @@ def test_atomic_write_tmp_write_failure(monkeypatch, tmp_path, capsys):
     cfg = _make_cfg_file(tmp_path)
 
     # monkeypatch load_settings
-    from agent_system.config.models import AgentConfig, MCPConfig
-    cfg_model = AgentConfig()
+    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    cfg_model = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_model="test-model"
+        )
+    )
     cfg_model.mcp = MCPConfig(plugin_dirs=[])
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg_model)
 

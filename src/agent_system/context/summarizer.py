@@ -2,7 +2,7 @@
 
 import logging
 from typing import List
-from ..llm.clients import ChatMessage
+from ..llm.models import ChatMessage
 from .config import ContextConfig
 from ..mcp.status import (
     status_bus,

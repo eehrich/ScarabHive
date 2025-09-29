@@ -16,8 +16,13 @@ def test_cli_plugins_table_pretty(monkeypatch, tmp_path, capsys):
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "pretty"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
     (plugin_dir / "plugin.yaml").write_text('description: "Pretty plugin"\nversion: "0.1"\n')
 
-    from agent_system.config.models import AgentConfig, MCPConfig
-    cfg = AgentConfig()
+    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    cfg = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_model="test-model"
+        )
+    )
     cfg.mcp = MCPConfig(plugin_dirs=[str(pdir)])
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 

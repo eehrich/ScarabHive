@@ -6,7 +6,7 @@ import tempfile
 import os
 
 from agent_system.config.loader import load_config
-from agent_system.config.models import AgentConfig, LLMConfig, ContextConfig, PromptsConfig
+from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile, ContextConfig, PromptsConfig
 
 
 class TestConfigLoader:
@@ -15,9 +15,15 @@ class TestConfigLoader:
     def test_load_valid_config(self):
         """Test loading valid configuration."""
         config_content = """
-llm:
-  provider: "openai"
-  model: "gpt-3.5-turbo"
+llm_system:
+  models:
+    gpt-3.5-turbo:
+      provider: "openai"
+      model: "gpt-3.5-turbo"
+  profiles:
+    normal:
+      model_ref: "gpt-3.5-turbo"
+  default_profile: "normal"
 
 context:
   auto_datetime: true
@@ -35,8 +41,8 @@ servers: {}
             config = load_config(temp_name)
             
             assert isinstance(config, AgentConfig)
-            assert config.llm.provider == "openai"
-            assert config.llm.model == "gpt-3.5-turbo"
+            assert config.llm_system.models["gpt-3.5-turbo"].provider == "openai"
+            assert config.llm_system.models["gpt-3.5-turbo"].model == "gpt-3.5-turbo"
             assert config.max_steps == 5
         finally:
             try:
@@ -51,21 +57,29 @@ class TestAgentConfig:
     def test_valid_config_creation(self):
         """Test creating valid configuration."""
         config = AgentConfig(
-            llm=LLMConfig(provider="openai", model="gpt-3.5-turbo"),
+            llm_system=LLMSystemConfig(
+                models={
+                    "gpt-3.5-turbo": LLMModelConfig(provider="openai", model="gpt-3.5-turbo")
+                },
+                profiles={
+                    "normal": LLMProfile(model_ref="gpt-3.5-turbo")
+                },
+                default_profile="normal"
+            ),
             max_steps=3,
             servers={}
         )
         
-        assert config.llm.provider == "openai"
+        assert config.llm_system.models["gpt-3.5-turbo"].provider == "openai"
         assert config.max_steps == 3
 
 
-class TestLLMConfig:
-    """Test LLM configuration validation."""
+class TestLLMModelConfig:
+    """Test LLM model configuration validation."""
     
     def test_valid_llm_config(self):
         """Test valid LLM configuration."""
-        config = LLMConfig(provider="openai", model="gpt-4")
+        config = LLMModelConfig(provider="openai", model="gpt-4")
         
         assert config.provider == "openai"
         assert config.model == "gpt-4"
@@ -76,7 +90,15 @@ class TestLLMConfig:
 def sample_config():
     """Fixture providing a sample configuration."""
     return AgentConfig(
-        llm=LLMConfig(provider="openai", model="gpt-3.5-turbo"),
+        llm_system=LLMSystemConfig(
+            models={
+                "gpt-3.5-turbo": LLMModelConfig(provider="openai", model="gpt-3.5-turbo")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="gpt-3.5-turbo")
+            },
+            default_profile="normal"
+        ),
         max_steps=5,
         servers={}
     )
@@ -87,7 +109,7 @@ class TestWithConfigFixtures:
     
     def test_sample_config(self, sample_config):
         """Test sample configuration fixture."""
-        assert sample_config.llm.provider == "openai"
+        assert sample_config.llm_system.models["gpt-3.5-turbo"].provider == "openai"
         assert sample_config.max_steps == 5
 
 

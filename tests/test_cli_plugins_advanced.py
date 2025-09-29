@@ -10,8 +10,13 @@ from agent_system import cli
 
 
 def _make_cfg(tmp_path: Path, plugin_dirs):
-    from agent_system.config.models import AgentConfig, MCPConfig
-    cfg = AgentConfig()
+    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    cfg = AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_model="test-model"
+        )
+    )
     cfg.mcp = MCPConfig(plugin_dirs=plugin_dirs)
     return cfg
 

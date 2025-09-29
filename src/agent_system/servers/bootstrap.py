@@ -99,30 +99,45 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
             from .agent.server import Agent
             # Create agent with basic config and empty registry (no recursion)
             # Inherit top-level LLM config unless server explicitly overrides
-            agent_cfg = AgentConfig()
-            # copy top-level LLM config
-            agent_cfg.llm = config.llm
-            # apply server-level overrides if present
-            if server_cfg.get("default_provider") or server_cfg.get("provider") or server_cfg.get("model"):
-                sc = server_cfg
-                llm_kwargs = {}
-                if sc.get("default_provider"):
-                    llm_kwargs["provider"] = sc.get("default_provider")
-                elif sc.get("provider"):
-                    llm_kwargs["provider"] = sc.get("provider")
-                if sc.get("model"):
-                    llm_kwargs["model"] = sc.get("model")
-                if sc.get("openai_api_key"):
-                    llm_kwargs["openai_api_key"] = sc.get("openai_api_key")
-                if sc.get("ollama_url"):
-                    llm_kwargs["ollama_url"] = sc.get("ollama_url")
-                if sc.get("ollama_mode"):
-                    llm_kwargs["ollama_mode"] = sc.get("ollama_mode")
-                if sc.get("request_timeout") is not None:
-                    llm_kwargs["request_timeout"] = sc.get("request_timeout")
-                # merge overrides
-                for k, v in llm_kwargs.items():
-                    setattr(agent_cfg.llm, k, v)
+            llm_system = config.llm_system
+            
+            # Apply server-level overrides if present
+            if any(server_cfg.get(k) for k in ["default_provider", "provider", "model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout"]):
+                from ..config.models import LLMSystemConfig, LLMModelConfig
+                
+                # Deep copy the existing LLM system to avoid modifying the original
+                llm_system_dict = config.llm_system.model_dump()
+                
+                # Create override model configuration
+                override_model_name = server_cfg.get("model", "override-model")
+                provider = server_cfg.get("default_provider") or server_cfg.get("provider", "openai")
+                
+                override_model = LLMModelConfig(
+                    provider=provider,
+                    model=override_model_name,
+                    openai_api_key=server_cfg.get("openai_api_key"),
+                    ollama_url=server_cfg.get("ollama_url"),
+                    ollama_mode=server_cfg.get("ollama_mode", "openai_compat"),
+                    request_timeout=server_cfg.get("request_timeout", 120)
+                )
+                
+                # Add or update the override model in the models dict
+                llm_system_dict["models"][override_model_name] = override_model.model_dump()
+                
+                # Create or update a profile to use this override model
+                override_profile_name = f"{key}_override"
+                llm_system_dict["profiles"][override_profile_name] = {
+                    "model_ref": override_model_name,
+                    "description": f"Server override profile for {key}"
+                }
+                
+                # Set this as the default profile for this agent
+                llm_system_dict["default_profile"] = override_profile_name
+                
+                # Create new LLMSystemConfig with overrides
+                llm_system = LLMSystemConfig.model_validate(llm_system_dict)
+            
+            agent_cfg = AgentConfig(llm_system=llm_system)
 
             agent_registry = MCPRegistry()  # Empty registry for this agent
             registry.register(key, Agent(key, agent_cfg, agent_registry, server_cfg, ssl_verify=config.network.ssl_verify))

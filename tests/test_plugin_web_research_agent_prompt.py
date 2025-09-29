@@ -7,7 +7,19 @@ def test_web_research_agent_uses_plugin_prompt():
     # Create the agent using the factory; it should load the plugin-local prompt
     agent = web_research_agent.create_web_research_agent(name='web_test', config={
         # minimal parent_llm dummy to satisfy LLM profile resolution in plugin factory
-        'parent_llm': {'llm': {'provider': 'ollama', 'model': 'gpt-oss:20b'}, 'llm_system': {'models': {}, 'profiles': {}, 'default_profile': 'fast'}},
+        'parent_llm': {
+            'llm': {'provider': 'ollama', 'model': 'gpt-oss:20b'}, 
+            'llm_system': {
+                'models': {
+                    'gpt-oss:20b': {'provider': 'ollama', 'model': 'gpt-oss:20b'}
+                }, 
+                'profiles': {
+                    'normal': {'model_ref': 'gpt-oss:20b'},
+                    'fast': {'model_ref': 'gpt-oss:20b'}
+                }, 
+                'default_profile': 'fast'
+            }
+        },
     }, ssl_verify=True)
 
     # The plugin code attaches research_config.prompts as a SimpleNamespace if found

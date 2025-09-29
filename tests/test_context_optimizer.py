@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch
 from agent_system.context.optimizer import TokenOptimizer
-from agent_system.llm.clients import ChatMessage
+from agent_system.llm.models import ChatMessage
 
 
 class TestTokenOptimizer:

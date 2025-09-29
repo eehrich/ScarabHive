@@ -12,7 +12,7 @@ from ...config.models import AgentConfig
 from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
-from ...llm.clients import ChatMessage
+from ...llm.models import ChatMessage
 from ...utils.prompt_renderer import render_prompts, get_datetime_context
 from jinja2 import Template
 from ...utils.text_sanitizer import sanitize_for_llm

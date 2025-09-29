@@ -4,7 +4,7 @@ import logging
 import re
 import json
 from typing import List, Dict, Any
-from ..llm.clients import ChatMessage
+from ..llm.models import ChatMessage
 from ..mcp.status import StatusScope, status_bus
 
 logger = logging.getLogger(__name__)

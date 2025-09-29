@@ -82,7 +82,7 @@ def create_web_research_agent(
             logger.error(f"Failed to resolve LLM profile for {name}: {e}")
             raise ValueError(f"WebResearchAgent requires proper LLM profile configuration: {e}")
     else:
-        raise ValueError(f"WebResearchAgent requires LLM system configuration with profiles")
+        raise ValueError("WebResearchAgent requires LLM system configuration with profiles")
 
     # Allow server config to override max_steps (fall back to default 50)
     resolved_max_steps = int(server_cfg.get("max_steps", 50)) if isinstance(server_cfg, dict) else 50

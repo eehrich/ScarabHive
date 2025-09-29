@@ -18,10 +18,9 @@ class TestWebUICancellation:
     @pytest.fixture
     async def mock_agent(self):
         """Create a mock agent for testing."""
-        config = AgentConfig(
-            name="test_agent",
-            description="Test agent for cancellation testing"
-        )
+        from tests.test_utils import create_test_config
+        
+        config = create_test_config()
         agent = Agent(
             name="test_agent",
             config=config,

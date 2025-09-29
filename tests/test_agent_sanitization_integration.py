@@ -4,8 +4,24 @@ import pytest
 from unittest.mock import AsyncMock
 
 from agent_system.servers.agent.server import Agent
-from agent_system.config.models import AgentConfig
+from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry, MCPServer
+
+
+def create_test_config():
+    """Create a test configuration with the new LLM system structure."""
+    return AgentConfig(
+        llm_system=LLMSystemConfig(
+            models={
+                "gpt-4": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="fake-key")
+            },
+            profiles={
+                "normal": LLMProfile(model_ref="gpt-4")
+            },
+            default_profile="normal"
+        ),
+        max_steps=1
+    )
 
 
 class TestAgentSanitizationIntegration:
@@ -15,14 +31,7 @@ class TestAgentSanitizationIntegration:
     async def test_agent_sanitizes_user_input(self):
         """Test that user input is sanitized before being sent to LLM."""
         # Create mock config
-        config = AgentConfig(
-            name="test_agent",
-            system_prompt="You are a test assistant",
-            max_turns=1,
-            llm_provider="openai",
-            llm_model="gpt-4",
-            openai_api_key="fake-key"
-        )
+        config = create_test_config()
         
         # Create mock registry
         registry = MCPRegistry()
@@ -65,14 +74,7 @@ class TestAgentSanitizationIntegration:
     async def test_agent_sanitizes_tool_results(self):
         """Test that tool results are sanitized before being sent to LLM."""
         # Create mock config
-        config = AgentConfig(
-            name="test_agent",
-            system_prompt="You are a test assistant",
-            max_turns=2,
-            llm_provider="openai", 
-            llm_model="gpt-4",
-            openai_api_key="fake-key"
-        )
+        config = create_test_config()
         
         # Mock tool server that returns problematic data
         class MockToolServer(MCPServer):

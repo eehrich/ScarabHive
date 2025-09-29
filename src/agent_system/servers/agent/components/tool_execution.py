@@ -9,7 +9,7 @@ import time
 from typing import Dict, List, Any
 
 from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
-from ....llm.clients import ChatMessage
+from ....llm.models import ChatMessage
 from ....utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....mcp.integration import get_mcp_integration
 

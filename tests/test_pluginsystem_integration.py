@@ -59,6 +59,20 @@ def create_test_config(workspace_path: Path):
     # Main agent config
     agent_config = {
         "includes": ["mcp.yaml"],
+        "llm_system": {
+            "models": {
+                "test-model": {
+                    "provider": "openai",
+                    "model": "test-model"
+                }
+            },
+            "profiles": {
+                "normal": {
+                    "model_ref": "test-model"
+                }
+            },
+            "default_profile": "normal"
+        },
         "logging": {
             "enabled": True,
             "level": "INFO",

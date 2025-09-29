@@ -26,7 +26,7 @@ from api.endpoints import router as api_router
 from ..mcp.base import MCPRegistry
 from ..servers.bootstrap import bootstrap_servers
 from ..utils.logging import setup_logging
-from ..llm.clients import ChatMessage
+from ..llm.models import ChatMessage
 from ..mcp.status import (
     status_bus,
     StatusEvent,
