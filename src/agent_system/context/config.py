@@ -35,6 +35,17 @@ class WarningLevel(Enum):
 
 
 @dataclass
+class TokenOptimizationConfig:
+    """Configuration for token optimization features."""
+    
+    enable_compression: bool = True  # Enable general token compression techniques
+    compress_tool_results: bool = True  # Compress verbose tool outputs to save tokens
+    optimize_json: bool = False  # JSON optimization
+    remove_verbose_patterns: bool = False  # Remove verbose patterns
+    max_tool_result_tokens: int = 1000  # Maximum tokens to preserve from tool results
+
+
+@dataclass
 class ContextConfig:
     """Configuration for context window management.
 
@@ -63,10 +74,8 @@ class ContextConfig:
     max_summary_words: int = 500  # Maximum words in generated summary (prevents overly long summaries)
     tool_result_preview_chars: int = 200  # Characters to show in tool result preview (balances detail vs brevity)
 
-    # Token optimization settings
-    enable_compression: bool = True  # Enable general token compression techniques
-    compress_tool_results: bool = True  # Compress verbose tool outputs to save tokens
-    max_tool_result_tokens: int = 1000  # Maximum tokens to preserve from tool results
+    # Token optimization settings (nested structure)
+    token_optimization: Optional[TokenOptimizationConfig] = field(default_factory=lambda: TokenOptimizationConfig())
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "ContextConfig":

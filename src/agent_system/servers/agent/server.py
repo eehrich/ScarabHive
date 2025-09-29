@@ -250,6 +250,19 @@ class Agent(MCPServer):
 
             # Use the new 'token_optimization' key exclusively.
             optimization_settings = context_mgmt_settings.get("token_optimization", {})
+            
+            # Import TokenOptimizationConfig for nested structure
+            from ...context.config import TokenOptimizationConfig
+            
+            # Create TokenOptimizationConfig from YAML settings
+            token_opt_config = TokenOptimizationConfig(
+                enable_compression=optimization_settings.get("enable_compression", True),
+                compress_tool_results=optimization_settings.get("compress_tool_results", True),
+                optimize_json=optimization_settings.get("optimize_json", False),
+                remove_verbose_patterns=optimization_settings.get("remove_verbose_patterns", False),
+                max_tool_result_tokens=optimization_settings.get("max_tool_result_tokens", 1000)
+            )
+            
             self.context_config = ContextConfig(
                 context_window=int(context_window),
                 summarization_threshold=summarization_threshold,
@@ -258,8 +271,7 @@ class Agent(MCPServer):
                 strategy=strategy,
                 max_summary_words=context_mgmt_settings.get("max_summary_words", 500),
                 tool_result_preview_chars=context_mgmt_settings.get("tool_result_preview_chars", 200),
-                enable_compression=optimization_settings.get("enabled", True),
-                compress_tool_results=optimization_settings.get("compress_tool_results", True)
+                token_optimization=token_opt_config
             )
 
             # Initialize context manager with agent-specific tracking
@@ -305,7 +317,8 @@ class Agent(MCPServer):
 
             # Initialize optimizer only when compression/optimization is enabled
             try:
-                if getattr(self.context_config, 'enable_compression', False):
+                if (self.context_config.token_optimization and 
+                    getattr(self.context_config.token_optimization, 'enable_compression', False)):
                     self.token_optimizer = TokenOptimizer()
                 else:
                     self.token_optimizer = None
