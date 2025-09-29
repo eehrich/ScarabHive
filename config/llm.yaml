@@ -8,7 +8,6 @@ llm_system:
     pool: 5.0          # Pool timeout - getting connection from pool (seconds)
 
   models:
-
     gpt-4.1:
       provider: openai
       model: gpt-4.1
@@ -30,18 +29,17 @@ llm_system:
       context_window: 272000
       request_timeout: 180
       httpx_timeouts:
-        connect: 15.0     # Longer connection timeout for complex requests
-        read: 300.0       # Extended read timeout for long responses
-        write: 15.0       # Extended write timeout for large payloads
-        pool: 10.0        # Extended pool timeout
-
+        connect: 10.0
+        read: 240.0
+        write: 10.0
+        pool: 5.0
+        
     gpt-5:
       provider: openai
       model: gpt-5
       openai_api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
-
 
     gpt-realtime:
       provider: openai
@@ -65,6 +63,14 @@ llm_system:
       request_timeout: 180
       context_window: 65535
 
+    deepseek-chat:
+      provider: ollama
+      model: deepseek-chat
+      openai_api_key: "***REMOVED***"
+      ollama_url: https://api.deepseek.com
+      ollama_mode: openai_compat      
+      context_window: 100000 # 128K context size totally
+      request_timeout: 180
 
    
   profiles:
@@ -73,7 +79,7 @@ llm_system:
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 100
     normal:
-      model_ref: gpt-5-mini
+      model_ref: deepseek-chat
       description: "Fast model for quick responses"
       max_steps: 100      
     think:
@@ -92,5 +98,12 @@ llm_system:
       model_ref: gpt-realtime
       description: "model for image processing"
       max_steps: 100
+    deepseek:
+      model_ref: deepseek-chat
+      description: "Cheap and fast none thinking model, for medium complex tasks"
+      max_steps: 100      
 
   default_profile: normal
+
+
+
