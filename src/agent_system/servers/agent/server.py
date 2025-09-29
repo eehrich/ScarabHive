@@ -773,7 +773,7 @@ class Agent(MCPServer):
 
                 # Get LLM response - handle context length exceeded errors
                 try:
-                    llm_out = await self.llm.chat_tools(messages, tools_schema)
+                    llm_out = await self.llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
                 except Exception as e:
                     # Check if this is a context length exceeded error
                     from agent_system.context.exceptions import ContextLengthExceededError
@@ -843,9 +843,22 @@ class Agent(MCPServer):
                             
                             # Try the LLM call again with reduced context
                             try:
-                                llm_out = await self.llm.chat_tools(messages, tools_schema)
+                                llm_out = await self.llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
                                 logger.info("LLM call successful after emergency context management")
                             except Exception as retry_e:
+                                # Check if this is a cancellation exception in the retry
+                                retry_error_str = str(retry_e).lower()
+                                if "cancelled" in retry_error_str or "timeout" in retry_error_str:
+                                    logger.info(f"Request {request_id} cancelled during retry LLM call: {retry_e}")
+                                    # Signal cancellation using status contexts
+                                    await status_worker.error(f"cancelled during retry LLM call: {retry_e}", 
+                                                            meta={"step": step + 1, "reason": "cancelled"})
+                                    await status_coordinator.error("cancelled during retry LLM call", 
+                                                                 meta={"step": step + 1, "reason": "cancelled"})
+                                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(retry_e)}
+                                    yield {"type": "end"}
+                                    return
+                                
                                 logger.error(f"LLM call failed even after emergency context management: {retry_e}")
                                 # Return empty response to trigger agent stop
                                 llm_out = {"assistant": {"role": "assistant", "content": ""}}
@@ -854,6 +867,19 @@ class Agent(MCPServer):
                             # Return empty response to trigger agent stop
                             llm_out = {"assistant": {"role": "assistant", "content": ""}}
                     else:
+                        # Check if this is a cancellation exception
+                        error_str = str(e).lower()
+                        if "cancelled" in error_str or "timeout" in error_str:
+                            logger.info(f"Request {request_id} cancelled during LLM call: {e}")
+                            # Signal cancellation using status contexts
+                            await status_worker.error(f"cancelled during LLM call: {e}", 
+                                                    meta={"step": step + 1, "reason": "cancelled"})
+                            await status_coordinator.error("cancelled during LLM call", 
+                                                         meta={"step": step + 1, "reason": "cancelled"})
+                            yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
+                            yield {"type": "end"}
+                            return
+                        
                         # Re-raise other exceptions
                         raise
                 
@@ -921,7 +947,19 @@ class Agent(MCPServer):
                     consecutive_no_tool_calls = 0
                     logger.error("LLM returned error payload (step %d): %s", step + 1, assistant_error)
                     results.setdefault("errors", []).append(f"LLM error: {assistant_error.get('message')}")
-                    yield {"type": "error", "message": assistant_error.get("message", "LLM error"), "llm_error": assistant_error}
+                    
+                    # Check if this is a cancellation error and send status messages
+                    error_message = assistant_error.get('message', '')
+                    if 'cancelled' in error_message.lower() or 'timeout' in error_message.lower():
+                        logger.info(f"Request {request_id} cancelled (from LLM error payload): {error_message}")
+                        # Signal cancellation using status contexts
+                        await status_worker.error(f"cancelled during LLM call: {error_message}", 
+                                                meta={"step": step + 1, "reason": "cancelled"})
+                        await status_coordinator.error("cancelled during LLM call", 
+                                                     meta={"step": step + 1, "reason": "cancelled"})
+                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": error_message}
+                    else:
+                        yield {"type": "error", "message": assistant_error.get("message", "LLM error"), "llm_error": assistant_error}
                     break
 
                 if not tool_calls and is_empty_content:
@@ -1042,7 +1080,7 @@ class Agent(MCPServer):
                     from agent_system.core.message_validator import validate_messages_before_llm
                     messages = validate_messages_before_llm(messages, context="agent_server_final")
                     
-                    final_llm_out = await self.llm.chat_tools(messages, [])
+                    final_llm_out = await self.llm.chat_tools(messages, [], cancellation_token=main_token)
                     final_assistant = final_llm_out.get("assistant", {})
                     final_content = final_assistant.get("content")
                     if final_content:
@@ -1056,6 +1094,19 @@ class Agent(MCPServer):
                         results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
                         yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
                 except Exception as e:
+                    # Check if this is a cancellation exception in final answer
+                    final_error_str = str(e).lower()
+                    if "cancelled" in final_error_str or "timeout" in final_error_str:
+                        logger.info(f"Request {request_id} cancelled during final LLM call: {e}")
+                        # Signal cancellation using status contexts
+                        await status_worker.error(f"cancelled during final LLM call: {e}", 
+                                                meta={"step": step + 1, "reason": "cancelled"})
+                        await status_coordinator.error("cancelled during final LLM call", 
+                                                     meta={"step": step + 1, "reason": "cancelled"})
+                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
+                        yield {"type": "end"}
+                        return
+                    
                     logger.exception("Failed to get final answer: %s", e)
                     results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
                     yield {"type": "error", "message": f"Failed to get final answer: {e}"}

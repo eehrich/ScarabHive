@@ -13,7 +13,7 @@ class MockLLMClient:
         self.response_type = response_type
         self.call_count = 0
     
-    async def chat_tools(self, messages, tools):
+    async def chat_tools(self, messages, tools, cancellation_token=None):
         self.call_count += 1
         
         if self.response_type == "empty":
@@ -101,7 +101,7 @@ async def test_agent_normal_execution_not_affected():
         def __init__(self):
             self.call_count = 0
         
-        async def chat_tools(self, messages, tools):
+        async def chat_tools(self, messages, tools, cancellation_token=None):
             self.call_count += 1
             if self.call_count == 1:
                 # First call: make a tool call

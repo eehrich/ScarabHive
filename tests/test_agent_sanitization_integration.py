@@ -32,7 +32,7 @@ class TestAgentSanitizationIntegration:
         
         # Mock the LLM to capture what messages it receives
         captured_messages = []
-        async def mock_chat_tools(messages, tools):
+        async def mock_chat_tools(messages, tools, cancellation_token=None):
             captured_messages.extend(messages)
             return {"assistant": {"content": "Test response"}}
         
@@ -107,7 +107,7 @@ class TestAgentSanitizationIntegration:
         captured_messages = []
         call_count = 0
         
-        async def mock_chat_tools(messages, tools):
+        async def mock_chat_tools(messages, tools, cancellation_token=None):
             nonlocal call_count
             captured_messages.extend(messages)
             call_count += 1

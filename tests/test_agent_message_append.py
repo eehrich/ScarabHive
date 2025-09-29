@@ -12,7 +12,7 @@ class DummyLLM:
         # Return a planner-like response format
         return {"assistant": {"content": "planner response", "tool_calls": []}, "usage": {"total_tokens": 10}}
 
-    async def chat_tools(self, messages, tools):
+    async def chat_tools(self, messages, tools, cancellation_token=None):
         # Final answer
         return {"assistant": {"content": "final response"}, "usage": {"total_tokens": 5}}
 

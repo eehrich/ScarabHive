@@ -22,9 +22,9 @@ class ChatMessage(BaseModel):
 
 
 class LLMClient:
-    async def chat(self, messages: list[ChatMessage]) -> str:
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         raise NotImplementedError
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict]) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
         raise NotImplementedError
 
 
@@ -101,7 +101,7 @@ class OpenAIAsyncClient(LLMClient):
         self._default_extra = default_extra or {}
         self._timeout = timeout
 
-    async def chat(self, messages: list[ChatMessage]) -> str:
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         logger = logging.getLogger(__name__)
         try:
             opts = {"model": self.model, "messages": [m.model_dump() for m in messages]}
@@ -125,11 +125,40 @@ class OpenAIAsyncClient(LLMClient):
                     return None
 
             for attempt in range(1, max_attempts + 1):
+                # Check for cancellation before each attempt
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise Exception("Request cancelled by user")
+                    
                 try:
                     # SDK stubs vary by version; cast the client to Any to avoid
                     # mypy overload/typing noise for dynamic SDK calls.
                     client_any = cast(Any, self._client)
-                    resp = await client_any.chat.completions.create(**opts)
+                    
+                    # If cancellation_token provided, use polling approach to check cancellation during request
+                    if cancellation_token:
+                        # Create the LLM request task
+                        llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
+                        
+                        # Poll for cancellation while waiting for LLM response
+                        while not llm_task.done():
+                            try:
+                                # Wait for either completion or a short interval (500ms)
+                                resp = await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.5)
+                                break  # Request completed
+                            except asyncio.TimeoutError:
+                                # Check if cancellation was requested
+                                if cancellation_token.is_cancelled:
+                                    llm_task.cancel()
+                                    try:
+                                        await llm_task  # Wait for cancellation to complete
+                                    except asyncio.CancelledError:
+                                        pass
+                                    raise Exception("Request cancelled by user during LLM call")
+                                # Continue polling
+                                continue
+                        resp = await llm_task  # Get the result
+                    else:
+                        resp = await client_any.chat.completions.create(**opts)
                     break
                 except Exception as e:
                     status = None
@@ -172,6 +201,10 @@ class OpenAIAsyncClient(LLMClient):
                         else:
                             wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                        
+                        # Check cancellation during sleep
+                        if cancellation_token and cancellation_token.is_cancelled:
+                            raise Exception("Request cancelled by user during rate limit backoff")
                         await asyncio.sleep(wait)
                         continue
                     # Not a rate-limit we can retry, re-raise to be handled below
@@ -241,7 +274,7 @@ class OpenAIAsyncClient(LLMClient):
                 logger.exception("OpenAI chat failed (secondary error building payload): %s", e)
                 return ""
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict]) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
         """Call model with native tool calling enabled.
 
         Returns a dict with keys:
@@ -313,9 +346,38 @@ class OpenAIAsyncClient(LLMClient):
                     return None
 
             for attempt in range(1, max_attempts + 1):
+                # Check for cancellation before each attempt
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise Exception("Request cancelled by user")
+                    
                 try:
                     client_any = cast(Any, self._client)
-                    resp = await client_any.chat.completions.create(**opts)
+                    
+                    # If cancellation_token provided, use polling approach to check cancellation during request
+                    if cancellation_token:
+                        # Create the LLM request task
+                        llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
+                        
+                        # Poll for cancellation while waiting for LLM response
+                        while not llm_task.done():
+                            try:
+                                # Wait for either completion or a short interval (500ms)
+                                resp = await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.5)
+                                break  # Request completed
+                            except asyncio.TimeoutError:
+                                # Check if cancellation was requested
+                                if cancellation_token.is_cancelled:
+                                    llm_task.cancel()
+                                    try:
+                                        await llm_task  # Wait for cancellation to complete
+                                    except asyncio.CancelledError:
+                                        pass
+                                    raise Exception("Request cancelled by user during LLM call")
+                                # Continue polling
+                                continue
+                        resp = await llm_task  # Get the result
+                    else:
+                        resp = await client_any.chat.completions.create(**opts)
                     break
                 except Exception as e:
                     status = None
@@ -353,6 +415,10 @@ class OpenAIAsyncClient(LLMClient):
                         else:
                             wait = max(self._retry_min_backoff, min(self._retry_backoff_cap, base_backoff * (2 ** (attempt - 1)))) + random.random() * 0.5
                         logger.warning("OpenAI rate limited (429). retrying in %.1f sec (attempt %d/%d)", wait, attempt, max_attempts)
+                        
+                        # Check cancellation during sleep
+                        if cancellation_token and cancellation_token.is_cancelled:
+                            raise Exception("Request cancelled by user during rate limit backoff")
                         await asyncio.sleep(wait)
                         continue
                     # Check for context length exceeded error (400 with specific message)
@@ -460,7 +526,7 @@ class OllamaNativeAsyncClient(LLMClient):
             out.append(d)
         return out
 
-    async def chat(self, messages: list[ChatMessage]) -> str:
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         url = f"{self._base}/api/chat"
         body: dict[str, Any] = {
             "model": self.model,
@@ -469,14 +535,43 @@ class OllamaNativeAsyncClient(LLMClient):
         }
         if self._options:
             body["options"] = self._options
+        
+        # Check for cancellation before HTTP request
+        if cancellation_token and cancellation_token.is_cancelled:
+            raise Exception("Request cancelled by user")
+            
         async with self._httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, json=body)
+            # If cancellation_token provided, use polling approach to check cancellation during request
+            if cancellation_token:
+                # Create the HTTP request task
+                http_task = asyncio.create_task(client.post(url, json=body))
+                
+                # Poll for cancellation while waiting for HTTP response
+                while not http_task.done():
+                    try:
+                        # Wait for either completion or a short interval (500ms)
+                        resp = await asyncio.wait_for(asyncio.shield(http_task), timeout=0.5)
+                        break  # Request completed
+                    except asyncio.TimeoutError:
+                        # Check if cancellation was requested
+                        if cancellation_token.is_cancelled:
+                            http_task.cancel()
+                            try:
+                                await http_task  # Wait for cancellation to complete
+                            except asyncio.CancelledError:
+                                pass
+                            raise Exception("Request cancelled by user during Ollama call")
+                        # Continue polling
+                        continue
+                resp = await http_task  # Get the result
+            else:
+                resp = await client.post(url, json=body)
             resp.raise_for_status()
             data = resp.json()
         msg = (data or {}).get("message") or {}
         return msg.get("content") or ""
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict]) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
         url = f"{self._base}/api/chat"
         body: dict[str, Any] = {
             "model": self.model,
@@ -486,8 +581,37 @@ class OllamaNativeAsyncClient(LLMClient):
         }
         if self._options:
             body["options"] = self._options
+        
+        # Check for cancellation before HTTP request
+        if cancellation_token and cancellation_token.is_cancelled:
+            raise Exception("Request cancelled by user")
+            
         async with self._httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, json=body)
+            # If cancellation_token provided, use polling approach to check cancellation during request
+            if cancellation_token:
+                # Create the HTTP request task
+                http_task = asyncio.create_task(client.post(url, json=body))
+                
+                # Poll for cancellation while waiting for HTTP response
+                while not http_task.done():
+                    try:
+                        # Wait for either completion or a short interval (500ms)
+                        resp = await asyncio.wait_for(asyncio.shield(http_task), timeout=0.5)
+                        break  # Request completed
+                    except asyncio.TimeoutError:
+                        # Check if cancellation was requested
+                        if cancellation_token.is_cancelled:
+                            http_task.cancel()
+                            try:
+                                await http_task  # Wait for cancellation to complete
+                            except asyncio.CancelledError:
+                                pass
+                            raise Exception("Request cancelled by user during Ollama call")
+                        # Continue polling
+                        continue
+                resp = await http_task  # Get the result
+            else:
+                resp = await client.post(url, json=body)
             resp.raise_for_status()
             data = resp.json()
         message = (data or {}).get("message") or {}

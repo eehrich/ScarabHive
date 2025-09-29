@@ -142,7 +142,7 @@ class LLMRouterServer(SchemaBasedMCPServer):
                 # Create client using profile-based configuration
                 client = self._make_client(profile=profile)
 
-                content = await client.chat(messages)
+                content = await client.chat(messages, cancellation_token=cancellation_token)
 
                 await status.end(f"Chat completed using profile '{profile}'")
                 return {
