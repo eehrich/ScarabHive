@@ -215,16 +215,16 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         await status.progress("Executing code")
         result = await loop.run_in_executor(None, self.executor.execute, code)
 
-        if result["success"]:
+        if result.get("success"):
             # Publish end status with execution metadata
             meta = {"execution_time": result.get("execution_time"), "variables": len(result.get("variables", {}))}
             await status.end("Execution completed", meta=meta)
 
             output_parts = []
-            if result["output"]:
+            if result.get("output"):
                 output_parts.append(f"Output: {result['output']}")
 
-            if result["variables"]:
+            if result.get("variables"):
                 var_summary = ", ".join([f"{k}={v}" for k, v in result["variables"].items()])
                 output_parts.append(f"Variables: {var_summary}")
 
@@ -234,25 +234,30 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
                 "content": [
                     {
                         "type": "text",
-                        "text": "\\n".join(output_parts) if output_parts else "Code executed successfully (no output)"
+                        "text": "\n".join(output_parts) if output_parts else "Code executed successfully (no output)"
                     }
                 ]
             }
-        else:
-            error_info = result["error"]
-            await status.error(f"Execution failed: {error_info}")
-            error_text = f"Error ({error_info['category']}): {error_info['message']}"
-            if "suggestion" in error_info:
-                error_text += f"\\nSuggestion: {error_info['suggestion']}"
 
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": error_text
-                    }
-                ]
-            }
+        # Error branch
+        error_info = result.get("error")
+        await status.error(f"Execution failed: {error_info}")
+        # If structured error, include category/message
+        if isinstance(error_info, dict):
+            error_text = f"Error ({error_info.get('category','error')}): {error_info.get('message','') }"
+            if "suggestion" in error_info:
+                error_text += f"\nSuggestion: {error_info['suggestion']}"
+        else:
+            error_text = str(error_info)
+
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": error_text
+                }
+            ]
+        }
 
     async def _reset_sandbox(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Reset the sandbox environment."""

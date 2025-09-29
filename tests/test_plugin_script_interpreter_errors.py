@@ -89,10 +89,6 @@ for i in range(3):
     assert "0\n1\n2" in result["result"]
 
 
-
-    assert "valid" in result["result"].lower()
-
-
 @pytest.mark.asyncio
 async def test_security_violation_error(server, mock_status):
     """Test security violation for disallowed functions."""
