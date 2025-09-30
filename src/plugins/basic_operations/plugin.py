@@ -11,46 +11,15 @@ from typing import Any
 from pathlib import Path
 
 import yaml
+from agent_system.plugins.factory_utils import make_agent_plugin_factory
 
 from .server import BasicOperationsServer
 
 logger = logging.getLogger(__name__)
 
 
-def PLUGIN_FACTORY(name: str, config: dict[str, Any] | None = None, ssl_verify: bool = True) -> BasicOperationsServer:
-    """Create and configure a BasicOperations plugin server instance.
-    
-    Args:
-        name: The plugin instance name (used for tool naming)
-        config: Plugin configuration dictionary with optional settings:
-            - max_wait_seconds (float): Maximum allowed wait time (default: 300)
-            - default_update_interval (float): Default status update interval (default: 1.0)
-        ssl_verify: Enable SSL certificate verification (default: True)
-    
-    Returns:
-        Configured BasicOperationsServer instance
-        
-    Example:
-        >>> server = PLUGIN_FACTORY("basic_ops", {"max_wait_seconds": 60})
-        >>> # Creates server with 60 second maximum wait time
-    """
-    # Initialize with defaults if no config provided
-    if config is None:
-        config = {}
-    
-    # Log plugin creation
-    logger.info(f"Creating BasicOperations plugin instance: {name}")
-    logger.debug(f"Configuration: {config}")
-    
-    try:
-        # Create and return the server instance
-        server = BasicOperationsServer(name, config, ssl_verify)
-        logger.info(f"BasicOperations plugin '{name}' created successfully")
-        return server
-        
-    except Exception as e:
-        logger.error(f"Failed to create BasicOperations plugin '{name}': {e}")
-        raise
+# MODERN: Use standardized plugin factory - automatically handles AgentConfig
+PLUGIN_FACTORY = make_agent_plugin_factory(BasicOperationsServer)
 
 
 # Plugin metadata for discovery is loaded from plugin.yaml when available.

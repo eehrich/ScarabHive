@@ -1376,7 +1376,7 @@ def main() -> None:
                     pass
             else:
                 # Not an Agent instance -> create a dedicated Agent wrapper
-                agent = Agent(entry_name, cli_agent_config, registry=registry, agent_config={})
+                agent = Agent(entry_name, cli_agent_config, registry)
         else:
             # Create new Agent with server-level patterns if defined
             try:
@@ -1391,11 +1391,11 @@ def main() -> None:
                     base_agent_cfg['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
                 if server_agent_cfg.get('blocked_tools'):
                     base_agent_cfg['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
-            agent = Agent(entry_name, cli_agent_config, registry=registry, agent_config=base_agent_cfg)
+            agent = Agent(entry_name, cli_agent_config, registry)
             registry.register(entry_name, agent)
     except Exception:
         # Fallback to legacy dedicated cli_agent if anything unexpected happens
-        agent = Agent("cli_agent", cli_agent_config, registry=registry, agent_config={})
+        agent = Agent("cli_agent", cli_agent_config, registry)
 
     # Removed legacy alias registration for 'cli_agent'. Historical scripts should be updated to
     # reference the configured entry agent directly.

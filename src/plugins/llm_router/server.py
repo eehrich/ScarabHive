@@ -1,93 +1,111 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from agent_system.llm.models import ChatMessage
 from agent_system.llm.clients import make_llm
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.utils.text_sanitizer import sanitize_for_llm
 
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
+
 
 class LLMRouterServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
-        super().__init__(name, config, ssl_verify=ssl_verify)
-        self.config = config or {}
+    def __init__(self, name: str, config: AgentConfig, registry=None) -> None:
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
         
-        # Get parent LLM configuration for profile-based routing
-        self.parent_llm = self.config.get("parent_llm", {})
+        # Store the full AgentConfig for LLM routing
+        self.llm_config = config.llm_system
 
 
 
     def _resolve_profile_config(self, profile_name: str) -> dict:
-        """Resolve LLM configuration from profile name using parent LLM system."""
-        if not isinstance(self.parent_llm, dict) or not self.parent_llm.get('llm_system'):
+        """Resolve LLM configuration from profile name using AgentConfig."""
+        if not self.llm_config:
             raise ValueError("Profile-based routing requires LLM system configuration")
         
         try:
-            # Import using relative paths to avoid import issues
-            import sys
-            import os
-            # Add the src directory to Python path for imports
-            src_path = os.path.join(os.path.dirname(__file__), '..', '..', '..')
-            if src_path not in sys.path:
-                sys.path.insert(0, src_path)
-                
-            from agent_system.config.models import AgentConfig, LLMSystemConfig
             from agent_system.llm.factory import resolve_llm_config_for_agent
             
-            # Create AgentConfig from parent_llm dictionary  
-            temp_config = AgentConfig(
-                llm_system=LLMSystemConfig(**(self.parent_llm.get('llm_system', {}))),
-                agent_llm_profiles={f"llm_router_{profile_name}": profile_name},
-            )
+            # Create temporary AgentConfig with the requested profile
+            temp_config = self.agent_config.model_copy()
+            temp_config.agent_llm_profiles = {f"llm_router_{profile_name}": profile_name}
             
             # Resolve profile to get LLM kwargs
             return resolve_llm_config_for_agent(temp_config, f"llm_router_{profile_name}")
         except Exception as e:
             raise ValueError(f"Failed to resolve profile '{profile_name}': {e}")
 
+    def _make_serializable(self, obj) -> Any:
+        """Convert objects to JSON-serializable format."""
+        if hasattr(obj, 'model_dump'):
+            # Pydantic v2
+            return obj.model_dump()
+        elif hasattr(obj, 'dict'):
+            # Pydantic v1
+            return obj.dict()
+        elif isinstance(obj, dict):
+            # Recursively handle nested dictionaries
+            return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            # Recursively handle lists/tuples
+            return [self._make_serializable(item) for item in obj]
+        elif isinstance(obj, (str, int, float, bool, type(None))):
+            # Basic JSON-serializable types
+            return obj
+        else:
+            # Fallback to string representation for unknown objects
+            return str(obj)
+
     def _get_profile_details(self) -> dict[str, Any]:
         """Get detailed information about all available LLM profiles."""
-        if not isinstance(self.parent_llm, dict) or not self.parent_llm.get('llm_system'):
+        if not self.llm_config:
             raise ValueError("Profile-based routing requires LLM system configuration")
         
-        llm_system = self.parent_llm.get('llm_system', {})
-        profiles = llm_system.get('profiles', {})
-        models = llm_system.get('models', {})
+        profiles = self.llm_config.profiles or {}
+        models = self.llm_config.models or {}
         
         profile_details = {}
         
         for profile_name, profile_config in profiles.items():
-            if isinstance(profile_config, dict):
+            # Make profile_config serializable early
+            serializable_config = self._make_serializable(profile_config)
+            
+            if isinstance(serializable_config, dict):
                 # Get model reference
-                model_ref = profile_config.get('model_ref', 'unknown')
+                model_ref = serializable_config.get('model_ref', 'unknown')
                 
                 # Look up model details
                 model_details = models.get(model_ref, {})
-                if isinstance(model_details, dict):
-                    provider = model_details.get('provider', 'unknown')
-                    model_name = model_details.get('model', model_ref)
+                # Make model_details serializable too
+                serializable_model_details = self._make_serializable(model_details)
+                
+                if isinstance(serializable_model_details, dict):
+                    provider = serializable_model_details.get('provider', 'unknown')
+                    model_name = serializable_model_details.get('model', model_ref)
                 else:
                     provider = 'unknown'
                     model_name = model_ref
                 
                 profile_details[profile_name] = {
-                    'description': profile_config.get('description', 'No description available'),
+                    'description': serializable_config.get('description', 'No description available'),
                     'model_ref': model_ref,
                     'provider': provider,
                     'model': model_name,
-                    'max_steps': profile_config.get('max_steps', 'unlimited'),
-                    'config': profile_config
+                    'max_steps': serializable_config.get('max_steps', 'unlimited'),
+                    'config': serializable_config
                 }
             else:
                 # Handle simple string descriptions
                 profile_details[profile_name] = {
-                    'description': str(profile_config),
+                    'description': str(serializable_config),
                     'model_ref': 'unknown',
                     'provider': 'unknown', 
                     'model': 'unknown',
                     'max_steps': 'unlimited',
-                    'config': profile_config
+                    'config': serializable_config
                 }
         
         return profile_details
@@ -183,15 +201,15 @@ class LLMRouterServer(SchemaBasedMCPServer):
         available_models = []
         available_providers = []
         
-        if isinstance(self.parent_llm, dict) and self.parent_llm.get('llm_system'):
-            llm_system = self.parent_llm.get('llm_system', {})
+        if self.llm_config:
+            llm_system = self.llm_config
             
             # Get available profiles
-            profiles = llm_system.get('profiles', {})
+            profiles = getattr(llm_system, 'profiles', {}) or {}
             available_profiles = list(profiles.keys())
             
             # Get available models 
-            models = llm_system.get('models', {})
+            models = getattr(llm_system, 'models', {}) or {}
             available_models = list(models.keys())
             
             # Get available providers from models

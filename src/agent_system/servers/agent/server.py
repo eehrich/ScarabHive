@@ -41,23 +41,20 @@ class Agent(MCPServer):
     """
 
     def __init__(self, name: str, config: AgentConfig, registry: MCPRegistry,
-                 agent_config: dict | None = None, ssl_verify: bool = True,
                  llm: object | None = None, llm_factory: object | None = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
 
         Args:
             name: Name of this agent (used when serving as MCP Server)
-            config: Agent configuration
+            config: Complete agent configuration (includes network settings)
             registry: MCP Registry with available tools
-            agent_config: Optional agent-specific config (description, etc.)
-            ssl_verify: SSL verification setting
         """
-        # Initialize as MCPServer
-        super().__init__(name, agent_config, ssl_verify)
+        # Initialize as MCPServer with AgentConfig
+        super().__init__(name, config)
 
-        # Agent-specific initialization
-        self.agent_config = config
+        # Agent-specific initialization (agent_config already set by MCPServer parent)
+        # self.agent_config = config  # Already done by MCPServer.__init__()
         self.registry = registry
         # Mark this Agent as internal by default so it doesn't show up in UI lists
         # Consumers who want it visible can set `agent._mcp_public = True` after construction.
@@ -67,9 +64,10 @@ class Agent(MCPServer):
         self.llm = llm
         self._llm_factory = llm_factory
 
-        # Set default description
-        if "description" not in self.config:
-            self.config["description"] = f"Agent: {name}"
+        # Set default description (using AgentConfig)
+        if not hasattr(self.agent_config, 'description') or not self.agent_config.description:
+            # We can't modify the AgentConfig directly, so we store description separately if needed
+            self._agent_description = f"Agent: {name}"
 
         # Initialize LLM if not provided. Prefer an explicitly passed `llm`.
         # Store LLM profile information for status display
@@ -225,14 +223,28 @@ class Agent(MCPServer):
                 # Fallback to default if profile resolution fails
                 context_window = 32768
 
-            # Read user-provided context management settings (may be None)
-            context_mgmt = getattr(self.agent_config, 'context_management', None) or {}
-
-            # Normalize to dict if it's a pydantic model
-            if hasattr(context_mgmt, '__dict__'):
+            # SIMPLIFIED: Read context management directly from AgentConfig
+            # No more complex parameter passing - use the source of truth
+            context_mgmt = getattr(self.agent_config, 'context_management', None)
+            if context_mgmt is None:
+                # Use defaults if no context_management configured
+                context_mgmt_settings = {}
+            elif hasattr(context_mgmt, 'model_dump'):
+                # Pydantic model - convert to dict
+                context_mgmt_settings = context_mgmt.model_dump()
+            elif hasattr(context_mgmt, '__dict__'):
+                # Regular object - convert to dict
                 context_mgmt_settings = vars(context_mgmt)
             else:
+                # Already a dict
                 context_mgmt_settings = dict(context_mgmt)
+            
+            # Apply server-specific overrides from AgentConfig if present
+            if hasattr(self.agent_config, 'context_management'):
+                server_overrides = getattr(self.agent_config, 'context_management', {})
+                if server_overrides:
+                    context_mgmt_settings.update(server_overrides)
+                    logger.debug("Applied server-specific context_management overrides for %s: %s", self.name, server_overrides)
 
             # Create ContextConfig with proper parameters from context_mgmt_settings
             from ...context.config import ContextConfig, ContextStrategy
@@ -446,7 +458,7 @@ class Agent(MCPServer):
     @property
     def description(self) -> str:
         """Get the agent description."""
-        return self.config.get("description", f"Agent: {self.name}")
+        return getattr(self.agent_config, 'description', None) or getattr(self, '_agent_description', f"Agent: {self.name}")
 
     async def cancel_request(self, request_id: str) -> bool:
         """
@@ -1438,7 +1450,7 @@ class Agent(MCPServer):
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.config.get("description", f"Agent: {self.name}"),
+                "description": getattr(self.agent_config, 'description', None) or getattr(self, '_agent_description', f"Agent: {self.name}"),
                 "parameters": {
                     "type": "object",
                     "properties": {

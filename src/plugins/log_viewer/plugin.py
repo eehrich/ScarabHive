@@ -1,26 +1,32 @@
 """Log Viewer Plugin Entry Point"""
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
+from agent_system.plugins.factory_utils import make_agent_plugin_factory
 from .mcp_server import LogViewerMCPServer
 from .endpoints import LogViewerWebEndpoints
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 
 class LogViewerHybridPlugin:
     """Hybrid plugin that provides both MCP and web capabilities"""
     
-    def __init__(self, name: str, config: dict, ssl_verify: bool = True):
+    def __init__(self, name: str, config: AgentConfig, registry=None):
+        # Ignore registry parameter - this is not an Agent plugin
         self.name = name
-        self.config = config
-        self.ssl_verify = ssl_verify
+        self.agent_config = config
+        self.ssl_verify = getattr(config.network, 'ssl_verify', True) if hasattr(config, 'network') and config.network else True
         
         # Expose configuration properties for compatibility
-        self.log_files = config.get('log_files', ['logs/agent.log', 'logs/api.log'])
-        self.max_lines = config.get('max_lines', 100)
-        self.refresh_interval = config.get('refresh_interval', 1.0)
+        self.log_files = getattr(config, 'log_files', ['logs/agent.log', 'logs/api.log'])
+        self.max_lines = getattr(config, 'max_lines', 100)
+        self.refresh_interval = getattr(config, 'refresh_interval', 1.0)
         
         # Initialize both components
-        self.mcp_server = LogViewerMCPServer(name, config, ssl_verify)
+        self.mcp_server = LogViewerMCPServer(name, config)
         self.web_endpoints = LogViewerWebEndpoints(name, config)
     
     # MCP Server interface methods
@@ -66,5 +72,5 @@ class LogViewerHybridPlugin:
         return self.web_endpoints.get_security_config()
 
 
-# Plugin factory for discovery system
-PLUGIN_FACTORY = LogViewerHybridPlugin
+# MODERN: Use standardized plugin factory - automatically handles AgentConfig
+PLUGIN_FACTORY = make_agent_plugin_factory(LogViewerHybridPlugin)

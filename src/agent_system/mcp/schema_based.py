@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 import importlib.util
 
 from .base import MCPServer
@@ -26,8 +26,11 @@ class SchemaBasedMCPServer(MCPServer):
     will be automatically loaded and parsed.
     """
     
-    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True):
-        super().__init__(name, config, ssl_verify)
+    if TYPE_CHECKING:
+        from agent_system.config.models import AgentConfig
+
+    def __init__(self, name: str, agent_config: AgentConfig):
+        super().__init__(name, agent_config)
         self._tools_cache: Optional[list[dict[str, Any]]] = None
         self._schema_cache: Optional[dict[str, Any]] = None
     

@@ -4,10 +4,13 @@ BasicAgent - Simple agent for basic task execution.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 from pathlib import Path
 
 from agent_system.servers.agent.server import Agent
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +18,9 @@ logger = logging.getLogger(__name__)
 class BasicAgent(Agent):
     """ Agent for basic requests."""
 
-    def __init__(self, name: str, config: Any, registry: Any, ssl_verify: bool = True):
+    def __init__(self, name: str, config: AgentConfig, registry: Any):
         """Initialize BasicAgent."""
-        super().__init__(name, config, registry, None, ssl_verify)
+        super().__init__(name, config, registry, None, None)
 
     def get_tools(self) -> list[Dict[str, Any]]:
         """Return the tool schema for basic agent."""

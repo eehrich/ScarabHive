@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
+
 
 class TwitterSearchServer(SchemaBasedMCPServer):
+    def __init__(self, name: str, config: AgentConfig, registry=None) -> None:
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         if tool != "search_tweets":
             return {"error": f"Unknown tool: {tool}. Only 'search_tweets' supported."}

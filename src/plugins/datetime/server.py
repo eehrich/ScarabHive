@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, cast
+from typing import Any, TYPE_CHECKING
 
 import pytz
 import calendar
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 
 class DateTimeServer(SchemaBasedMCPServer):
@@ -22,8 +25,9 @@ class DateTimeServer(SchemaBasedMCPServer):
     - Business day calculations
     """
 
-    def __init__(self, name: str = "datetime", config: Optional[dict[str, Any]] = None, ssl_verify: bool = True):
-        super().__init__(name, cast(dict[str, Any] | None, config), ssl_verify)
+    def __init__(self, name: str, config: AgentConfig, registry=None):
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
 
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """Execute datetime operations."""

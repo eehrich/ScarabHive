@@ -82,14 +82,23 @@ class MCPIntegration:
         logger.debug(f"MCP integration - config keys: {list(config.keys())}")
         logger.debug(f"MCP integration - servers_config: {servers_config}")
         
-        # Extract parent configuration for plugin inheritance
-        parent_config = {}
-        if 'llm_system' in config:
-            parent_config['llm_system'] = config['llm_system']
-        if 'agent_llm_profiles' in config:
-            parent_config['agent_llm_profiles'] = config['agent_llm_profiles']
+        # SIMPLIFIED: Pass complete AgentConfig instead of selective parent_config
+        # This eliminates the need to manually copy specific keys
+        from ..config.models import AgentConfig
+        
+        if isinstance(config, dict) and all(key in config for key in ['llm_system', 'agent_llm_profiles']):
+            # Convert dict to AgentConfig if needed (for full config access)
+            try:
+                full_agent_config = AgentConfig.model_validate(config)
+                logger.debug("Converted config dict to AgentConfig for MCP plugin registration")
+            except Exception as e:
+                logger.warning("Could not convert config to AgentConfig: %s. Using dict fallback.", e)
+                full_agent_config = config
+        else:
+            # Assume it's already an AgentConfig or compatible dict
+            full_agent_config = config
 
-        await self.plugin_registry.register_from_config(enabled_servers, servers_config, parent_config)
+        await self.plugin_registry.register_from_config(enabled_servers, servers_config, full_agent_config)
 
         # Register plugin servers with HTTP server
         for server_name in self.plugin_registry.list_servers():

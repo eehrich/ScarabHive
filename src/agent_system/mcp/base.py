@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, List
+from typing import Any, List, TYPE_CHECKING
 from .core import MCPTool
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 
 class MCPServer(ABC):
     name: str
 
-    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
+    def __init__(self, name: str, agent_config: AgentConfig) -> None:
         self.name = name
-        self.config = config or {}
-        self.ssl_verify = ssl_verify
+        self.agent_config = agent_config
+        
+        # Extract SSL setting from AgentConfig
+        self.ssl_verify = getattr(agent_config.network, 'ssl_verify', True) if hasattr(agent_config, 'network') and agent_config.network else True
 
     @abstractmethod
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
@@ -98,19 +103,6 @@ class MCPServer(ABC):
             
         raise NotImplementedError("Plugin must implement list_tools(), get_tools(), get_schema(), or get_default_action()")
 
-    def get_tools(self) -> list[dict[str, Any]]:
-        """Return a list of OpenAI function schemas for this MCP server's tools.
-        
-        DEPRECATED: Use list_tools() instead. This method is kept for backward compatibility.
-        """
-        raise NotImplementedError("Plugin should implement list_tools() instead of get_tools()")
-
-    def get_schema(self) -> dict[str, Any]:
-        """Return the OpenAI function schema for this MCP server's tools.
-        
-        DEPRECATED: Use list_tools() instead. This method is kept for backward compatibility.
-        """
-        raise NotImplementedError("Plugin should implement list_tools() instead of get_schema()")
 
     def get_default_action(self) -> str:
         """Return the default action name for this MCP server.

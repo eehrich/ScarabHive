@@ -7,11 +7,14 @@ handled centrally.
 """
 from __future__ import annotations
 
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 from pathlib import Path
 import logging
 
 from agent_system.servers.agent.server import Agent
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -176,10 +179,10 @@ class WebResearchAgent(Agent):
 
 
 # Backward compatibility for legacy tests importing create_web_research_agent
-def create_web_research_agent(name: str, config: Any, registry: Any, ssl_verify: bool = True):  # pragma: no cover - legacy shim
+def create_web_research_agent(name: str, config: AgentConfig, registry: Any, ssl_verify: bool = True):  # pragma: no cover - legacy shim
     """Legacy factory kept for test compatibility.
 
     Older tests import create_web_research_agent expecting the previous factory
     signature. We now just instantiate WebResearchAgent directly.
     """
-    return WebResearchAgent(name, config, registry, None, ssl_verify)
+    return WebResearchAgent(name, config, registry, None, None)

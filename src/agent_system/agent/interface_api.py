@@ -304,7 +304,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         pass
         except Exception:
             pass
-        selected_agent = CoreAgent(entry_name, config, registry, {}, ssl_verify=config.network.ssl_verify)
+        selected_agent = CoreAgent(entry_name, config, registry)
         registry.register(entry_name, selected_agent)
     else:
         # Ensure reused agent is bound to current registry (in case plugin created with isolated one)

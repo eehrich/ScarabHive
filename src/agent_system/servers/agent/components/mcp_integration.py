@@ -36,6 +36,11 @@ class MCPIntegrationManager:
                     if hasattr(self.agent_config, 'agent_llm_profiles'):
                         full_config['agent_llm_profiles'] = self.agent_config.agent_llm_profiles
                     
+                    # CRITICAL FIX: Add context_management configuration for plugins
+                    # This ensures sub-agents inherit token_optimization settings correctly
+                    if hasattr(self.agent_config, 'context_management'):
+                        full_config['context_management'] = self.agent_config.context_management.model_dump() if hasattr(self.agent_config.context_management, "model_dump") else getattr(self.agent_config.context_management, "__dict__", {})
+                    
                     # Add servers configuration for MCP plugin initialization
                     if hasattr(self.agent_config, 'servers'):
                         if hasattr(self.agent_config.servers, 'model_dump'):

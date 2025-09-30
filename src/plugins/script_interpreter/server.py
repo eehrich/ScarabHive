@@ -1,12 +1,13 @@
 """MCP Server for Script Interpreter Plugin."""
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import sys
 from pathlib import Path
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.config.models import AgentConfig
 from .executor import ScriptExecutor
 from .config import ScriptInterpreterConfig
 
@@ -21,13 +22,16 @@ logger = logging.getLogger(__name__)
 class ScriptInterpreterServer(SchemaBasedMCPServer):
     """MCP Server for executing scripts in a secure sandbox."""
 
-    def __init__(self, name: str = "script_interpreter", config: Optional[dict] = None, ssl_verify: bool = True):
-        super().__init__(name, config, ssl_verify)
-        # Convert dict config to ScriptInterpreterConfig if needed
-        if isinstance(config, dict):
-            script_config = ScriptInterpreterConfig.from_dict(config)
+    def __init__(self, name: str, config: AgentConfig, registry=None):
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
+        
+        # Extract script-specific config from AgentConfig
+        script_config_dict = getattr(config, 'script_interpreter', {})
+        if script_config_dict:
+            script_config = ScriptInterpreterConfig.from_dict(script_config_dict)
         else:
-            script_config = config or ScriptInterpreterConfig()
+            script_config = ScriptInterpreterConfig()
         self.script_config = script_config
         self.executor = ScriptExecutor(script_config)
 

@@ -3,22 +3,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.plugins.cache import PluginCache
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
 
 class DuckDuckGoSearchServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True):
-        super().__init__(name, config, ssl_verify)
+    def __init__(self, name: str, config: AgentConfig, registry=None):
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
         
         # Initialize cache system 
         # Search results typically change more frequently, so shorter TTL (15 minutes default)
-        cache_ttl = config.get("cache_ttl", 900) if config else 900  
+        cache_ttl = getattr(config, 'cache_ttl', 900)
         self.cache = PluginCache(plugin_name="duckduckgo_search", default_ttl=cache_ttl)
-        self.cache_enabled = config.get("cache_enabled", True) if config else True
+        self.cache_enabled = getattr(config, 'cache_enabled', True)
     
     def _create_cache_key(self, query: str, max_results: int) -> str:
         """Create a cache key from search parameters."""

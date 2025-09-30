@@ -7,9 +7,12 @@ using SchemaBasedMCPServer. All tools are defined in schema.yaml.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from decimal import Decimal, InvalidOperation
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +29,14 @@ class ExampleServer(SchemaBasedMCPServer):
     All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
     """
 
-    def __init__(self, name: str, config: dict[str, Any] | None = None, ssl_verify: bool = True):
+    def __init__(self, name: str, config: AgentConfig, registry=None):
         """Initialize the example server."""
-        super().__init__(name, config, ssl_verify)
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
         
         # Extract configuration with sensible defaults
-        self.precision = int(self.config.get("precision", 2))
-        self.max_text_length = int(self.config.get("max_text_length", 1000))
+        self.precision = int(getattr(config, "precision", 2))
+        self.max_text_length = int(getattr(config, "max_text_length", 1000))
         
         logger.info(f"Example server '{name}' initialized")
 

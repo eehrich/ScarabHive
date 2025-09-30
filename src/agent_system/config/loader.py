@@ -57,7 +57,7 @@ def load_config(path: str | Path) -> AgentConfig:
     return AgentConfig.model_validate(merged_final)
 
 
-def build_mcp_payload(config: "AgentConfig") -> dict[str, Any]:
+def build_mcp_payload(config: AgentConfig) -> dict[str, Any]:
     """
     Build the MCP initialization payload from AgentConfig.
     

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
-
+from typing import Any, TYPE_CHECKING
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -10,6 +9,9 @@ import uvicorn
 
 from agent_system.mcp.base import MCPServer
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 
 class CallRequest(BaseModel):
@@ -20,11 +22,11 @@ class CallRequest(BaseModel):
 class HTTPServer(SchemaBasedMCPServer):
     """HTTP Server MCP adapter that wraps other MCP servers with FastAPI REST endpoints."""
 
-    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True) -> None:
-        super().__init__(name, config, ssl_verify=ssl_verify)
-        self.config = config or {}
-        self.host = self.config.get("host", os.getenv("HOST", "127.0.0.1"))
-        self.port = self.config.get("port", int(os.getenv("PORT", "9000")))
+    def __init__(self, name: str, config: AgentConfig, registry=None) -> None:
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
+        self.host = getattr(config, "host", None) or os.getenv("HOST", "127.0.0.1")
+        self.port = getattr(config, "port", None) or int(os.getenv("PORT", "9000"))
         self.wrapped_server = None
 
     def wrap_server(self, server: MCPServer) -> None:

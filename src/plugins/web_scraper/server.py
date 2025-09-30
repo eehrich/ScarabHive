@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import re
 import urllib.parse
 import asyncio
@@ -10,12 +10,16 @@ import logging
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.plugins.cache import PluginCache
 
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
+
 logger = logging.getLogger(__name__)
 
 
 class WebScraperServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, config: dict | None = None, ssl_verify: bool = True):
-        super().__init__(name, config, ssl_verify)
+    def __init__(self, name: str, config: AgentConfig, registry=None):
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
         
         # Initialize User-Agent pool for anti-bot evasion
         self._user_agents = [
@@ -59,12 +63,12 @@ class WebScraperServer(SchemaBasedMCPServer):
         self._sessions = {}  # domain -> httpx.Cookies
         
         # Proxy configuration
-        self._proxies = config.get("proxies", []) if config else []
+        self._proxies = getattr(config, 'proxies', [])
         
         # Initialize cache system
-        cache_ttl = config.get("cache_ttl", 1800) if config else 1800  # 30 minutes default
+        cache_ttl = getattr(config, 'cache_ttl', 1800)  # 30 minutes default
         self.cache = PluginCache(plugin_name="web_scraper", default_ttl=cache_ttl)
-        self.cache_enabled = config.get("cache_enabled", True) if config else True
+        self.cache_enabled = getattr(config, 'cache_enabled', True)
 
     def _get_random_user_agent(self) -> str:
         """Get a random User-Agent from the pool"""

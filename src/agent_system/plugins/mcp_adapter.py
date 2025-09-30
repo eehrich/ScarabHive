@@ -7,12 +7,15 @@ Adapts existing AgentSystem plugins to be MCP-compatible servers.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import json
 from pathlib import Path
 
 from ..mcp.core import MCPServer, MCPTool, MCPCapability
 from .web_adapter import PluginWebInterface, plugin_web_registry
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +220,13 @@ class PluginMCPRegistry:
 
         try:
             logger.info(f"MCP registry creating plugin {name} with config: {plugin_config}")
-            plugin_server = factory(name, plugin_config, ssl_verify=True)
+            # TODO: This is the OLD register_plugin method - should use register_plugin_simple instead
+            # For now, fallback to old behavior but without ssl_verify if factory expects AgentConfig
+            if 'parent_agent_config' in plugin_config:
+                plugin_server = factory(name, plugin_config['parent_agent_config'])
+            else:
+                # Fallback for legacy factories that still expect dict + ssl_verify
+                plugin_server = factory(name, plugin_config, ssl_verify=True)
         except Exception as e:
             logger.error(f"Failed to create plugin {name}: {e}")
             raise
@@ -226,30 +235,42 @@ class PluginMCPRegistry:
         schema = None
         schema_file = None
 
-        # Try to find schema file
-        for plugin_dir in ["src/plugins", "plugins"]:
-            schema_path = Path(plugin_dir) / name / "mcp_schema.yaml"
-            if schema_path.exists():
-                schema_file = schema_path
-                break
-
-            # Try JSON schema
-            schema_path = Path(plugin_dir) / name / "mcp_schema.json"
-            if schema_path.exists():
-                schema_file = schema_path
-                break
-
-        if schema_file:
+        # Try to get schema from plugin server first (handles templates properly)
+        if hasattr(plugin_server, 'get_schema_data'):
             try:
-                import yaml
-                with open(schema_file, 'r', encoding='utf-8') as f:
-                    if schema_file.suffix == '.json':
-                        schema = json.load(f)
-                    else:
-                        schema = yaml.safe_load(f)
-                logger.debug(f"Loaded schema for plugin {name}")
+                schema = plugin_server.get_schema_data()
+                logger.debug(f"Loaded schema for plugin {name} from server (with template support)")
             except Exception as e:
-                logger.warning(f"Failed to load schema for plugin {name}: {e}")
+                logger.warning(f"Failed to load schema from plugin server {name}: {e}")
+                schema = None
+        
+        # Fallback to file-based loading if server doesn't support schema or failed
+        if schema is None:
+            # Try to find schema file
+            for plugin_dir in ["src/plugins", "plugins"]:
+                # Standard schema.yaml
+                schema_path = Path(plugin_dir) / name / "schema.yaml"
+                if schema_path.exists():
+                    schema_file = schema_path
+                    break
+
+                # Standard JSON schema
+                schema_path = Path(plugin_dir) / name / "schema.json"
+                if schema_path.exists():
+                    schema_file = schema_path
+                    break
+
+            if schema_file:
+                try:
+                    import yaml
+                    with open(schema_file, 'r', encoding='utf-8') as f:
+                        if schema_file.suffix == '.json':
+                            schema = json.load(f)
+                        else:
+                            schema = yaml.safe_load(f)
+                    logger.debug(f"Loaded schema for plugin {name} from file (no template support)")
+                except Exception as e:
+                    logger.warning(f"Failed to load schema for plugin {name}: {e}")
 
         # Create MCP adapter
         mcp_adapter = PluginMCPAdapter(name, plugin_server, schema)
@@ -290,17 +311,111 @@ class PluginMCPRegistry:
         """List all available plugins (not necessarily registered)"""
         return list(self.plugin_factories.keys())
 
-    async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any], parent_config: Optional[Dict[str, Any]] = None) -> None:
+    async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any], parent_config: AgentConfig) -> None:
         """Register plugins from configuration"""
         logger.debug(f"MCP register_from_config - servers_config keys: {list(servers_config.keys())}")
+        
         for server_name in enabled_servers:
             if server_name in self.plugin_factories:
-                config = servers_config.get(server_name, {})
-                logger.debug(f"MCP register_from_config - plugin {server_name} config: {config}")
+                server_overrides = servers_config.get(server_name, {})
+                logger.debug(f"MCP register_from_config - plugin {server_name} overrides: {server_overrides}")
+                
+                if server_overrides:
+                    # MODERN: Use Pydantic's model_copy with update for type-safe overrides
+                    # This automatically handles all fields without hardcoding keys
+                    try:
+                        final_config = parent_config.model_copy(update=server_overrides, deep=True)
+                        logger.debug(f"Applied server overrides for {server_name} using model_copy")
+                    except Exception as e:
+                        logger.warning(f"Could not apply server overrides for {server_name}: {e}. Using original config.")
+                        final_config = parent_config
+                else:
+                    # No overrides, use original config
+                    final_config = parent_config
+                
                 try:
-                    await self.register_plugin(server_name, config, parent_config)
+                    await self.register_plugin_simple(server_name, final_config)
                 except Exception as e:
                     logger.error(f"Failed to register plugin {server_name}: {e}")
+
+    async def register_plugin_simple(self, name: str, config: AgentConfig) -> None:
+        """SIMPLIFIED: Register a plugin with a complete AgentConfig (no complex dict handling)"""
+        
+        if name not in self.plugin_factories:
+            raise Exception(f"Unknown plugin: {name}")
+
+        # Check if already registered
+        if name in self.plugin_servers:
+            logger.warning(f"Plugin {name} already registered in MCP registry. Re-registering.")
+
+        # Create plugin instance with simplified factory call
+        factory = self.plugin_factories[name]
+        
+        try:
+            logger.info(f"MCP registry creating plugin {name} with AgentConfig")
+            plugin_server = factory(name, config)  # Modern call - clean interface
+        except Exception as e:
+            logger.error(f"Failed to create plugin instance {name}: {e}")
+            raise
+
+        # Load schema if available
+        schema = None
+        schema_file = None
+
+        # Try to get schema from plugin server first (handles templates properly)
+        if hasattr(plugin_server, 'get_schema_data'):
+            try:
+                schema = plugin_server.get_schema_data()
+                logger.debug(f"Loaded schema for plugin {name} from server (with template support)")
+            except Exception as e:
+                logger.warning(f"Failed to load schema from plugin server {name}: {e}")
+                schema = None
+        
+        # Fallback to file-based loading if server doesn't support schema or failed
+        if schema is None:
+            # Try to find schema file in standard locations
+            for plugin_dir in ["src/plugins", "plugins"]:
+                # Standard schema.yaml
+                schema_path = Path(plugin_dir) / name / "schema.yaml"
+                if schema_path.exists():
+                    schema_file = schema_path
+                    break
+
+                # Standard JSON schema
+                schema_path = Path(plugin_dir) / name / "schema.json"
+                if schema_path.exists():
+                    schema_file = schema_path
+                    break
+
+            if schema_file:
+                try:
+                    import yaml
+                    with open(schema_file, 'r', encoding='utf-8') as f:
+                        if schema_file.suffix == '.json':
+                            schema = json.load(f)
+                        else:
+                            schema = yaml.safe_load(f)
+                    logger.debug(f"Loaded schema for plugin {name} from file (no template support)")
+                except Exception as e:
+                    logger.warning(f"Failed to load schema for plugin {name}: {e}")
+
+        # Create MCP adapter
+        mcp_adapter = PluginMCPAdapter(name, plugin_server, schema)
+        self.plugin_servers[name] = mcp_adapter
+
+        # Register web capabilities if plugin supports them
+        plugin_metadata = {'name': name, 'description': getattr(plugin_server, 'description', '')}
+        if schema_file:
+            plugin_metadata['schema_path'] = str(schema_file)
+            
+        if isinstance(plugin_server, PluginWebInterface):
+            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            logger.debug(f"Registered web capabilities for plugin {name}")
+        elif hasattr(plugin_server, 'get_web_router'):
+            plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
+            logger.debug(f"Registered hybrid web capabilities for plugin {name}")
+
+        logger.info(f"Registered plugin {name} as MCP server")
 
     async def get_all_tools(self) -> Dict[str, List[MCPTool]]:
         """Get all tools from all registered plugins"""

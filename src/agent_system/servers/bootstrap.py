@@ -79,7 +79,17 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
             except Exception:
                 pass
             try:
-                inst = factory(key, server_cfg, ssl_verify=config.network.ssl_verify)
+                # MODERN: Pass complete AgentConfig to factory
+                # If server_cfg has parent_agent_config, use it; otherwise create one
+                if 'parent_agent_config' in server_cfg:
+                    inst = factory(key, server_cfg['parent_agent_config'])
+                else:
+                    # Legacy fallback - try to extract AgentConfig or use old signature
+                    try:
+                        inst = factory(key, config)  # Pass complete config
+                    except TypeError:
+                        # Last resort for very old factories
+                        inst = factory(key, server_cfg, ssl_verify=config.network.ssl_verify)
                 registry.register(key, inst)
                 # Apply per-server agent_config overrides (allowed/blocked tools) without mutating the shared
                 # global AgentConfig reference. We deep-copy only when overrides are present so most plugins stay cheap.
@@ -176,10 +186,10 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                 # Create new LLMSystemConfig with overrides
                 llm_system = LLMSystemConfig.model_validate(llm_system_dict)
             
-            agent_cfg = AgentConfig(llm_system=llm_system)
+            agent_cfg = AgentConfig(llm_system=llm_system, network=config.network)
 
             agent_registry = MCPRegistry()  # Empty registry for this agent
-            registry.register(key, Agent(key, agent_cfg, agent_registry, server_cfg, ssl_verify=config.network.ssl_verify))
+            registry.register(key, Agent(key, agent_cfg, agent_registry))
         else:
             # ignore unknown for now
             continue

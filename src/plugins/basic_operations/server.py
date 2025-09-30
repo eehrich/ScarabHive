@@ -23,9 +23,12 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +43,16 @@ class BasicOperationsServer(SchemaBasedMCPServer):
     All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
     """
 
-    def __init__(self, name: str, config: dict[str, Any] | None = None, ssl_verify: bool = True):
+    def __init__(self, name: str, config: AgentConfig, registry=None):
         """Initialize the BasicOperations server."""
-        super().__init__(name, config, ssl_verify)
+        # Ignore registry parameter - this is not an Agent plugin
         
-        # Extract configuration with sensible defaults
-        self.max_wait_seconds = float(self.config.get("max_wait_seconds", 3600))
-        self.default_update_interval = float(self.config.get("default_update_interval", 1.0))
+        # MODERN: Pass AgentConfig directly to modernized parent class
+        super().__init__(name, config)
+        
+        # Extract configuration with sensible defaults from AgentConfig
+        self.max_wait_seconds = float(getattr(config, 'max_wait_seconds', 3600))
+        self.default_update_interval = float(getattr(config, 'default_update_interval', 1.0))
         # Log effective configuration for debugging lifecycle issues where
         # the registry may create instances with incomplete config.
         logger.info(

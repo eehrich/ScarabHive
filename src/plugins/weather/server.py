@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from . import sources
 
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentConfig
+
 
 class WeatherServer(SchemaBasedMCPServer):
+    def __init__(self, name: str, config: AgentConfig, registry=None) -> None:
+        # Ignore registry parameter - this is not an Agent plugin
+        super().__init__(name, config)
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         status = params.get("_status")
 

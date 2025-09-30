@@ -4,45 +4,34 @@ This module centralizes tiny helpers so individual plugin directories can stay
 minimal (ideally just: from .server import X; PLUGIN_FACTORY = make_agent_plugin_factory(X)).
 """
 from __future__ import annotations
-from typing import Any, Callable, Type
+from typing import Callable, Type
 import logging
 
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.agent.server import Agent
+from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
 
-def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[[str, Any | None], Agent]:
+def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[[str, AgentConfig], Agent]:
     """Return a standard PLUGIN_FACTORY callable for an Agent subclass.
 
-    It expects bootstrap to have already injected a fully prepared AgentConfig
-    (as object) either directly as `config` (AgentConfig instance) or inside
-    a dict under key `parent_agent_config`.
+    SIMPLIFIED: Always expects a fully prepared AgentConfig object.
+    No more complex type checking or dict parsing.
+    SSL verification is read from config.network.ssl_verify.
 
-    Signature produced: (name: str, config: Any | None, ssl_verify: bool = True) -> Agent
-    Matching existing discovery expectations.
+    Signature produced: (name: str, config: AgentConfig) -> Agent
     """
-    def _factory(name: str, config: Any | None = None, ssl_verify: bool = True) -> Agent:
-        from agent_system.config.models import AgentConfig  # local import to avoid cycles
-        cfg_obj = None
-        if isinstance(config, AgentConfig):
-            cfg_obj = config
-        elif isinstance(config, dict):
-            parent = config.get("parent_agent_config")
-            if isinstance(parent, AgentConfig):
-                cfg_obj = parent
-            else:
-                raise ValueError(
-                    f"Plugin '{name}': expected full AgentConfig (parent_agent_config). Got partial dict; aborting."
-                )
-        else:
-            raise ValueError(
-                f"Plugin '{name}': unsupported config type {type(config).__name__}; expected AgentConfig or dict"
-            )
+    def _factory(name: str, config: AgentConfig) -> Agent:
+        # MODERN: Clean constructor - no legacy parameters, no ssl_verify
         registry = MCPRegistry()
-        inst = agent_cls(name, cfg_obj, registry, ssl_verify=ssl_verify)
-        logger.debug("Instantiated agent plugin %s via generic factory", name)
+        
+        # Standard modern constructor: Agent(name, config, registry)
+        # All configuration (including SSL settings) is in the AgentConfig
+        inst = agent_cls(name, config, registry)
+        
+        logger.debug("Instantiated agent plugin %s via generic factory with server config", name)
         return inst
     return _factory
 
