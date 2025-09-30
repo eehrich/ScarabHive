@@ -7,7 +7,7 @@ Provides a small factory that creates an LL            else:
         else:
             logger.error("Profile '%s' not found in profiles", profile_name)
             raise ValueError(f"Profile '{profile_name}' not found in LLM system profiles")
-    
+
     # If we reach here, the LLM system is not properly configured
     logger.error("LLM system not properly configured for agent %s", agent_name or "default")
     raise ValueError("LLM system configuration missing or incomplete. Please ensure llm_system with models and profiles is configured.")AgentConfig.
@@ -28,33 +28,33 @@ logger = logging.getLogger(__name__)
 def resolve_llm_config_for_agent(agent_config: AgentConfig, agent_name: str = None) -> dict:
     """
     Resolve LLM configuration for a specific agent using the profile system.
-    
+
     Args:
         agent_config: The main agent configuration
         agent_name: The name of the agent to resolve config for
-    
+
     Returns:
         dict: LLM configuration parameters for make_llm()
     """
     # Determine which profile to use
     profile_name = None
-    
+
     # 1. Check agent-specific assignment
     if agent_name and agent_config.agent_llm_profiles:
         profile_name = agent_config.agent_llm_profiles.get(agent_name)
-    
+
     # 2. Fall back to default profile
     if not profile_name:
         profile_name = agent_config.llm_system.default_profile
-    
+
     # Resolve profile to model config
     if profile_name in agent_config.llm_system.profiles:
         profile = agent_config.llm_system.profiles[profile_name]
         model_ref = profile.model_ref
-        
+
         if model_ref in agent_config.llm_system.models:
             model_config = agent_config.llm_system.models[model_ref]
-            
+
             # Build LLM kwargs from model config
             llm_kwargs = {
                 "provider": model_config.provider,
@@ -65,7 +65,7 @@ def resolve_llm_config_for_agent(agent_config: AgentConfig, agent_name: str = No
                 "ollama_mode": model_config.ollama_mode,
                 "request_timeout": model_config.request_timeout,
             }
-            
+
             # Add HTTPX timeouts if available (model-specific overrides or system defaults)
             httpx_timeouts = None
             if model_config.httpx_timeouts:
@@ -74,13 +74,13 @@ def resolve_llm_config_for_agent(agent_config: AgentConfig, agent_name: str = No
             elif agent_config.llm_system.httpx_timeouts:
                 # System default HTTPX timeouts
                 httpx_timeouts = agent_config.llm_system.httpx_timeouts.model_dump()
-            
+
             if httpx_timeouts:
                 llm_kwargs["httpx_timeouts"] = httpx_timeouts
-            
+
             logger.debug("Resolved LLM config for agent %s: profile=%s, model_ref=%s, provider=%s, model=%s",
                        agent_name or "default", profile_name, model_ref, model_config.provider, model_config.model)
-            
+
             return llm_kwargs
         else:
             logger.error("Model reference '%s' not found in models", model_ref)
@@ -88,7 +88,7 @@ def resolve_llm_config_for_agent(agent_config: AgentConfig, agent_name: str = No
     else:
         logger.error("Profile '%s' not found in profiles", profile_name)
         raise ValueError(f"Profile '{profile_name}' not found in LLM system profiles")
-    
+
     # If we reach here, the LLM system is not properly configured
     logger.error("LLM system not properly configured for agent %s", agent_name or "default")
     raise ValueError("LLM system configuration missing or incomplete. Please ensure llm_system with models and profiles is configured.")
@@ -118,14 +118,14 @@ class LLMFactory:
 
         # Use new profile-based resolution
         llm_kwargs = resolve_llm_config_for_agent(self.agent_config, self.agent_name)
-        
+
         # Propagate network SSL verification setting into the LLM client creation
         ssl_verify = None
         try:
-            ssl_verify = getattr(self.agent_config, "network").ssl_verify
+            ssl_verify = self.agent_config.network.ssl_verify
         except Exception:
             ssl_verify = None
-        
+
         return make_llm(
             llm_kwargs["provider"],
             llm_kwargs["model"],

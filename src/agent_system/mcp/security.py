@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)

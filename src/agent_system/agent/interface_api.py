@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 # Response is not needed here; FastAPI/Starlette response classes are imported where required
 
-from ..config.loader import load_config
+from ..config.settings import load_settings
 from ..config.models import AgentConfig
 from api.endpoints import router as api_router
 from ..mcp.base import MCPRegistry
@@ -78,7 +78,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
 
     cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
-    config = load_config(cfg_path)
+    config = load_settings(cfg_path)
 
     # Initialize MCP integration helper function
     async def _init_mcp_for_app(app: FastAPI):
@@ -115,11 +115,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Use centralized configuration building to ensure consistency with CLI
             from ..config.loader import build_mcp_payload
             payload = build_mcp_payload(config)
-            
+
             logger.debug(f"Built MCP payload with keys: {list(payload.keys())}")
             if 'servers' in payload:
                 logger.debug(f"Added servers config to payload: {list(payload['servers'].keys())}")
-            
+
             mcp_integration = await initialize_mcp(payload, app)
             # Ensure configured_external_servers includes any entries provided by the
             # app-level config. Merge and override existing entries so per-app
@@ -147,7 +147,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Non-fatal if this can't be done (tests will still work via returned instance)
                 pass
             logger.info("MCP integration initialized for API")
-            
+
             # Initialize plugin web capabilities after MCP is ready
             try:
                 from ..plugins.web_adapter import plugin_web_registry
@@ -155,7 +155,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.info("Plugin web capabilities applied to app")
             except Exception as e:
                 logger.warning(f"Failed to apply plugin web capabilities: {e}")
-                
+
         except Exception as e:
             logger.exception("Failed to initialize MCP integration for API: %s", e)
 
@@ -238,6 +238,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         os.environ.setdefault("SSL_CERT_FILE", "")
         os.environ.setdefault("CURL_CA_BUNDLE", "")
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
+        logging.getLogger(__name__).info("SSL verification disabled - set environment variables for global SSL bypass")
 
     # Initialize agent registry and bootstrap plugin servers
     registry = MCPRegistry()
@@ -256,7 +257,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent = candidate
                 # Apply server-level overrides (allowed_tools, blocked_tools, max_steps) without mutating shared config
                 try:  # pragma: no cover - defensive
-                    server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
+                    if(not config.servers):
+                        ValueError("No servers config to apply overrides from")
+
+                    server_cfg = config.servers.get(entry_name, {})
                     overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
                     import copy
                     if isinstance(overrides, dict) and overrides:
@@ -289,15 +293,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     if selected_agent is None:
         from ..servers.agent.server import Agent as CoreAgent
         try:
-            server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
+            server_cfg = (config.servers or {}).get(entry_name, {}) if config.servers else {}
             server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
             if isinstance(server_agent_cfg, dict):
-                if server_agent_cfg.get('allowed_tools') and not getattr(config, 'allowed_tools', None):
+                if server_agent_cfg.get('allowed_tools') and not config.allowed_tools:
                     try:
                         config.allowed_tools = list(server_agent_cfg.get('allowed_tools'))  # type: ignore[attr-defined]
                     except Exception:
                         pass
-                if server_agent_cfg.get('blocked_tools') and not getattr(config, 'blocked_tools', None):
+                if server_agent_cfg.get('blocked_tools') and not config.blocked_tools:
                     try:
                         config.blocked_tools = list(server_agent_cfg.get('blocked_tools'))  # type: ignore[attr-defined]
                     except Exception:
@@ -1159,7 +1163,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             # Skip servers that explicitly mark themselves as internal/private
                             if getattr(server_obj, '_mcp_public', True) is False:
                                 continue
-                                
+
                             tools = []
                             detailed_tools = []
 
@@ -1203,7 +1207,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             servers.append({
                                 "id": server_id,
                                 "name": server_id.replace('_', ' ').title(),
-                                "type": "plugin", 
+                                "type": "plugin",
                                 "connected": False,
                                 "tools": [],
                                 "tool_count": 0,
@@ -1224,7 +1228,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Skip servers that explicitly mark themselves as internal/private
                     if getattr(server_obj, '_mcp_public', True) is False:
                         continue
-                    
+
                     tools = []
                     detailed_tools = []
 
@@ -1445,7 +1449,7 @@ def run() -> None:
 
     # Load configuration
     cfg_path = str(Path(__file__).parents[3] / "config" / "agent.yaml")
-    config = load_config(cfg_path)
+    config = load_settings(cfg_path)
 
     # Build the application
     app_obj = build_app(cfg_path)

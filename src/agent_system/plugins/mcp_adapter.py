@@ -65,7 +65,7 @@ class PluginMCPAdapter(MCPServer):
             except (NotImplementedError, AttributeError):
                 pass
 
-        # Handle legacy plugins with get_schema() method  
+        # Handle legacy plugins with get_schema() method
         if not tools and hasattr(self.plugin_server, 'get_schema'):
             try:
                 schema = self.plugin_server.get_schema()
@@ -162,7 +162,7 @@ class PluginMCPRegistry:
         """Discover plugins from directories"""
         # Import here to avoid circular dependency
         from .discovery import discover_plugins
-        
+
         for plugin_dir in plugin_dirs:
             path = Path(plugin_dir)
             if path.exists() and path.is_dir():
@@ -175,7 +175,7 @@ class PluginMCPRegistry:
         if name not in self.plugin_factories:
             raise Exception(f"Unknown plugin: {name}")
 
-        # Check if already registered and log for debugging  
+        # Check if already registered and log for debugging
         if name in self.plugin_servers:
             logger.warning(f"Plugin {name} already registered in MCP registry. Re-registering with new config: {config}")
             # Continue to re-register instead of skipping
@@ -186,7 +186,7 @@ class PluginMCPRegistry:
         # Remove reserved keys coming from mcp.yaml server definitions (e.g., 'type')
         if 'type' in plugin_config:
             plugin_config.pop('type', None)
-        
+
         # Inject parent_llm configuration if available and not already present
         if parent_config and isinstance(plugin_config, dict) and 'parent_llm' not in plugin_config:
             parent_llm = {}
@@ -200,7 +200,7 @@ class PluginMCPRegistry:
             if parent_llm:
                 plugin_config['parent_llm'] = parent_llm
                 logger.debug(f"Injected parent_llm configuration into plugin {name}")
-        
+
         # Ensure generic Agent plugin factories receive a full AgentConfig via parent_agent_config.
         # bootstrap() already injects this, but the CLI MCP adapter path builds its own instances.
         try:  # pragma: no cover - defensive
@@ -243,7 +243,7 @@ class PluginMCPRegistry:
             except Exception as e:
                 logger.warning(f"Failed to load schema from plugin server {name}: {e}")
                 schema = None
-        
+
         # Fallback to file-based loading if server doesn't support schema or failed
         if schema is None:
             # Try to find schema file
@@ -280,7 +280,7 @@ class PluginMCPRegistry:
         plugin_metadata = {'name': name, 'description': getattr(plugin_server, 'description', '')}
         if schema_file:
             plugin_metadata['schema_path'] = str(schema_file)
-            
+
         if isinstance(plugin_server, PluginWebInterface):
             plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
             logger.debug(f"Registered web capabilities for plugin {name}")
@@ -314,25 +314,24 @@ class PluginMCPRegistry:
     async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any], parent_config: AgentConfig) -> None:
         """Register plugins from configuration"""
         logger.debug(f"MCP register_from_config - servers_config keys: {list(servers_config.keys())}")
-        
+
         for server_name in enabled_servers:
             if server_name in self.plugin_factories:
                 server_overrides = servers_config.get(server_name, {})
                 logger.debug(f"MCP register_from_config - plugin {server_name} overrides: {server_overrides}")
-                
+
                 if server_overrides:
-                    # MODERN: Use Pydantic's model_copy with update for type-safe overrides
+                    # Use Pydantic's model_copy with update for type-safe overrides
                     # This automatically handles all fields without hardcoding keys
                     try:
                         final_config = parent_config.model_copy(update=server_overrides, deep=True)
-                        logger.debug(f"Applied server overrides for {server_name} using model_copy")
                     except Exception as e:
                         logger.warning(f"Could not apply server overrides for {server_name}: {e}. Using original config.")
                         final_config = parent_config
                 else:
                     # No overrides, use original config
                     final_config = parent_config
-                
+
                 try:
                     await self.register_plugin_simple(server_name, final_config)
                 except Exception as e:
@@ -340,7 +339,7 @@ class PluginMCPRegistry:
 
     async def register_plugin_simple(self, name: str, config: AgentConfig) -> None:
         """SIMPLIFIED: Register a plugin with a complete AgentConfig (no complex dict handling)"""
-        
+
         if name not in self.plugin_factories:
             raise Exception(f"Unknown plugin: {name}")
 
@@ -350,7 +349,7 @@ class PluginMCPRegistry:
 
         # Create plugin instance with simplified factory call
         factory = self.plugin_factories[name]
-        
+
         try:
             logger.info(f"MCP registry creating plugin {name} with AgentConfig")
             plugin_server = factory(name, config)  # Modern call - clean interface
@@ -370,7 +369,7 @@ class PluginMCPRegistry:
             except Exception as e:
                 logger.warning(f"Failed to load schema from plugin server {name}: {e}")
                 schema = None
-        
+
         # Fallback to file-based loading if server doesn't support schema or failed
         if schema is None:
             # Try to find schema file in standard locations
@@ -407,7 +406,7 @@ class PluginMCPRegistry:
         plugin_metadata = {'name': name, 'description': getattr(plugin_server, 'description', '')}
         if schema_file:
             plugin_metadata['schema_path'] = str(schema_file)
-            
+
         if isinstance(plugin_server, PluginWebInterface):
             plugin_web_registry.register_web_plugin(name, plugin_server, plugin_metadata)
             logger.debug(f"Registered web capabilities for plugin {name}")

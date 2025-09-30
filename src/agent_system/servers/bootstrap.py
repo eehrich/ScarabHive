@@ -149,18 +149,18 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
             # Create agent with basic config and empty registry (no recursion)
             # Inherit top-level LLM config unless server explicitly overrides
             llm_system = config.llm_system
-            
+
             # Apply server-level overrides if present
             if any(server_cfg.get(k) for k in ["default_provider", "provider", "model", "openai_api_key", "ollama_url", "ollama_mode", "request_timeout"]):
                 from ..config.models import LLMSystemConfig, LLMModelConfig
-                
+
                 # Deep copy the existing LLM system to avoid modifying the original
                 llm_system_dict = config.llm_system.model_dump()
-                
+
                 # Create override model configuration
                 override_model_name = server_cfg.get("model", "override-model")
                 provider = server_cfg.get("default_provider") or server_cfg.get("provider", "openai")
-                
+
                 override_model = LLMModelConfig(
                     provider=provider,
                     model=override_model_name,
@@ -169,24 +169,25 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                     ollama_mode=server_cfg.get("ollama_mode", "openai_compat"),
                     request_timeout=server_cfg.get("request_timeout", 120)
                 )
-                
+
                 # Add or update the override model in the models dict
                 llm_system_dict["models"][override_model_name] = override_model.model_dump()
-                
+
                 # Create or update a profile to use this override model
                 override_profile_name = f"{key}_override"
                 llm_system_dict["profiles"][override_profile_name] = {
                     "model_ref": override_model_name,
                     "description": f"Server override profile for {key}"
                 }
-                
+
                 # Set this as the default profile for this agent
                 llm_system_dict["default_profile"] = override_profile_name
-                
+
                 # Create new LLMSystemConfig with overrides
                 llm_system = LLMSystemConfig.model_validate(llm_system_dict)
-            
-            agent_cfg = AgentConfig(llm_system=llm_system, network=config.network)
+
+            # Create agent config by copying all fields from parent config, then override llm_system
+            agent_cfg = config.model_copy(update={"llm_system": llm_system}, deep=True)
 
             agent_registry = MCPRegistry()  # Empty registry for this agent
             registry.register(key, Agent(key, agent_cfg, agent_registry))
