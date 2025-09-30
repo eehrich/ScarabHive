@@ -21,7 +21,7 @@ from .config.settings import load_settings
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
-from .mcp.integration import MCPIntegration
+from .mcp.integration import MCPIntegration, initialize_mcp
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
@@ -307,7 +307,7 @@ async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str
     if not tool_action:
         print(json.dumps({"error": "Tool action required: list, allow, or block"}, ensure_ascii=False))
         return
-    
+
     if tool_action == "list":
         await _list_server_tools(mcp_integration, server_name, args)
     elif tool_action == "allow":
@@ -329,16 +329,16 @@ async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str
 async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
     """List all available tools for a server and show filtering configuration."""
     server_config = mcp_integration.mcp_config.servers[server_name]
-    
+
     # Get current tool filtering config
     allowed_tools = getattr(server_config, 'allowed_tools', None)
     blocked_tools = getattr(server_config, 'blocked_tools', None)
-    
+
     # Try to connect and list tools
     try:
         client = await _maybe_await_get_client(mcp_integration, server_name)
         client_created = False
-        
+
         if not client and server_config.enabled:
             # Create temporary client to list tools
             client_config = {
@@ -348,14 +348,14 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
                 "timeout": server_config.timeout,
                 "ssl_verify": server_config.ssl_verify
             }
-            
+
             if server_config.initialization_options:
                 client_config["initialization_options"] = server_config.initialization_options
-                
+
             await mcp_integration.client_manager.add_client(server_name, client_config)
             client = await _maybe_await_get_client(mcp_integration, server_name)
             client_created = True
-        
+
         available_tools = []
         if client:
             try:
@@ -364,7 +364,7 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
             except Exception as e:
                 print(json.dumps({"error": f"Failed to list tools: {str(e)}"}, ensure_ascii=False))
                 return
-        
+
         result = {
             "server": server_name,
             "available_tools": available_tools,
@@ -373,20 +373,20 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
                 "blocked_tools": blocked_tools
             }
         }
-        
+
         if allowed_tools:
             result["effective_tools"] = [t for t in available_tools if t in allowed_tools]
         elif blocked_tools:
             result["effective_tools"] = [t for t in available_tools if t not in blocked_tools]
         else:
             result["effective_tools"] = available_tools
-            
+
         # Output in requested format
         if getattr(args, 'out_format', 'json') == "table":
             # Table format output
             print(f"\nServer: {server_name}")
             print("=" * (len(server_name) + 8))
-            
+
             if not available_tools:
                 print("No tools available")
             else:
@@ -399,12 +399,12 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
                     elif allowed_tools and tool not in allowed_tools:
                         status = " [NOT ALLOWED]"
                     print(f"  {tool}{status}")
-                
+
                 print(f"\nEffective Tools ({len(result['effective_tools'])}):")
                 print("-" * 30)
                 for tool in result["effective_tools"]:
                     print(f"  {tool}")
-                
+
                 if blocked_tools or allowed_tools:
                     print("\nFiltering Configuration:")
                     print("-" * 30)
@@ -415,14 +415,14 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
         else:
             # JSON format output
             print(json.dumps(result, indent=2, ensure_ascii=False))
-        
+
         # Clean up temporary client
         if client_created:
             try:
                 await mcp_integration.client_manager.remove_client(server_name)
             except Exception as cleanup_error:
                 logger.debug(f"Error cleaning up tool list client {server_name}: {cleanup_error}")
-                
+
     except Exception as e:
         print(json.dumps({"error": f"Failed to list tools for {server_name}: {str(e)}"}, ensure_ascii=False))
 
@@ -434,7 +434,7 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     if server_name not in mcp_integration.all_configured_external_servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
-    
+
     # Still need to modify the config file, so read it for updates
     cfg_path = Path("config/mcp.yaml")
     if not cfg_path.exists():
@@ -491,7 +491,7 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     if server_name not in mcp_integration.all_configured_external_servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
-    
+
     # Still need to modify the config file, so read it for updates
     cfg_path = Path("config/mcp.yaml")
     if not cfg_path.exists():
@@ -1032,14 +1032,12 @@ def main() -> None:
             except Exception:
                 mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
 
-            # Use centralized configuration building to ensure consistency with API
-            from .config.loader import build_mcp_payload
-            payload = build_mcp_payload(config)
-            mcp_integration = MCPIntegration(config=payload)
+            # Use direct AgentConfig approach for consistency with main CLI bootstrapping
+            mcp_integration = MCPIntegration(config=config)
             # Ensure MCPIntegration sets up external clients and plugins
             try:
                 try:
-                    await mcp_integration.initialize(payload)
+                    await mcp_integration.initialize(config)
                 except Exception:
                     # Non-fatal: continue without live clients if initialization fails
                     pass
@@ -1282,6 +1280,17 @@ def main() -> None:
     bootstrap_servers(config, registry)
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
+
+    # Initialize global MCP integration to enable tool sharing across agents
+    vprint("[cli] initializing MCP integration...")
+    logger.info("Initializing MCP integration")
+    try:
+        asyncio.run(initialize_mcp(config))
+        vprint("[cli] MCP integration initialized")
+        logger.info("MCP integration initialized successfully")
+    except Exception as e:
+        logger.warning("Failed to initialize MCP integration: %s", e)
+        vprint(f"[cli] Warning: MCP integration failed: {e}")
     # Create a CLI-specific AgentConfig at runtime by loading the global
     # system prompt, appending a one-line hint, and keeping it in-memory
     # on the `prompts.system_prompt` attribute so we don't write any files.
@@ -1368,10 +1377,19 @@ def main() -> None:
                     server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
                     if isinstance(server_agent_cfg, dict):
                         # Only apply if agent currently has no allow list (keeps runtime modifications intact)
+                        update_needed = False
+                        updates = {}
+
                         if getattr(agent.agent_config, 'allowed_tools', None) is None and server_agent_cfg.get('allowed_tools'):
-                            agent.agent_config.allowed_tools = list(server_agent_cfg.get('allowed_tools'))  # type: ignore[attr-defined]
+                            updates['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
+                            update_needed = True
                         if getattr(agent.agent_config, 'blocked_tools', None) is None and server_agent_cfg.get('blocked_tools'):
-                            agent.agent_config.blocked_tools = list(server_agent_cfg.get('blocked_tools'))  # type: ignore[attr-defined]
+                            updates['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
+                            update_needed = True
+
+                        if update_needed:
+                            # Create new config with updated values using Pydantic model_copy
+                            agent.agent_config = agent.agent_config.model_copy(update=updates)  # type: ignore[attr-defined]
                 except Exception:
                     pass
             else:

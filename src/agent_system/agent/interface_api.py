@@ -112,15 +112,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 mcp_block = getattr(config.mcp, "__dict__", {})
                 logger.warning("Failed to get MCP config with model_dump, using __dict__")
 
-            # Use centralized configuration building to ensure consistency with CLI
-            from ..config.loader import build_mcp_payload
-            payload = build_mcp_payload(config)
-
-            logger.debug(f"Built MCP payload with keys: {list(payload.keys())}")
-            if 'servers' in payload:
-                logger.debug(f"Added servers config to payload: {list(payload['servers'].keys())}")
-
-            mcp_integration = await initialize_mcp(payload, app)
+            # Use direct AgentConfig approach for consistency with CLI
+            # This avoids serialization/deserialization and potential field loss
+            mcp_integration = await initialize_mcp(config, app)
             # Ensure configured_external_servers includes any entries provided by the
             # app-level config. Merge and override existing entries so per-app
             # configuration takes precedence during TestClient lifespan.
@@ -262,27 +256,27 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                     server_cfg = config.servers.get(entry_name, {})
                     overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
-                    import copy
                     if isinstance(overrides, dict) and overrides:
                         needs_copy = any(k in overrides for k in ('allowed_tools', 'blocked_tools')) or 'max_steps' in server_cfg
                         if needs_copy:
-                            new_cfg = copy.deepcopy(selected_agent.agent_config)
-                            if overrides.get('allowed_tools') is not None and getattr(new_cfg, 'allowed_tools', None) is None:
+                            updates = {}
+                            if overrides.get('allowed_tools') is not None and getattr(selected_agent.agent_config, 'allowed_tools', None) is None:
                                 try:
-                                    new_cfg.allowed_tools = list(overrides.get('allowed_tools') or [])  # type: ignore[attr-defined]
+                                    updates['allowed_tools'] = list(overrides.get('allowed_tools') or [])
                                 except Exception:
                                     pass
-                            if overrides.get('blocked_tools') is not None and getattr(new_cfg, 'blocked_tools', None) is None:
+                            if overrides.get('blocked_tools') is not None and getattr(selected_agent.agent_config, 'blocked_tools', None) is None:
                                 try:
-                                    new_cfg.blocked_tools = list(overrides.get('blocked_tools') or [])  # type: ignore[attr-defined]
+                                    updates['blocked_tools'] = list(overrides.get('blocked_tools') or [])
                                 except Exception:
                                     pass
                             if 'max_steps' in server_cfg and isinstance(server_cfg.get('max_steps'), int):
                                 try:
-                                    new_cfg.max_steps = int(server_cfg.get('max_steps'))  # type: ignore[attr-defined]
+                                    updates['max_steps'] = int(server_cfg.get('max_steps'))
                                 except Exception:
                                     pass
-                            selected_agent.agent_config = new_cfg  # type: ignore[attr-defined]
+                            if updates:
+                                selected_agent.agent_config = selected_agent.agent_config.model_copy(update=updates)  # type: ignore[attr-defined]
                             logging.getLogger(__name__).debug("Applied entry agent server overrides for %s", entry_name)
                 except Exception:
                     logging.getLogger(__name__).debug("Failed to apply entry agent overrides for %s", entry_name)
@@ -296,16 +290,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             server_cfg = (config.servers or {}).get(entry_name, {}) if config.servers else {}
             server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
             if isinstance(server_agent_cfg, dict):
+                updates = {}
                 if server_agent_cfg.get('allowed_tools') and not config.allowed_tools:
                     try:
-                        config.allowed_tools = list(server_agent_cfg.get('allowed_tools'))  # type: ignore[attr-defined]
+                        updates['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
                     except Exception:
                         pass
                 if server_agent_cfg.get('blocked_tools') and not config.blocked_tools:
                     try:
-                        config.blocked_tools = list(server_agent_cfg.get('blocked_tools'))  # type: ignore[attr-defined]
+                        updates['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
                     except Exception:
                         pass
+                if updates:
+                    config = config.model_copy(update=updates)
         except Exception:
             pass
         selected_agent = CoreAgent(entry_name, config, registry)

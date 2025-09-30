@@ -22,6 +22,22 @@ class MCPIntegrationManager:
     async def setup_mcp_integration(self) -> None:
         """Initialize MCP integration if needed."""
         try:
+            # First try to get an existing global integration (from API or CLI bootstrap)
+            try:
+                # Check if there's already a global initialized integration (no config needed for check)
+                existing_integration = get_mcp_integration()
+                if existing_integration and existing_integration.initialized:
+                    self.mcp_integration = existing_integration
+                    logger.debug("Using existing initialized MCP integration for agent")
+                    # Set agent reference for cancellation support if available
+                    if hasattr(self, '_agent_ref') and self._agent_ref:
+                        self.mcp_integration.main_agent_ref = self._agent_ref
+                    return
+            except (ValueError, Exception):
+                # No existing integration available, create new one
+                logger.debug("No existing MCP integration found, creating new one")
+
+            # Create or get a new integration with our config
             self.mcp_integration = get_mcp_integration(config=self.agent_config)
             if not self.mcp_integration.initialized:
                 # Initialize with the full agent configuration directly
@@ -29,9 +45,9 @@ class MCPIntegrationManager:
                 self.mcp_initialized_locally = True
                 logger.debug("Initialized MCP integration for agent with full configuration")
 
-                # Set agent reference for cancellation support if available
-                if hasattr(self, '_agent_ref') and self._agent_ref:
-                    self.mcp_integration.main_agent_ref = self._agent_ref
+            # Set agent reference for cancellation support if available
+            if hasattr(self, '_agent_ref') and self._agent_ref:
+                self.mcp_integration.main_agent_ref = self._agent_ref
         except Exception as e:
             logger.debug("Failed to initialize MCP integration: %s", e)
 

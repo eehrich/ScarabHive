@@ -91,34 +91,56 @@ def bootstrap_servers(config: AgentConfig, registry: MCPRegistry) -> None:
                         # Last resort for very old factories
                         inst = factory(key, server_cfg, ssl_verify=config.network.ssl_verify)
                 registry.register(key, inst)
+                # CRITICAL FIX: Update agent plugins to use the shared registry instead of their isolated one
+                # Agent plugins need access to all other plugins (like duckduckgo_search, web_scraper) but the
+                # factory creates them with empty MCPRegistry() instances
+                try:  # pragma: no cover - defensive
+                    from agent_system.servers.agent.server import Agent as _Agent
+                    if isinstance(inst, _Agent):
+                        # Fix isolated registry - point agent to the shared registry containing all plugins
+                        inst.registry = registry
+                        logger.debug("Updated agent %s to use shared registry with %d servers", key, len(registry._servers))
+                except Exception:
+                    logger.debug("Failed to update registry for agent %s", key)
                 # Apply per-server agent_config overrides (allowed/blocked tools) without mutating the shared
                 # global AgentConfig reference. We deep-copy only when overrides are present so most plugins stay cheap.
                 try:  # pragma: no cover - defensive
                     from agent_system.servers.agent.server import Agent as _Agent
                     overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
+                    logger.debug("Checking agent_config overrides for %s: inst_type=%s, overrides=%s", key, type(inst).__name__, overrides)
+                    is_agent = isinstance(inst, _Agent)
+                    is_dict = isinstance(overrides, dict)
+                    has_overrides = bool(overrides)
+                    logger.debug("Override checks for %s: is_agent=%s, is_dict=%s, has_overrides=%s", key, is_agent, is_dict, has_overrides)
                     if isinstance(inst, _Agent) and isinstance(overrides, dict) and overrides:
                         needs_copy = any(k in overrides for k in ('allowed_tools', 'blocked_tools', 'max_steps'))
+                        logger.debug("Override application for %s: needs_copy=%s, keys=%s", key, needs_copy, list(overrides.keys()))
                         if needs_copy:
-                            import copy
-                            new_cfg = copy.deepcopy(inst.agent_config)
+                            updates = {}
                             if 'allowed_tools' in overrides and overrides.get('allowed_tools') is not None:
                                 try:
-                                    new_cfg.allowed_tools = list(overrides.get('allowed_tools') or [])  # type: ignore[attr-defined]
+                                    updates['allowed_tools'] = list(overrides.get('allowed_tools') or [])
                                 except Exception:
                                     pass
                             if 'blocked_tools' in overrides and overrides.get('blocked_tools') is not None:
                                 try:
-                                    new_cfg.blocked_tools = list(overrides.get('blocked_tools') or [])  # type: ignore[attr-defined]
+                                    updates['blocked_tools'] = list(overrides.get('blocked_tools') or [])
                                 except Exception:
                                     pass
                             # Optional: allow per-server max_steps override (outside of strict AgentConfig.agent_config block)
                             if 'max_steps' in server_cfg and isinstance(server_cfg.get('max_steps'), int):
                                 try:
-                                    new_cfg.max_steps = int(server_cfg.get('max_steps'))  # type: ignore[attr-defined]
+                                    updates['max_steps'] = int(server_cfg.get('max_steps'))
                                 except Exception:
                                     pass
-                            inst.agent_config = new_cfg  # type: ignore[attr-defined]
-                            logger.debug("Applied per-server agent_config overrides to %s", key)
+                            if updates:
+                                logger.debug("Applying agent_config updates to %s: %s", key, updates)
+                                old_id = id(inst.agent_config)
+                                inst.agent_config = inst.agent_config.model_copy(update=updates)  # type: ignore[attr-defined]
+                                new_id = id(inst.agent_config)
+                                logger.debug("Applied per-server agent_config overrides to %s: old_id=%s, new_id=%s, new allowed_tools=%s", key, old_id, new_id, getattr(inst.agent_config, 'allowed_tools', None))
+                            else:
+                                logger.debug("No updates to apply for %s", key)
                 except Exception:
                     logger.debug("Failed to apply per-server overrides for %s", key)
                 # Nach erfolgreicher Instanzierung: Schwergewichtige Vererbungs-Hilfsfelder entfernen,

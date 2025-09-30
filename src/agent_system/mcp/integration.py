@@ -369,20 +369,23 @@ def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentCon
     except (ImportError, AttributeError):
         pass  # API module not available or not initialized
 
+    # Return existing global instance if available
+    if mcp_integration is not None:
+        return mcp_integration
+
+    # If no config provided and no existing instance, we need config to create one
+    if config is None:
+        raise ValueError("AgentConfig is required when creating new MCPIntegration instance")
+
     # If an app is provided, create a fresh app-bound integration so tests
     # that build an ASGI app get a dedicated integration instance and do not
     # accidentally reuse a previously initialized global instance.
     if app is not None:
-        if config is None:
-            raise ValueError("AgentConfig is required when creating new MCPIntegration instance")
-        mcp_integration = MCPIntegration(app, config)
-        return mcp_integration
+        fresh_integration = MCPIntegration(app, config)
+        return fresh_integration
 
     # Fall back to module-level global instance (create if needed)
-    if mcp_integration is None:
-        if config is None:
-            raise ValueError("AgentConfig is required when creating new MCPIntegration instance")
-        mcp_integration = MCPIntegration(app, config)
+    mcp_integration = MCPIntegration(app, config)
     return mcp_integration
 async def initialize_mcp(config: Dict[str, Any], app: Optional[FastAPI] = None) -> MCPIntegration:
     """Initialize MCP integration with configuration"""
