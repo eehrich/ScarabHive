@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -79,11 +79,15 @@ class MCPSecurityManager:
         return value
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> "MCPSecurityManager":
+    def from_config(cls, config) -> "MCPSecurityManager":
         """Create security manager from configuration"""
         manager = cls()
 
-        servers_config = config.get("servers", {})
+        # Handle both dict and AgentConfig objects
+        if hasattr(config, 'servers'):
+            servers_config = config.servers or {}
+        else:
+            servers_config = config.get("servers", {})
         for server_name, server_config in servers_config.items():
             auth_config = MCPAuthConfig()
 

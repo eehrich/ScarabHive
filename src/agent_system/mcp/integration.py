@@ -19,6 +19,7 @@ from ..plugins.mcp_adapter import plugin_mcp_registry
 from .http_server import MCPHTTPServer
 from .config import MCPConfigManager, MCPConfig
 from .security import configure_security
+from ..config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -26,44 +27,52 @@ logger = logging.getLogger(__name__)
 class MCPIntegration:
     """Main integration class for MCP functionality"""
 
-    def __init__(self, app: Optional[FastAPI] = None, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, app: Optional[FastAPI] = None, config: AgentConfig = None):
+        if config is None:
+            raise ValueError("AgentConfig is required for MCPIntegration initialization")
+
         # Initialize configuration manager without loading config yet
         self.config_manager = MCPConfigManager()
         self.mcp_config = MCPConfig()  # Use default config initially
 
-        # Configure security if config provided
-        if config:
-            configure_security(config)
+        # Configure security with provided config
+        configure_security(config)
 
         self.client_manager = MCPClientManager()
         self.plugin_registry = plugin_mcp_registry
         self.http_server = MCPHTTPServer(app)
         self.initialized = False
         self.configured_external_servers: Dict[str, Dict[str, Any]] = {}  # Store original configuration
-        
+
         # Tool list caching to reduce external server queries
         self._tools_cache: Optional[Dict[str, Dict[str, List[Any]]]] = None
         self._tools_cache_time = 0.0
         self._tools_cache_ttl = 30.0  # Cache for 30 seconds
-        
+
         # Reference to main agent for cancellation support
 
 
-    async def initialize(self, config: Dict[str, Any]) -> None:
+    async def initialize(self, config: AgentConfig) -> None:
         """Initialize MCP integration from configuration"""
         if self.initialized:
             return
 
         # Load the MCP configuration properly
-        self.mcp_config = self.config_manager.load_config(config)
+        # Convert AgentConfig.mcp to dict for the config manager
+        if config.mcp:
+            mcp_dict = config.mcp.model_dump() if hasattr(config.mcp, 'model_dump') else {}
+            self.mcp_config = self.config_manager.load_config(mcp_dict)
+        else:
+            self.mcp_config = self.config_manager.load_config()
 
-        mcp_config = config.get('mcp', {})
-        
+        # Access MCP config from AgentConfig model (not dict)
+        mcp_config = config.mcp if config.mcp else {}
+
         # Update cache TTL from configuration
-        cache_config = mcp_config.get('cache', {})
-        self._tools_cache_ttl = cache_config.get('tool_list_ttl', 30.0)
+        cache_config = getattr(mcp_config, 'cache', {}) if hasattr(mcp_config, 'cache') else {}
+        self._tools_cache_ttl = cache_config.get('tool_list_ttl', 30.0) if isinstance(cache_config, dict) else 30.0
         logger.debug(f"MCP tools cache TTL set to {self._tools_cache_ttl}s")
-        
+
         # Set cache TTL on client manager as well
         self.client_manager.set_cache_ttl(self._tools_cache_ttl)
 
@@ -71,21 +80,21 @@ class MCPIntegration:
         await self._setup_external_servers_from_config()
 
         # Discover and register plugins
-        plugin_dirs = mcp_config.get('plugin_dirs', ['src/plugins'])
+        plugin_dirs = getattr(mcp_config, 'plugin_dirs', ['src/plugins']) if hasattr(mcp_config, 'plugin_dirs') else ['src/plugins']
         self.plugin_registry.discover_plugins(plugin_dirs)
 
         # Register enabled plugins as MCP servers
-        enabled_servers = mcp_config.get('enabled_servers', [])
+        enabled_servers = getattr(mcp_config, 'enabled_servers', []) if hasattr(mcp_config, 'enabled_servers') else []
         # Read servers config from the servers section of mcp.yaml, not from mcp_config
         # which only contains external_servers config
-        servers_config = config.get('servers', {})
-        logger.debug(f"MCP integration - config keys: {list(config.keys())}")
+        servers_config = config.servers if config.servers else {}
+        logger.debug(f"MCP integration - config type: {type(config)}")
         logger.debug(f"MCP integration - servers_config: {servers_config}")
-        
+
         # SIMPLIFIED: Pass complete AgentConfig instead of selective parent_config
         # This eliminates the need to manually copy specific keys
         from ..config.models import AgentConfig
-        
+
         if isinstance(config, dict) and all(key in config for key in ['llm_system', 'agent_llm_profiles']):
             # Convert dict to AgentConfig if needed (for full config access)
             try:
@@ -107,7 +116,7 @@ class MCPIntegration:
                 self.http_server.register_server(server_name, server)
 
         # Connect to external MCP servers (using old format for backward compatibility)
-        external_servers = mcp_config.get('external_servers', {})
+        external_servers = getattr(mcp_config, 'external_servers', {}) if hasattr(mcp_config, 'external_servers') else {}
         # Only store enabled servers for runtime connections and status endpoint
         self.configured_external_servers = {
             name: config for name, config in external_servers.items()
@@ -202,13 +211,13 @@ class MCPIntegration:
         """List all available tools from plugins and external servers"""
         # Check cache validity
         now = time.time()
-        if (self._tools_cache is not None and 
+        if (self._tools_cache is not None and
             (now - self._tools_cache_time) < self._tools_cache_ttl):
             logger.debug("Returning cached tools list (age: %.1fs)", now - self._tools_cache_time)
             return self._tools_cache
-        
+
         logger.debug("Refreshing tools list cache...")
-        
+
         result: Dict[str, Dict[str, List[Any]]] = {
             "plugins": {},
             "external_servers": {}
@@ -322,7 +331,7 @@ class MCPIntegration:
             }
         }
 
-    async def register_plugin(self, name: str, config: Optional[Dict[str, Any]] = None) -> None:
+    async def register_plugin(self, name: str, config: Optional[AgentConfig] = None) -> None:
         """Register a plugin as an MCP server"""
         await self.plugin_registry.register_plugin(name, config)
 
@@ -349,7 +358,7 @@ class MCPIntegration:
 mcp_integration: Optional[MCPIntegration] = None
 
 
-def get_mcp_integration(app: Optional[FastAPI] = None) -> MCPIntegration:
+def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentConfig] = None) -> MCPIntegration:
     """Get or create the global MCP integration instance"""
     global mcp_integration
     # First check if the API has an initialized instance and prefer it
@@ -364,19 +373,31 @@ def get_mcp_integration(app: Optional[FastAPI] = None) -> MCPIntegration:
     # that build an ASGI app get a dedicated integration instance and do not
     # accidentally reuse a previously initialized global instance.
     if app is not None:
-        mcp_integration = MCPIntegration(app)
+        if config is None:
+            raise ValueError("AgentConfig is required when creating new MCPIntegration instance")
+        mcp_integration = MCPIntegration(app, config)
         return mcp_integration
 
     # Fall back to module-level global instance (create if needed)
     if mcp_integration is None:
-        mcp_integration = MCPIntegration(app)
+        if config is None:
+            raise ValueError("AgentConfig is required when creating new MCPIntegration instance")
+        mcp_integration = MCPIntegration(app, config)
     return mcp_integration
-
-
 async def initialize_mcp(config: Dict[str, Any], app: Optional[FastAPI] = None) -> MCPIntegration:
     """Initialize MCP integration with configuration"""
-    integration = get_mcp_integration(app)
-    await integration.initialize(config)
+    # Convert dict config to AgentConfig if needed
+    if isinstance(config, dict):
+        from ..config.models import AgentConfig
+        try:
+            agent_config = AgentConfig.model_validate(config)
+        except Exception as e:
+            raise ValueError(f"Invalid configuration for MCPIntegration: {e}") from e
+    else:
+        agent_config = config
+
+    integration = get_mcp_integration(app, agent_config)
+    await integration.initialize(agent_config)
     return integration
 
 

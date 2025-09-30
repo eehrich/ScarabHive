@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 import asyncio
 
 from .status import StatusEvent, status_bus
-
+from ..config import AgentConfig
 
 class MCPAdapter(ABC):
     """Abstract base class for MCP adapters.
@@ -14,7 +14,7 @@ class MCPAdapter(ABC):
     whether local or remote.
     """
 
-    def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str, config: AgentConfig):
         self.name = name
         self.config = config or {}
 
@@ -67,7 +67,7 @@ class MCPAdapter(ABC):
 class BaseMCPAdapter(MCPAdapter):
     """Base implementation of MCPAdapter with common functionality."""
 
-    def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str, config: AgentConfig):
         super().__init__(name, config)
         self._timeout = self.config.get('timeout', 30.0)
 

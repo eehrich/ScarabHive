@@ -16,6 +16,7 @@ from datetime import datetime
 from .core import MCPMessage
 from .streaming_transport import HTTPStreamingTransport
 from .status import status_bus, StatusEvent
+from ..config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 class MCPStatusStreamingTransport(HTTPStreamingTransport):
     """Extended streaming transport that publishes status events as MCP notifications."""
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None, **kwargs):
+    def __init__(self, base_url: str, config: AgentConfig = None, **kwargs):
         super().__init__(base_url, config, **kwargs)
         self._status_subscription: Optional[asyncio.Queue] = None
         self._status_task: Optional[asyncio.Task] = None
@@ -33,13 +34,13 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
     async def connect(self) -> None:
         """Establish HTTP session and start status event streaming."""
         await super().connect()
-        
+
         # Subscribe to status events
         self._status_subscription = await status_bus.subscribe(
             server=self._server_filter,
             request_id=self._request_id_filter
         )
-        
+
         # Start background task to forward status events
         self._status_task = asyncio.create_task(self._stream_status_events())
         logger.info("Started status event streaming for MCP transport")
@@ -72,13 +73,13 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
             while True:
                 # Wait for status event
                 event: StatusEvent = await self._status_subscription.get()
-                
+
                 # Convert to MCP notification
                 notification = self._create_status_notification(event)
-                
+
                 # Send as notification (no response expected)
                 await self._send_status_notification(notification)
-                
+
         except asyncio.CancelledError:
             logger.debug("Status event streaming task cancelled")
         except Exception as e:
@@ -109,10 +110,10 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
                 "method": notification.method,
                 "params": notification.params
             }
-            
+
             # Log the notification
             logger.debug(f"Status notification: {json.dumps(payload)}")
-            
+
             # Send over HTTP if session is available
             if self.session:
                 async with self.session.post(
@@ -123,7 +124,7 @@ class MCPStatusStreamingTransport(HTTPStreamingTransport):
                         logger.warning(f"Status notification failed: {response.status}")
                     else:
                         logger.debug("Status notification sent successfully")
-                        
+
         except Exception:
             logger.exception("Failed to send status notification")
 
@@ -136,7 +137,7 @@ class MCPStatusNotificationHandler:
 
     def add_status_handler(self, handler: Any) -> None:
         """Add a handler function for status notifications.
-        
+
         Handler should accept (server, request_id, message, timestamp, phase, level, meta).
         """
         self._status_handlers.add(handler)
@@ -187,10 +188,10 @@ async def create_status_streaming_server(base_url: str, server_filter: Optional[
 async def setup_status_client_handler() -> MCPStatusNotificationHandler:
     """Set up a client-side handler for status notifications."""
     handler = MCPStatusNotificationHandler()
-    
+
     # Example status handler
     async def log_status(server, request_id, message, timestamp, phase, level, meta):
         print(f"[{timestamp}] {server}: {message} (phase={phase}, level={level})")
-    
+
     handler.add_status_handler(log_status)
     return handler
