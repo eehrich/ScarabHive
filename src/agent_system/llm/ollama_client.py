@@ -13,13 +13,14 @@ class OllamaNativeAsyncClient(LLMClient):
     Supports per-request options including num_ctx.
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None) -> None:
+    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None) -> None:
         import httpx  # lazy import
         self._httpx = httpx
         self._base = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
         self.model = model
         self._options = options or {}
         self._timeout = timeout or 60.0
+        self.verify = verify if verify is not None else True
 
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -50,7 +51,7 @@ class OllamaNativeAsyncClient(LLMClient):
         if cancellation_token and cancellation_token.is_cancelled:
             raise Exception("Request cancelled by user")
 
-        async with self._httpx.AsyncClient(timeout=self._timeout) as client:
+        async with self._httpx.AsyncClient(timeout=self._timeout, verify=self.verify) as client:
             if cancellation_token:
                 http_task = asyncio.create_task(client.post(url, json=body))
                 while not http_task.done():
@@ -88,7 +89,7 @@ class OllamaNativeAsyncClient(LLMClient):
         if cancellation_token and cancellation_token.is_cancelled:
             raise Exception("Request cancelled by user")
 
-        async with self._httpx.AsyncClient(timeout=self._timeout) as client:
+        async with self._httpx.AsyncClient(timeout=self._timeout, verify=self.verify) as client:
             if cancellation_token:
                 http_task = asyncio.create_task(client.post(url, json=body))
                 while not http_task.done():

@@ -1,7 +1,7 @@
 """
 HTTPX-based LLM client with superior cancellation, timeout, and error handling.
 
-This client uses HTTPX directly for better async control compared to the official 
+This client uses HTTPX directly for better async control compared to the official
 OpenAI client which has known hanging/timeout issues.
 """
 
@@ -23,14 +23,14 @@ class HTTPXTimeoutConfig:
     """Fine-grained timeout configuration for HTTPX client."""
     connect: float = 10.0      # Connection establishment timeout
     read: float = 180.0        # Read timeout (waiting for response data)
-    write: float = 10.0        # Write timeout (sending request data)  
+    write: float = 10.0        # Write timeout (sending request data)
     pool: float = 5.0          # Pool timeout (getting connection from pool)
 
 
 class HTTPXOpenAIClient(LLMClient):
     """
     HTTPX-based OpenAI API client with superior async handling.
-    
+
     Advantages over official OpenAI client:
     - Native asyncio.CancelledError support (no polling required)
     - Fine-grained timeout control (connect, read, write, pool)
@@ -38,7 +38,7 @@ class HTTPXOpenAIClient(LLMClient):
     - Better connection management and retry logic
     - Cleaner cancellation without complex task management
     """
-    
+
     def __init__(
         self,
         model: str,
@@ -47,6 +47,7 @@ class HTTPXOpenAIClient(LLMClient):
         timeout_config: Optional[HTTPXTimeoutConfig] = None,
         max_retries: int = 3,
         retry_backoff: float = 1.0,
+        verify: Optional[bool] = None,
         **extra_params
     ):
         # LLMClient doesn't have __init__, so no super() call needed
@@ -56,8 +57,11 @@ class HTTPXOpenAIClient(LLMClient):
         self.timeout_config = timeout_config or HTTPXTimeoutConfig()
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
+        self.verify = verify
         self.extra_params = extra_params
-        
+
+        logger.debug(f"HTTPXOpenAIClient initialized model={model} base_url={base_url} verify={verify}")
+
         # Create timeout object for HTTPX
         self._timeout = httpx.Timeout(
             connect=self.timeout_config.connect,
@@ -65,32 +69,32 @@ class HTTPXOpenAIClient(LLMClient):
             write=self.timeout_config.write,
             pool=self.timeout_config.pool
         )
-        
+
         # HTTPX client will be created per request to ensure proper cleanup
         self._headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "User-Agent": "AgentSystem-HTTPX/1.0"
         }
-    
+
     async def chat(
-        self, 
-        messages: list, 
+        self,
+        messages: list,
         cancellation_token: Optional[CancellationToken] = None
     ) -> str:
         """Send chat completion request without tools."""
         result = await self._make_request(messages, tools=[], cancellation_token=cancellation_token)
         return result.get("assistant", {}).get("content", "")
-    
+
     async def chat_tools(
-        self, 
-        messages: list, 
-        tools: list, 
+        self,
+        messages: list,
+        tools: list,
         cancellation_token: Optional[CancellationToken] = None
     ) -> dict:
         """Send chat completion request with tools."""
         return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token)
-    
+
     async def _make_request(
         self,
         messages: list,
@@ -98,7 +102,7 @@ class HTTPXOpenAIClient(LLMClient):
         cancellation_token: Optional[CancellationToken] = None
     ) -> dict:
         """Make the actual HTTP request with proper cancellation and error handling."""
-        
+
         # Build request payload - convert ChatMessage objects to dicts
         message_dicts = []
         for msg in messages:
@@ -111,59 +115,62 @@ class HTTPXOpenAIClient(LLMClient):
             else:
                 # Fallback - try to convert to dict
                 message_dicts.append(dict(msg))
-        
+
         payload = {
             "model": self.model,
             "messages": message_dicts,
             **self.extra_params
         }
-        
+
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        
+
         url = f"{self.base_url}/chat/completions"
-        
+
         # Retry logic with exponential backoff
         last_exception = None
         for attempt in range(self.max_retries + 1):
             # Check cancellation before each attempt
             if cancellation_token and cancellation_token.is_cancelled:
                 raise asyncio.CancelledError("Request cancelled by user")
-            
+
             try:
                 # Create fresh client for each request to avoid connection issues
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                client_kwargs = {"timeout": self._timeout}
+                if self.verify is not None:
+                    client_kwargs["verify"] = self.verify
+                async with httpx.AsyncClient(**client_kwargs) as client:
                     logger.debug(f"HTTPX request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
-                    
+
                     # Make request - this will raise CancelledError naturally if cancelled
                     response = await client.post(
                         url=url,
                         headers=self._headers,
                         json=payload
                     )
-                    
+
                     # Check for HTTP errors
                     if response.status_code == 429 and attempt < self.max_retries:
                         # Rate limit - retry with backoff
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
                         backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
-                        
+
                         logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                         await asyncio.sleep(backoff_time)
                         continue
-                    
+
                     response.raise_for_status()
-                    
+
                     # Parse response
                     response_data = response.json()
                     return self._format_response(response_data)
-                    
+
             except asyncio.CancelledError:
                 # Re-raise cancellation without wrapping
                 logger.info("HTTPX request cancelled by user")
                 raise
-                
+
             except httpx.TimeoutException as e:
                 last_exception = e
                 if attempt < self.max_retries:
@@ -174,7 +181,7 @@ class HTTPXOpenAIClient(LLMClient):
                 else:
                     logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
                     raise Exception(f"Request timed out: {e}") from e
-                    
+
             except httpx.HTTPStatusError as e:
                 last_exception = e
                 if e.response.status_code >= 500 and attempt < self.max_retries:
@@ -188,7 +195,7 @@ class HTTPXOpenAIClient(LLMClient):
                     error_detail = self._parse_error_response(e.response)
                     logger.error(f"HTTP error {e.response.status_code}: {error_detail}")
                     raise Exception(f"HTTP {e.response.status_code}: {error_detail}") from e
-                    
+
             except (httpx.NetworkError, httpx.ConnectError) as e:
                 last_exception = e
                 if attempt < self.max_retries:
@@ -199,21 +206,21 @@ class HTTPXOpenAIClient(LLMClient):
                 else:
                     logger.error(f"Network error after {self.max_retries + 1} attempts: {e}")
                     raise Exception(f"Network error: {e}") from e
-        
+
         # Should never reach here, but just in case
         raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
-    
+
     def _parse_retry_after(self, retry_after: Optional[str]) -> Optional[float]:
         """Parse Retry-After header value."""
         if not retry_after:
             return None
-        
+
         try:
             # Can be seconds or HTTP date, we only handle seconds for simplicity
             return float(retry_after)
         except ValueError:
             return None
-    
+
     def _parse_error_response(self, response: httpx.Response) -> str:
         """Extract error message from HTTP error response."""
         try:
@@ -226,44 +233,44 @@ class HTTPXOpenAIClient(LLMClient):
                     return str(error_info)
         except Exception:
             pass
-        
+
         return f"HTTP {response.status_code}: {response.text[:200]}"
-    
+
     def _format_response(self, response_data: dict) -> dict:
         """Format OpenAI API response to our standard format."""
         try:
             choices = response_data.get("choices", [])
             if not choices:
                 return {"assistant": {"role": "assistant", "content": ""}}
-            
+
             choice = choices[0]
             message = choice.get("message", {})
-            
+
             # Build assistant response
             assistant = {
                 "role": "assistant",
                 "content": message.get("content", "") or ""
             }
-            
+
             # Add tool calls if present
             tool_calls = message.get("tool_calls")
             if tool_calls:
                 assistant["tool_calls"] = tool_calls
-            
+
             # Track usage if available
             usage = response_data.get("usage", {})
-            
+
             result = {"assistant": assistant}
-            
+
             if usage:
                 result["usage"] = {
                     "prompt_tokens": usage.get("prompt_tokens", 0),
                     "completion_tokens": usage.get("completion_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0)
                 }
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to format response: {e}, raw data: {response_data}")
             return {"assistant": {"role": "assistant", "content": ""}}
@@ -274,6 +281,7 @@ def create_httpx_openai_client(
     model: str,
     api_key: str,
     base_url: str = "https://api.openai.com/v1",
+    verify: Optional[bool] = None,
     **kwargs
 ) -> HTTPXOpenAIClient:
     """Create HTTPX-based OpenAI client with sensible defaults."""
@@ -281,5 +289,6 @@ def create_httpx_openai_client(
         model=model,
         api_key=api_key,
         base_url=base_url,
+        verify=verify,
         **kwargs
     )

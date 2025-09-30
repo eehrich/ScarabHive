@@ -3,20 +3,20 @@ llm_system:
   # These can be overridden per model if needed
   httpx_timeouts:
     connect: 10.0      # Connection establishment timeout (seconds)
-    read: 180.0        # Read timeout - waiting for response data (seconds) 
+    read: 180.0        # Read timeout - waiting for response data (seconds)
     write: 10.0        # Write timeout - sending request data (seconds)
     pool: 5.0          # Pool timeout - getting connection from pool (seconds)
 
   models:
     gpt-4.1:
-      provider: openai
+      provider: openai_httpx
       model: gpt-4.1
       openai_api_key: ***REMOVED***
       context_window: 1000000
       request_timeout: 60
 
     gpt-5-nano:
-      provider: openai
+      provider: openai_httpx
       model: gpt-5-nano
       openai_api_key: ***REMOVED***
       context_window: 272000
@@ -33,9 +33,9 @@ llm_system:
         read: 240.0
         write: 10.0
         pool: 5.0
-        
+
     gpt-5:
-      provider: openai
+      provider: openai_httpx
       model: gpt-5
       openai_api_key: ***REMOVED***
       context_window: 272000
@@ -53,7 +53,7 @@ llm_system:
       model: gpt-audio
       openai_api_key: ***REMOVED***
       context_window: 100000
-      request_timeout: 180      
+      request_timeout: 180
 
     ollama-gpt-oss-20b:
       provider: ollama
@@ -68,11 +68,11 @@ llm_system:
       model: deepseek-chat
       openai_api_key: "***REMOVED***"
       ollama_url: https://api.deepseek.com
-      ollama_mode: openai_compat      
+      ollama_mode: openai_compat
       context_window: 100000 # 128K context size totally
       request_timeout: 180
 
-   
+
   profiles:
     turbo:
       model_ref: gpt-5-nano
@@ -81,7 +81,7 @@ llm_system:
     normal:
       model_ref: deepseek-chat
       description: "Fast model for quick responses"
-      max_steps: 100      
+      max_steps: 100
     think:
       model_ref: gpt-5
       description: "Advanced model for complex reasoning"
@@ -101,7 +101,7 @@ llm_system:
     deepseek:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks"
-      max_steps: 100      
+      max_steps: 100
 
   default_profile: normal
 
