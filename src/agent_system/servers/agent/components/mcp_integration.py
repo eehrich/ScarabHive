@@ -28,19 +28,22 @@ class MCPIntegrationManager:
                 if hasattr(self.agent_config, 'mcp'):
                     # Build complete config including LLM system for plugin inheritance
                     full_config = {"mcp": self.agent_config.mcp.model_dump() if hasattr(self.agent_config.mcp, "model_dump") else getattr(self.agent_config.mcp, "__dict__", {})}
-                    
+
                     # Add LLM system configuration for plugins that need it
                     if hasattr(self.agent_config, 'llm_system'):
                         full_config['llm_system'] = self.agent_config.llm_system.model_dump() if hasattr(self.agent_config.llm_system, "model_dump") else getattr(self.agent_config.llm_system, "__dict__", {})
-                    
+
                     if hasattr(self.agent_config, 'agent_llm_profiles'):
                         full_config['agent_llm_profiles'] = self.agent_config.agent_llm_profiles
-                    
-                    # CRITICAL FIX: Add context_management configuration for plugins
+
                     # This ensures sub-agents inherit token_optimization settings correctly
                     if hasattr(self.agent_config, 'context_management'):
                         full_config['context_management'] = self.agent_config.context_management.model_dump() if hasattr(self.agent_config.context_management, "model_dump") else getattr(self.agent_config.context_management, "__dict__", {})
-                    
+
+                    # This ensures sub-agents inherit network settings correctly
+                    if hasattr(self.agent_config, 'network'):
+                        full_config['network'] = self.agent_config.network.model_dump() if hasattr(self.agent_config.network, "model_dump") else getattr(self.agent_config.network, "__dict__", {})
+
                     # Add servers configuration for MCP plugin initialization
                     if hasattr(self.agent_config, 'servers'):
                         if hasattr(self.agent_config.servers, 'model_dump'):
@@ -49,11 +52,11 @@ class MCPIntegrationManager:
                             full_config['servers'] = self.agent_config.servers
                         else:
                             full_config['servers'] = getattr(self.agent_config.servers, '__dict__', {})
-                        
+
                     await self.mcp_integration.initialize(full_config)
                     self.mcp_initialized_locally = True
                     logger.debug("Initialized MCP integration for agent with full configuration")
-                    
+
                     # Set agent reference for cancellation support if available
                     if hasattr(self, '_agent_ref') and self._agent_ref:
                         self.mcp_integration.main_agent_ref = self._agent_ref
