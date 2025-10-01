@@ -10,7 +10,6 @@ class ChatMessage(BaseModel):
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
-    function_call: Optional[Dict[str, Any]] = None
 
 
 class LLMClient:

@@ -5,7 +5,7 @@ from typing import Any, TYPE_CHECKING
 from agent_system.llm.models import ChatMessage
 from agent_system.llm.clients import make_llm
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.utils.text_sanitizer import sanitize_for_llm
+from agent_system.llm.text_sanitizer import sanitize_for_llm
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentConfig

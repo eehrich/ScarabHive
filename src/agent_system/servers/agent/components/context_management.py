@@ -8,7 +8,7 @@ from typing import List
 
 from ....llm.models import ChatMessage
 from ....context.agent_tracker import update_agent_context_usage
-from ....core.message_validator import validate_messages_before_llm
+from ....llm.message_validator import validate_messages_before_llm
 
 logger = logging.getLogger(__name__)
 

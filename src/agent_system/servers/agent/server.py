@@ -15,7 +15,7 @@ from ...utils.id import short_id
 from ...llm.models import ChatMessage
 from ...utils.prompt_renderer import render_prompts, get_datetime_context
 from jinja2 import Template
-from ...utils.text_sanitizer import sanitize_for_llm
+from ...llm.text_sanitizer import sanitize_for_llm
 from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
 from ...context.agent_tracker import register_agent_for_tracking
 from ...mcp.status import (
@@ -974,7 +974,7 @@ class Agent(MCPServer):
                 await status_worker.progress(f"Calling LLM{llm_info}", meta={"step": step + 1})
 
                 # Validate messages before LLM call to ensure API compliance
-                from agent_system.core.message_validator import validate_messages_before_llm
+                from agent_system.llm.message_validator import validate_messages_before_llm
                 messages = validate_messages_before_llm(messages, context=f"agent_server_step_{step + 1}")
 
                 # Get LLM response - handle context length exceeded errors
@@ -1292,7 +1292,7 @@ class Agent(MCPServer):
                 # Max steps reached - get final answer
                 try:
                     # Validate messages before final LLM call
-                    from agent_system.core.message_validator import validate_messages_before_llm
+                    from agent_system.llm.message_validator import validate_messages_before_llm
                     messages = validate_messages_before_llm(messages, context="agent_server_final")
                     
                     final_llm_out = await self.llm.chat_tools(messages, [], cancellation_token=main_token)

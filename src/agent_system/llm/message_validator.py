@@ -1,5 +1,5 @@
 """
-Central message history validation and repair module.
+Message validation and repair for LLM message sequences.
 
 This module provides comprehensive validation of message sequences before LLM calls,
 ensuring structural integrity and OpenAI API compliance. It can detect and repair
@@ -10,7 +10,7 @@ import logging
 from typing import List, Dict, Any, Set
 from dataclasses import dataclass
 
-from agent_system.llm.models import ChatMessage
+from .models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +271,7 @@ class MessageValidator:
         # Always log errors and warnings in detail
         if error_issues or warning_issues:
             logger.warning(
-                "🔍 Message validation found issues in %s context: %s",
+                "Message validation found issues in %s context: %s",
                 context,
                 repair_summary
             )
@@ -327,7 +327,7 @@ def validate_messages_before_llm(
     if critical_errors:
         error_details = [f"{e.type}@{e.message_index}" for e in critical_errors]
         logger.error(
-            "🚫 Critical message validation errors in %s: %s", 
+            "Critical message validation errors in %s: %s", 
             context, 
             ", ".join(error_details)
         )
@@ -338,7 +338,6 @@ def validate_messages_before_llm(
 
 def get_validation_stats() -> Dict[str, Any]:
     """Get validation statistics for monitoring."""
-    # This could be extended to track validation metrics over time
     return {
         "validator_available": True,
         "log_level": _validator.log_level

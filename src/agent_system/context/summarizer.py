@@ -150,7 +150,7 @@ class ConversationSummarizer:
             
             # Add preserved recent messages (with tool result truncation and validation)
             truncated_preserved = self._truncate_tool_results(to_preserve, config)
-            from agent_system.core.message_validator import validate_messages_before_llm
+            from agent_system.llm.message_validator import validate_messages_before_llm
             validated_preserved = validate_messages_before_llm(truncated_preserved, context="summarizer_preserve")
             result.extend(validated_preserved)
             
@@ -241,7 +241,7 @@ class ConversationSummarizer:
             summary_messages = [ChatMessage(role="user", content=summary_prompt)]
             
             # Validate message sequence before LLM call
-            from agent_system.core.message_validator import validate_messages_before_llm
+            from agent_system.llm.message_validator import validate_messages_before_llm
             summary_messages = validate_messages_before_llm(summary_messages, context="summarizer")
             
             response_content = await self.llm_client.chat(summary_messages)

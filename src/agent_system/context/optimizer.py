@@ -187,7 +187,6 @@ class TokenOptimizer:
             tool_calls=optimized_tool_calls,
             tool_call_id=getattr(msg, 'tool_call_id', None),
             name=getattr(msg, 'name', None)
-            ,function_call=getattr(msg, 'function_call', None)
         )
         
         # Check if optimization actually helps

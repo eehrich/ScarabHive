@@ -1,54 +1,90 @@
-import pytest
-from unittest.mock import MagicMock
-
 from agent_system.llm.factory import LLMFactory
-from agent_system.servers.agent.server import Agent
-from agent_system.mcp.base import MCPRegistry
-from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile, ContextConfig, PromptsConfig
+from agent_system.config.models import (
+    AgentSystemConfig, 
+    AgentConfig, 
+    LLMSystemConfig, 
+    LLMModelConfig, 
+    LLMProfile,
+    ContextConfig,
+    NetworkConfig,
+    LoggingConfig
+)
 
 
 def make_config():
-    return AgentConfig(
+    """Create a test AgentSystemConfig with LLM configuration."""
+    return AgentSystemConfig(
+        name="TestSystem",
+        version="0.0.0",
         llm_system=LLMSystemConfig(
             models={
-                "gpt-test": LLMModelConfig(provider="openai", model="gpt-test", openai_api_key=None)
+                "gpt-test": LLMModelConfig(
+                    provider="openai", 
+                    model="gpt-test", 
+                    openai_api_key="test-key"
+                )
             },
             profiles={
                 "normal": LLMProfile(model_ref="gpt-test")
-            },
-            default_profile="normal"
+            }
         ),
         context=ContextConfig(auto_datetime=False),
-        prompts=PromptsConfig(system_template="config/prompts/system_prompt.yaml"),
-        max_steps=1,
-        servers={}
+        network=NetworkConfig(),
+        logging=LoggingConfig()
+    )
+
+
+def make_agent_config(llm_profile: str = "normal"):
+    """Create a test AgentConfig."""
+    return AgentConfig(
+        llm_profile=llm_profile,
+        max_steps=20
     )
 
 
 def test_llmfactory_returns_none_if_no_config():
-    f = LLMFactory(None)
+    """Test that LLMFactory returns None when no config is provided."""
+    f = LLMFactory(None, None)
     assert f.create() is None
 
 
-def test_agent_accepts_injected_llm():
-    cfg = make_config()
-    registry = MCPRegistry()
-    fake_llm = MagicMock()
-    agent = Agent("test_agent", cfg, registry, llm=fake_llm)
-    assert agent.llm is fake_llm
+def test_llmfactory_returns_none_if_no_agent_config():
+    """Test that LLMFactory returns None when only system config is provided."""
+    config = make_config()
+    f = LLMFactory(config, None)
+    assert f.create() is None
 
 
-def test_agent_uses_llm_factory_when_provided():
-    cfg = make_config()
-    registry = MCPRegistry()
-    class FakeFactory:
-        def __init__(self):
-            self.created = False
-        def create(self):
-            self.created = True
-            return MagicMock()
+def test_llmfactory_creates_llm_with_valid_configs():
+    """Test that LLMFactory creates an LLM client with valid configurations."""
+    config = make_config()
+    agent_config = make_agent_config()
+    
+    f = LLMFactory(config, agent_config)
+    llm = f.create()
+    
+    assert llm is not None
+    # The client should have the configured model
+    assert hasattr(llm, 'model')
 
-    f = FakeFactory()
-    agent = Agent("test_agent", cfg, registry, llm_factory=f)
-    assert f.created is True
-    assert agent.llm is not None
+
+def test_llmfactory_respects_agent_profile():
+    """Test that LLMFactory uses the profile specified in agent config."""
+    config = make_config()
+    
+    # Add another profile and model
+    config.llm_system.models["gpt-turbo"] = LLMModelConfig(
+        provider="openai",
+        model="gpt-turbo",
+        openai_api_key="test-key"
+    )
+    config.llm_system.profiles["turbo"] = LLMProfile(model_ref="gpt-turbo")
+    
+    # Create agent config with turbo profile
+    agent_config = make_agent_config(llm_profile="turbo")
+    
+    f = LLMFactory(config, agent_config)
+    llm = f.create()
+    
+    assert llm is not None
+    assert llm.model == "gpt-turbo"

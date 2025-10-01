@@ -2,7 +2,10 @@
 
 import re
 import unicodedata
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def sanitize_for_llm(text: Optional[str]) -> str:
@@ -28,8 +31,6 @@ def sanitize_for_llm(text: Optional[str]) -> str:
             try:
                 text = text.decode('utf-8', errors='ignore')
             except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.warning("Failed to decode bytes to UTF-8, returning empty string: %s", e)
                 return ""
         else:
@@ -79,8 +80,6 @@ def sanitize_for_llm(text: Optional[str]) -> str:
         
     except Exception as e:
         # Fallback: return empty string if sanitization fails completely
-        import logging
-        logger = logging.getLogger(__name__)
         logger.warning("Text sanitization failed completely, returning empty string: %s", e)
         return ""
 

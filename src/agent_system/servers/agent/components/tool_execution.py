@@ -10,7 +10,7 @@ from typing import Dict, List, Any
 
 from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
 from ....llm.models import ChatMessage
-from ....utils.text_sanitizer import sanitize_for_llm, sanitize_json_content
+from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....mcp.integration import get_mcp_integration
 
 logger = logging.getLogger(__name__)

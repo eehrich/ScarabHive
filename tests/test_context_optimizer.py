@@ -336,15 +336,13 @@ class TestTokenOptimizerEdgeCases:
         msg = ChatMessage(
             role="assistant",
             content="  Hello world  ",
-            name="test_assistant",
-            function_call={"name": "test_function"}
+            name="test_assistant"
         )
         
         optimized = self.optimizer._optimize_message(msg)
         
         assert optimized.role == msg.role
         assert optimized.name == msg.name
-        assert optimized.function_call == msg.function_call
     
     @pytest.mark.asyncio
     async def test_stats_updated_correctly(self):
