@@ -264,7 +264,13 @@ class OpenAIAsyncClient(LLMClient):
             logger.debug("Normalized tool schemas: input=%d, output=%d", len(tools), len(normalized_tools))
         tools = normalized_tools
         try:
-            opts = {"model": self.model, "messages": msgs, "tools": tools, "tool_choice": "auto"}
+            opts = {"model": self.model, "messages": msgs}
+            
+            # Only include tools if we have at least one tool (some providers reject empty arrays)
+            if tools:
+                opts["tools"] = tools
+                opts["tool_choice"] = "auto"
+                
             opts.update(self._default_extra)
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff

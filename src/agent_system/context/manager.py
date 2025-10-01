@@ -73,11 +73,12 @@ class ContextManager:
             
             # Try to get from system_config via LLM factory resolution
             if hasattr(self.agent, 'system_config') and self.agent.system_config:
-                from ..llm.factory import resolve_llm_config_for_agent
-                llm_kwargs = resolve_llm_config_for_agent(self.agent.system_config, self.agent.name)
-                context_window = llm_kwargs.get("context_window")
-                if context_window:
-                    return context_window
+                if hasattr(self.agent, 'agent_config') and self.agent.agent_config:
+                    from ..llm.factory import resolve_llm_config_for_agent
+                    llm_kwargs = resolve_llm_config_for_agent(self.agent.system_config, self.agent.agent_config)
+                    context_window = llm_kwargs.get("context_window")
+                    if context_window:
+                        return context_window
         except Exception as e:
             logger.warning("Failed to get context_window from agent, using default fallback: %s", e)
         

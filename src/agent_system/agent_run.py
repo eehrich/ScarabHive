@@ -22,7 +22,6 @@ import sys
 
 from .config.settings import load_settings, get_mcp_config_by_name
 from .mcp.base import MCPRegistry
-from .utils.logging import setup_logging
 from .servers.agent.server import Agent
 
 
@@ -68,13 +67,12 @@ async def create_agent(config, registry, agent_name: str):
     if not mcp_config.agent_config:
         raise ValueError(f"Agent '{agent_name}' has no agent_config section")
     
-    # Create a modified version of the main config for this agent
-    # Similar to how the CLI creates cli_agent_config
-    import copy
-    agent_system_config = copy.deepcopy(config)
+    # Create the agent using the new signature:
+    # Agent(name, system_config, mcp_config, registry)
+    agent = Agent(agent_name, config, mcp_config, registry)
     
-    # Create the agent using the same pattern as CLI
-    agent = Agent(agent_name, agent_system_config, registry)
+    # Make agent public so it shows up in tool lists if needed
+    agent._mcp_public = True
     
     # Register the agent in the registry
     registry.register(agent_name, agent)
@@ -99,7 +97,7 @@ async def run_agent_request(agent: Agent, request: str) -> dict:
         raise
 
 
-async def main_async(request: str) -> None:
+async def main_async(request: str, agent_name: str | None = None) -> None:
     """Main async function to execute the agent request."""
     try:
         # Load configuration
@@ -111,13 +109,14 @@ async def main_async(request: str) -> None:
         logger.info("Initializing system...")
         registry = await initialize_system(config)
         
-        # Get default agent name from config
-        default_agent = config.default_agent
-        logger.info(f"Using default agent: {default_agent}")
+        # Get agent name from argument or use default
+        if agent_name is None:
+            agent_name = config.default_agent
+        logger.info(f"Using agent: {agent_name}")
         
         # Create and initialize agent
         logger.info("Creating agent...")
-        agent = await create_agent(config, registry, default_agent)
+        agent = await create_agent(config, registry, agent_name)
         
         # Execute the request
         logger.info("Executing request...")
@@ -144,6 +143,8 @@ async def main_async(request: str) -> None:
         
     except Exception as e:
         logger.error(f"Agent execution failed: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
@@ -180,13 +181,17 @@ Examples:
     
     # Setup logging
     if args.verbose:
-        setup_logging("DEBUG")
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(levelname)s: %(name)s: %(message)s',
+            handlers=[logging.StreamHandler(sys.stdout)]
+        )
     else:
         setup_basic_logging()
     
     # Run the async main function
     try:
-        asyncio.run(main_async(args.request))
+        asyncio.run(main_async(args.request, args.agent))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(130)

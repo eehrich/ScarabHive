@@ -29,9 +29,7 @@ def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[[str, AgentSys
         
     Note:
         The factory signature uses AgentSystemConfig and MCPConfig as the modern standard.
-        Internally, the Agent constructor currently expects AgentSystemConfig (misnamed as 
-        'config' parameter in the constructor). The MCPConfig.agent_config provides
-        agent-specific overrides if needed.
+        The Agent constructor expects: (name, system_config, mcp_config, registry)
     """
     def _factory(name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> Agent:
         """Create an agent plugin instance.
@@ -41,13 +39,12 @@ def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[[str, AgentSys
             system_config: Complete system configuration (LLM, network, context, etc.)
             mcp_config: Plugin-specific MCP configuration (enabled, type, agent_config)
         """
+        # Agent constructor signature: (name, system_config, mcp_config, registry, llm, llm_factory)
+        # Note: Registry is required but will be injected after bootstrap completes
+        # For now, we create an empty registry that will be populated later
         registry = MCPRegistry()
         
-        # Agent constructor signature: (name, config, registry, llm, llm_factory)
-        # The 'config' parameter is typed as AgentConfig but actually expects
-        # AgentSystemConfig since Agent code accesses config.llm_system, config.network, etc.
-        # This is a naming/typing inconsistency that should be fixed in Agent class.
-        inst = agent_cls(name, system_config, registry)
+        inst = agent_cls(name, system_config, mcp_config, registry)
         
         logger.debug(
             "Instantiated agent plugin %s (type=%s) via generic factory",

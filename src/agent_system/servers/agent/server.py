@@ -99,8 +99,8 @@ class Agent(MCPServer):
                     # Lazy import to avoid circular imports when testing
                     from ...llm.factory import resolve_llm_config_for_agent
                     
-                    # Use new profile-based resolution with agent name
-                    llm_kwargs = resolve_llm_config_for_agent(system_config, name)
+                    # Use new profile-based resolution with agent config
+                    llm_kwargs = resolve_llm_config_for_agent(system_config, self.agent_config)
                     
                     # Store profile information for status display
                     self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
@@ -228,10 +228,12 @@ class Agent(MCPServer):
                     # Use profile-based resolution for summarizer LLM
                     from ...llm.factory import resolve_llm_config_for_agent
                     from ...llm.clients import make_llm
+                    from ...config.models import AgentConfig
                     
-                    # Resolve LLM config for summarizer using agent name suffix
-                    summarizer_agent_name = f"{self.name}_summarizer"
-                    summarizer_kwargs = resolve_llm_config_for_agent(self.system_config, summarizer_agent_name)
+                    # Create agent config for summarizer using summarizer_llm_profile from context config
+                    summarizer_profile = self.agent_config.context_management.summarizer_llm_profile
+                    summarizer_agent_config = AgentConfig(llm_profile=summarizer_profile)
+                    summarizer_kwargs = resolve_llm_config_for_agent(self.system_config, summarizer_agent_config)
                     
                     summarizer_llm = make_llm(
                         summarizer_kwargs["provider"],
@@ -246,7 +248,7 @@ class Agent(MCPServer):
                     )
                     
                     # Store profile info for summarizer
-                    self.summarizer_profile_info = self._extract_profile_info(self.system_config, summarizer_agent_name, summarizer_kwargs)
+                    self.summarizer_profile_info = f"{summarizer_profile}:{summarizer_kwargs.get('provider')}/{summarizer_kwargs.get('model')}"
                     
                 except Exception as e:
                     logger.warning("Failed to create dedicated summarizer LLM client: %s", e)
@@ -315,8 +317,10 @@ class Agent(MCPServer):
         """
         prompts_cfg = getattr(self.agent_config, 'prompts', None)
         context_vals = {"tools": available_tools, "max_steps": max_steps-1}
-        if getattr(self.agent_config, 'context', None) and self.agent_config.context.auto_datetime:
-            dt_ctx = get_datetime_context(self.agent_config.context.timezone, self.agent_config.context.location)
+        
+        # Get datetime context from system_config.context, not agent_config
+        if hasattr(self.system_config, 'context') and self.system_config.context.auto_datetime:
+            dt_ctx = get_datetime_context(self.system_config.context.timezone, self.system_config.context.location)
             context_vals.update(dt_ctx)
 
         # Subclass custom hook
@@ -338,16 +342,20 @@ class Agent(MCPServer):
                 rendered_system = "You are an assistant agent."
             return rendered_system, None
 
-        # Template based
+        # Template based - only if prompts config exists
+        if not prompts_cfg or not getattr(prompts_cfg, 'system_template', None):
+            logger.debug("Agent %s has no prompts config, using default system prompt", self.name)
+            return "You are an assistant agent.", None
+            
         logger.debug(
             "Agent %s rendering system_template from path: %s",
-            self.name, getattr(getattr(self.agent_config, 'prompts', object()), 'system_template', 'N/A'))
+            self.name, getattr(prompts_cfg, 'system_template', 'N/A'))
         rendered = render_prompts(
-            self.agent_config.prompts.system_template,
+            prompts_cfg.system_template,
             context_vals,
-            auto_datetime=self.agent_config.context.auto_datetime,
-            timezone=self.agent_config.context.timezone,
-            location=self.agent_config.context.location
+            auto_datetime=self.system_config.context.auto_datetime if hasattr(self.system_config, 'context') else False,
+            timezone=self.system_config.context.timezone if hasattr(self.system_config, 'context') else None,
+            location=self.system_config.context.location if hasattr(self.system_config, 'context') else None
         )
         system_msg = rendered.get("system_prompt") or "You are an assistant agent."
         tools_msg = rendered.get("tools_prompt")
@@ -735,6 +743,9 @@ class Agent(MCPServer):
                 yield event
 
     async def _run_events(self, task: str, request_id: str, session_id: str, status_coordinator: StatusScope, status_worker: StatusScope):
+        # Initialize step counter at function level so it's accessible in finally blocks and cleanup
+        step = 0
+        
         # Create cancellation token for the main request
         cancellation_manager = get_cancellation_manager()
         main_token = cancellation_manager.create_token(request_id)
