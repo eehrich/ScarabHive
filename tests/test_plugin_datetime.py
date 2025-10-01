@@ -28,9 +28,9 @@ def mock_status():
 
 
 @pytest.fixture
-def datetime_server():
+def datetime_server(mock_system_config, mock_mcp_config):
     """Create datetime server for testing."""
-    return DateTimeServer("datetime_test")
+    return DateTimeServer("datetime_test", mock_system_config, mock_mcp_config)
 
 
 # Basic datetime operations tests
@@ -205,17 +205,17 @@ async def test_format_still_handles_iso_datetime(datetime_server, mock_status):
 
 # Plugin factory tests  
 @pytest.mark.asyncio
-async def test_datetime_plugin_factory():
+async def test_datetime_plugin_factory(mock_system_config, mock_mcp_config):
     """Test datetime plugin factory creates server."""
-    plugin = datetime_factory("test_datetime")
+    plugin = datetime_factory("test_datetime", mock_system_config, mock_mcp_config)
     assert plugin is not None
     assert hasattr(plugin, 'call')
 
 
 @pytest.mark.asyncio
-async def test_datetime_server_get_tools():
+async def test_datetime_server_get_tools(mock_system_config, mock_mcp_config):
     """Test datetime server exposes correct tools."""
-    server = DateTimeServer("test")
+    server = DateTimeServer("test", mock_system_config, mock_mcp_config)
     tools = server.get_tools()
     
     assert len(tools) > 0

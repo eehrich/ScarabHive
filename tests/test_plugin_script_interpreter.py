@@ -24,7 +24,7 @@ from plugins.script_interpreter.server import ScriptInterpreterServer
 class TestScriptInterpreterBasic:
     """Test basic script interpreter functionality."""
 
-    def test_config_creation(self):
+    def test_config_creation(self, mock_system_config, mock_mcp_config):
         """Test configuration creation and defaults."""
         config = ScriptInterpreterConfig()
 
@@ -38,7 +38,7 @@ class TestScriptInterpreterBasic:
         assert "min" in config.allowed_functions
         assert "max" in config.allowed_functions
 
-    def test_config_from_dict(self):
+    def test_config_from_dict(self, mock_system_config, mock_mcp_config):
         """Test configuration creation from dictionary."""
         config_dict = {
             "max_execution_time": 3.0,
@@ -49,7 +49,7 @@ class TestScriptInterpreterBasic:
         assert config.max_execution_time == 3.0
         assert config.allowed_functions == ["abs", "min"]
 
-    def test_secure_sandbox_basic_math(self):
+    def test_secure_sandbox_basic_math(self, mock_system_config, mock_mcp_config):
         """Test secure sandbox with basic mathematical operations."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -58,7 +58,7 @@ class TestScriptInterpreterBasic:
         assert result["success"] is True
         assert "5" in str(result.get("output", "")) or result.get("variables", {}).get("_") == 5
 
-    def test_secure_sandbox_security_restrictions(self):
+    def test_secure_sandbox_security_restrictions(self, mock_system_config, mock_mcp_config):
         """Test that security restrictions work."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -73,7 +73,7 @@ class TestScriptInterpreterBasic:
         assert result2["success"] is False
         assert "error" in result2
 
-    def test_secure_sandbox_variables(self):
+    def test_secure_sandbox_variables(self, mock_system_config, mock_mcp_config):
         """Test variable handling in secure sandbox."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -86,7 +86,7 @@ class TestScriptInterpreterBasic:
         assert result["success"] is True
         assert result.get("variables", {}).get("y") == 50
 
-    def test_secure_sandbox_variables_disabled(self):
+    def test_secure_sandbox_variables_disabled(self, mock_system_config, mock_mcp_config):
         """Test behavior when variables are disabled."""
         config = ScriptInterpreterConfig()
         config.enable_variables = False
@@ -96,7 +96,7 @@ class TestScriptInterpreterBasic:
         assert result["success"] is False
         assert "error" in result
 
-    def test_executor_basic_math(self):
+    def test_executor_basic_math(self, mock_system_config, mock_mcp_config):
         """Test executor with basic math operations."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -105,7 +105,7 @@ class TestScriptInterpreterBasic:
         assert result["success"] is True
         assert "10" in result["output"] or result["variables"].get("_", 10) == 10
 
-    def test_executor_with_variables(self):
+    def test_executor_with_variables(self, mock_system_config, mock_mcp_config):
         """Test executor with variable operations."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -115,7 +115,7 @@ class TestScriptInterpreterBasic:
         assert result["variables"]["x"] == 15
         assert result["variables"]["y"] == 30
 
-    def test_executor_syntax_validation(self):
+    def test_executor_syntax_validation(self, mock_system_config, mock_mcp_config):
         """Test executor syntax error handling."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -124,7 +124,7 @@ class TestScriptInterpreterBasic:
         assert result["success"] is False
         assert result["error"]["category"] == "syntax"
 
-    def test_executor_timeout(self):
+    def test_executor_timeout(self, mock_system_config, mock_mcp_config):
         """Test executor timeout handling."""
         config = ScriptInterpreterConfig()
         config.max_execution_time = 0.1  # Very short timeout
@@ -135,7 +135,7 @@ class TestScriptInterpreterBasic:
         assert result["success"] is False
         assert "error" in result  # Could be syntax or import error, not necessarily timeout
 
-    def test_executor_reset(self):
+    def test_executor_reset(self, mock_system_config, mock_mcp_config):
         """Test executor variable reset."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -148,10 +148,10 @@ class TestScriptInterpreterBasic:
         result2 = executor.execute("x")  # Should fail because x is not defined after reset
         assert result2["success"] is False or not result2.get("variables", {}).get("x")
 
-    def test_server_list_tools(self):
+    def test_server_list_tools(self, mock_system_config, mock_mcp_config):
         """Test server tool listing."""
         config = ScriptInterpreterConfig()
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         tools = server.get_tools()
         assert isinstance(tools, list)
@@ -162,9 +162,9 @@ class TestScriptInterpreterBasic:
         assert "reset_python_sandbox" in tool_names
 
     @pytest.mark.asyncio
-    async def test_server_eval_tool(self):
+    async def test_server_eval_tool(self, mock_system_config, mock_mcp_config):
         """Test server eval tool."""
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
         result = await server.call("execute_python_sandbox", {"code": "2 + 3", "_status": mock_status})
@@ -173,9 +173,9 @@ class TestScriptInterpreterBasic:
         assert "result" in result
 
     @pytest.mark.asyncio
-    async def test_server_reset_tool(self):
+    async def test_server_reset_tool(self, mock_system_config, mock_mcp_config):
         """Test server reset tool."""
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         # Execute something first
         mock_status = AsyncMock()
@@ -187,16 +187,15 @@ class TestScriptInterpreterBasic:
         assert "result" in result
 
     @pytest.mark.asyncio
-    async def test_server_error_handling(self):
-        """Test server error handling."""
-        server = ScriptInterpreterServer("test", {}, True)
+    async def test_server_error_handling(self, mock_system_config, mock_mcp_config):
+        """Test server error handling for invalid tools."""
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
-        result = await server.call("unknown_tool", {"_status": mock_status})
-        
-        assert "error" in result
+        with pytest.raises(ValueError, match="Tool 'unknown_tool' not found"):
+            await server.call("unknown_tool", {"_status": mock_status})
 
-    def test_llm_friendly_expressions(self):
+    def test_llm_friendly_expressions(self, mock_system_config, mock_mcp_config):
         """Test expressions that LLMs commonly generate."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -218,7 +217,7 @@ class TestScriptInterpreterBasic:
 class TestScriptInterpreterEvaluator:
     """Test script interpreter evaluator functionality."""
 
-    def test_simple_arithmetic(self):
+    def test_simple_arithmetic(self, mock_system_config, mock_mcp_config):
         cfg = ScriptInterpreterConfig()
         executor = ScriptExecutor(cfg)
 
@@ -230,7 +229,7 @@ class TestScriptInterpreterEvaluator:
         # sandboxed environment may put last expression in output
         assert any(s in result["output"] or s in str(result["variables"]) for s in ["20", "20.0"])
 
-    def test_syntax_error(self):
+    def test_syntax_error(self, mock_system_config, mock_mcp_config):
         cfg = ScriptInterpreterConfig()
         executor = ScriptExecutor(cfg)
 
@@ -242,7 +241,7 @@ class TestScriptInterpreterEvaluator:
 class TestScriptLanguageChoice:
     """Test script interpreter language choice functionality."""
 
-    def test_basic_math_expressions(self):
+    def test_basic_math_expressions(self, mock_system_config, mock_mcp_config):
         """Test basic mathematical expressions that LLMs commonly generate."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -267,7 +266,7 @@ class TestScriptLanguageChoice:
                 found = True
             assert found, f"Expected {expected} for expression {expression}"
 
-    def test_security_restrictions(self):
+    def test_security_restrictions(self, mock_system_config, mock_mcp_config):
         """Test that security restrictions are properly enforced."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -285,7 +284,7 @@ class TestScriptLanguageChoice:
             result = executor.execute(code)
             assert result["success"] is False, f"Security restriction failed for: {code}"
 
-    def test_syntax_error_handling(self):
+    def test_syntax_error_handling(self, mock_system_config, mock_mcp_config):
         """Test proper handling of syntax errors."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -302,7 +301,7 @@ class TestScriptLanguageChoice:
             assert result["success"] is False
             assert result["error"]["category"] == "syntax"
 
-    def test_mathematical_functions(self):
+    def test_mathematical_functions(self, mock_system_config, mock_mcp_config):
         """Test built-in mathematical functions."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -326,7 +325,7 @@ class TestScriptLanguageChoice:
                 found = True
             assert found, f"Expected {expected} for {expression}"
 
-    def test_variable_assignment(self):
+    def test_variable_assignment(self, mock_system_config, mock_mcp_config):
         """Test variable assignment and retrieval."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -339,7 +338,7 @@ class TestScriptLanguageChoice:
         assert result["success"] is True
         assert result["variables"]["y"] == 84
 
-    def test_llm_friendly_expressions(self):
+    def test_llm_friendly_expressions(self, mock_system_config, mock_mcp_config):
         """Test expressions that are commonly generated by LLMs."""
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
@@ -360,7 +359,7 @@ class TestScriptLanguageChoice:
 class TestScriptInterpreterPlugin:
     """Test script interpreter plugin integration."""
 
-    def test_plugin_py_exists(self):
+    def test_plugin_py_exists(self, mock_system_config, mock_mcp_config):
         """Test plugin.py file exists and contains PLUGIN_FACTORY."""
         plugin_path = Path("src/plugins/script_interpreter/plugin.py")
         assert plugin_path.exists()
@@ -371,7 +370,7 @@ class TestScriptInterpreterPlugin:
         assert "PLUGIN_FACTORY" in content
         assert "ScriptInterpreterServer" in content
 
-    def test_plugin_yaml_exists(self):
+    def test_plugin_yaml_exists(self, mock_system_config, mock_mcp_config):
         """Test plugin.yaml file exists and contains required metadata."""
         plugin_yaml_path = Path("src/plugins/script_interpreter/plugin.yaml")
         assert plugin_yaml_path.exists()
@@ -386,20 +385,20 @@ class TestScriptInterpreterPlugin:
         assert "entrypoint" in config
         assert config["name"] == "script_interpreter"
 
-    def test_plugin_factory_import(self):
+    def test_plugin_factory_import(self, mock_system_config, mock_mcp_config):
         """Test that plugin factory can be imported and used."""
         from src.plugins.script_interpreter.plugin import PLUGIN_FACTORY
         
-        server = PLUGIN_FACTORY("test_script_interpreter")
+        server = PLUGIN_FACTORY("test_script_interpreter", mock_system_config, mock_mcp_config)
         assert server is not None
         from src.plugins.script_interpreter.server import ScriptInterpreterServer
         assert isinstance(server, ScriptInterpreterServer)
 
-    def test_plugin_factory_creates_working_server(self):
+    def test_plugin_factory_creates_working_server(self, mock_system_config, mock_mcp_config):
         """Test that factory creates a working server."""
         from src.plugins.script_interpreter.plugin import PLUGIN_FACTORY
         
-        server = PLUGIN_FACTORY("test_script_interpreter")
+        server = PLUGIN_FACTORY("test_script_interpreter", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
         assert isinstance(tools, list)
         assert len(tools) > 0
@@ -408,7 +407,7 @@ class TestScriptInterpreterPlugin:
 class TestScriptInterpreterSafeguards:
     """Test script interpreter safeguards."""
 
-    def test_detect_while_true_rejected(self):
+    def test_detect_while_true_rejected(self, mock_system_config, mock_mcp_config):
         cfg = ScriptInterpreterConfig()
         executor = ScriptExecutor(cfg)
 
@@ -417,7 +416,7 @@ class TestScriptInterpreterSafeguards:
         error_msg = str(result.get("error", "")).lower()
         assert "infinite" in error_msg and "while true" in error_msg
 
-    def test_large_range_rejected(self):
+    def test_large_range_rejected(self, mock_system_config, mock_mcp_config):
         cfg = ScriptInterpreterConfig()
         executor = ScriptExecutor(cfg)
 
@@ -426,7 +425,7 @@ class TestScriptInterpreterSafeguards:
         error_msg = str(result.get("error", "")).lower()
         assert "range" in error_msg and ("large" in error_msg or "too large" in error_msg)
 
-    def test_small_range_allowed(self):
+    def test_small_range_allowed(self, mock_system_config, mock_mcp_config):
         cfg = ScriptInterpreterConfig()
         executor = ScriptExecutor(cfg)
 
@@ -438,12 +437,12 @@ class TestScriptInterpreterSafeguards:
 class TestSchemaCompliance:
     """Test schema compliance for the script interpreter."""
 
-    def test_schema_file_exists(self):
+    def test_schema_file_exists(self, mock_system_config, mock_mcp_config):
         """Test that schema.yaml file exists."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         assert schema_path.exists(), "schema.yaml file should exist"
 
-    def test_schema_basic_structure(self):
+    def test_schema_basic_structure(self, mock_system_config, mock_mcp_config):
         """Test basic schema structure."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
@@ -454,13 +453,13 @@ class TestSchemaCompliance:
         assert "tools" in schema
         assert isinstance(schema["tools"], list)
 
-    def test_server_metadata(self):
+    def test_server_metadata(self, mock_system_config, mock_mcp_config):
         """Test server metadata in schema."""
         # This schema format doesn't have server metadata section
         # Skip this test as it's not applicable to current schema structure
         assert True
 
-    def test_tools_definition(self):
+    def test_tools_definition(self, mock_system_config, mock_mcp_config):
         """Test tools definition in schema."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
@@ -475,7 +474,7 @@ class TestSchemaCompliance:
         assert "execute_python_sandbox" in tool_names
         assert "reset_python_sandbox" in tool_names
 
-    def test_eval_tool_schema(self):
+    def test_eval_tool_schema(self, mock_system_config, mock_mcp_config):
         """Test eval tool schema structure."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
@@ -494,7 +493,7 @@ class TestSchemaCompliance:
         assert "description" in eval_tool["function"]
         assert "parameters" in eval_tool["function"]
 
-    def test_reset_tool_schema(self):
+    def test_reset_tool_schema(self, mock_system_config, mock_mcp_config):
         """Test reset tool schema structure."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
@@ -510,7 +509,7 @@ class TestSchemaCompliance:
         assert reset_tool is not None
         assert "function" in reset_tool
 
-    def test_security_section(self):
+    def test_security_section(self, mock_system_config, mock_mcp_config):
         """Test security section in schema."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
@@ -521,7 +520,7 @@ class TestSchemaCompliance:
             security = schema["security"]
             assert isinstance(security, dict)
 
-    def test_examples_section(self):
+    def test_examples_section(self, mock_system_config, mock_mcp_config):
         """Test examples section in schema."""
         schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
@@ -536,17 +535,17 @@ class TestSchemaCompliance:
 class TestMCPServerIntegration:
     """Test MCP server integration."""
 
-    def test_server_inherits_from_mcpserver(self):
+    def test_server_inherits_from_mcpserver(self, mock_system_config, mock_mcp_config):
         """Test that ScriptInterpreterServer inherits from MCPServer."""
         # Test that the server is properly initialized
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         assert hasattr(server, 'call')
         assert hasattr(server, 'get_tools')
 
     @pytest.mark.asyncio
-    async def test_mcpserver_call_method(self):
+    async def test_mcpserver_call_method(self, mock_system_config, mock_mcp_config):
         """Test MCP server call method."""
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
         result = await server.call("execute_python_sandbox", {"code": "1 + 1", "_status": mock_status})
@@ -555,46 +554,46 @@ class TestMCPServerIntegration:
         assert "result" in result or "error" in result
 
     @pytest.mark.asyncio
-    async def test_mcpserver_call_eval(self):
+    async def test_mcpserver_call_eval(self, mock_system_config, mock_mcp_config):
         """Test MCP server eval call."""
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
         result = await server.call("execute_python_sandbox", {"code": "2 * 3", "_status": mock_status})
         
         assert "result" in result or "error" in result
 
-    def test_mcpserver_get_tools_method(self):
+    def test_mcpserver_get_tools_method(self, mock_system_config, mock_mcp_config):
         """Test MCP server get_tools method."""
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         tools = server.get_tools()
         assert isinstance(tools, list)
         assert len(tools) > 0
 
-    def test_mcpserver_get_default_action(self):
+    @pytest.mark.skip(reason="get_default_action() removed in modernization - dispatcher handles routing")
+    def test_mcpserver_get_default_action(self, mock_system_config, mock_mcp_config):
         """Test MCP server get_default_action method."""
-        server = ScriptInterpreterServer("test", {}, True)
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         default_action = server.get_default_action()
         assert isinstance(default_action, str)
         assert default_action == "execute_python_sandbox"
 
     @pytest.mark.asyncio
-    async def test_mcpserver_handles_unknown_tool(self):
-        """Test MCP server handles unknown tools gracefully."""
-        server = ScriptInterpreterServer("test", {}, True)
+    async def test_mcpserver_handles_unknown_tool(self, mock_system_config, mock_mcp_config):
+        """Test MCP server raises ValueError for unknown tools."""
+        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
-        result = await server.call("unknown_tool", {"_status": mock_status})
-        
-        assert "error" in result
+        with pytest.raises(ValueError, match="Tool 'unknown_tool' not found"):
+            await server.call("unknown_tool", {"_status": mock_status})
 
 
 class TestVariablesAndLoops:
     """Test variables and loops functionality."""
 
-    def test_variable_assignment_and_persistence(self):
+    def test_variable_assignment_and_persistence(self, mock_system_config, mock_mcp_config):
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
 
@@ -609,7 +608,7 @@ class TestVariablesAndLoops:
         assert result["variables"]["y"] == 52
         assert result["variables"]["x"] == 42  # Should still exist
 
-    def test_loop_sum(self):
+    def test_loop_sum(self, mock_system_config, mock_mcp_config):
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
 
@@ -625,7 +624,7 @@ for i in range(1, 6):
         assert simple_result["success"] is True
         assert simple_result.get("variables", {}).get("total") == 15
 
-    def test_simple_function_definition_and_call(self):
+    def test_simple_function_definition_and_call(self, mock_system_config, mock_mcp_config):
         config = ScriptInterpreterConfig()
         executor = ScriptExecutor(config)
 

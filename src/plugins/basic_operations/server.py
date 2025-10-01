@@ -1,19 +1,6 @@
 """BasicOperations MCP Server implementation.
 
-This module provides basic utility operations including wait            # Ini                # U            # Final status update (English) and include 'waiting' and optional message
-            elapsed = time.time() - start_time
-            if message:
-                await status.progress(f"Waiting ({message}): completed after {elapsed:.1f}s")
-            else:
-                await status.progress(f"Waiting: completed after {elapsed:.1f}s")status with countdown (English) and include 'waiting' and optional message
-                if message:
-                    await status.progress(f"Waiting ({message}): {remaining:.1f}s remaining")
-                else:
-                    await status.progress(f"Waiting: {remaining:.1f}s remaining")status update (English) - include 'waiting' keyword and optional user message
-            if message:
-                await status.progress(f"Waiting ({message}): starting countdown - {seconds:.1f}s")
-            else:
-                await status.progress(f"Waiting: starting countdown - {seconds:.1f}s") countdown,
+This module provides basic utility operations including wait, countdown,
 echo functionality, and ping operations.
 """
 
@@ -28,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,18 +30,21 @@ class BasicOperationsServer(SchemaBasedMCPServer):
     All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
     """
 
-    def __init__(self, name: str, config: AgentConfig, registry=None):
-        """Initialize the BasicOperations server."""
-        # Ignore registry parameter - this is not an Agent plugin
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """
+        Modern constructor signature.
         
-        # MODERN: Pass AgentConfig directly to modernized parent class
-        super().__init__(name, config)
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration
+        """
+        super().__init__(name, system_config, mcp_config)
         
-        # Extract configuration with sensible defaults from AgentConfig
-        self.max_wait_seconds = float(getattr(config, 'max_wait_seconds', 3600))
-        self.default_update_interval = float(getattr(config, 'default_update_interval', 1.0))
-        # Log effective configuration for debugging lifecycle issues where
-        # the registry may create instances with incomplete config.
+        # Extract configuration with sensible defaults from mcp_config
+        self.max_wait_seconds = float(mcp_config.get('max_wait_seconds', 3600))
+        self.default_update_interval = float(mcp_config.get('default_update_interval', 1.0))
+        
         logger.info(
             f"BasicOperations server '{name}' initialized - max_wait_seconds={self.max_wait_seconds}, "
             f"default_update_interval={self.default_update_interval}"
@@ -67,27 +57,21 @@ class BasicOperationsServer(SchemaBasedMCPServer):
             "max_wait_seconds": self.max_wait_seconds
         }
 
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        """Route tool calls to appropriate handlers."""
-        logger.debug(f"Calling tool '{tool}' with params: {params}")
+    async def wait(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Handle wait operation with countdown status.
         
-        if tool == "wait":
-            return await self._handle_wait(params)
-        elif tool == "ping":
-            return await self._handle_ping(params)
-        else:
-            return {"status": "error", "error": f"Unknown tool: {tool}"}
-
-    async def _handle_wait(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle wait operation with countdown status."""
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
         try:
             seconds = float(params["seconds"])
             # Always use server-configured default_update_interval. Ignore caller-supplied update_interval.
             update_interval = float(self.default_update_interval)
             message = params.get("message", "Waiting")
             
-            # Get status context for updates
-            status = params.get("_status")
+            # Get status context for updates (mandatory from framework)
+            status = params["_status"]
             
             # Validate parameters
             if seconds <= 0:
@@ -211,8 +195,13 @@ class BasicOperationsServer(SchemaBasedMCPServer):
             logger.error(error_msg)
             return {"status": "error", "error": error_msg}
 
-    async def _handle_ping(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle ping operation."""
+    async def ping(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Handle ping operation.
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
         try:
             include_details = params.get("include_details", False)
             
@@ -247,7 +236,3 @@ class BasicOperationsServer(SchemaBasedMCPServer):
             error_msg = f"Ping operation failed: {e}"
             logger.error(error_msg)
             return {"status": "error", "error": error_msg}
-
-    def get_default_action(self) -> str:
-        """Return the default action for this server."""
-        return "ping"

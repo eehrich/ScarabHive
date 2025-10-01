@@ -6,20 +6,35 @@ from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from . import sources
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config import AgentSystemConfig, MCPConfig
 
 
 class WeatherServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, config: AgentConfig, registry=None) -> None:
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
+    """Weather plugin using modern MCPServer pattern."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """
+        Modern constructor signature.
+        
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration
+        """
+        super().__init__(name, system_config, mcp_config)
+        
+        # Extract SSL verification setting from system config if available
+        self.ssl_verify = getattr(system_config, 'ssl_verify', True)
+    
+    async def get_weather(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Get weather conditions and forecasts for any location.
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
         status = params.get("_status")
-
-        if tool != "get_weather":
-            error_msg = f"Unknown tool: {tool}. Only 'get_weather' supported."
-            await status.error(error_msg)
-            return {"status": "error", "error": error_msg}
+        cancellation_token = params.get("_cancellation_token")
 
         location = params.get("location", "")
         if not location:
@@ -28,7 +43,6 @@ class WeatherServer(SchemaBasedMCPServer):
             return {"status": "error", "error": error_msg}
 
         # Check for cancellation before weather fetch
-        cancellation_token = params.get("_cancellation_token")
         if cancellation_token and cancellation_token.is_cancelled:
             return {"status": "error", "error": "Weather request cancelled by user", "cancelled": True}
 
@@ -55,8 +69,9 @@ class WeatherServer(SchemaBasedMCPServer):
             elif source == "marine.weather.gov":
                 result = await sources.fetch_marine_weather_gov(location, days, units, self.ssl_verify, include_marine)
             else:
-                await status.error(f"Unsupported weather source: {source}")
-                return {"status": "error", "error": f"Unsupported weather source: {source}"}
+                error_msg = f"Unsupported weather source: {source}"
+                await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
 
             if "error" not in result:
                 result["status"] = "success"
@@ -68,7 +83,9 @@ class WeatherServer(SchemaBasedMCPServer):
             return result
 
         except Exception as e:
-            await status.error(f"Exception during weather fetch: {str(e)}")
+            error_msg = f"Exception during weather fetch: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
+            await status.error(error_msg)
             return {
                 "status": "error",
                 "error": str(e),
@@ -76,6 +93,3 @@ class WeatherServer(SchemaBasedMCPServer):
                 "source": source,
                 "message": f"Failed to fetch weather data from {source}",
             }
-
-    def get_default_action(self) -> str:
-        return "get_weather"

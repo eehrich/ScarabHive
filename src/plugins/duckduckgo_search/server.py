@@ -4,25 +4,35 @@ import asyncio
 import logging
 import random
 from typing import Any, TYPE_CHECKING
+
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.plugins.cache import PluginCache
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
 
 class DuckDuckGoSearchServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, config: AgentConfig, registry=None):
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
+    """DuckDuckGo search server with caching and retry logic."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """
+        Modern constructor signature.
+        
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration (cache_ttl, cache_enabled, etc.)
+        """
+        super().__init__(name, system_config, mcp_config)
         
         # Initialize cache system 
         # Search results typically change more frequently, so shorter TTL (15 minutes default)
-        cache_ttl = getattr(config, 'cache_ttl', 900)
+        cache_ttl = mcp_config.get('cache_ttl', 900)
         self.cache = PluginCache(plugin_name="duckduckgo_search", default_ttl=cache_ttl)
-        self.cache_enabled = getattr(config, 'cache_enabled', True)
+        self.cache_enabled = mcp_config.get('cache_enabled', True)
     
     def _create_cache_key(self, query: str, max_results: int) -> str:
         """Create a cache key from search parameters."""
@@ -33,15 +43,18 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
         }
         return json.dumps(cache_data, sort_keys=True, separators=(',', ':'))
     
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        if tool != "web_search":
-            return {"error": f"Unknown tool: {tool}. Only 'web_search' supported."}
-            
+    async def web_search(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Perform web search using DuckDuckGo.
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
         query = params.get("query", "")
         max_results = int(params.get("max_results", 5))
         ignore_cache = params.get("ignore_cache", False)
         custom_cache_ttl = params.get("cache_ttl")
-        status = params.get("_status")  # Get status object from base class
+        status = params["_status"]  # Status is mandatory from framework
         
         if not query.strip():
             return {"engine": "duckduckgo", "query": query, "results": [], "package": "ddgs", "error": "Empty query"}
@@ -52,8 +65,7 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result is not None:
-                if status:
-                    await status.end("Retrieved from cache", meta={"cache_hit": True})
+                await status.end("Retrieved from cache", meta={"cache_hit": True})
                 logger.debug(f"Cache hit for query: {query[:50]}...")
                 return cached_result
             
@@ -68,8 +80,7 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
             raise RuntimeError("Install `ddgs` (preferred) or `duckduckgo-search` for duckduckgo_search server.") from e
 
         # Update status with search progress
-        if status:
-            await status.progress(f"🔍 Searching: {query}")
+        await status.progress(f"🔍 Searching: {query}")
 
         logger.debug("DuckDuckGo search: %s (max_results=%d)", query, max_results)
         results = []
@@ -118,9 +129,8 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
                 logger.debug(f"Cached search results for query: {query[:50]}...")
             
             # Update status with success
-            if status:
-                await status.end(f"Search completed: {query} ({len(results)} results)",
-                               meta={"results": len(results)})
+            await status.end(f"Search completed: {query} ({len(results)} results)",
+                           meta={"results": len(results)})
             
             return search_result
         
@@ -128,8 +138,7 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
             logger.warning("DuckDuckGo search failed for query '%s': %s", query, str(e))
             
             # Update status with error
-            if status:
-                await status.error(f"Search failed for query '{query}': {str(e)}", meta={"error": str(e)})
+            await status.error(f"Search failed for query '{query}': {str(e)}", meta={"error": str(e)})
             
             return {
                 "engine": "duckduckgo",

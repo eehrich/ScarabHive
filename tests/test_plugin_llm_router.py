@@ -11,7 +11,7 @@ from plugins.llm_router.server import LLMRouterServer
 
 
 @pytest.mark.asyncio
-async def test_llm_router_plugin_discovered():
+async def test_llm_router_plugin_discovered(mock_system_config, mock_mcp_config):
     """Test that LLM router plugin is discovered correctly."""
     repo_root = Path(__file__).resolve().parents[1]
     default_dir = repo_root / 'plugins'
@@ -22,7 +22,7 @@ async def test_llm_router_plugin_discovered():
     plugins = discover_all_plugins([default_dir])
     assert 'llm_router' in plugins
     factory = plugins['llm_router']
-    inst = factory('llm_router', {})
+    inst = factory('llm_router', mock_system_config, mock_mcp_config)
     assert inst is not None
 
 
@@ -30,46 +30,46 @@ class TestLLMRouterServerNew:
     """Test the new multi-tool LLM router server functionality."""
 
     @pytest.mark.asyncio
-    async def test_server_initialization(self):
+    async def test_server_initialization(self, mock_system_config, mock_mcp_config):
         """Test server initializes correctly."""
-        server = LLMRouterServer("llm_router", {}, True)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         assert server.name == "llm_router"
-        assert server.ssl_verify is True
-        assert server.config == {}
+        # ssl_verify is not relevant for llm_router (no HTTP requests)
+        assert hasattr(server, 'llm_config')
 
     @pytest.mark.asyncio
-    async def test_server_with_parent_llm_config(self):
+    async def test_server_with_parent_llm_config(self, mock_system_config, mock_mcp_config):
         """Test server with parent LLM configuration."""
-        config = {
-            "parent_llm": {
-                "llm": {"provider": "openai", "model": "gpt-5-nano"},
-                "llm_system": {
-                    "profiles": {
-                        "turbo": {"provider": "openai", "model": "gpt-5-nano"},
-                        "normal": {"provider": "openai", "model": "gpt-5-nano"}
-                    },
-                    "models": {
-                        "gpt-5-nano": {"provider": "openai"},
-                        "gpt-4o": {"provider": "openai"}
-                    }
-                }
+        from types import SimpleNamespace
+        
+        # Create mock llm_system
+        mock_llm_system = SimpleNamespace(
+            profiles={
+                "turbo": {"provider": "openai", "model": "gpt-5-nano"},
+                "normal": {"provider": "openai", "model": "gpt-5-nano"}
+            },
+            models={
+                "gpt-5-nano": {"provider": "openai"},
+                "gpt-4o": {"provider": "openai"}
             }
-        }
-        server = LLMRouterServer("llm_router", config, True)
-        assert server.parent_llm == config["parent_llm"]
+        )
+        mock_system_config.llm_system = mock_llm_system
+        
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
+        assert server.llm_config == mock_llm_system
 
     @pytest.mark.asyncio
-    async def test_get_tools_structure(self):
+    async def test_get_tools_structure(self, mock_system_config, mock_mcp_config):
         """Test that get_tools returns correct multi-tool structure."""
-        config = {
-            "parent_llm": {
-                "llm_system": {
-                    "profiles": {"test": {"provider": "openai", "model": "gpt-5-nano"}},
-                    "models": {"gpt-5-nano": {"provider": "openai"}}
-                }
-            }
-        }
-        server = LLMRouterServer("llm_router", config, True)
+        from types import SimpleNamespace
+        
+        mock_llm_system = SimpleNamespace(
+            profiles={"test": {"provider": "openai", "model": "gpt-5-nano"}},
+            models={"gpt-5-nano": {"provider": "openai"}}
+        )
+        mock_system_config.llm_system = mock_llm_system
+        
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
 
         # Should have 2 tools: chat and list_profiles
@@ -91,9 +91,9 @@ class TestLLMRouterServerNew:
         assert "profile" in chat_params["required"]
 
     @pytest.mark.asyncio
-    async def test_chat_tool_missing_profile(self):
+    async def test_chat_tool_missing_profile(self, mock_system_config, mock_mcp_config):
         """Test chat tool with missing profile parameter."""
-        server = LLMRouterServer("llm_router", {}, True)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         mock_status = AsyncMock()
         
         result = await server.call("chat_agent", {"message": "Hello", "_status": mock_status})
@@ -101,9 +101,9 @@ class TestLLMRouterServerNew:
         assert "Profile parameter is required" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_chat_tool_missing_message(self):
+    async def test_chat_tool_missing_message(self, mock_system_config, mock_mcp_config):
         """Test chat tool with missing message."""
-        server = LLMRouterServer("llm_router", {}, True)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         mock_status = AsyncMock()
         
         result = await server.call("chat_agent", {"profile": "test", "_status": mock_status})
@@ -111,23 +111,23 @@ class TestLLMRouterServerNew:
         assert "No message or messages provided" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_list_profiles_tool(self):
+    async def test_list_profiles_tool(self, mock_system_config, mock_mcp_config):
         """Test list_profiles tool functionality."""
-        config = {
-            "parent_llm": {
-                "llm_system": {
-                    "profiles": {
-                        "turbo": {"provider": "openai", "model": "gpt-4o-mini"},
-                        "normal": {"provider": "openai", "model": "gpt-4o"}
-                    },
-                    "models": {
-                        "gpt-4o-mini": {"provider": "openai"},
-                        "gpt-4o": {"provider": "openai"}
-                    }
-                }
+        from types import SimpleNamespace
+        
+        mock_llm_system = SimpleNamespace(
+            profiles={
+                "turbo": {"provider": "openai", "model": "gpt-4o-mini"},
+                "normal": {"provider": "openai", "model": "gpt-4o"}
+            },
+            models={
+                "gpt-4o-mini": {"provider": "openai"},
+                "gpt-4o": {"provider": "openai"}
             }
-        }
-        server = LLMRouterServer("llm_router", config, True)
+        )
+        mock_system_config.llm_system = mock_llm_system
+        
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         mock_status = AsyncMock()
         
         result = await server.call("list_profiles", {"_status": mock_status})
@@ -141,32 +141,32 @@ class TestLLMRouterServerNew:
         assert "normal" in profiles
 
     @pytest.mark.asyncio
-    async def test_unknown_tool(self):
-        """Test calling unknown tool returns error."""
-        server = LLMRouterServer("llm_router", {}, True)
+    async def test_unknown_tool(self, mock_system_config, mock_mcp_config):
+        """Test calling unknown tool raises ValueError."""
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         
-        with pytest.raises(ValueError, match="Unknown tool"):
+        with pytest.raises(ValueError, match="not found"):
             await server.call("unknown_tool", {"_status": AsyncMock()})
 
+    @pytest.mark.skip(reason="get_default_action() removed in modernization - dispatcher handles routing")
     @pytest.mark.asyncio
-    async def test_default_action(self):
+    async def test_default_action(self, mock_system_config, mock_mcp_config):
         """Test default action is chat."""
-        server = LLMRouterServer("llm_router", {}, True)
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         assert server.get_default_action() == "chat_agent"
 
     @pytest.mark.asyncio
-    async def test_chat_with_profile_success(self):
+    async def test_chat_with_profile_success(self, mock_system_config, mock_mcp_config):
         """Test successful chat with profile (mocked)."""
-        config = {
-            "parent_llm": {
-                "llm": {"provider": "openai", "model": "gpt-5-nano"},
-                "llm_system": {
-                    "profiles": {"test": {"provider": "openai", "model": "gpt-5-nano"}},
-                    "models": {"gpt-5-nano": {"provider": "openai"}}
-                }
-            }
-        }
-        server = LLMRouterServer("llm_router", config, True)
+        from types import SimpleNamespace
+        
+        mock_llm_system = SimpleNamespace(
+            profiles={"test": {"provider": "openai", "model": "gpt-5-nano"}},
+            models={"gpt-5-nano": {"provider": "openai"}}
+        )
+        mock_system_config.llm_system = mock_llm_system
+        
+        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         mock_status = AsyncMock()
         
         # Mock the make_client method to return a mock client

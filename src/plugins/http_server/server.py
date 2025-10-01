@@ -11,7 +11,7 @@ from agent_system.mcp.base import MCPServer
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
 class CallRequest(BaseModel):
@@ -22,54 +22,49 @@ class CallRequest(BaseModel):
 class HTTPServer(SchemaBasedMCPServer):
     """HTTP Server MCP adapter that wraps other MCP servers with FastAPI REST endpoints."""
 
-    def __init__(self, name: str, config: AgentConfig, registry=None) -> None:
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
-        self.host = getattr(config, "host", None) or os.getenv("HOST", "127.0.0.1")
-        self.port = getattr(config, "port", None) or int(os.getenv("PORT", "9000"))
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        super().__init__(name, system_config, mcp_config)
+        http_config = mcp_config.get("http_server", {})
+        self.host = http_config.get("host") or os.getenv("HOST", "127.0.0.1")
+        self.port = http_config.get("port") or int(os.getenv("PORT", "9000"))
         self.wrapped_server = None
 
     def wrap_server(self, server: MCPServer) -> None:
         """Wrap an MCP server to expose it via HTTP."""
         self.wrapped_server = server
 
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        """Route calls to the wrapped MCP server."""
-        if tool == "http_server_ops":
-            operation = params.get("operation")
-            
-            if operation == "health":
-                # Check for cancellation before health check
-                cancellation_token = params.get("_cancellation_token")
-                if cancellation_token and cancellation_token.is_cancelled:
-                    return {"error": "HTTP health check cancelled by user", "cancelled": True}
+    async def http_server_ops(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        HTTP server operations (health, call).
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
+        operation = params.get("operation")
+        
+        if operation == "health":
+            # Check for cancellation before health check
+            cancellation_token = params.get("_cancellation_token")
+            if cancellation_token and cancellation_token.is_cancelled:
+                return {"error": "HTTP health check cancelled by user", "cancelled": True}
 
-                if not self.wrapped_server:
-                    return {"error": "No server wrapped - use wrap_server() first"}
-                return {"status": "ok", "server": self.name}
-            
-            elif operation == "call":
-                if not self.wrapped_server:
-                    return {"error": "No server wrapped - use wrap_server() first"}
-                    
-                target_tool = params.get("tool")
-                if not target_tool:
-                    return {"error": "Tool name required for 'call' operation"}
+            if not self.wrapped_server:
+                return {"error": "No server wrapped - use wrap_server() first"}
+            return {"status": "ok", "server": self.name}
+        
+        elif operation == "call":
+            if not self.wrapped_server:
+                return {"error": "No server wrapped - use wrap_server() first"}
                 
-                tool_params = params.get("params", {})
-                return await self.wrapped_server.call(target_tool, tool_params)
+            target_tool = params.get("tool")
+            if not target_tool:
+                return {"error": "Tool name required for 'call' operation"}
             
-            else:
-                return {"error": f"Invalid operation: {operation}"}
+            tool_params = params.get("params", {})
+            return await self.wrapped_server.call(target_tool, tool_params)
         
         else:
-            return {"error": f"Unknown tool: {tool}"}
-
-
-
-    def get_default_action(self) -> str:
-        """Return the default action for HTTP server."""
-        return "health"
+            return {"error": f"Invalid operation: {operation}"}
 
     def create_fastapi_app(self) -> FastAPI:
         """Create and return a FastAPI application."""

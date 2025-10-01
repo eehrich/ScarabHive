@@ -271,3 +271,21 @@ def ensure_test_servers_terminated():
         print(f"[conftest] WARNING: Some processes may still be running after cleanup: {final}")
     else:
         print("[conftest] All project processes successfully terminated")
+
+
+# Modern plugin test fixtures
+@pytest.fixture
+def mock_system_config():
+    """Create a mock AgentSystemConfig for plugin tests."""
+    from unittest.mock import Mock
+    config = Mock()
+    config.ssl_verify = True
+    config.api_base_url = "http://localhost:8000"
+    config.log_level = "INFO"
+    return config
+
+
+@pytest.fixture
+def mock_mcp_config():
+    """Create a mock MCPConfig (dict-like) for plugin tests."""
+    return {}

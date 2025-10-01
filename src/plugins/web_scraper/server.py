@@ -11,15 +11,27 @@ from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.plugins.cache import PluginCache
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
 
 class WebScraperServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, config: AgentConfig, registry=None):
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
+    """Web scraper with caching, retry logic, and anti-bot evasion."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """
+        Modern constructor signature.
+        
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration
+        """
+        super().__init__(name, system_config, mcp_config)
+        
+        # SSL verification from system config
+        self.ssl_verify = getattr(system_config, 'ssl_verify', True)
         
         # Initialize User-Agent pool for anti-bot evasion
         self._user_agents = [
@@ -62,13 +74,13 @@ class WebScraperServer(SchemaBasedMCPServer):
         # Session management for cookie persistence
         self._sessions = {}  # domain -> httpx.Cookies
         
-        # Proxy configuration
-        self._proxies = getattr(config, 'proxies', [])
+        # Proxy configuration from mcp_config
+        self._proxies = mcp_config.get('proxies', [])
         
         # Initialize cache system
-        cache_ttl = getattr(config, 'cache_ttl', 1800)  # 30 minutes default
+        cache_ttl = mcp_config.get('cache_ttl', 1800)  # 30 minutes default
         self.cache = PluginCache(plugin_name="web_scraper", default_ttl=cache_ttl)
-        self.cache_enabled = getattr(config, 'cache_enabled', True)
+        self.cache_enabled = mcp_config.get('cache_enabled', True)
 
     def _get_random_user_agent(self) -> str:
         """Get a random User-Agent from the pool"""
@@ -416,10 +428,13 @@ class WebScraperServer(SchemaBasedMCPServer):
             # Fallback: return empty string if sanitization fails
             return ""
 
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        if tool != "scrape_webpage":
-            return {"error": f"Unknown tool: {tool}. Only 'scrape_webpage' supported."}
-
+    async def scrape_webpage(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Scrape webpage content or extract links.
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
         operation = params.get("operation", "content")
         if operation not in ("content", "links"):
             return {"error": f"Unknown operation: {operation}. Supported: 'content', 'links'"}
@@ -428,8 +443,8 @@ class WebScraperServer(SchemaBasedMCPServer):
         if not url or not isinstance(url, str):
             return {"error": "Missing required parameter 'url' (string)"}
 
-        # Get status object from base class (injected by call_with_status)
-        status = params.get("_status")
+        # Get status object (mandatory from framework)
+        status = params["_status"]
 
         timeout = float(params.get("timeout", 20))
         user_agent = params.get("user_agent", self._get_random_user_agent())
@@ -452,8 +467,7 @@ class WebScraperServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result is not None:
-                if status:
-                    await status.end("Retrieved from cache", meta={"cache_hit": True})
+                await status.end("Retrieved from cache", meta={"cache_hit": True})
                 logger.debug(f"Cache hit for URL: {url[:80]}...")
                 return cached_result
 
@@ -473,8 +487,7 @@ class WebScraperServer(SchemaBasedMCPServer):
         # fetch HTML (async) and parse according to requested action
         # notify start of fetch
         try:
-            if status:
-                await status.progress(f"Fetching {url}")
+            await status.progress(f"Fetching {url}")
         except Exception:
             # status publishing must not break functionality
             pass
@@ -488,8 +501,7 @@ class WebScraperServer(SchemaBasedMCPServer):
         is_blocked, block_reason = self._is_blocked_response(html, status_code, final_url)
         if is_blocked:
             try:
-                if status:
-                    await status.error(f"Blocked response from {url}: {block_reason}")
+                await status.error(f"Blocked response from {url}: {block_reason}")
             except Exception:
                 pass
             return {
@@ -505,8 +517,7 @@ class WebScraperServer(SchemaBasedMCPServer):
         # If fetch failed, publish error and return minimal payload
         if not html and status_code == 0:
             try:
-                if status:
-                    await status.error(f"Failed to fetch {url}")
+                await status.error(f"Failed to fetch {url}")
             except Exception:
                 pass
             return {
@@ -535,8 +546,7 @@ class WebScraperServer(SchemaBasedMCPServer):
                 result["html"] = html
                 
             try:
-                if status:
-                    await status.end(f"Completed fetch {url} - non-HTML content detected ({content_type})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
+                await status.end(f"Completed fetch {url} - non-HTML content detected ({content_type})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
             except Exception:
                 pass
             return result
@@ -711,8 +721,7 @@ class WebScraperServer(SchemaBasedMCPServer):
             result["links"] = links
         # publish success
         try:
-            if status:
-                await status.end(f"Completed fetch {url} (status={status_code})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
+            await status.end(f"Completed fetch {url} (status={status_code})", meta={"final_url": final_url, "status_code": status_code, "content_type": content_type})
         except Exception:
             pass
         
@@ -831,7 +840,3 @@ class WebScraperServer(SchemaBasedMCPServer):
             lists.append(list_data)
 
         return lists
-
-    def get_default_action(self) -> str:
-        """Return the default tool for web scraper."""
-        return "scrape_webpage"

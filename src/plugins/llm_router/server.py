@@ -8,16 +8,16 @@ from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.llm.text_sanitizer import sanitize_for_llm
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
 class LLMRouterServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, config: AgentConfig, registry=None) -> None:
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        super().__init__(name, system_config, mcp_config)
         
-        # Store the full AgentConfig for LLM routing
-        self.llm_config = config.llm_system
+        # Store the full system config for LLM routing
+        self.llm_config = system_config.llm_system
+        self.agent_config = system_config
 
 
 
@@ -128,70 +128,79 @@ class LLMRouterServer(SchemaBasedMCPServer):
         except Exception as e:
             raise ValueError(f"Failed to create LLM client for profile '{profile}': {e}")
 
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        status = params.get("_status")
+    async def chat_agent(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Route chat requests to LLM profiles.
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
+        status = params["_status"]
+        
+        # Check for cancellation before LLM routing
+        cancellation_token = params.get("_cancellation_token")
+        if cancellation_token and cancellation_token.is_cancelled:
+            return {"error": "LLM routing request cancelled by user", "cancelled": True}
 
-        # Only accept the new 'chat_agent' tool name
-        if tool == "chat_agent":
-            # Check for cancellation before LLM routing
-            cancellation_token = params.get("_cancellation_token")
-            if cancellation_token and cancellation_token.is_cancelled:
-                return {"error": "LLM routing request cancelled by user", "cancelled": True}
+        # Handle both message formats first
+        if "messages" in params:
+            messages = [ChatMessage(**m) for m in params["messages"]]
+            # Sanitize message content
+            for msg in messages:
+                if msg.content:
+                    msg.content = sanitize_for_llm(msg.content)
+        elif "message" in params:
+            messages = [ChatMessage(role="user", content=sanitize_for_llm(params["message"]))]
+        else:
+            return {"error": "No message or messages provided"}
 
-            # Handle both message formats first
-            if "messages" in params:
-                messages = [ChatMessage(**m) for m in params["messages"]]
-                # Sanitize message content
-                for msg in messages:
-                    if msg.content:
-                        msg.content = sanitize_for_llm(msg.content)
-            elif "message" in params:
-                messages = [ChatMessage(role="user", content=sanitize_for_llm(params["message"]))]
-            else:
-                return {"error": "No message or messages provided"}
+        # Extract profile parameter (required)
+        profile = params.get("profile")
+        if not profile:
+            return {"error": "Profile parameter is required"}
 
-            # Extract profile parameter (required)
-            profile = params.get("profile")
-            if not profile:
-                return {"error": "Profile parameter is required"}
+        try:
+            await status.progress(f"Chat request using profile '{profile}'")
 
-            try:
-                await status.progress(f"Chat request using profile '{profile}'")
+            # Create client using profile-based configuration
+            client = self._make_client(profile=profile)
 
-                # Create client using profile-based configuration
-                client = self._make_client(profile=profile)
+            content = await client.chat(messages, cancellation_token=cancellation_token)
 
-                content = await client.chat(messages, cancellation_token=cancellation_token)
+            await status.end(f"Chat completed using profile '{profile}'")
+            return {
+                "content": content,
+                "profile": profile,
+                "provider": getattr(client, 'provider', 'unknown'),
+                "model": getattr(client, 'model', 'unknown')
+            }
+        except Exception as e:
+            return {
+                "error": f"Chat failed with profile '{profile}': {str(e)}",
+                "profile": profile
+            }
 
-                await status.end(f"Chat completed using profile '{profile}'")
-                return {
-                    "content": content,
-                    "profile": profile,
-                    "provider": getattr(client, 'provider', 'unknown'),
-                    "model": getattr(client, 'model', 'unknown')
-                }
-            except Exception as e:
-                return {
-                    "error": f"Chat failed with profile '{profile}': {str(e)}",
-                    "profile": profile
-                }
+    async def list_profiles(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        List available LLM profiles.
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
+        status = params["_status"]
+        
+        try:
+            await status.progress("Retrieving available LLM profiles")
 
-        elif tool == "list_profiles":
-            try:
-                await status.progress("Retrieving available LLM profiles")
+            profile_details = self._get_profile_details()
 
-                profile_details = self._get_profile_details()
-
-                await status.end(f"Retrieved {len(profile_details)} profile(s)")
-                return {
-                    "profiles": profile_details,
-                    "total_count": len(profile_details)
-                }
-            except Exception as e:
-                return {"error": f"Failed to list profiles: {str(e)}"}
-
-        raise ValueError(f"Unknown tool: {tool}")
-
+            await status.end(f"Retrieved {len(profile_details)} profile(s)")
+            return {
+                "profiles": profile_details,
+                "total_count": len(profile_details)
+            }
+        except Exception as e:
+            return {"error": f"Failed to list profiles: {str(e)}"}
 
 
     def get_template_vars(self) -> dict[str, Any]:
@@ -225,9 +234,3 @@ class LLMRouterServer(SchemaBasedMCPServer):
             "available_models": available_models, 
             "available_providers": available_providers
         }
-
-
-
-    def get_default_action(self) -> str:
-        """Return the default action for LLM router."""
-        return "chat_agent"

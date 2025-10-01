@@ -9,7 +9,7 @@ import calendar
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config import AgentSystemConfig, MCPConfig
 
 
 class DateTimeServer(SchemaBasedMCPServer):
@@ -25,17 +25,25 @@ class DateTimeServer(SchemaBasedMCPServer):
     - Business day calculations
     """
 
-    def __init__(self, name: str, config: AgentConfig, registry=None):
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """
+        Modern constructor signature.
+        
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration
+        """
+        super().__init__(name, system_config, mcp_config)
 
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        """Execute datetime operations."""
-        status = params.get("_status")
-
-        if tool != "datetime_operations":
-            await status.error(f"Unknown tool: {tool}")
-            return {"status": "error", "error": f"Unknown tool: {tool}. Only 'datetime_operations' supported."}
+    async def datetime_operations(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Execute datetime operations.
+        
+        Tool method - automatically called by generic dispatcher.
+        Method name matches tool name in schema.yaml.
+        """
+        status = params["_status"]  # Status is mandatory from framework
 
         operation = params.get("operation")
         if not operation:
@@ -74,7 +82,7 @@ class DateTimeServer(SchemaBasedMCPServer):
             result = {"status": "error", "error": str(e)}
 
         # Publish status for operation completion
-        status_msg = f"Completed {tool} operation"
+        status_msg = f"Completed datetime_operations: {operation}"
         if result.get("status") == "error":
             await status.error(status_msg)
         else:
@@ -629,9 +637,3 @@ class DateTimeServer(SchemaBasedMCPServer):
 
         except Exception as e:
             return {"status": "error", "error": str(e), "input": {"target_date": target_date, "start_date": start_date}}
-
-
-
-    def get_default_action(self) -> str:
-        """Return the default tool for datetime operations."""
-        return "datetime_operations"
