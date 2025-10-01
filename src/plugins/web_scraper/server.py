@@ -75,12 +75,12 @@ class WebScraperServer(SchemaBasedMCPServer):
         self._sessions = {}  # domain -> httpx.Cookies
         
         # Proxy configuration from mcp_config
-        self._proxies = mcp_config.get('proxies', [])
+        self._proxies = getattr(mcp_config, 'proxies', [])
         
         # Initialize cache system
-        cache_ttl = mcp_config.get('cache_ttl', 1800)  # 30 minutes default
+        cache_ttl = getattr(mcp_config, 'cache_ttl', 1800)  # 30 minutes default
         self.cache = PluginCache(plugin_name="web_scraper", default_ttl=cache_ttl)
-        self.cache_enabled = mcp_config.get('cache_enabled', True)
+        self.cache_enabled = getattr(mcp_config, 'cache_enabled', True)
 
     def _get_random_user_agent(self) -> str:
         """Get a random User-Agent from the pool"""

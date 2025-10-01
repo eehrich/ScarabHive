@@ -7,26 +7,27 @@ from .mcp_server import LogViewerMCPServer
 from .endpoints import LogViewerWebEndpoints
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
 class LogViewerHybridPlugin:
     """Hybrid plugin that provides both MCP and web capabilities"""
     
-    def __init__(self, name: str, config: AgentConfig, registry=None):
-        # Ignore registry parameter - this is not an Agent plugin
+    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
+        """Initialize with new signature."""
         self.name = name
-        self.agent_config = config
-        self.ssl_verify = getattr(config.network, 'ssl_verify', True) if hasattr(config, 'network') and config.network else True
+        self.system_config = system_config
+        self.mcp_config = mcp_config
+        self.ssl_verify = getattr(system_config.network, 'ssl_verify', True) if hasattr(system_config, 'network') and system_config.network else True
         
         # Expose configuration properties for compatibility
-        self.log_files = getattr(config, 'log_files', ['logs/agent.log', 'logs/api.log'])
-        self.max_lines = getattr(config, 'max_lines', 100)
-        self.refresh_interval = getattr(config, 'refresh_interval', 1.0)
+        self.log_files = getattr(mcp_config, 'log_files', ['logs/agent.log', 'logs/api.log'])
+        self.max_lines = getattr(mcp_config, 'max_lines', 100)
+        self.refresh_interval = getattr(mcp_config, 'refresh_interval', 1.0)
         
-        # Initialize both components
-        self.mcp_server = LogViewerMCPServer(name, config)
-        self.web_endpoints = LogViewerWebEndpoints(name, config)
+        # Initialize both components with new signature
+        self.mcp_server = LogViewerMCPServer(name, system_config, mcp_config)
+        self.web_endpoints = LogViewerWebEndpoints(name, system_config, mcp_config)
     
     # MCP Server interface methods
     async def call(self, tool: str = None, params: dict = None, *args, **kwargs):

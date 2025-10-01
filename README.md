@@ -202,7 +202,7 @@ Behavior:
 
 ### Per-Agent Tool Allow / Deny Lists
 
-Each agent has zero tool access unless explicitly granted through `allowed_tools` patterns. (Secure by default — no silent broad access.)
+Each agent has zero tool access unless explicitly granted through `tools.allowed` patterns. (Secure by default — no silent broad access.)
 
 Example:
 
@@ -211,11 +211,12 @@ servers:
   basic_agent:
     type: basic_agent
     agent_config:
-      allowed_tools:
-        - "web_scraper/*"      # all tools from web_scraper plugin/server
-        - "datetime.*"         # any datetime.* tool
-      blocked_tools:
-        - "datetime.legacy_*"  # remove deprecated subset
+      tools:
+        allowed:
+          - "web_scraper/*"      # all tools from web_scraper plugin/server
+          - "datetime.*"         # any datetime.* tool
+        blocked:
+          - "datetime.legacy_*"  # remove deprecated subset
 ```
 
 Pattern rules:
@@ -223,7 +224,7 @@ Pattern rules:
 * `plugin.function` — a single tool function
 * `external_server/*` — all tools from an external MCP server
 * `*` — allow everything (only for experimentation; tighten later)
-* `blocked_tools` is applied after allow filtering to subtract matches
+* `tools.blocked` is applied after allow filtering to subtract matches
 
 Diagnostics:
 * `GET /agents` — list registered agents
@@ -231,9 +232,9 @@ Diagnostics:
 * `GET /agents/{name}/allowed-tools/debug` — includes which patterns matched or were skipped
 
 Migration tips:
-1. Start with `allowed_tools: ["*"]` while auditing actual tool usage.
+1. Start with `tools.allowed: ["*"]` while auditing actual tool usage.
 2. Narrow to specific plugins / functions.
-3. Add `blocked_tools` for carve-outs (experimental / unsafe tools).
+3. Add `tools.blocked` for carve-outs (experimental / unsafe tools).
 4. Use the `/debug` endpoint to validate pattern intent.
 
 ## Plugins

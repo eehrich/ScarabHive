@@ -588,7 +588,7 @@ class Agent(MCPServer):
                 if not any(self._is_tool_allowed(t, [pat]) for t in tools):
                     unmatched.append(pat)
         if unmatched:
-            logger.debug("Agent %s allowed_tools patterns with no matches: %s", self.name, unmatched)
+            logger.debug("Agent %s tools.allowed patterns with no matches: %s", self.name, unmatched)
         return matched
 
     async def list_allowed_tool_servers(self) -> list[str]:
@@ -604,12 +604,12 @@ class Agent(MCPServer):
 
         # Determine patterns first (deny-all baseline if not configured)
         try:
-            allowed_patterns = getattr(self.agent_config, 'allowed_tools', None)
+            allowed_patterns = self.agent_config.tools.allowed if self.agent_config.tools else None
         except Exception:
             allowed_patterns = None
         # If no allow list -> deny all (explicit policy change)
         if not allowed_patterns:
-            logger.debug("Agent %s: no allowed_tools configured -> deny-all (0 tools)", self.name)
+            logger.debug("Agent %s: no tools.allowed configured -> deny-all (0 tools)", self.name)
             return []
 
         # Gather plugin provided tool servers
@@ -680,10 +680,8 @@ class Agent(MCPServer):
             status = params.get("_status")
             all_tools: list[Dict[str, Any]] = []
 
-            # Use agent's allowed_tools configuration for filtering
-            allowed_patterns = None
-            if hasattr(self.agent_config, 'allowed_tools'):
-                allowed_patterns = self.agent_config.allowed_tools
+            # Use agent's tools.allowed configuration for filtering
+            allowed_patterns = self.agent_config.tools.allowed if self.agent_config.tools else None
             
             # Guard against non-iterable / MagicMock truthy values in tests
             if allowed_patterns and not isinstance(allowed_patterns, (list, tuple, set)):

@@ -6,8 +6,9 @@ covering plugin discovery, instantiation, tool schema, and basic functionality.
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
+from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
 from plugins.basic_agent.plugin import PLUGIN_FACTORY
 from plugins.basic_agent.server import BasicAgent
 
@@ -21,62 +22,76 @@ class TestBasicAgentPluginFactory:
         assert callable(PLUGIN_FACTORY)
 
     def test_plugin_instantiation_with_valid_config(self):
-        """Test factory instantiation with proper LLM config."""
-        config = {
-            "parent_llm": {
-                "llm_system": {
-                    "profiles": {
-                        "normal": {"model_ref": "gpt-5-nano"},
-                        "fast": {"model_ref": "gpt-5-nano"}
-                    },
-                    "models": {
-                        "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
-                    },
-                    "default_profile": "normal"
-                },
-                "agent_llm_profiles": {}
-            },
-            "max_steps": 25,
-            "enable_debug": True
+        """Test factory instantiation with proper config."""
+        # Create mock system config with LLM system
+        system_config = Mock(spec=AgentSystemConfig)
+        system_config.llm_system = Mock()
+        system_config.llm_system.profiles = {
+            "normal": Mock(model_ref="gpt-5-nano"),
+            "fast": Mock(model_ref="gpt-5-nano")
         }
+        system_config.llm_system.models = {
+            "gpt-5-nano": Mock(provider="openai", model="gpt-5-nano")
+        }
+        system_config.llm_system.default_profile = "normal"
+        system_config.network = Mock()
+        system_config.network.ssl_verify = False
         
-        agent = PLUGIN_FACTORY("test_basic_agent", config, ssl_verify=False)
+        # Create MCP config with agent config
+        agent_config = AgentConfig(llm_profile="normal", max_steps=25)
+        mcp_config = MCPConfig(
+            type="basic_agent",
+            enabled=True,
+            agent_config=agent_config
+        )
+        
+        agent = PLUGIN_FACTORY("test_basic_agent", system_config, mcp_config)
         
         assert isinstance(agent, BasicAgent)
         assert agent.name == "test_basic_agent"
-        assert agent.ssl_verify is False
 
     def test_plugin_instantiation_missing_llm_config(self):
-        """Test factory fails with missing LLM config."""
-        config = {}  # Missing parent_llm
+        """Test factory requires agent_config in MCPConfig."""
+        system_config = Mock(spec=AgentSystemConfig)
+        system_config.llm_system = None
+        system_config.network = Mock()
+        system_config.network.ssl_verify = False
         
-        with pytest.raises(ValueError, match="requires LLM system configuration"):
-            PLUGIN_FACTORY("test_basic_agent", config, ssl_verify=False)
+        mcp_config = MCPConfig(
+            type="basic_agent",
+            enabled=True
+        )
+        
+        # Should raise ValueError because agent_config is missing
+        with pytest.raises(ValueError, match="requires agent_config in MCPConfig"):
+            agent = PLUGIN_FACTORY("test_basic_agent", system_config, mcp_config)
 
     def test_plugin_instantiation_with_debug_config(self):
         """Test factory with debug configuration."""
-        config = {
-            "parent_llm": {
-                "llm_system": {
-                    "profiles": {
-                        "normal": {"model_ref": "gpt-5-nano"}
-                    },
-                    "models": {
-                        "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
-                    },
-                    "default_profile": "normal"
-                },
-                "agent_llm_profiles": {}
-            },
-            "enable_debug": True,
-            "max_steps": 50
+        system_config = Mock(spec=AgentSystemConfig)
+        system_config.llm_system = Mock()
+        system_config.llm_system.profiles = {
+            "normal": Mock(model_ref="gpt-5-nano")
         }
+        system_config.llm_system.models = {
+            "gpt-5-nano": Mock(provider="openai", model="gpt-5-nano")
+        }
+        system_config.llm_system.default_profile = "normal"
+        system_config.network = Mock()
+        system_config.network.ssl_verify = True
         
-        agent = PLUGIN_FACTORY("debug_agent", config, ssl_verify=True)
+        agent_config = AgentConfig(llm_profile="normal", max_steps=50)
+        mcp_config = MCPConfig(
+            type="basic_agent",
+            enabled=True,
+            agent_config=agent_config,
+            enable_debug=True
+        )
+        
+        agent = PLUGIN_FACTORY("debug_agent", system_config, mcp_config)
         
         assert isinstance(agent, BasicAgent)
         assert agent.name == "debug_agent"
-        assert agent.ssl_verify is True
 
 
 class TestBasicAgentServer:
@@ -117,16 +132,28 @@ class TestBasicAgentServer:
             "weather": None  # Test server without tools
         }.get(name)
         
-        # Mock config
-        self.mock_config = MagicMock()
+        # Create mock system config
+        system_config = Mock(spec=AgentSystemConfig)
+        system_config.network = Mock()
+        system_config.network.ssl_verify = True
+        system_config.llm_system = Mock()
+        system_config.llm_system.profiles = {"normal": Mock(model_ref="gpt-5-nano")}
+        system_config.llm_system.models = {"gpt-5-nano": Mock(provider="openai", model="gpt-5-nano")}
         
-        # Create agent instance
-        self.agent = BasicAgent("test_agent", self.mock_config, self.mock_registry, ssl_verify=True)
+        # Create MCP config
+        agent_config = AgentConfig(llm_profile="normal")
+        mcp_config = MCPConfig(
+            type="basic_agent",
+            enabled=True,
+            agent_config=agent_config
+        )
+        
+        # Create agent instance with new signature
+        self.agent = BasicAgent("test_agent", system_config, mcp_config, self.mock_registry)
 
     def test_agent_initialization(self):
         """Test basic agent initialization."""
         assert self.agent.name == "test_agent"
-        assert self.agent.ssl_verify is True
         assert self.agent.registry == self.mock_registry
 
     def test_get_tools_schema(self):
@@ -141,9 +168,9 @@ class TestBasicAgentServer:
         assert "test_agent_list_tools" in tool_names
 
     def test_get_default_action(self):
-        """Test default action returns agent name."""
+        """Test default action returns 'run'."""
         default_action = self.agent.get_default_action()
-        assert default_action == "test_agent"
+        assert default_action == "run"
 
     @pytest.mark.asyncio
     async def test_list_available_tools_success(self):
@@ -170,7 +197,23 @@ class TestBasicAgentServer:
     @pytest.mark.asyncio
     async def test_list_available_tools_empty_registry(self):
         """Test listing tools with empty registry."""
-        agent = BasicAgent("empty_agent", self.mock_config, None, ssl_verify=True)
+        system_config = Mock(spec=AgentSystemConfig)
+        system_config.network = Mock()
+        system_config.network.ssl_verify = True
+        
+        agent_config = AgentConfig(llm_profile="normal")
+        mcp_config = MCPConfig(
+            type="basic_agent",
+            enabled=True,
+            agent_config=agent_config
+        )
+        
+        # Create empty registry
+        empty_registry = MagicMock()
+        empty_registry.list.return_value = []
+        empty_registry.get.return_value = None
+        
+        agent = BasicAgent("empty_agent", system_config, mcp_config, empty_registry)
         
         result = await agent._list_available_tools({})
         

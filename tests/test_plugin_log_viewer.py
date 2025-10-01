@@ -3,11 +3,12 @@ Tests for log viewer plugin
 """
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 from plugins.log_viewer.plugin import LogViewerHybridPlugin
 from agent_system.plugins.web_adapter import PluginWebRegistry
 
@@ -18,12 +19,18 @@ class TestLogViewerServer:
     @pytest.fixture
     def plugin(self):
         """Create a log viewer plugin instance"""
-        config = {
-            'log_files': ['test.log', 'test2.log'],
-            'max_lines': 50,
-            'refresh_interval': 0.1  # Faster for testing
-        }
-        return LogViewerHybridPlugin("log_viewer", config)
+        system_config = Mock(spec=AgentSystemConfig)
+        system_config.network = Mock()
+        system_config.network.ssl_verify = True
+        
+        mcp_config = MCPConfig(
+            type="log_viewer",
+            enabled=True,
+            log_files=['test.log', 'test2.log'],
+            max_lines=50,
+            refresh_interval=0.1  # Faster for testing
+        )
+        return LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
     
     def test_plugin_initialization(self, plugin):
         """Test plugin initializes correctly"""

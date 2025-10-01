@@ -287,8 +287,9 @@ def mock_system_config():
 
 @pytest.fixture
 def mock_mcp_config():
-    """Create a mock MCPConfig (dict-like) for plugin tests."""
-    return {}
+    """Create a mock MCPConfig object for plugin tests."""
+    from agent_system.config.models import MCPConfig
+    return MCPConfig(type="test", enabled=True)
 
 
 @pytest.fixture

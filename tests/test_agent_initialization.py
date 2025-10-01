@@ -7,6 +7,7 @@ from agent_system.config.models import (
     AgentSystemConfig,
     MCPConfig,
     AgentConfig,
+    ToolConfig,
     ContextManagementConfig,
     TokenOptimizationConfig,
     LLMSystemConfig,
@@ -93,10 +94,11 @@ def test_agent_initialization_with_full_config():
         token_optimization=token_opt
     )
     
-    # Create agent config
+    # Create agent config with tools allowed
+    tool_config = ToolConfig(allowed=["*"])
     agent_config = AgentConfig(
         max_steps=10,
-        allowed_tools=["*"]
+        tools=tool_config
     )
     
     # Create system config

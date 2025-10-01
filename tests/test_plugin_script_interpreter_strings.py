@@ -3,6 +3,7 @@ Tests for string methods in the script interpreter plugin.
 """
 
 import pytest
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
 
@@ -24,7 +25,10 @@ class MockStatus:
 @pytest.fixture
 def server():
     """Create script interpreter server for testing."""
-    return ScriptInterpreterServer("test", {})
+    from unittest.mock import Mock
+    system_config = Mock(spec=AgentSystemConfig)
+    mcp_config = MCPConfig(type="script_interpreter", enabled=True)
+    return ScriptInterpreterServer("test", system_config, mcp_config)
 
 
 @pytest.fixture

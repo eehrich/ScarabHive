@@ -12,7 +12,7 @@ from typing import Any, Dict, List, TYPE_CHECKING
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 class LogViewerMCPServer(SchemaBasedMCPServer):
     """MCP server component for log viewer plugin"""
     
-    def __init__(self, name: str, config: AgentConfig, registry=None):
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
-        self.log_files = getattr(config, 'log_files', ['logs/agent.log', 'logs/api.log'])
+    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
+        """Initialize with new signature."""
+        super().__init__(name, system_config, mcp_config)
+        self.log_files = getattr(mcp_config, 'log_files', ['logs/agent.log', 'logs/api.log'])
         
         logger.info(f"LogViewerMCPServer initialized: {name}")
     

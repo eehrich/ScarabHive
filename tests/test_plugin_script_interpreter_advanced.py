@@ -1,15 +1,18 @@
 """Test advanced Python constructs in script_interpreter plugin."""
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
 
 @pytest.fixture
 async def server():
     """Create a script interpreter server for testing."""
-    return ScriptInterpreterServer("test", {}, True)
+    system_config = Mock(spec=AgentSystemConfig)
+    mcp_config = MCPConfig(type="script_interpreter", enabled=True)
+    return ScriptInterpreterServer("test", system_config, mcp_config)
 
 
 @pytest.fixture  

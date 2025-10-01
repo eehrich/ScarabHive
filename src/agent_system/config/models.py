@@ -114,24 +114,12 @@ class AgentConfig(BaseModel):
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning
     tools: ToolConfig = Field(default_factory=ToolConfig)
     context_management: ContextManagementConfig = Field(default_factory=ContextManagementConfig)
-    
-    # Legacy field for backward compatibility - maps to tools.allowed
-    allowed_tools: Optional[List[str]] = None
-    
-    def __init__(self, **data):
-        # Handle legacy allowed_tools field
-        if "allowed_tools" in data and data["allowed_tools"] is not None:
-            if "tools" not in data:
-                data["tools"] = {}
-            if isinstance(data["tools"], dict):
-                data["tools"]["allowed"] = data["allowed_tools"]
-            # Remove the legacy field after processing
-            data.pop("allowed_tools", None)
-        super().__init__(**data)
 
 
 class MCPConfig(BaseModel):
     """MCP configuration (matches type comment in mcp.yaml for default_config)"""
+    model_config = {"extra": "allow"}  # Allow extra fields for plugin-specific config
+    
     type: str = "basic_agent"   # type of mcp-server/agent to use
     enabled: bool = False       # enable or disable this mcp-server/agent
     agent_config: Optional[AgentConfig] = None

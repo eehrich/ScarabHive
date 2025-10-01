@@ -36,7 +36,7 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         super().__init__(name, system_config, mcp_config)
         
         # Extract script-specific config from mcp_config
-        script_config_dict = mcp_config.get('script_interpreter', {})
+        script_config_dict = getattr(mcp_config, 'script_interpreter', {})
         if script_config_dict:
             script_config = ScriptInterpreterConfig.from_dict(script_config_dict)
         else:

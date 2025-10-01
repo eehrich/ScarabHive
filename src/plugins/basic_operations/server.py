@@ -42,8 +42,8 @@ class BasicOperationsServer(SchemaBasedMCPServer):
         super().__init__(name, system_config, mcp_config)
         
         # Extract configuration with sensible defaults from mcp_config
-        self.max_wait_seconds = float(mcp_config.get('max_wait_seconds', 3600))
-        self.default_update_interval = float(mcp_config.get('default_update_interval', 1.0))
+        self.max_wait_seconds = float(getattr(mcp_config, 'max_wait_seconds', 3600))
+        self.default_update_interval = float(getattr(mcp_config, 'default_update_interval', 1.0))
         
         logger.info(
             f"BasicOperations server '{name}' initialized - max_wait_seconds={self.max_wait_seconds}, "

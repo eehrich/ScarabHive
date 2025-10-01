@@ -275,9 +275,9 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
     """List all available tools for a server and show filtering configuration."""
     server_config = mcp_integration.mcp_config.servers[server_name]
 
-    # Get current tool filtering config
-    allowed_tools = getattr(server_config, 'allowed_tools', None)
-    blocked_tools = getattr(server_config, 'blocked_tools', None)
+    # Get current tool filtering config from nested tools structure
+    allowed_tools = server_config.tools.allowed if server_config.tools else None
+    blocked_tools = server_config.tools.blocked if server_config.tools else None
 
     # Try to connect and list tools
     try:

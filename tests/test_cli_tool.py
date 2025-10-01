@@ -52,7 +52,10 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     mcp_block = data.get("mcp", data)
     servers = mcp_block.get("external_servers", {})
     server_cfg = servers.get("localhost") or {}
-    assert "hello" in (server_cfg.get("allowed_tools") or [])
+    # Check for tools.allowed (new format) or allowed_tools (legacy)
+    tools_dict = server_cfg.get("tools", {})
+    allowed = tools_dict.get("allowed") or server_cfg.get("allowed_tools") or []
+    assert "hello" in allowed
 
     # Run block
     code, out, err = run_cli(["mcp", "tool", "localhost", "block", "hello"])

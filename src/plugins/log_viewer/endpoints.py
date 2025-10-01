@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 from agent_system.plugins.web_adapter import PluginWebInterface
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 # Create a separate logger for log viewer that doesn't write to files to avoid infinite loops
 logger = logging.getLogger(__name__)
@@ -34,14 +34,16 @@ log_viewer_logger.propagate = False  # Don't propagate to parent loggers
 class LogViewerWebEndpoints(PluginWebInterface):
     """Web endpoints component for log viewer plugin"""
     
-    def __init__(self, name: str, config: AgentConfig):
+    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
+        """Initialize with new signature."""
         self.name = name
-        self.agent_config = config
+        self.system_config = system_config
+        self.mcp_config = mcp_config
         
         # Configuration
-        self.log_files = getattr(config, 'log_files', ['logs/agent.log', 'logs/api.log'])
-        self.max_lines = getattr(config, 'max_lines', 20)  # Reduced from 100 to 20
-        self.refresh_interval = getattr(config, 'refresh_interval', 1.0)
+        self.log_files = getattr(mcp_config, 'log_files', ['logs/agent.log', 'logs/api.log'])
+        self.max_lines = getattr(mcp_config, 'max_lines', 20)  # Reduced from 100 to 20
+        self.refresh_interval = getattr(mcp_config, 'refresh_interval', 1.0)
         
         # Initialize templates
         template_dir = Path(__file__).parent / "templates"

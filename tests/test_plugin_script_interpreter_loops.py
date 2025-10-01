@@ -1,6 +1,8 @@
 """Test script_interpreter plugin with loops and if statements."""
 
 import pytest
+from unittest.mock import Mock
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
 
@@ -22,8 +24,13 @@ class MockStatus:
 @pytest.fixture
 def server():
     """Create script interpreter server with loops enabled."""
-    config = {"enable_loops": True, "enable_functions": True}
-    return ScriptInterpreterServer("test", config)
+    system_config = Mock(spec=AgentSystemConfig)
+    mcp_config = MCPConfig(
+        type="script_interpreter",
+        enabled=True,
+        script_interpreter={"enable_loops": True, "enable_functions": True}
+    )
+    return ScriptInterpreterServer("test", system_config, mcp_config)
 
 
 @pytest.fixture

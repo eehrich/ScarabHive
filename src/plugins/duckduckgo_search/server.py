@@ -30,9 +30,9 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
         
         # Initialize cache system 
         # Search results typically change more frequently, so shorter TTL (15 minutes default)
-        cache_ttl = mcp_config.get('cache_ttl', 900)
+        cache_ttl = getattr(mcp_config, 'cache_ttl', 900)
         self.cache = PluginCache(plugin_name="duckduckgo_search", default_ttl=cache_ttl)
-        self.cache_enabled = mcp_config.get('cache_enabled', True)
+        self.cache_enabled = getattr(mcp_config, 'cache_enabled', True)
     
     def _create_cache_key(self, query: str, max_results: int) -> str:
         """Create a cache key from search parameters."""

@@ -1,7 +1,9 @@
 """Extended security tests for script interpreter - comprehensive host protection."""
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
+
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 from src.plugins.script_interpreter.server import ScriptInterpreterServer
 
@@ -20,7 +22,9 @@ class MockStatus:
 @pytest.fixture
 async def server():
     """Create a script interpreter server for testing."""
-    server = ScriptInterpreterServer()
+    system_config = Mock(spec=AgentSystemConfig)
+    mcp_config = MCPConfig(type="script_interpreter", enabled=True)
+    server = ScriptInterpreterServer("test", system_config, mcp_config)
     yield server
 
 

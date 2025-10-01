@@ -18,6 +18,7 @@ except Exception:
     tabulate = None
 
 from .config.settings import load_settings
+from .config.models import ToolConfig
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
@@ -330,9 +331,9 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
     """List all available tools for a server and show filtering configuration."""
     server_config = mcp_integration.mcp_config.servers[server_name]
 
-    # Get current tool filtering config
-    allowed_tools = getattr(server_config, 'allowed_tools', None)
-    blocked_tools = getattr(server_config, 'blocked_tools', None)
+    # Get current tool filtering config from nested tools structure
+    allowed_tools = server_config.tools.allowed if server_config.tools else None
+    blocked_tools = server_config.tools.blocked if server_config.tools else None
 
     # Try to connect and list tools
     try:
@@ -454,8 +455,15 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
         return
 
     server_cfg = servers[server_name] or {}
-    allowed = list(server_cfg.get("allowed_tools") or [])
-    blocked = list(server_cfg.get("blocked_tools") or [])
+    
+    # Handle both old (allowed_tools) and new (tools.allowed) formats
+    tools_dict = server_cfg.get("tools", {})
+    if not tools_dict:
+        tools_dict = {}
+        server_cfg["tools"] = tools_dict
+    
+    allowed = list(tools_dict.get("allowed") or server_cfg.get("allowed_tools") or [])
+    blocked = list(tools_dict.get("blocked") or server_cfg.get("blocked_tools") or [])
 
     if tool_name in allowed:
         print(json.dumps({"message": "Tool already allowed", "server": server_name, "tool": tool_name}, ensure_ascii=False))
@@ -464,10 +472,15 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     # Ensure tool is not in blocked list
     if tool_name in blocked:
         blocked.remove(tool_name)
-        server_cfg["blocked_tools"] = blocked
+        tools_dict["blocked"] = blocked
 
     allowed.append(tool_name)
-    server_cfg["allowed_tools"] = allowed
+    tools_dict["allowed"] = allowed
+    
+    # Remove legacy fields if they exist
+    server_cfg.pop("allowed_tools", None)
+    server_cfg.pop("blocked_tools", None)
+    
     servers[server_name] = server_cfg
     mcp_block["external_servers"] = servers
     # Put back into top-level structure if original used mcp key
@@ -511,8 +524,15 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
         return
 
     server_cfg = servers[server_name] or {}
-    allowed = list(server_cfg.get("allowed_tools") or [])
-    blocked = list(server_cfg.get("blocked_tools") or [])
+    
+    # Handle both old (allowed_tools) and new (tools.allowed) formats
+    tools_dict = server_cfg.get("tools", {})
+    if not tools_dict:
+        tools_dict = {}
+        server_cfg["tools"] = tools_dict
+    
+    allowed = list(tools_dict.get("allowed") or server_cfg.get("allowed_tools") or [])
+    blocked = list(tools_dict.get("blocked") or server_cfg.get("blocked_tools") or [])
 
     if tool_name in blocked:
         print(json.dumps({"message": "Tool already blocked", "server": server_name, "tool": tool_name}, ensure_ascii=False))
@@ -521,10 +541,15 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     # Ensure tool is not in allowed list
     if tool_name in allowed:
         allowed.remove(tool_name)
-        server_cfg["allowed_tools"] = allowed
+        tools_dict["allowed"] = allowed
 
     blocked.append(tool_name)
-    server_cfg["blocked_tools"] = blocked
+    tools_dict["blocked"] = blocked
+    
+    # Remove legacy fields if they exist
+    server_cfg.pop("allowed_tools", None)
+    server_cfg.pop("blocked_tools", None)
+    
     servers[server_name] = server_cfg
     mcp_block["external_servers"] = servers
     if "mcp" in raw:
@@ -1380,11 +1405,23 @@ def main() -> None:
                         update_needed = False
                         updates = {}
 
-                        if getattr(agent.agent_config, 'allowed_tools', None) is None and server_agent_cfg.get('allowed_tools'):
-                            updates['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
+                        # Handle both old (allowed_tools) and new (tools.allowed) format
+                        tools_config = server_agent_cfg.get('tools', {})
+                        allowed_list = tools_config.get('allowed') if tools_config else server_agent_cfg.get('allowed_tools')
+                        blocked_list = tools_config.get('blocked') if tools_config else server_agent_cfg.get('blocked_tools')
+                        
+                        current_allowed = agent.agent_config.tools.allowed if agent.agent_config.tools else None
+                        current_blocked = agent.agent_config.tools.blocked if agent.agent_config.tools else None
+                        
+                        if not current_allowed and allowed_list:
+                            if 'tools' not in updates:
+                                updates['tools'] = agent.agent_config.tools.model_copy() if agent.agent_config.tools else ToolConfig()
+                            updates['tools'].allowed = list(allowed_list)
                             update_needed = True
-                        if getattr(agent.agent_config, 'blocked_tools', None) is None and server_agent_cfg.get('blocked_tools'):
-                            updates['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
+                        if not current_blocked and blocked_list:
+                            if 'tools' not in updates:
+                                updates['tools'] = agent.agent_config.tools.model_copy() if agent.agent_config.tools else ToolConfig()
+                            updates['tools'].blocked = list(blocked_list)
                             update_needed = True
 
                         if update_needed:
@@ -1393,27 +1430,14 @@ def main() -> None:
                 except Exception:
                     pass
             else:
-                # Not an Agent instance -> create a dedicated Agent wrapper
-                agent = Agent(entry_name, cli_agent_config, registry)
+                # Not an Agent instance -> will be handled by bootstrap_servers
+                pass
         else:
-            # Create new Agent with server-level patterns if defined
-            try:
-                server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
-                server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
-            except Exception:
-                server_agent_cfg = {}
-            base_agent_cfg = {}
-            if isinstance(server_agent_cfg, dict):
-                # Pass patterns through via agent_config parameter (kept minimal)
-                if server_agent_cfg.get('allowed_tools'):
-                    base_agent_cfg['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
-                if server_agent_cfg.get('blocked_tools'):
-                    base_agent_cfg['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
-            agent = Agent(entry_name, cli_agent_config, registry)
-            registry.register(entry_name, agent)
+            # Agent will be created by bootstrap_servers with proper config
+            pass
     except Exception:
-        # Fallback to legacy dedicated cli_agent if anything unexpected happens
-        agent = Agent("cli_agent", cli_agent_config, registry)
+        # Fallback will be handled by bootstrap_servers
+        pass
 
     # Removed legacy alias registration for 'cli_agent'. Historical scripts should be updated to
     # reference the configured entry agent directly.
