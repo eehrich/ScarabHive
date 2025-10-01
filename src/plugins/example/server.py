@@ -1,7 +1,18 @@
 """Example MCP Server implementation.
 
-This module demonstrates the simplest way to implement an MCP server
-using SchemaBasedMCPServer. All tools are defined in schema.yaml.
+This module demonstrates the MODERN way to implement an MCP server
+using SchemaBasedMCPServer with automatic tool dispatching.
+
+Key Pattern (NO manual call() override needed):
+1. Inherit from SchemaBasedMCPServer
+2. Define tools in schema.yaml with names like: "{{ name }}_toolname"
+3. Implement async methods matching EXACT tool names from schema
+4. MCPServer.call() automatically routes to your methods
+
+For a plugin named "example", with tools in schema.yaml:
+- "example_calculator" → auto-routes to self.example_calculator(params)
+- "example_formatter" → auto-routes to self.example_formatter(params)
+- "example_status" → auto-routes to self.example_status(params)
 """
 
 from __future__ import annotations
@@ -12,7 +23,7 @@ from decimal import Decimal, InvalidOperation
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,43 +33,41 @@ class ExampleServer(SchemaBasedMCPServer):
 
     This server demonstrates:
     - Schema-based tool definitions (tools defined in schema.yaml)
+    - Generic dispatcher (no manual call() override needed)
+    - Tool methods matching tool names (automatic routing)
     - Configuration-driven behavior
     - Clean error handling and input validation
     - Proper logging
     
     All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
+    Tool calls are automatically routed to methods by MCPServer.call().
     """
 
-    def __init__(self, name: str, config: AgentConfig, registry=None):
-        """Initialize the example server."""
-        # Ignore registry parameter - this is not an Agent plugin
-        super().__init__(name, config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        """Initialize the example server.
         
-        # Extract configuration with sensible defaults
-        self.precision = int(getattr(config, "precision", 2))
-        self.max_text_length = int(getattr(config, "max_text_length", 1000))
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration
+        """
+        super().__init__(name, system_config, mcp_config)
         
-        logger.info(f"Example server '{name}' initialized")
+        # Extract plugin-specific configuration with sensible defaults
+        # mcp_config contains the plugin's specific settings
+        self.precision = int(getattr(mcp_config, "precision", 2))
+        self.max_text_length = int(getattr(mcp_config, "max_text_length", 1000))
+        
+        logger.info(f"Example server '{name}' initialized with precision={self.precision}, max_length={self.max_text_length}")
 
-    async def call(self, tool: str, params: dict[str, Any]) -> Any:
-        """Route tool calls to appropriate handlers."""
-        logger.debug(f"Calling tool '{tool}' with params: {params}")
-        
-        calculator_name = f"{self.name}_calculator"
-        formatter_name = f"{self.name}_formatter"
-        status_name = f"{self.name}_status"
-        
-        if tool == calculator_name:
-            return await self._handle_calculator(params)
-        elif tool == formatter_name:
-            return await self._handle_formatter(params)
-        elif tool == status_name:
-            return await self._handle_status(params)
-        else:
-            raise ValueError(f"Unknown tool '{tool}'. Available: {calculator_name}, {formatter_name}, {status_name}")
-
-    async def _handle_calculator(self, params: dict[str, Any]) -> dict[str, Any]:
+    # Tool methods - these are automatically called by MCPServer.call() dispatcher
+    # Method names must match the tool names defined in schema.yaml
+    
+    async def example_calculator(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle calculator operations with high precision.
+        
+        This method is automatically called when the "example_calculator" tool is invoked.
+        The generic dispatcher in MCPServer routes the call here based on the tool name.
         
         Args:
             params: Parameters containing operation, a, and b
@@ -113,8 +122,10 @@ class ExampleServer(SchemaBasedMCPServer):
         logger.debug(f"Calculator result: {response}")
         return response
 
-    async def _handle_formatter(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def example_formatter(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle text formatting operations.
+        
+        This method is automatically called when the "example_formatter" tool is invoked.
         
         Args:
             params: Parameters containing text and format
@@ -164,8 +175,17 @@ class ExampleServer(SchemaBasedMCPServer):
         logger.debug(f"Formatter result: {len(text)} chars -> {len(formatted)} chars")
         return response
 
-    async def _handle_status(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle status information requests."""
+    async def example_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle status information requests.
+        
+        This method is automatically called when the "example_status" tool is invoked.
+        
+        Args:
+            params: Parameters containing optional verbose flag
+            
+        Returns:
+            Dict with server status and configuration
+        """
         verbose = params.get("verbose", False)
         
         tools = self.get_tools()
@@ -180,8 +200,7 @@ class ExampleServer(SchemaBasedMCPServer):
             status.update({
                 "config": {
                     "precision": self.precision,
-                    "max_text_length": self.max_text_length,
-                    "ssl_verify": self.ssl_verify
+                    "max_text_length": self.max_text_length
                 },
                 "available_tools": [tool["function"]["name"] for tool in tools]
             })

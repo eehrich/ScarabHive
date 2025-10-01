@@ -1,80 +1,121 @@
-"""Test plugin for example plugin functionality."""
+"""Test example plugin with modernized MCPServer pattern.
 
+Tests the example plugin using the new SchemaBasedMCPServer pattern
+with automatic tool dispatching.
+"""
+
+from __future__ import annotations
+
+import inspect
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import Mock
 
-from plugins.example.plugin import PLUGIN_FACTORY
 from plugins.example.server import ExampleServer
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
-class TestPluginExample:
-    """Test the example plugin functionality."""
+@pytest.fixture
+def system_config():
+    """Create a mock system config."""
+    config = Mock(spec=AgentSystemConfig)
+    config.network = Mock()
+    config.network.ssl_verify = True
+    return config
 
-    @pytest.fixture
-    def example_server(self):
-        """Create example server for testing."""
-        return ExampleServer("test_example", {"precision": 2, "max_text_length": 1000})
 
-    @pytest.fixture
-    def mock_status(self):
-        """Create mock status for testing."""
-        mock_status = AsyncMock()
-        mock_status.progress = AsyncMock()
-        mock_status.error = AsyncMock()
-        mock_status.end = AsyncMock()
-        return mock_status
+@pytest.fixture
+def mcp_config():
+    """Create a mock MCP config with example settings."""
+    config = Mock(spec=MCPConfig)
+    config.precision = 2
+    config.max_text_length = 1000
+    return config
 
-    def test_plugin_factory_basic(self):
-        """Test basic plugin factory functionality."""
-        server = PLUGIN_FACTORY("test_example")
-        assert isinstance(server, ExampleServer)
-        assert server.name == "test_example"
-        assert server.precision == 2
-        assert server.max_text_length == 1000
 
-    def test_plugin_factory_with_config(self):
-        """Test plugin factory with custom configuration."""
-        config = {
-            "precision": 4,
-            "max_text_length": 500,
-            "enable_debug": True
-        }
-        server = PLUGIN_FACTORY("test_example", config)
+@pytest.fixture
+def example_server(system_config, mcp_config):
+    """Create example server for testing."""
+    return ExampleServer("example", system_config, mcp_config)
+
+
+class TestExampleServerConstructor:
+    """Test ExampleServer constructor and initialization."""
+
+    def test_constructor_signature(self, system_config, mcp_config):
+        """Test that constructor has modern signature."""
+        server = ExampleServer("example", system_config, mcp_config)
+        
+        assert server.name == "example"
+        assert server.system_config is system_config
+        assert server.mcp_config is mcp_config
+
+    def test_config_extraction(self, system_config):
+        """Test configuration extraction from mcp_config."""
+        config = Mock(spec=MCPConfig)
+        config.precision = 4
+        config.max_text_length = 500
+        
+        server = ExampleServer("example", system_config, config)
+        
         assert server.precision == 4
         assert server.max_text_length == 500
 
-    def test_plugin_factory_config_validation(self):
-        """Test plugin factory configuration validation."""
-        # Test invalid precision
-        with pytest.raises(ValueError, match="precision must be between 0 and 10"):
-            PLUGIN_FACTORY("test", {"precision": 15})
+    def test_config_defaults(self, system_config):
+        """Test that default values are used when config attrs missing."""
+        config = Mock(spec=MCPConfig)
+        # Don't set precision or max_text_length attributes
         
-        # Test invalid max_text_length
-        with pytest.raises(ValueError, match="max_text_length must be between 1 and 100000"):
-            PLUGIN_FACTORY("test", {"max_text_length": -1})
+        server = ExampleServer("example", system_config, config)
+        
+        # Should use defaults
+        assert server.precision == 2
+        assert server.max_text_length == 1000
 
-    def test_server_initialization(self):
-        """Test server initialization with different configs."""
-        server = ExampleServer("test", {"precision": 3, "max_text_length": 2000})
-        assert server.name == "test"
-        assert server.precision == 3
-        assert server.max_text_length == 2000
+    def test_no_legacy_attributes(self, example_server):
+        """Test that legacy attributes are not present."""
+        # Should not have ssl_verify attribute
+        assert not hasattr(example_server, 'ssl_verify')
+        
+        # Should not have agent_config backwards compatibility
+        assert not hasattr(example_server, 'agent_config')
 
-    def test_server_get_tools(self):
-        """Test that server exposes expected tools."""
-        server = ExampleServer("test")
-        tools = server.get_tools()
+
+class TestExampleServerTools:
+    """Test tool definition and loading."""
+
+    def test_get_tools_returns_three_tools(self, example_server):
+        """Test that server exposes exactly 3 tools."""
+        tools = example_server.get_tools()
         
         assert len(tools) == 3
         tool_names = [tool["function"]["name"] for tool in tools]
-        assert "test_calculator" in tool_names
-        assert "test_formatter" in tool_names
-        assert "test_status" in tool_names
+        assert "example_calculator" in tool_names
+        assert "example_formatter" in tool_names
+        assert "example_status" in tool_names
+
+    def test_tool_names_match_methods(self, example_server):
+        """Test that tool names match implemented methods."""
+        tools = example_server.get_tools()
+        
+        for tool in tools:
+            tool_name = tool["function"]["name"]
+            # Method should exist
+            assert hasattr(example_server, tool_name)
+            assert callable(getattr(example_server, tool_name))
+
+    def test_no_manual_call_override(self):
+        """Test that ExampleServer doesn't override call()."""
+        # Should not have call() in its own __dict__ (inherits from MCPServer)
+        assert 'call' not in ExampleServer.__dict__
+
+
+class TestCalculatorTool:
+    """Test calculator tool functionality."""
 
     @pytest.mark.asyncio
-    async def test_calculator_add(self, example_server):
+    async def test_add_operation(self, example_server):
         """Test calculator addition operation."""
-        result = await example_server.call("test_example_calculator", {
+        result = await example_server.call("example_calculator", {
             "operation": "add",
             "a": 5.5,
             "b": 3.2
@@ -86,9 +127,9 @@ class TestPluginExample:
         assert result["precision"] == 2
 
     @pytest.mark.asyncio
-    async def test_calculator_subtract(self, example_server):
+    async def test_subtract_operation(self, example_server):
         """Test calculator subtraction operation."""
-        result = await example_server.call("test_example_calculator", {
+        result = await example_server.call("example_calculator", {
             "operation": "subtract",
             "a": 10,
             "b": 3
@@ -99,9 +140,9 @@ class TestPluginExample:
         assert result["result"] == 7.0
 
     @pytest.mark.asyncio
-    async def test_calculator_multiply(self, example_server):
+    async def test_multiply_operation(self, example_server):
         """Test calculator multiplication operation."""
-        result = await example_server.call("test_example_calculator", {
+        result = await example_server.call("example_calculator", {
             "operation": "multiply",
             "a": 4,
             "b": 2.5
@@ -112,9 +153,9 @@ class TestPluginExample:
         assert result["result"] == 10.0
 
     @pytest.mark.asyncio
-    async def test_calculator_divide(self, example_server):
+    async def test_divide_operation(self, example_server):
         """Test calculator division operation."""
-        result = await example_server.call("test_example_calculator", {
+        result = await example_server.call("example_calculator", {
             "operation": "divide",
             "a": 15,
             "b": 3
@@ -125,50 +166,55 @@ class TestPluginExample:
         assert result["result"] == 5.0
 
     @pytest.mark.asyncio
-    async def test_calculator_division_by_zero(self, example_server):
+    async def test_division_by_zero(self, example_server):
         """Test calculator division by zero handling."""
         with pytest.raises(ValueError, match="Division by zero is not allowed"):
-            await example_server.call("test_example_calculator", {
+            await example_server.call("example_calculator", {
                 "operation": "divide",
                 "a": 10,
                 "b": 0
             })
 
     @pytest.mark.asyncio
-    async def test_calculator_invalid_operation(self, example_server):
+    async def test_invalid_operation(self, example_server):
         """Test calculator with invalid operation."""
         with pytest.raises(ValueError, match="Invalid operation 'power'"):
-            await example_server.call("test_example_calculator", {
+            await example_server.call("example_calculator", {
                 "operation": "power",
                 "a": 2,
                 "b": 3
             })
 
     @pytest.mark.asyncio
-    async def test_calculator_missing_parameters(self, example_server):
+    async def test_missing_parameters(self, example_server):
         """Test calculator with missing parameters."""
         with pytest.raises(ValueError, match="Missing required parameters"):
-            await example_server.call("test_example_calculator", {
+            await example_server.call("example_calculator", {
                 "operation": "add",
                 "a": 5
                 # Missing 'b' parameter
             })
 
     @pytest.mark.asyncio
-    async def test_calculator_invalid_number_format(self, example_server):
+    async def test_invalid_number_format(self, example_server):
         """Test calculator with invalid number format."""
         with pytest.raises(TypeError, match="Invalid number format"):
-            await example_server.call("test_example_calculator", {
+            await example_server.call("example_calculator", {
                 "operation": "add",
                 "a": "not_a_number",
                 "b": 5
             })
 
     @pytest.mark.asyncio
-    async def test_calculator_precision_handling(self):
-        """Test calculator precision configuration."""
-        server = ExampleServer("test", {"precision": 4})
-        result = await server.call("test_calculator", {
+    async def test_custom_precision(self, system_config):
+        """Test calculator with custom precision."""
+        config = Mock(spec=MCPConfig)
+        config.precision = 4
+        config.max_text_length = 1000
+        
+        server = ExampleServer("example", system_config, config)
+        
+        result = await server.call("example_calculator", {
             "operation": "divide",
             "a": 1,
             "b": 3
@@ -179,9 +225,45 @@ class TestPluginExample:
         assert result["result"] == 0.3333
 
     @pytest.mark.asyncio
-    async def test_formatter_uppercase(self, example_server):
+    async def test_large_numbers(self, system_config, mcp_config):
+        """Test calculator with very large numbers."""
+        server = ExampleServer("example", system_config, mcp_config)
+        
+        result = await server.call("example_calculator", {
+            "operation": "multiply",
+            "a": 999999999999,
+            "b": 999999999999
+        })
+        
+        assert result["operation"] == "multiply"
+        assert isinstance(result["result"], float)
+
+    @pytest.mark.asyncio
+    async def test_precision_zero(self, system_config):
+        """Test calculator with zero precision."""
+        config = Mock(spec=MCPConfig)
+        config.precision = 0
+        config.max_text_length = 1000
+        
+        server = ExampleServer("example", system_config, config)
+        
+        result = await server.call("example_calculator", {
+            "operation": "divide",
+            "a": 7,
+            "b": 3
+        })
+        
+        assert result["precision"] == 0
+        assert result["result"] == 2  # Should round to 0 decimal places
+
+
+class TestFormatterTool:
+    """Test formatter tool functionality."""
+
+    @pytest.mark.asyncio
+    async def test_uppercase_format(self, example_server):
         """Test text formatter uppercase operation."""
-        result = await example_server.call("test_example_formatter", {
+        result = await example_server.call("example_formatter", {
             "text": "hello world",
             "format": "uppercase"
         })
@@ -192,9 +274,9 @@ class TestPluginExample:
         assert result["length"] == 11
 
     @pytest.mark.asyncio
-    async def test_formatter_lowercase(self, example_server):
+    async def test_lowercase_format(self, example_server):
         """Test text formatter lowercase operation."""
-        result = await example_server.call("test_example_formatter", {
+        result = await example_server.call("example_formatter", {
             "text": "HELLO WORLD",
             "format": "lowercase"
         })
@@ -204,9 +286,9 @@ class TestPluginExample:
         assert result["formatted"] == "hello world"
 
     @pytest.mark.asyncio
-    async def test_formatter_title(self, example_server):
+    async def test_title_format(self, example_server):
         """Test text formatter title case operation."""
-        result = await example_server.call("test_example_formatter", {
+        result = await example_server.call("example_formatter", {
             "text": "hello world test",
             "format": "title"
         })
@@ -216,9 +298,9 @@ class TestPluginExample:
         assert result["formatted"] == "Hello World Test"
 
     @pytest.mark.asyncio
-    async def test_formatter_reverse(self, example_server):
+    async def test_reverse_format(self, example_server):
         """Test text formatter reverse operation."""
-        result = await example_server.call("test_example_formatter", {
+        result = await example_server.call("example_formatter", {
             "text": "hello",
             "format": "reverse"
         })
@@ -228,130 +310,51 @@ class TestPluginExample:
         assert result["formatted"] == "olleh"
 
     @pytest.mark.asyncio
-    async def test_formatter_invalid_format(self, example_server):
+    async def test_invalid_format(self, example_server):
         """Test formatter with invalid format type."""
         with pytest.raises(ValueError, match="Invalid format 'capitalize'"):
-            await example_server.call("test_example_formatter", {
+            await example_server.call("example_formatter", {
                 "text": "hello world",
                 "format": "capitalize"
             })
 
     @pytest.mark.asyncio
-    async def test_formatter_missing_parameters(self, example_server):
+    async def test_missing_parameters(self, example_server):
         """Test formatter with missing parameters."""
         with pytest.raises(ValueError, match="Missing required parameters"):
-            await example_server.call("test_example_formatter", {
+            await example_server.call("example_formatter", {
                 "text": "hello world"
                 # Missing 'format' parameter
             })
 
     @pytest.mark.asyncio
-    async def test_formatter_invalid_text_type(self, example_server):
+    async def test_invalid_text_type(self, example_server):
         """Test formatter with invalid text type."""
         with pytest.raises(TypeError, match="Text parameter must be a string"):
-            await example_server.call("test_example_formatter", {
+            await example_server.call("example_formatter", {
                 "text": 12345,
                 "format": "uppercase"
             })
 
     @pytest.mark.asyncio
-    async def test_formatter_text_length_limit(self):
+    async def test_text_length_limit(self, system_config):
         """Test formatter text length validation."""
-        server = ExampleServer("test", {"max_text_length": 5})
+        config = Mock(spec=MCPConfig)
+        config.precision = 2
+        config.max_text_length = 5
+        
+        server = ExampleServer("example", system_config, config)
         
         with pytest.raises(ValueError, match="Text length 10 exceeds maximum 5"):
-            await server.call("test_formatter", {
+            await server.call("example_formatter", {
                 "text": "1234567890",  # 10 characters
                 "format": "uppercase"
             })
 
     @pytest.mark.asyncio
-    async def test_status_basic(self, example_server):
-        """Test status information basic request."""
-        result = await example_server.call("test_example_status", {})
-        
-        assert result["server_name"] == "test_example"
-        assert result["status"] == "active"
-        assert result["tools_count"] == 3
-        assert result["version"] == "1.0.0"
-        assert "config" not in result  # Not verbose
-
-    @pytest.mark.asyncio
-    async def test_status_verbose(self, example_server):
-        """Test status information verbose request."""
-        result = await example_server.call("test_example_status", {"verbose": True})
-        
-        assert result["server_name"] == "test_example"
-        assert result["status"] == "active"
-        assert result["tools_count"] == 3
-        assert result["version"] == "1.0.0"
-        
-        # Verbose information
-        assert "config" in result
-        assert result["config"]["precision"] == 2
-        assert result["config"]["max_text_length"] == 1000
-        assert result["config"]["ssl_verify"] is True
-        
-        assert "available_tools" in result
-        assert len(result["available_tools"]) == 3
-
-    @pytest.mark.asyncio
-    async def test_invalid_tool_call(self, example_server):
-        """Test calling non-existent tool."""
-        with pytest.raises(ValueError, match="Unknown tool 'test_example_nonexistent'"):
-            await example_server.call("test_example_nonexistent", {})
-
-    def test_plugin_discovery(self):
-        """Test that example plugin can be discovered."""
-        from pathlib import Path
-        from agent_system.plugins import discover_all_plugins
-        
-        repo_root = Path(__file__).parent.parent
-        plugin_dirs = [repo_root / 'src' / 'plugins']
-        
-        plugins = discover_all_plugins(plugin_dirs)
-        assert 'example' in plugins
-        
-        factory = plugins['example']
-        server = factory("test_example")
-        assert isinstance(server, ExampleServer)
-
-
-class TestPluginExampleEdgeCases:
-    """Test edge cases and error handling."""
-
-    @pytest.mark.asyncio
-    async def test_large_number_calculation(self):
-        """Test calculator with very large numbers."""
-        server = ExampleServer("test", {"precision": 2})
-        result = await server.call("test_calculator", {
-            "operation": "multiply",
-            "a": 999999999999,
-            "b": 999999999999
-        })
-        
-        assert result["operation"] == "multiply"
-        # Should handle large numbers correctly
-        assert isinstance(result["result"], float)
-
-    @pytest.mark.asyncio
-    async def test_decimal_precision_edge_cases(self):
-        """Test decimal precision with edge cases."""
-        server = ExampleServer("test", {"precision": 0})
-        result = await server.call("test_calculator", {
-            "operation": "divide",
-            "a": 7,
-            "b": 3
-        })
-        
-        assert result["precision"] == 0
-        assert result["result"] == 2  # Should round to 0 decimal places
-
-    @pytest.mark.asyncio
-    async def test_empty_text_formatting(self):
+    async def test_empty_text(self, example_server):
         """Test formatting empty text."""
-        server = ExampleServer("test")
-        result = await server.call("test_formatter", {
+        result = await example_server.call("example_formatter", {
             "text": "",
             "format": "uppercase"
         })
@@ -361,10 +364,9 @@ class TestPluginExampleEdgeCases:
         assert result["length"] == 0
 
     @pytest.mark.asyncio
-    async def test_special_characters_formatting(self):
+    async def test_special_characters(self, example_server):
         """Test formatting text with special characters."""
-        server = ExampleServer("test")
-        result = await server.call("test_formatter", {
+        result = await example_server.call("example_formatter", {
             "text": "héllo wørld! 123 @#$",
             "format": "uppercase"
         })
@@ -372,10 +374,9 @@ class TestPluginExampleEdgeCases:
         assert result["formatted"] == "HÉLLO WØRLD! 123 @#$"
 
     @pytest.mark.asyncio
-    async def test_unicode_text_formatting(self):
+    async def test_unicode_text(self, example_server):
         """Test formatting Unicode text."""
-        server = ExampleServer("test")
-        result = await server.call("test_formatter", {
+        result = await example_server.call("example_formatter", {
             "text": "🌟 Hello 世界 🌟",
             "format": "reverse"
         })
@@ -383,25 +384,95 @@ class TestPluginExampleEdgeCases:
         assert result["formatted"] == "🌟 界世 olleH 🌟"
 
 
-class TestPluginExampleIntegration:
+class TestStatusTool:
+    """Test status tool functionality."""
+
+    @pytest.mark.asyncio
+    async def test_status_basic(self, example_server):
+        """Test status information basic request."""
+        result = await example_server.call("example_status", {})
+        
+        assert result["server_name"] == "example"
+        assert result["status"] == "active"
+        assert result["tools_count"] == 3
+        assert result["version"] == "1.0.0"
+        assert "config" not in result  # Not verbose
+
+    @pytest.mark.asyncio
+    async def test_status_verbose(self, example_server):
+        """Test status information verbose request."""
+        result = await example_server.call("example_status", {"verbose": True})
+        
+        assert result["server_name"] == "example"
+        assert result["status"] == "active"
+        assert result["tools_count"] == 3
+        assert result["version"] == "1.0.0"
+        
+        # Verbose information
+        assert "config" in result
+        assert result["config"]["precision"] == 2
+        assert result["config"]["max_text_length"] == 1000
+        # Note: ssl_verify removed from modern pattern
+        assert "ssl_verify" not in result["config"]
+        
+        assert "available_tools" in result
+        assert len(result["available_tools"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_status_non_verbose_default(self, example_server):
+        """Test that status defaults to non-verbose."""
+        result = await example_server.call("example_status", {})
+        
+        assert "config" not in result
+        assert "available_tools" not in result
+
+
+class TestGenericDispatcher:
+    """Test generic dispatcher integration."""
+
+    @pytest.mark.asyncio
+    async def test_automatic_routing(self, example_server):
+        """Test that tools are automatically routed to methods."""
+        # Call through generic dispatcher
+        result = await example_server.call("example_calculator", {
+            "operation": "add",
+            "a": 1,
+            "b": 2
+        })
+        
+        assert result["result"] == 3
+
+    @pytest.mark.asyncio
+    async def test_invalid_tool_error(self, example_server):
+        """Test calling non-existent tool gives helpful error."""
+        with pytest.raises(ValueError) as exc_info:
+            await example_server.call("example_nonexistent", {})
+        
+        error_msg = str(exc_info.value)
+        assert "nonexistent" in error_msg
+        # Should list available tools
+        assert "example_calculator" in error_msg or "Available" in error_msg
+
+
+class TestIntegration:
     """Integration tests for example plugin."""
 
     @pytest.mark.asyncio
-    async def test_plugin_lifecycle(self):
-        """Test complete plugin lifecycle."""
-        # Create plugin
-        server = PLUGIN_FACTORY("integration_test", {
-            "precision": 3,
-            "max_text_length": 100
-        })
+    async def test_complete_workflow(self, system_config):
+        """Test complete plugin workflow with all tools."""
+        config = Mock(spec=MCPConfig)
+        config.precision = 3
+        config.max_text_length = 100
+        
+        server = ExampleServer("example", system_config, config)
         
         # Test status
-        status = await server.call("integration_test_status", {"verbose": True})
-        assert status["server_name"] == "integration_test"
+        status = await server.call("example_status", {"verbose": True})
+        assert status["server_name"] == "example"
         assert status["config"]["precision"] == 3
         
         # Test calculator
-        calc_result = await server.call("integration_test_calculator", {
+        calc_result = await server.call("example_calculator", {
             "operation": "add",
             "a": 1.111,
             "b": 2.222
@@ -409,41 +480,77 @@ class TestPluginExampleIntegration:
         assert calc_result["result"] == 3.333
         
         # Test formatter
-        format_result = await server.call("integration_test_formatter", {
-            "text": "test",
+        format_result = await server.call("example_formatter", {
+            "text": "example",
             "format": "title"
         })
-        assert format_result["formatted"] == "Test"
+        assert format_result["formatted"] == "Example"
 
     @pytest.mark.asyncio
-    async def test_configuration_inheritance(self):
-        """Test that configuration is properly inherited."""
-        config = {
-            "precision": 5,
-            "max_text_length": 50,
-            "enable_debug": True
-        }
+    async def test_config_isolation(self, system_config):
+        """Test that different instances have isolated configs."""
+        config1 = Mock(spec=MCPConfig)
+        config1.precision = 2
+        config1.max_text_length = 100
         
-        server = PLUGIN_FACTORY("config_test", config)
+        config2 = Mock(spec=MCPConfig)
+        config2.precision = 5
+        config2.max_text_length = 500
         
-        # Verify config is applied
-        assert server.precision == 5
-        assert server.max_text_length == 50
+        server1 = ExampleServer("server1", system_config, config1)
+        server2 = ExampleServer("server2", system_config, config2)
         
-        # Test precision in action
-        result = await server.call("config_test_calculator", {
-            "operation": "divide",
-            "a": 22,
-            "b": 7
-        })
-        assert result["precision"] == 5
-        # 22/7 = 3.14286 with 5 decimal places
-        assert result["result"] == 3.14286
+        assert server1.precision == 2
+        assert server2.precision == 5
+        assert server1.max_text_length == 100
+        assert server2.max_text_length == 500
 
-    def test_ssl_verify_configuration(self):
-        """Test SSL verification configuration."""
-        server = PLUGIN_FACTORY("ssl_test", ssl_verify=False)
-        assert server.ssl_verify is False
+
+class TestModernPattern:
+    """Test modern MCPServer pattern compliance."""
+
+    def test_inherits_from_schema_based_mcp_server(self):
+        """Test that ExampleServer inherits from SchemaBasedMCPServer."""
+        from agent_system.mcp.schema_based import SchemaBasedMCPServer
+        from agent_system.mcp.base import MCPServer
         
-        server = PLUGIN_FACTORY("ssl_test", ssl_verify=True)
-        assert server.ssl_verify is True
+        assert issubclass(ExampleServer, SchemaBasedMCPServer)
+        assert issubclass(ExampleServer, MCPServer)
+
+    def test_uses_modern_constructor(self, system_config, mcp_config):
+        """Test modern constructor signature."""
+        sig = inspect.signature(ExampleServer.__init__)
+        params = list(sig.parameters.keys())
+        
+        assert params == ['self', 'name', 'system_config', 'mcp_config']
+
+    def test_no_backwards_compatibility(self, example_server):
+        """Test that backwards compatibility is completely removed."""
+        # No agent_config alias
+        assert not hasattr(example_server, 'agent_config')
+        
+        # No ssl_verify attribute
+        assert not hasattr(example_server, 'ssl_verify')
+        
+        # No registry parameter
+        sig = inspect.signature(ExampleServer.__init__)
+        assert 'registry' not in sig.parameters
+
+    @pytest.mark.asyncio
+    async def test_method_names_match_tools(self, example_server):
+        """Test that all tool methods follow naming convention."""
+        import asyncio
+        tools = example_server.get_tools()
+        
+        for tool in tools:
+            tool_name = tool["function"]["name"]
+            # Should have a method with exact tool name
+            assert hasattr(example_server, tool_name), \
+                f"Method {tool_name} not found for tool"
+            
+            method = getattr(example_server, tool_name)
+            assert callable(method)
+            
+            # Should be async
+            assert asyncio.iscoroutinefunction(method), \
+                f"Method {tool_name} should be async"
