@@ -1,10 +1,13 @@
 """Context window manager with enhanced warning system."""
 
+from __future__ import annotations
+
 import logging
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 from ..llm.models import ChatMessage
-from .config import ContextConfig, WarningLevel
+from ..llm.token_utils import estimate_token_count
+from ..config.models import ContextManagementConfig
 from .tracker import record_context_usage
 from .agent_tracker import record_agent_summarization
 from ..mcp.status import (
@@ -12,19 +15,38 @@ from ..mcp.status import (
     StatusScope,
 )
 
+if TYPE_CHECKING:
+    from ..servers.agent.server import Agent
+
 logger = logging.getLogger(__name__)
 
 
 class ContextManager:
-    """Manages context window usage with enhanced warnings and automatic handling."""
+    """Manages context window usage with warnings and automatic handling."""
 
-    def __init__(self, config: ContextConfig, agent_id: Optional[str] = None):
-        self.config = config
-        self.agent_id = agent_id  # Store agent ID for tracking purposes
-        self._last_warning_level: Optional[WarningLevel] = None
+    def __init__(self, agent: Agent):
+        """Initialize ContextManager with Agent object.
+        
+        Args:
+            agent: Agent instance containing all necessary config and context window info
+        """
+        self.agent = agent
+        self.agent_id = agent.name
+        
+        # Get config from agent's mcp_config.agent_config
+        if not hasattr(agent.mcp_config, 'agent_config') or agent.mcp_config.agent_config is None:
+            raise ValueError(f"Agent {agent.name} has no agent_config in mcp_config")
+        
+        self.config: ContextManagementConfig = agent.mcp_config.agent_config.context_management
+        
+        # Get context_window from LLM configuration (via agent's system_config)
+        self.context_window = self._get_context_window_from_agent()
+        
+        self._last_warning_level: Optional[str] = None  # "yellow", "orange", "red"
         self._summarizer = None  # Will be set when summarizer is available
         self._summarization_in_progress = False  # Prevent recursive summarization loops
         self._context_managed_this_step = False  # Prevent duplicate context management in same step
+        
         # Track actual token usage from LLM responses
         self._actual_usage_stats = {
             'total_tokens': 0,
@@ -32,11 +54,66 @@ class ContextManager:
             'completion_tokens': 0,
             'last_call_tokens': 0
         }
+        
         # Precompute warning levels in absolute tokens for UI consumption
+        self.warning_levels = {
+            level: int(self.context_window * threshold)
+            for level, threshold in self.config.warning_levels.items()
+        }
+    
+    def _get_context_window_from_agent(self) -> int:
+        """Extract context_window from agent's LLM configuration."""
         try:
-            self.warning_levels = {level.value: self.config.get_warning_threshold_tokens(level) for level in self.config.warning_thresholds}
-        except Exception:
-            self.warning_levels = {}
+            # Try to get from LLM client if available
+            if hasattr(self.agent, 'llm') and self.agent.llm:
+                if hasattr(self.agent.llm, 'context_window'):
+                    return self.agent.llm.context_window
+                if hasattr(self.agent.llm, 'model_config') and hasattr(self.agent.llm.model_config, 'context_window'):
+                    return self.agent.llm.model_config.context_window
+            
+            # Try to get from system_config via LLM factory resolution
+            if hasattr(self.agent, 'system_config') and self.agent.system_config:
+                from ..llm.factory import resolve_llm_config_for_agent
+                llm_kwargs = resolve_llm_config_for_agent(self.agent.system_config, self.agent.name)
+                context_window = llm_kwargs.get("context_window")
+                if context_window:
+                    return context_window
+        except Exception as e:
+            logger.warning("Failed to get context_window from agent, using default fallback: %s", e)
+        
+        # Fallback to default with warning
+        logger.warning("⚠️  Could not determine context_window from agent '%s', falling back to default: 100000 tokens", self.agent.name)
+        return 100000
+
+    def get_summarization_threshold_tokens(self) -> int:
+        """Get the summarization threshold in absolute tokens."""
+        if self.config.summarization_threshold <= 1:
+            # Percentage-based threshold
+            return int(self.context_window * self.config.summarization_threshold)
+        else:
+            # Absolute token threshold (backwards compatibility)
+            return int(self.config.summarization_threshold)
+
+    def get_current_warning_level(self, current_tokens: int) -> Optional[str]:
+        """Get the current warning level based on token count."""
+        usage_ratio = current_tokens / self.context_window
+        
+        # Check in descending order: red, orange, yellow
+        for level in ["red", "orange", "yellow"]:
+            if usage_ratio >= self.config.warning_levels[level]:
+                return level
+        
+        return None
+
+    def should_manage_context_prediction(self, predicted_tokens: int) -> bool:
+        """Check if context management should trigger based on token prediction."""
+        threshold_tokens = int(self.context_window * self.config.prediction_threshold)
+        return predicted_tokens >= threshold_tokens
+
+    def should_manage_context_actual(self, actual_tokens: int) -> bool:
+        """Check if context management should trigger based on actual token usage."""
+        threshold_tokens = self.get_summarization_threshold_tokens()
+        return actual_tokens >= threshold_tokens
 
     def set_summarizer(self, summarizer):
         """Set the conversation summarizer."""
@@ -71,163 +148,29 @@ class ContextManager:
         """Get current usage statistics for debugging."""
         return {
             'actual_usage': self._actual_usage_stats.copy(),
-            'context_window': self.config.context_window,
+            'context_window': self.context_window,
             'prediction_threshold': self.config.prediction_threshold,
             # Report summarization threshold as absolute tokens for the UI
-            'summarization_threshold': self.config.get_summarization_threshold_tokens(),
-            'warning_levels': {level.value: threshold for level, threshold in self.config.warning_thresholds.items()}
+            'summarization_threshold': self.get_summarization_threshold_tokens(),
+            'warning_levels': self.config.warning_levels  # Already a dict of str: float
         }
 
-    def estimate_token_count(self, messages: List[ChatMessage]) -> int:
-        """Enhanced token count estimation with improved accuracy for different content types."""
-        total_tokens = 0
-
-        for msg in messages:
-            msg_tokens = 0
-
-            # Base overhead for message structure (role, formatting, etc.)
-            msg_tokens += 4  # Base message overhead
-
-            # Count content tokens with content-type aware ratios
-            if msg.content:
-                content = str(msg.content)
-                msg_tokens += self._estimate_content_tokens(content)
-
-            # Count tool calls with detailed breakdown
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    # Tool call overhead (id, type, function wrapper)
-                    msg_tokens += 10
-
-                    func = tc.get("function", {})
-                    func_name = func.get("name", "")
-                    msg_tokens += len(func_name) // 4  # Function names are typically short
-
-                    # Tool arguments - often JSON, handle differently
-                    args_str = str(func.get("arguments", ""))
-                    if args_str:
-                        msg_tokens += self._estimate_json_tokens(args_str)
-
-            # Count tool results (these can be the biggest consumers)
-            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                # Tool call ID overhead
-                msg_tokens += 8
-                # Tool result content
-                content = str(msg.content or "")
-                if content:
-                    msg_tokens += self._estimate_tool_result_tokens(content)
-
-            total_tokens += msg_tokens
-
-        return total_tokens
-
-    def _estimate_content_tokens(self, content: str) -> int:
-        """Estimate tokens for message content using word-based ratios."""
-        if not content:
-            return 0
-
-        # Word-based estimation (more accurate than character-based)
-        words = len(content.split())
-
-        # Detect content type for better estimation
-        if self._is_code_content(content):
-            # Code: higher token density due to symbols, operators, keywords
-            # Ratio: ~1.2 tokens per word
-            return int(words * 1.2)
-        elif self._is_structured_data(content):
-            # JSON/XML: compact structure, many punctuation tokens
-            # Ratio: ~1.1 tokens per word
-            return int(words * 1.1)
-        else:
-            # Natural language: standard ratio
-            # Ratio: ~0.75 tokens per word (standard for English)
-            return int(words * 0.75)
-
-    def _estimate_json_tokens(self, json_str: str) -> int:
-        """Estimate tokens for JSON content using word and structure analysis."""
-        if not json_str:
-            return 0
-
-        # Count words in JSON (excluding structural characters)
-        import re
-        # Remove JSON structural characters to count actual content words
-        content_only = re.sub(r'[{}\[\]":,]', ' ', json_str)
-        words = len(content_only.split())
-
-        # Count structural tokens (each structural char is usually a token)
-        structural_chars = json_str.count('{') + json_str.count('}') + \
-                          json_str.count('[') + json_str.count(']') + \
-                          json_str.count('"') + json_str.count(':') + \
-                          json_str.count(',')
-
-        # JSON tokens = structural tokens + content words * ratio
-        return structural_chars + int(words * 0.8)
-
-    def _estimate_tool_result_tokens(self, content: str) -> int:
-        """Estimate tokens for tool results using content-aware word counting."""
-        if not content:
-            return 0
-
-        # Tool results can be JSON, plain text, HTML, etc.
-        if content.strip().startswith('{') or content.strip().startswith('['):
-            # Likely JSON response
-            return self._estimate_json_tokens(content)
-        elif '<' in content and '>' in content:
-            # Likely HTML/XML - high token density due to tags
-            words = len(content.split())
-            return int(words * 1.4)  # HTML has many tag tokens
-        elif self._is_code_content(content):
-            # Code output
-            words = len(content.split())
-            return int(words * 1.2)
-        else:
-            # Plain text tool results
-            words = len(content.split())
-            return int(words * 0.75)
-
-    def _is_code_content(self, content: str) -> bool:
-        """Detect if content is likely code."""
-        code_indicators = [
-            'def ', 'function ', 'class ', 'import ', 'from ',
-            '=>', '&&', '||', '{}', '[]', '()', 'const ', 'let ', 'var ',
-            'if (', 'for (', 'while (', 'switch (', 'catch (', 'try {'
-        ]
-
-        # Count code-like patterns
-        code_score = sum(1 for indicator in code_indicators if indicator in content)
-
-        # Also check character density of symbols common in code
-        symbol_chars = sum(1 for c in content if c in '{}[]();=+-*/<>!')
-        symbol_ratio = symbol_chars / len(content) if content else 0
-
-        return code_score >= 2 or symbol_ratio > 0.15
-
-    def _is_structured_data(self, content: str) -> bool:
-        """Detect if content is structured data like JSON, XML, YAML."""
-        content = content.strip()
-        return (
-            (content.startswith('{') and content.endswith('}')) or
-            (content.startswith('[') and content.endswith(']')) or
-            content.startswith('<') and content.endswith('>') or
-            '\n- ' in content  # YAML-like lists
-        )
-
-    def check_and_warn(self, messages: List[ChatMessage], step: int = 0) -> Tuple[int, Optional[WarningLevel]]:
+    def check_and_warn(self, messages: List[ChatMessage], step: int = 0) -> Tuple[int, Optional[str]]:
         """Check token count and issue appropriate warnings."""
-        estimated_tokens = self.estimate_token_count(messages)
-        current_level = self.config.get_current_warning_level(estimated_tokens)
+        estimated_tokens = estimate_token_count(messages)
+        current_level = self.get_current_warning_level(estimated_tokens)
 
         # Log detailed token breakdown in debug mode
         self._log_token_breakdown(messages, estimated_tokens, step)
 
         # Issue warnings only when level changes or for RED level
-        if current_level and (current_level != self._last_warning_level or current_level == WarningLevel.RED):
+        if current_level and (current_level != self._last_warning_level or current_level == "red"):
             self._issue_warning(current_level, estimated_tokens, len(messages))
             self._last_warning_level = current_level
 
         return estimated_tokens, current_level
 
-    def should_manage_context(self, current_tokens: int, current_level: Optional[WarningLevel]) -> bool:
+    def should_manage_context(self, current_tokens: int, current_level: Optional[str]) -> bool:
         """Determine if context management action should be taken.
 
         Primary trigger strategy: Use estimated token count of current messages.
@@ -246,30 +189,30 @@ class ContextManager:
             return False
 
         # Primary trigger: Current conversation size exceeds summarization threshold
-        summarization_threshold = self.config.get_summarization_threshold_tokens()
+        summarization_threshold = self.get_summarization_threshold_tokens()
         primary_trigger = current_tokens >= summarization_threshold
 
         # Secondary trigger: Prediction-based (90% of context window)
-        prediction_trigger = self.config.should_manage_context_prediction(current_tokens)
+        prediction_trigger = self.should_manage_context_prediction(current_tokens)
 
         # Tertiary trigger: Recent actual usage exceeds threshold (proactive management)
         # This handles cases where the last LLM call was expensive, indicating we should
         # proactively manage context even if current estimated tokens are moderate
         recent_usage = self._actual_usage_stats.get('last_call_tokens', 0)
-        actual_usage_trigger = self.config.should_manage_context_actual(recent_usage)
+        actual_usage_trigger = self.should_manage_context_actual(recent_usage)
 
         # Quaternary trigger: Warning level escalation (for UI responsiveness)
-        level_trigger = current_level in (WarningLevel.ORANGE, WarningLevel.RED)
+        level_trigger = current_level in ("orange", "red")
 
         # Log trigger reasons for debugging
         triggers_fired = []
         if primary_trigger:
-            threshold_percent = (summarization_threshold / self.config.context_window) * 100
-            current_percent = (current_tokens / self.config.context_window) * 100
+            threshold_percent = (summarization_threshold / self.context_window) * 100
+            current_percent = (current_tokens / self.context_window) * 100
             triggers_fired.append(f"CONVERSATION: {current_tokens:,} tokens ({current_percent:.1f}%) >= {summarization_threshold:,} threshold ({threshold_percent:.1f}%)")
 
         if prediction_trigger:
-            pred_percent = (current_tokens / self.config.context_window) * 100
+            pred_percent = (current_tokens / self.context_window) * 100
             pred_threshold_percent = self.config.prediction_threshold * 100
             triggers_fired.append(f"PREDICTION: {current_tokens:,} tokens ({pred_percent:.1f}%) >= {pred_threshold_percent:.1f}% threshold")
 
@@ -289,10 +232,10 @@ class ContextManager:
 
     async def manage_context(self, messages: List[ChatMessage], request_id: Optional[str] = None) -> List[ChatMessage]:
         """Apply context management strategy to reduce token count."""
-        current_tokens = self.estimate_token_count(messages)
+        current_tokens = estimate_token_count(messages)
 
         # Determine current warning level for more informed trigger decisions
-        current_level = self.config.get_current_warning_level(current_tokens)
+        current_level = self.get_current_warning_level(current_tokens)
 
         # Use the improved trigger logic (no forced triggers)
         should_trigger = self.should_manage_context(current_tokens, current_level)
@@ -310,35 +253,35 @@ class ContextManager:
             for msg in messages
         )
 
-        if has_existing_summary and self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST:
+        if has_existing_summary and self.config.strategy == "SUMMARIZE_OLDEST":
             logger.debug("🔄 Existing summary detected, skipping re-summarization to prevent loops")
             # Use truncation as fallback to avoid infinite summarization loops
             return self._truncate_oldest(messages)
 
         # Use StatusScope for automatic START/END status management
         async with StatusScope(status_bus, "context-manager", request_id) as status:
-            percentage = (current_tokens / self.config.context_window) * 100
+            percentage = (current_tokens / self.context_window) * 100
             logger.debug("🔄 Context management triggered: %d tokens (%.1f%% of context window)",
                        current_tokens, percentage)
-            logger.debug("📋 Strategy: %s", self.config.strategy.value.replace('_', ' ').title())
+            logger.debug("📋 Strategy: %s", self.config.strategy.replace('_', ' ').title())
 
             # Record context management trigger
             record_context_usage(
                 total_tokens=current_tokens,
                 message_count=len(messages),
-                context_window=self.config.context_window,
+                context_window=self.context_window,
                 management_triggered=True,
-                management_strategy=self.config.strategy.value
+                management_strategy=self.config.strategy
             )
 
             original_count = len(messages)
             start_time = time.time()
 
             try:
-                if self.config.strategy == self.config.strategy.TRUNCATE_OLDEST:
+                if self.config.strategy == "TRUNCATE_OLDEST":
                     logger.debug("✂️  Truncating oldest messages to reduce context size...")
                     result = self._truncate_oldest(messages)
-                elif self.config.strategy == self.config.strategy.SUMMARIZE_OLDEST and self._summarizer:
+                elif self.config.strategy == "SUMMARIZE_OLDEST" and self._summarizer:
                     logger.debug("📝 Summarizing conversation history to preserve context...")
                     result = await self._summarize_conversation(messages)
                     # Track summarization for UI display
@@ -347,7 +290,7 @@ class ContextManager:
                         record_agent_summarization(agent_name)
                     except Exception as track_e:
                         logger.debug("Failed to track summarization for %s: %s", agent_name, track_e)
-                elif self.config.strategy == self.config.strategy.SLIDING_WINDOW:
+                elif self.config.strategy == "SLIDING_WINDOW":
                     logger.debug("🪟 Applying sliding window to keep most relevant messages...")
                     result = self._apply_sliding_window(messages)
                 else:
@@ -357,7 +300,7 @@ class ContextManager:
 
                 # Report results
                 end_time = time.time()
-                new_tokens = self.estimate_token_count(result)
+                new_tokens = estimate_token_count(result)
                 new_count = len(result)
                 saved_tokens = current_tokens - new_tokens
                 processing_time = (end_time - start_time) * 1000  # Convert to milliseconds
@@ -368,7 +311,7 @@ class ContextManager:
                 logger.debug("   🪙 Tokens: %d → %d (saved %d tokens, %.1f%% reduction)",
                            current_tokens, new_tokens, saved_tokens, (saved_tokens / current_tokens) * 100)
                 logger.debug("   📈 New usage: %.1f%% of context window",
-                           (new_tokens / self.config.context_window) * 100)
+                           (new_tokens / self.context_window) * 100)
 
                 # Add final progress update with results
                 await status.end(
@@ -388,7 +331,7 @@ class ContextManager:
             except Exception as e:
                 # StatusScope will automatically publish ERROR event
                 await status.error(f"❌ failed: {str(e)}",
-                                 meta={"error": str(e), "strategy": self.config.strategy.value})
+                                 meta={"error": str(e), "strategy": self.config.strategy})
                 logger.error("Context management failed: %s", e)
                 # Return original messages as fallback
                 return messages
@@ -438,35 +381,35 @@ class ContextManager:
             tool_result_tokens=breakdown["tool_results"],
             system_tokens=breakdown["system_messages"],
             message_count=len(messages),
-            context_window=self.config.context_window
+            context_window=self.context_window
         )
 
-    def _issue_warning(self, level: WarningLevel, tokens: int, message_count: int):
+    def _issue_warning(self, level: str, tokens: int, message_count: int):
         """Issue appropriate warning based on level. Warnings are for UI/logging only."""
-        percentage = (tokens / self.config.context_window) * 100
+        percentage = (tokens / self.context_window) * 100
         threshold_tokens = self.config.get_warning_threshold_tokens(level)
 
-        if level == WarningLevel.YELLOW:
+        if level == "yellow":
             logger.warning(
                 "🟡 Context usage WARNING (yellow): %d/%d tokens (%.1f%%, threshold: %d tokens, %d messages) - Consider optimization soon",
-                tokens, self.config.context_window, percentage, threshold_tokens, message_count
+                tokens, self.context_window, percentage, threshold_tokens, message_count
             )
-        elif level == WarningLevel.ORANGE:
+        elif level == "orange":
             logger.warning(
                 "🟠 Context usage WARNING (orange): %d/%d tokens (%.1f%%, threshold: %d tokens, %d messages) - Optimization recommended",
-                tokens, self.config.context_window, percentage, threshold_tokens, message_count
+                tokens, self.context_window, percentage, threshold_tokens, message_count
             )
-        elif level == WarningLevel.RED:
+        elif level == "red":
             logger.error(
                 "🔴 Context usage WARNING (red): %d/%d tokens (%.1f%%, threshold: %d tokens, %d messages) - Critical level reached!",
-                tokens, self.config.context_window, percentage, threshold_tokens, message_count
+                tokens, self.context_window, percentage, threshold_tokens, message_count
             )
 
         # Record warning in usage tracker
         record_context_usage(
             total_tokens=tokens,
             message_count=message_count,
-            context_window=self.config.context_window,
+            context_window=self.context_window,
             warning_level=level.value
         )
 
@@ -493,14 +436,14 @@ class ContextManager:
 
     def _apply_sliding_window(self, messages: List[ChatMessage]) -> List[ChatMessage]:
         """Apply sliding window to keep most relevant messages."""
-        target_tokens = int(self.config.context_window * 0.6)  # Aim for 60% usage
+        target_tokens = int(self.context_window * 0.6)  # Aim for 60% usage
 
         # Start with recent messages and work backwards
         result = []
         current_tokens = 0
 
         for msg in reversed(messages):
-            msg_tokens = self.estimate_token_count([msg])
+            msg_tokens = estimate_token_count([msg])
             if current_tokens + msg_tokens <= target_tokens:
                 result.insert(0, msg)
                 current_tokens += msg_tokens
@@ -516,7 +459,7 @@ class ContextManager:
 
         removed_count = len(messages) - len(result)
         logger.debug("Applied sliding window: kept %d messages (%.1f%% of context), removed %d",
-                   len(result), (current_tokens / self.config.context_window) * 100, removed_count)
+                   len(result), (current_tokens / self.context_window) * 100, removed_count)
 
         return result
 

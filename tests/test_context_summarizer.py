@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from agent_system.context.summarizer import ConversationSummarizer
-from agent_system.context.config import ContextConfig
+from agent_system.config.models import ContextManagementConfig as ContextConfig
 from agent_system.llm.models import ChatMessage
 
 

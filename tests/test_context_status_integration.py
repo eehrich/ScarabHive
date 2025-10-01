@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch, Mock
 from agent_system.context.manager import ContextManager
-from agent_system.context.config import ContextConfig, ContextStrategy
+from agent_system.config.models import ContextManagementConfig as ContextConfig
 from agent_system.llm.models import ChatMessage
 from agent_system.mcp.status import StatusPhase
 
@@ -15,7 +15,7 @@ class TestContextStatusIntegration:
         """Set up test fixtures."""
         self.config = ContextConfig(
             context_window=1000,
-            strategy=ContextStrategy.TRUNCATE_OLDEST,
+            strategy="TRUNCATE_OLDEST",
             summarization_threshold=800
         )
         self.manager = ContextManager(self.config)
@@ -89,7 +89,7 @@ class TestContextStatusIntegration:
         # Create manager with summarizer strategy and low threshold for testing
         config = ContextConfig(
             context_window=1000,
-            strategy=ContextStrategy.SUMMARIZE_OLDEST,
+            strategy="SUMMARIZE_OLDEST",
             summarization_threshold=800
         )
         manager = ContextManager(config)

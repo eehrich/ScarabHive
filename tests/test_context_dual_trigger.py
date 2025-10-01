@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import Mock, patch
-from agent_system.context.config import ContextConfig, ContextStrategy
+from agent_system.config.models import ContextManagementConfig as ContextConfig
 from agent_system.context.manager import ContextManager
 from agent_system.llm.models import ChatMessage
 
@@ -18,7 +18,7 @@ class TestDualTriggerContextManagement:
             summarization_threshold=8000,  # 80% of context window
             prediction_threshold=0.90,     # 90% prediction threshold
             preserve_recent_messages=5,
-            strategy=ContextStrategy.SUMMARIZE_OLDEST
+            strategy="SUMMARIZE_OLDEST"
         )
 
     @pytest.fixture

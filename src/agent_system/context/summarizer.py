@@ -3,7 +3,7 @@
 import logging
 from typing import List
 from ..llm.models import ChatMessage
-from .config import ContextConfig
+from ..config.models import ContextManagementConfig
 from ..mcp.status import (
     status_bus,
     status_scope,
@@ -25,7 +25,7 @@ class ConversationSummarizer:
         self.llm_client = llm_client
         self.profile_info = profile_info
     
-    async def summarize_conversation(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
+    async def summarize_conversation(self, messages: List[ChatMessage], config: ContextManagementConfig) -> List[ChatMessage]:
         """Summarize older conversation while preserving recent messages.
         
         Smart summarization that:
@@ -174,7 +174,7 @@ class ConversationSummarizer:
             
             return result
     
-    def _truncate_tool_results(self, messages: List[ChatMessage], config: ContextConfig) -> List[ChatMessage]:
+    def _truncate_tool_results(self, messages: List[ChatMessage], config: ContextManagementConfig) -> List[ChatMessage]:
         """Truncate large tool results in messages to prevent context overflow."""
         truncated_messages = []
         max_chars = config.tool_result_preview_chars
@@ -205,7 +205,7 @@ class ConversationSummarizer:
         
         return truncated_messages
     
-    async def _create_summary(self, messages: List[ChatMessage], config: ContextConfig, scope) -> str:
+    async def _create_summary(self, messages: List[ChatMessage], config: ContextManagementConfig, scope) -> str:
         """Create a concise summary of the conversation messages."""
         # If no LLM client is available, use fallback method immediately
         if not self.llm_client:
@@ -283,7 +283,7 @@ class ConversationSummarizer:
             logger.error("❌ LLM summary failed: %s, using fallback method", e)
             return await self._create_fallback_summary(messages)
     
-    def _format_messages_for_summary(self, messages: List[ChatMessage], config: ContextConfig) -> str:
+    def _format_messages_for_summary(self, messages: List[ChatMessage], config: ContextManagementConfig) -> str:
         """Format messages into readable text for summarization."""
         formatted_parts = []
         
@@ -349,7 +349,7 @@ class ConversationSummarizer:
         
         return "\n".join(formatted_parts)
     
-    def _create_summary_prompt(self, conversation_text: str, config: ContextConfig) -> str:
+    def _create_summary_prompt(self, conversation_text: str, config: ContextManagementConfig) -> str:
         """Create the prompt for summarizing conversation."""
         return f"""Please create a concise but comprehensive summary of the following conversation. Focus on:
 

@@ -79,6 +79,7 @@ class TokenOptimizationConfig(BaseModel):
     compress_tool_results: bool = False
     optimize_json: bool = False
     remove_verbose_patterns: bool = False
+    max_tool_result_tokens: int = 1000  # Maximum tokens to preserve from tool results
 
 
 class ContextManagementConfig(BaseModel):
@@ -86,17 +87,25 @@ class ContextManagementConfig(BaseModel):
     enabled: bool = True
     summarizer_llm_profile: str = "turbo"
     strategy: Literal["TRUNCATE_OLDEST", "SUMMARIZE_OLDEST", "SLIDING_WINDOW", "SMART_COMPRESSION"] = "SUMMARIZE_OLDEST"
+    
+    # Thresholds
     preserve_recent_messages: int = 10
     prediction_threshold: float = 0.95
-    summarization_threshold: float = 0.70
+    summarization_threshold: float = 0.70  # As percentage (0.70 = 70%)
+    
+    # Summarization settings
+    summarization_ratio: float = 0.5  # Reduce to 50% of original size
     max_summary_words: int = 5000
     tool_result_preview_chars: int = 500
+    
+    # Warning levels (as percentage of context window)
     warning_levels: Dict[str, float] = Field(default_factory=lambda: {
         "yellow": 0.70,
         "orange": 0.85,
         "red": 0.95
     })
-    token_optimization: Optional[TokenOptimizationConfig] = None
+    
+    token_optimization: Optional[TokenOptimizationConfig] = Field(default_factory=TokenOptimizationConfig)
 
 
 class AgentConfig(BaseModel):

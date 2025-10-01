@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from agent_system.context.manager import ContextManager
-from agent_system.context.config import ContextConfig, ContextStrategy, WarningLevel
+from agent_system.config.models import ContextManagementConfig as ContextConfig
 from agent_system.llm.models import ChatMessage
 
 
@@ -65,7 +65,7 @@ class TestContextManager:
             tokens, level = self.manager.check_and_warn(messages, 1)
             
         assert tokens == 750
-        assert level == WarningLevel.YELLOW
+        assert level == "yellow"
     
     def test_check_and_warn_orange_level(self):
         """Test check_and_warn with orange warning level."""
@@ -76,7 +76,7 @@ class TestContextManager:
             tokens, level = self.manager.check_and_warn(messages, 1)
             
         assert tokens == 860
-        assert level == WarningLevel.ORANGE
+        assert level == "orange"
     
     def test_check_and_warn_red_level(self):
         """Test check_and_warn with red warning level."""
@@ -87,7 +87,7 @@ class TestContextManager:
             tokens, level = self.manager.check_and_warn(messages, 1)
             
         assert tokens == 970
-        assert level == WarningLevel.RED
+        assert level == "red"
     
     def test_should_manage_context_below_threshold(self):
         """Test should_manage_context with tokens below threshold."""
@@ -96,18 +96,18 @@ class TestContextManager:
     
     def test_should_manage_context_orange_level(self):
         """Test should_manage_context with orange warning level."""
-        result = self.manager.should_manage_context(860, WarningLevel.ORANGE)
+        result = self.manager.should_manage_context(860, "orange")
         assert result
     
     def test_should_manage_context_red_level(self):
         """Test should_manage_context with red warning level."""
-        result = self.manager.should_manage_context(970, WarningLevel.RED)
+        result = self.manager.should_manage_context(970, "red")
         assert result
     
     def test_should_manage_context_early_summarization(self):
         """Test should_manage_context with early summarization threshold."""
         # Early threshold is 800, which should trigger management
-        result = self.manager.should_manage_context(850, WarningLevel.YELLOW)
+        result = self.manager.should_manage_context(850, "yellow")
         assert result
 
 
@@ -229,7 +229,7 @@ class TestContextManagerAsync:
         """Set up test fixtures."""
         self.config = ContextConfig(
             context_window=1000,
-            strategy=ContextStrategy.TRUNCATE_OLDEST,
+            strategy="TRUNCATE_OLDEST",
             summarization_threshold=800
         )
         self.manager = ContextManager(self.config)

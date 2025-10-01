@@ -1030,13 +1030,13 @@ class Agent(MCPServer):
                                 original_threshold = context_manager.config.summarization_threshold
                                 
                                 # Set emergency summarization parameters
-                                from agent_system.context.config import ContextStrategy
-                                context_manager.config.strategy = ContextStrategy.SUMMARIZE_OLDEST
+                                context_manager.config.strategy = "SUMMARIZE_OLDEST"
                                 # Set a very low window to force aggressive summarization
                                 context_manager.config.context_window = min(50000, original_window // 4)
                                 context_manager.config.summarization_threshold = 1000  # Very low threshold
                                 
                                 logger.info("Attempting emergency summarization to preserve context")
+
                                 
                                 # Apply context management (will use summarization)
                                 # Generate unique request ID for emergency context management

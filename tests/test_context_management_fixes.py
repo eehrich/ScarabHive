@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock
 from agent_system.context.manager import ContextManager
-from agent_system.context.config import ContextConfig, ContextStrategy
+from agent_system.config.models import ContextManagementConfig as ContextConfig
 from agent_system.context.summarizer import ConversationSummarizer
 from agent_system.llm.models import ChatMessage
 
@@ -16,7 +16,7 @@ def small_context_config():
         summarization_threshold=600,  # 60%
         prediction_threshold=0.8,  # 80%
         preserve_recent_messages=3,
-        strategy=ContextStrategy.SUMMARIZE_OLDEST
+        strategy="SUMMARIZE_OLDEST"
     )
 
 

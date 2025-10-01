@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Any
+from typing import Dict, Optional
 from enum import Enum
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ContextStrategy(Enum):
