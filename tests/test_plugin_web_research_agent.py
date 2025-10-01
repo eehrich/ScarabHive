@@ -5,35 +5,14 @@ from plugins.web_research_agent.plugin import PLUGIN_FACTORY
 
 
 @pytest.mark.asyncio
-async def test_plugin_discovery():
+async def test_plugin_discovery(mock_system_config, mock_mcp_config):
     """Test that the plugin can be discovered and instantiated."""
-    # Name is implied by folder. No PLUGIN_NAME constant anymore.
-
-    # Test factory instantiation with proper LLM config
-    config = {
-        "parent_llm": {
-            "llm": {"provider": "openai", "model": "gpt-5-nano"},
-            "llm_system": {
-                "profiles": {
-                    "normal": {"model_ref": "gpt-5-nano"},
-                    "fast": {"model_ref": "gpt-5-nano"},
-                    "research": {"model_ref": "gpt-5-nano"},
-                    "turbo": {"model_ref": "gpt-5-nano"}
-                },
-                "models": {
-                    "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
-                },
-                "default_profile": "normal"
-            }
-        }
-    }
+    # Test factory instantiation with modern signature
     factory = PLUGIN_FACTORY
-    server = factory("test_web_research", config, ssl_verify=False)
+    server = factory("test_web_research", mock_system_config, mock_mcp_config)
 
     assert server.name == "test_web_research"
-    assert server.cfg == config
-    assert server.ssl_verify is False
-
+    
     # Test tools (multi-tool format)
     tools = server.get_tools()
     assert isinstance(tools, list)
@@ -45,33 +24,12 @@ async def test_plugin_discovery():
     assert "source_analysis_agent" in tool_names
     assert "research_assistant_agent" in tool_names
 
-    # Test default action
-    default_action = server.get_default_action()
-    assert default_action == "web_research_agent"
-
 
 @pytest.mark.asyncio
-async def test_plugin_call():
+async def test_plugin_call(mock_system_config, mock_mcp_config):
     """Test basic plugin call functionality."""
-    config = {
-        "parent_llm": {
-            "llm": {"provider": "openai", "model": "gpt-5-nano"},
-            "llm_system": {
-                "profiles": {
-                    "normal": {"model_ref": "gpt-5-nano"},
-                    "fast": {"model_ref": "gpt-5-nano"},
-                    "research": {"model_ref": "gpt-5-nano"},
-                    "turbo": {"model_ref": "gpt-5-nano"}
-                },
-                "models": {
-                    "gpt-5-nano": {"provider": "openai", "model": "gpt-5-nano"}
-                },
-                "default_profile": "normal"
-            }
-        }
-    }
     factory = PLUGIN_FACTORY
-    server = factory("test_web_research", config, ssl_verify=False)
+    server = factory("test_web_research", mock_system_config, mock_mcp_config)
 
     # Test error handling for missing parameters
     result = await server.call("web_research_agent", {})

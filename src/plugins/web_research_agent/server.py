@@ -1,20 +1,16 @@
 """WebResearchAgent - simplified: relies on global AgentConfig inheritance.
 
-All legacy reconstruction (parent_llm, create_web_research_agent, bespoke
-bootstrap, context tracking noise) removed. The generic plugin factory now
-provides a full AgentConfig + empty registry; enabled_servers / filtering
-handled centrally.
+All legacy reconstruction (parent_llm, bespoke bootstrap, context tracking 
+noise) removed. The generic plugin factory now provides a full system_config 
+and mcp_config; enabled_servers / filtering handled centrally.
 """
 from __future__ import annotations
 
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any
 from pathlib import Path
 import logging
 
 from agent_system.servers.agent.server import Agent
-
-if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +148,6 @@ class WebResearchAgent(Agent):
 
         raise ValueError(f"Unknown tool: {tool}")
 
-    def get_default_action(self) -> str:
-        return "web_research_agent"
 
     # ------------------------------------------------------------------
     # Custom system prompt hook override
@@ -176,13 +170,3 @@ class WebResearchAgent(Agent):
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("Failed loading custom system_prompt YAML: %s", e)
         return None
-
-
-# Backward compatibility for legacy tests importing create_web_research_agent
-def create_web_research_agent(name: str, config: AgentConfig, registry: Any, ssl_verify: bool = True):  # pragma: no cover - legacy shim
-    """Legacy factory kept for test compatibility.
-
-    Older tests import create_web_research_agent expecting the previous factory
-    signature. We now just instantiate WebResearchAgent directly.
-    """
-    return WebResearchAgent(name, config, registry, None, None)
