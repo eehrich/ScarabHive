@@ -59,34 +59,29 @@ class Agent(MCPServer):
             llm: Optional LLM client instance (for testing)
             llm_factory: Optional LLM factory for creating client (for testing)
         """
-        from ...config.models import AgentConfig as ConfigAgentConfig
-        
         # Initialize as MCPServer with MCPConfig object
         super().__init__(name, system_config, mcp_config)
 
-        # Extract agent_config from MCPConfig for easy access
-        if mcp_config.agent_config:
-            self.agent_config = mcp_config.agent_config
-        else:
-            # Fallback: create default agent config
-            self.agent_config = ConfigAgentConfig()
+        # Extract agent_config from MCPConfig (required, no fallbacks)
+        if not mcp_config.agent_config:
+            raise ValueError(f"Agent '{name}' requires agent_config in MCPConfig")
+        self.agent_config = mcp_config.agent_config
         
-        # Agent-specific initialization
-        self.registry = registry or MCPRegistry()  # Fallback for direct instantiation
+        # Agent-specific initialization (registry required for agents)
+        if registry is None:
+            raise ValueError(f"Agent '{name}' requires MCPRegistry instance")
+        self.registry = registry
+        
         # Mark this Agent as internal by default so it doesn't show up in UI lists
         # Consumers who want it visible can set `agent._mcp_public = True` after construction.
         self._mcp_public = False
+        
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
         self.llm = llm
         self._llm_factory = llm_factory
 
-        # Set default description (using AgentConfig)
-        if not hasattr(self.agent_config, 'description') or not self.agent_config.description:
-            # We can't modify the AgentConfig directly, so we store description separately if needed
-            self._agent_description = f"Agent: {name}"
-
-        # Initialize LLM if not provided. Prefer an explicitly passed `llm`.
+        # Initialize LLM if not provided
         # Store LLM profile information for status display
         self.llm_profile_info = None
         
@@ -146,19 +141,15 @@ class Agent(MCPServer):
                 monitor_interval=system_config.cancellation.monitor_interval
             )
         else:
-            # Use defaults if no cancellation config is provided
             configure_cancellation_manager()
 
         # Centralized internal tool-call counter (used to generate per-tool suffixes)
         self._internal_tool_counter = 0
         self._internal_tool_counter_lock = asyncio.Lock()
 
-        # Register agent with context tracker
-        if hasattr(self, 'context_manager') and self.context_manager:
-            register_agent_for_tracking(name, name, self.context_manager.config.context_window)
-        else:
-            # Use default context window if no context manager
-            register_agent_for_tracking(name, name, 32768)
+        # Register agent with context tracker (use context_window from context_manager)
+        if self.context_manager:
+            register_agent_for_tracking(name, name, self.context_manager.context_window)
 
         # Track current conversation messages for debugging
         self._current_messages: List[ChatMessage] = []
@@ -190,18 +181,14 @@ class Agent(MCPServer):
         try:
             # Check if we have the new LLM system configuration
             if config.llm_system and config.llm_system.models and config.llm_system.profiles:
-                # Determine which profile was used (same logic as resolve_llm_config_for_agent)
+                # Determine which profile was used
                 profile_name = None
                 
                 # 1. Check agent-specific assignment
                 if agent_name and config.agent_llm_profiles:
                     profile_name = config.agent_llm_profiles.get(agent_name)
                 
-                # 2. Check if main LLM config specifies a profile (legacy support)
-                if not profile_name and getattr(config, 'llm', None) and getattr(config.llm, 'profile', None):
-                    profile_name = config.llm.profile
-                
-                # 3. Fall back to default profile
+                # 2. Fall back to default profile
                 if not profile_name:
                     profile_name = config.llm_system.default_profile
                 
@@ -211,10 +198,10 @@ class Agent(MCPServer):
                 
                 return f"{profile_name}:{provider}/{model}"
             else:
-                # Legacy config - just show provider/model
+                # No LLM system config
                 model = llm_kwargs.get("model", "unknown")
                 provider = llm_kwargs.get("provider", "unknown")
-                return f"legacy:{provider}/{model}"
+                return f"unknown:{provider}/{model}"
         except Exception:
             return "unknown"
 
@@ -229,96 +216,22 @@ class Agent(MCPServer):
             return f"{base_request_id}_{self._internal_tool_counter:03d}"
 
     def _init_context_management(self):
-        """Initialize the context management system."""
+        """Initialize the context management system using new config system."""
         try:
-            # Read context window from resolved LLM profile
-            try:
-                from ...llm.factory import resolve_llm_config_for_agent
-                llm_kwargs = resolve_llm_config_for_agent(self.agent_config, self.name)
-                context_window = llm_kwargs.get("context_window", 32768)
-            except Exception:
-                # Fallback to default if profile resolution fails
-                context_window = 32768
-
-            # SIMPLIFIED: Read context management directly from AgentConfig
-            # No more complex parameter passing - use the source of truth
-            context_mgmt = getattr(self.agent_config, 'context_management', None)
-            if context_mgmt is None:
-                # Use defaults if no context_management configured
-                context_mgmt_settings = {}
-            elif hasattr(context_mgmt, 'model_dump'):
-                # Pydantic model - convert to dict
-                context_mgmt_settings = context_mgmt.model_dump()
-            elif hasattr(context_mgmt, '__dict__'):
-                # Regular object - convert to dict
-                context_mgmt_settings = vars(context_mgmt)
-            else:
-                # Already a dict
-                context_mgmt_settings = dict(context_mgmt)
-            
-            # Apply server-specific overrides from AgentConfig if present
-            if hasattr(self.agent_config, 'context_management'):
-                server_overrides = getattr(self.agent_config, 'context_management', {})
-                if server_overrides:
-                    context_mgmt_settings.update(server_overrides)
-                    logger.debug("Applied server-specific context_management overrides for %s: %s", self.name, server_overrides)
-
-            # Create ContextConfig with proper parameters from context_mgmt_settings
-            from ...context.config import ContextConfig, ContextStrategy
-
-            # Convert strategy string to enum if needed
-            strategy_str = context_mgmt_settings.get("strategy", "SUMMARIZE_OLDEST")
-            if isinstance(strategy_str, str):
-                strategy = ContextStrategy(strategy_str)
-            else:
-                strategy = strategy_str
-
-            # summarization_threshold may be provided as float (percentage) or int (absolute tokens)
-            summarization_threshold = context_mgmt_settings.get("summarization_threshold", 0.80)
-            # If percentage (0..1) leave as-is; ContextConfig.from_dict handles translation to tokens
-
-            # Use the new 'token_optimization' key exclusively.
-            optimization_settings = context_mgmt_settings.get("token_optimization", {})
-            
-            # Import TokenOptimizationConfig for nested structure
-            from ...context.config import TokenOptimizationConfig
-            
-            # Create TokenOptimizationConfig from YAML settings
-            token_opt_config = TokenOptimizationConfig(
-                enable_compression=optimization_settings.get("enable_compression", True),
-                compress_tool_results=optimization_settings.get("compress_tool_results", True),
-                optimize_json=optimization_settings.get("optimize_json", False),
-                remove_verbose_patterns=optimization_settings.get("remove_verbose_patterns", False),
-                max_tool_result_tokens=optimization_settings.get("max_tool_result_tokens", 1000)
-            )
-            
-            self.context_config = ContextConfig(
-                context_window=int(context_window),
-                summarization_threshold=summarization_threshold,
-                prediction_threshold=context_mgmt_settings.get("prediction_threshold", 0.90),
-                preserve_recent_messages=context_mgmt_settings.get("preserve_recent_messages", 10),
-                strategy=strategy,
-                max_summary_words=context_mgmt_settings.get("max_summary_words", 500),
-                tool_result_preview_chars=context_mgmt_settings.get("tool_result_preview_chars", 200),
-                token_optimization=token_opt_config
-            )
-
-            # Initialize context manager with agent-specific tracking
-            agent_id = getattr(self, 'name', 'unknown_agent')
-            self.context_manager = ContextManager(self.context_config, agent_id=agent_id)
+            # Initialize context manager with Agent instance (no config passing)
+            self.context_manager = ContextManager(self)
 
             # Initialize and set summarizer with dedicated LLM client
-            # Create a separate LLM client for summarization to prevent recursive context management
             summarizer_llm = None
-            if self.llm and getattr(self.agent_config, "llm", None):
+            if self.llm:
                 try:
-                    # Use profile-based resolution for summarizer LLM (with "summarizer" agent name)
+                    # Use profile-based resolution for summarizer LLM
                     from ...llm.factory import resolve_llm_config_for_agent
                     from ...llm.clients import make_llm
                     
                     # Resolve LLM config for summarizer using agent name suffix
-                    summarizer_agent_name = f"{self.name}_summarizer" if self.name else "summarizer"
-                    summarizer_kwargs = resolve_llm_config_for_agent(self.agent_config, summarizer_agent_name)
+                    summarizer_agent_name = f"{self.name}_summarizer"
+                    summarizer_kwargs = resolve_llm_config_for_agent(self.system_config, summarizer_agent_name)
                     
                     summarizer_llm = make_llm(
                         summarizer_kwargs["provider"],
@@ -328,12 +241,12 @@ class Agent(MCPServer):
                         summarizer_kwargs["context_window"],
                         summarizer_kwargs["ollama_mode"],
                         summarizer_kwargs["request_timeout"],
-                        ssl_verify=getattr(self.agent_config, "network").ssl_verify if getattr(self.agent_config, "network", None) else None,
+                        ssl_verify=self.system_config.network.ssl_verify if self.system_config.network else None,
                         httpx_timeouts=summarizer_kwargs.get("httpx_timeouts"),
                     )
                     
                     # Store profile info for summarizer
-                    self.summarizer_profile_info = self._extract_profile_info(self.agent_config, summarizer_agent_name, summarizer_kwargs)
+                    self.summarizer_profile_info = self._extract_profile_info(self.system_config, summarizer_agent_name, summarizer_kwargs)
                     
                 except Exception as e:
                     logger.warning("Failed to create dedicated summarizer LLM client: %s", e)
@@ -345,31 +258,22 @@ class Agent(MCPServer):
             self.context_manager.set_summarizer(summarizer)
 
             # Initialize optimizer only when compression/optimization is enabled
-            try:
-                if (self.context_config.token_optimization and 
-                    getattr(self.context_config.token_optimization, 'enable_compression', False)):
-                    self.token_optimizer = TokenOptimizer()
-                else:
-                    self.token_optimizer = None
-            except Exception:
-                # Defensive fallback - do not initialize optimizer on any error
+            token_opt = self.mcp_config.agent_config.context_management.token_optimization
+            if token_opt and token_opt.enable_compression:
+                self.token_optimizer = TokenOptimizer()
+            else:
                 self.token_optimizer = None
 
-            # Optimizer run guard: avoid repeated optimizer runs when token usage
-            # hasn't increased significantly since the last run.
+            # Optimizer run guard
             self._last_optimizer_tokens_snapshot = 0
             self._last_optimizer_run_time = 0.0
-            # Cooldown in seconds between optimizer attempts when insufficient growth
-            self._optimizer_cooldown_seconds = 10.0  # Increased from 1.0 to 10.0 seconds
-            # Minimum token increase required to trigger optimizer again
-            self._optimizer_min_increase_tokens = max(200, int(self.context_config.context_window * 0.05))  # Increased threshold
-            # Skip optimizer for N steps after context management
+            self._optimizer_cooldown_seconds = 10.0
+            self._optimizer_min_increase_tokens = max(200, int(self.context_manager.context_window * 0.05))
             self._skip_optimizer_steps_after_context_mgmt = 0
 
-            logger.info("Context management initialized - window: %d, summarization threshold: %d, prediction threshold: %.1f%%",
-                      self.context_config.context_window,
-                      int(self.context_config.context_window * self.context_config.summarization_threshold),
-                      self.context_config.prediction_threshold * 100)
+            logger.info("Context management initialized - window: %d, strategy: %s",
+                      self.context_manager.context_window,
+                      self.mcp_config.agent_config.context_management.strategy)
 
         except Exception as e:
             logger.warning("Context management initialization failed: %s", e)
@@ -475,7 +379,8 @@ class Agent(MCPServer):
     @property
     def description(self) -> str:
         """Get the agent description."""
-        return getattr(self.agent_config, 'description', None) or getattr(self, '_agent_description', f"Agent: {self.name}")
+        # No description field in AgentConfig, use agent name
+        return f"Agent: {self.name}"
 
     async def cancel_request(self, request_id: str) -> bool:
         """
@@ -751,28 +656,60 @@ class Agent(MCPServer):
                 logger.warning("Agent %s blocked_tools removed all tools", self.name)
         return available_tools
 
-    def _estimate_token_count(self, messages: List[ChatMessage]) -> int:
-        """Rough token count estimation for debugging context window usage."""
-        total_chars = 0
-        for msg in messages:
-            # Count content characters
-            if msg.content:
-                total_chars += len(str(msg.content))
+    async def _list_available_tools(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
+        """List all available tools that the agent can access (simplified: only names and descriptions).
+        
+        This is a utility method for agent subclasses that provide tool listing functionality.
+        Returns a list of tool dictionaries with 'name' and 'description' keys.
+        
+        Args:
+            params: Parameters including optional '_status' for progress reporting
+            
+        Returns:
+            List of tool dictionaries with 'name' and 'description' keys
+        """
+        try:
+            status = params.get("_status")
+            all_tools: list[Dict[str, Any]] = []
 
-            # Count tool calls
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    func = tc.get("function", {})
-                    total_chars += len(str(func.get("name", "")))
-                    total_chars += len(str(func.get("arguments", "")))
+            # Use agent's allowed_tools configuration for filtering
+            allowed_patterns = None
+            if hasattr(self.agent_config, 'allowed_tools'):
+                allowed_patterns = self.agent_config.allowed_tools
+            
+            # Guard against non-iterable / MagicMock truthy values in tests
+            if allowed_patterns and not isinstance(allowed_patterns, (list, tuple, set)):
+                allowed_patterns = None
 
-            # Add role and structure overhead
-            total_chars += 50  # rough overhead per message
+            if self.registry:
+                server_names = list(self.registry.list())
 
-        # Very rough token estimation: ~4 chars per token for most languages
-        # This is conservative and language-dependent
-        estimated_tokens = total_chars // 4
-        return estimated_tokens
+                # Apply server-level filtering when allow patterns defined
+                if allowed_patterns:
+                    filtered_server_names = [s for s in server_names if self._is_tool_allowed(s, allowed_patterns)]
+                else:
+                    filtered_server_names = server_names
+
+                for server_name in filtered_server_names:
+                    try:
+                        server = self.registry.get(server_name)
+                        if not server or not hasattr(server, 'get_tools'):
+                            continue
+                        tools = server.get_tools()
+                        for tool in tools:
+                            name = tool.get("function", {}).get("name", "unknown")
+                            description = tool.get("function", {}).get("description", "")
+                            all_tools.append({"name": name, "description": description})
+                    except Exception as e:
+                        logger.debug(f"Could not get tools from server '{server_name}': {e}")
+
+            if status:
+                await status.end(f"Listed available tools ({len(all_tools)} tools)")
+
+            return all_tools
+        except Exception as e:
+            logger.error(f"Failed to list tools: {e}")
+            return []
 
     async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None):
         """Run the agent and yield structured events for UI streaming."""

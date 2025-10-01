@@ -10,17 +10,18 @@ from pathlib import Path
 from agent_system.servers.agent.server import Agent
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.mcp.base import MCPRegistry
 
 logger = logging.getLogger(__name__)
 
 
 class BasicAgent(Agent):
-    """ Agent for basic requests."""
+    """Agent for basic requests."""
 
-    def __init__(self, name: str, config: AgentConfig, registry: Any):
-        """Initialize BasicAgent."""
-        super().__init__(name, config, registry, None, None)
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig, registry: MCPRegistry):
+        """Initialize BasicAgent with modern config system."""
+        super().__init__(name, system_config, mcp_config, registry)
 
     def get_tools(self) -> list[Dict[str, Any]]:
         """Return the tool schema for basic agent."""
@@ -49,7 +50,7 @@ class BasicAgent(Agent):
                 return {"status": "error", "error": f"Missing required parameter 'task' for {tool}"}
             return await self._execute_task(task, request_id, status)
         elif tool == f"{self.name}_list_tools":
-            # List available tools
+            # List available tools (uses base Agent class implementation)
             return await self._list_available_tools(params)
         else:
             raise ValueError(f"Unknown tool: {tool}")
@@ -130,54 +131,3 @@ class BasicAgent(Agent):
                 "error": str(e),
                 "request_id": request_id
             }
-
-    async def _list_available_tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """List all available tools that the agent can access (simplified: only names and descriptions)."""
-        try:
-            status = params.get("_status")
-            all_tools: list[Dict[str, Any]] = []
-
-            # Determine allow-list patterns (may be absent)
-            try:
-                allowed_patterns = getattr(self.agent_config, "allowed_tools", None)
-            except Exception:
-                allowed_patterns = None
-            # Guard against non-iterable / MagicMock truthy values in tests
-            if allowed_patterns and not isinstance(allowed_patterns, (list, tuple, set)):
-                allowed_patterns = None
-
-            if self.registry:
-                server_names = list(self.registry.list())
-
-                # Apply server-level filtering when allow patterns defined
-                if allowed_patterns:
-                    filtered_server_names = [s for s in server_names if self._is_tool_allowed(s, allowed_patterns)]
-                else:
-                    filtered_server_names = server_names
-
-                for server_name in filtered_server_names:
-                    try:
-                        server = self.registry.get(server_name)
-                        if not server or not hasattr(server, 'get_tools'):
-                            continue
-                        tools = server.get_tools()
-                        for tool in tools:
-                            name = tool.get("function", {}).get("name", "unknown")
-                            description = tool.get("function", {}).get("description", "")
-                            # If patterns include plugin/* we already filtered by server_name; if more granular
-                            # function-level filtering is desired later we can extend here.
-                            all_tools.append({"name": name, "description": description})
-                    except Exception as e:
-                        logger.debug(f"Could not get tools from server '{server_name}': {e}")
-
-            if status:
-                await status.end(f"Listed available tools ({len(all_tools)} tools)")
-
-            return all_tools
-        except Exception as e:
-            logger.error(f"Failed to list tools: {e}")
-            return []
-
-    def get_default_action(self) -> str:
-        """Return the default action for this agent."""
-        return self.name
