@@ -1,3 +1,4 @@
+# General Agent prompt Template
 # Multi-section prompt template for native tool calling LLMs.
 # Available context keys: tools (list[str])
 

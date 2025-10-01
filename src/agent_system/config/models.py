@@ -1,8 +1,19 @@
+"""
+Configuration models for AgentSystem.
+
+This module provides Pydantic models that match the new YAML configuration
+structure with config.yaml as the master configuration and included files
+for LLM and MCP configurations.
+"""
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, Dict
+from typing import Literal, Optional, Dict, List, Any
 
+
+# ===========================
+# LLM Configuration Models
+# ===========================
 
 class HTTPXTimeoutConfig(BaseModel):
     """HTTPX timeout configuration"""
@@ -29,76 +40,141 @@ class LLMProfile(BaseModel):
     model_ref: str  # Reference to model in models dict
     description: Optional[str] = None
     max_steps: Optional[int] = None
-    # Could add profile-specific overrides here if needed
 
 
 class LLMSystemConfig(BaseModel):
-    """Complete LLM system configuration with models and profiles"""
+    """Complete LLM system configuration"""
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
     models: Dict[str, LLMModelConfig] = {}
     profiles: Dict[str, LLMProfile] = {}
-    default_profile: str = "normal"
 
 
-class MCPServerRef(BaseModel):
-    type: str
+# ===========================
+# MCP Configuration Models
+# ===========================
+
+class ExternalServerConfig(BaseModel):
+    """Configuration for external server connections and defaults"""
+    # This matches the type comment in mcp.yaml for external_server
+    pass  # Currently empty in YAML, can be extended
 
 
-class MCPConfig(BaseModel):
-    enabled_servers: list[str] = []
-    # Optional list of plugin directories to discover MCP server plugins from
-    plugin_dirs: list[str] = []
-    # Suffix to use for config backups when enabling/disabling plugins
-    backup_suffix: str = ".bak"
-    # How many backup rotations to keep (1 = keep only .bak, 0 = no backups)
-    backup_rotate: int = 1
-    # External MCP servers configuration
-    external_servers: dict[str, dict] = {}
+class ToolConfig(BaseModel):
+    """Tool access control configuration"""
+    allowed: Optional[List[str]] = Field(default_factory=list)  # list of allowed tools (use "*" to allow all tools)
+    blocked: Optional[List[str]] = Field(default_factory=list)  # list of blocked tools
+    
+    def __init__(self, **data):
+        # Convert None values to empty lists
+        if data.get("allowed") is None:
+            data["allowed"] = []
+        if data.get("blocked") is None:
+            data["blocked"] = []
+        super().__init__(**data)
 
 
-class NetworkConfig(BaseModel):
-    ssl_verify: bool = True
-    # Host and port for the FastAPI/Uvicorn server
-    host: str = "127.0.0.1"
-    port: int = 8000
-    # Disable browser caching for web assets (useful for development)
-    disable_cache: bool = False
-
-
-# In this scaffold we keep 'servers' as dict[str, dict] directly on AgentConfig.
-
-
-class LoggingConfig(BaseModel):
-    enabled: bool = False
-    level: str = "INFO"
-    file: str = "logs/agent.log"
-    # Optional explicit per-role log files. If provided, these override the
-    # role-derived naming logic used by the CLI and API startup code.
-    file_cli: Optional[str] = None
-    file_api: Optional[str] = None
-    as_json: bool = False
-
-
-class PromptsConfig(BaseModel):
-    system_template: str = "config/prompts/system_prompt.yaml"
-
-
-class ContextConfig(BaseModel):
-    auto_datetime: bool = True
-    timezone: str = "Europe/Berlin"
-    location: str = "Germany"
+class TokenOptimizationConfig(BaseModel):
+    """Token optimization configuration"""
+    enable_compression: bool = False
+    compress_tool_results: bool = False
+    optimize_json: bool = False
+    remove_verbose_patterns: bool = False
 
 
 class ContextManagementConfig(BaseModel):
+    """Context window management configuration"""
     enabled: bool = True
+    summarizer_llm_profile: str = "turbo"
     strategy: Literal["TRUNCATE_OLDEST", "SUMMARIZE_OLDEST", "SLIDING_WINDOW", "SMART_COMPRESSION"] = "SUMMARIZE_OLDEST"
-    preserve_recent_messages: int = 5
-    prediction_threshold: float = 0.90
-    summarization_threshold: float | int = 0.80
-    max_summary_words: int = 500
-    tool_result_preview_chars: int = 200
-    warning_levels: dict[str, float] = {"yellow": 0.7, "orange": 0.85, "red": 0.95}
-    token_optimization: dict | None = None
+    preserve_recent_messages: int = 10
+    prediction_threshold: float = 0.95
+    summarization_threshold: float = 0.70
+    max_summary_words: int = 5000
+    tool_result_preview_chars: int = 500
+    warning_levels: Dict[str, float] = Field(default_factory=lambda: {
+        "yellow": 0.70,
+        "orange": 0.85,
+        "red": 0.95
+    })
+    token_optimization: Optional[TokenOptimizationConfig] = None
+
+
+class AgentConfig(BaseModel):
+    """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
+    llm_profile: str = "normal"  # LLM profile to use
+    max_steps: int = 20  # maximum steps for agents that support multi-step reasoning
+    tools: ToolConfig = Field(default_factory=ToolConfig)
+    context_management: ContextManagementConfig = Field(default_factory=ContextManagementConfig)
+    
+    # Legacy field for backward compatibility - maps to tools.allowed
+    allowed_tools: Optional[List[str]] = None
+    
+    def __init__(self, **data):
+        # Handle legacy allowed_tools field
+        if "allowed_tools" in data and data["allowed_tools"] is not None:
+            if "tools" not in data:
+                data["tools"] = {}
+            if isinstance(data["tools"], dict):
+                data["tools"]["allowed"] = data["allowed_tools"]
+            # Remove the legacy field after processing
+            data.pop("allowed_tools", None)
+        super().__init__(**data)
+
+
+class MCPConfig(BaseModel):
+    """MCP configuration (matches type comment in mcp.yaml for default_config)"""
+    type: str = "basic_agent"   # type of mcp-server/agent to use
+    enabled: bool = False       # enable or disable this mcp-server/agent
+    agent_config: Optional[AgentConfig] = None
+
+
+class ExternalServerConnectionConfig(BaseModel):
+    """Configuration for external server connections"""
+    timeout: float = 5.0
+    parallel_connect: bool = True
+
+
+class ExternalServerCacheConfig(BaseModel):
+    """Configuration for external server caching"""
+    tool_list_ttl: float = 30.0
+
+
+class RemoteMCPConfig(BaseModel):
+    """Configuration for a remote MCP server"""
+    url: str
+    enabled: bool = False
+    description: Optional[str] = None
+    transport: str = "streaming"
+    initialization_options: Optional[Dict[str, Any]] = None
+    features: Optional[Dict[str, bool]] = None
+    tools: Optional[ToolConfig] = None
+
+
+class ExternalServersConfig(BaseModel):
+    """Configuration for all external servers"""
+    connection: ExternalServerConnectionConfig = Field(default_factory=ExternalServerConnectionConfig)
+    cache: ExternalServerCacheConfig = Field(default_factory=ExternalServerCacheConfig)
+    remote_servers: Dict[str, RemoteMCPConfig] = Field(default_factory=dict)
+
+
+class MCPSystemConfig(BaseModel):
+    """Complete MCP system configuration (matches type comment in mcp.yaml)"""
+    plugin_dirs: List[str] = Field(default_factory=list)
+    default_config: MCPConfig = Field(default_factory=MCPConfig)
+    external_servers: ExternalServersConfig = Field(default_factory=ExternalServersConfig)
+    servers: Dict[str, MCPConfig] = Field(default_factory=dict)  # Named MCP server configurations
+
+
+# ===========================
+# Core Configuration Models
+# ===========================
+
+class NetworkConfig(BaseModel):
+    """Network configuration for the application"""
+    ssl_verify: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8000
+    disable_cache: bool = True
 
 
 class CancellationConfig(BaseModel):
@@ -107,28 +183,39 @@ class CancellationConfig(BaseModel):
     monitor_interval: float = 1.0  # Seconds between timeout checks
 
 
-class AgentConfig(BaseModel):
-    llm_system: LLMSystemConfig  # New LLM system configuration (now required)
-    agent_llm_profiles: Optional[Dict[str, str]] = None  # Agent-specific LLM profile assignments
-    mcp: MCPConfig = MCPConfig()
-    network: NetworkConfig = NetworkConfig()
-    servers: dict[str, dict] = {}
-    context_management: ContextManagementConfig | None = None
-    logging: LoggingConfig = LoggingConfig()
-    prompts: PromptsConfig = PromptsConfig()
-    context: ContextConfig = ContextConfig()
-    cancellation: CancellationConfig = CancellationConfig()
-    # Per-agent allow list of tools (patterns). Patterns support forms like
-    #   plugin_name            -> allow the plugin (all its functions)
-    #   plugin_name/*          -> allow the plugin (explicit wildcard)
-    #   plugin_name/function   -> allow a single function of a multi-tool plugin
-    #   external_server/*      -> allow all tools from an external MCP server
-    #   external_server/tool   -> allow a specific external MCP server tool
-    # Wildcards using fnmatch syntax (*) are supported across segments.
-    allowed_tools: list[str] | None = None
-    # Deny list patterns applied after allow list (if any) to subtract tools
-    blocked_tools: list[str] | None = None
-    # Name of the agent server to expose as primary entry point (default: 'agent').
-    entry_agent: str | None = None
-    # Maximum planning/tool-calling steps before stopping
-    max_steps: int = Field(default=6, ge=1)
+class LoggingConfig(BaseModel):
+    """Logging configuration"""
+    enabled: bool = True
+    level: str = "DEBUG"
+    file: str = "logs/agent.log"
+    file_cli: str = "logs/cli.log"
+    file_api: str = "logs/api.log"
+    cancellation: Optional[CancellationConfig] = None
+
+
+class ContextConfig(BaseModel):
+    """Context information configuration"""
+    auto_datetime: bool = True
+    timezone: str = "Europe/Berlin"
+    location: str = "Germany"
+
+
+class AgentSystemConfig(BaseModel):
+    """Main configuration model for the entire AgentSystem"""
+    # Basic metadata
+    name: str = "AgentSystem"
+    version: str = "0.0.0"
+    description: str = "Scarab Flexible AI Agent System using MCP"
+    
+    # Include references (for documentation purposes)
+    includes: Optional[List[str]] = None
+    
+    # Core configurations
+    context: ContextConfig = Field(default_factory=ContextConfig)
+    network: NetworkConfig = Field(default_factory=NetworkConfig)
+    default_agent: str = "basic_agent"
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    
+    # Included configurations (will be populated from included files)
+    llm_system: Optional[LLMSystemConfig] = None
+    mcp_system: Optional[MCPSystemConfig] = None

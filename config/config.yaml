@@ -1,0 +1,51 @@
+# ================================
+# Scarab AgentSystem Configuration
+# ================================
+
+name: "AgentSystem"
+version: "0.2.0"
+description: "Scarab Flexible AI Agent System using MCP"
+
+# all included configs
+includes:
+  - llm.yaml
+  - mcp.yaml
+
+# Context information automatically added to prompts
+context:
+  auto_datetime: true 
+  timezone: "Europe/Berlin"  
+  location: "Germany" 
+
+network: # type NetworkConfig
+  ssl_verify: false
+  host: 127.0.0.1
+  port: 8000
+  disable_cache: true  
+
+
+# define the agent which will be startet by default if no other agent is specified
+default_agent: basic_agent
+
+
+
+
+
+logging: # type LoggingConfig
+  enabled: true
+  level: DEBUG
+  file: logs/agent.log
+  file_cli: logs/cli.log
+  file_api: logs/api.log
+
+  # Cancellation system configuration
+  cancellation: # type CancellationConfig
+    cleanup_timeout: 10.0  # Seconds to wait for graceful cleanup before forcing termination
+    monitor_interval: 1.0  # Seconds between timeout checks
+ 
+
+
+
+
+
+
