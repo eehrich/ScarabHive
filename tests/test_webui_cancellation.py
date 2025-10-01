@@ -8,8 +8,8 @@ import aiohttp
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.agent_system.servers.agent.server import Agent
-from src.agent_system.config.models import AgentConfig
+from agent_system.servers.agent.server import Agent
+from agent_system.config.models import AgentSystemConfig
 
 
 class TestWebUICancellation:
@@ -46,7 +46,7 @@ class TestWebUICancellation:
     @pytest.mark.asyncio
     async def test_cancellation_manager_integration(self):
         """Test that cancellation manager is properly integrated."""
-        from src.agent_system.core.cancellation import get_cancellation_manager
+        from agent_system.utils.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -61,8 +61,8 @@ class TestWebUICancellation:
     @pytest.mark.asyncio
     async def test_tool_execution_with_cancellation(self):
         """Test tool execution cancellation integration."""
-        from src.agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-        from src.agent_system.core.cancellation import get_cancellation_manager
+        from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
+        from agent_system.utils.cancellation import get_cancellation_manager
         
         # Create tool manager
         tool_manager = ToolExecutionManager(registry=None, agent=None)
@@ -93,7 +93,7 @@ class TestCancellationFlow:
     @pytest.mark.asyncio
     async def test_basic_cancellation_flow(self):
         """Test basic cancellation flow."""
-        from src.agent_system.core.cancellation import (
+        from agent_system.utils.cancellation import (
             get_cancellation_manager, 
             cancellable_operation,
             CancellationError
@@ -138,7 +138,7 @@ class TestCancellationFlow:
     @pytest.mark.asyncio
     async def test_forced_cancellation_flow(self):
         """Test forced cancellation of stubborn tools."""
-        from src.agent_system.core.cancellation import (
+        from agent_system.utils.cancellation import (
             CancellationManager,
             cancellable_operation
         )
@@ -196,7 +196,7 @@ class TestAPIEndpoints:
         # This is a structural test - we verify the endpoint exists and has correct signature
         # Real integration testing would require a running server
         
-        from src.agent_system.agent.interface_api import build_app
+        from agent_system.agent.interface_api import build_app
         
         app = build_app()
         
@@ -217,7 +217,7 @@ class TestAPIEndpoints:
     @pytest.mark.asyncio
     async def test_mock_api_cancellation(self):
         """Test cancellation through mocked API calls."""
-        from src.agent_system.core.cancellation import get_cancellation_manager
+        from agent_system.utils.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -245,7 +245,7 @@ class TestCancellationRobustness:
     @pytest.mark.asyncio
     async def test_multiple_concurrent_cancellations(self):
         """Test handling multiple concurrent cancellation requests."""
-        from src.agent_system.core.cancellation import get_cancellation_manager
+        from agent_system.utils.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -266,7 +266,7 @@ class TestCancellationRobustness:
     @pytest.mark.asyncio
     async def test_cancellation_of_nonexistent_request(self):
         """Test cancelling a request that doesn't exist."""
-        from src.agent_system.core.cancellation import get_cancellation_manager
+        from agent_system.utils.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -277,7 +277,7 @@ class TestCancellationRobustness:
     @pytest.mark.asyncio
     async def test_cleanup_after_cancellation(self):
         """Test that resources are properly cleaned up after cancellation."""
-        from src.agent_system.core.cancellation import (
+        from agent_system.utils.cancellation import (
             get_cancellation_manager,
             cancellable_operation,
             CancellationError

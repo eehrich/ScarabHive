@@ -8,7 +8,7 @@ Key Components:
 - MCPIntegration: Main integration class
 - StandardMCPClient: MCP client implementation
 - MCPHTTPServer: HTTP server exposing MCP endpoints
-- PluginMCPAdapter: Adapts AgentSystem plugins to MCP interface
+- PluginMCPAdapter: Available from agent_system.plugins package
 - MCPConfig: Configuration management for MCP settings
 - MCPSecurityManager: Authentication and security handling
 """
@@ -16,7 +16,6 @@ Key Components:
 from .integration import MCPIntegration
 from .client import StandardMCPClient, MCPClientManager
 from .http_server import MCPHTTPServer
-from ..plugins.mcp_adapter import PluginMCPAdapter, plugin_mcp_registry
 from .core import MCPTool, MCPResource, MCPPrompt, MCPMessage, MCPError
 from .config import MCPConfig, MCPConfigManager, create_example_config
 from .security import MCPSecurityManager, configure_security
@@ -27,8 +26,6 @@ __all__ = [
     "StandardMCPClient",
     "MCPClientManager",
     "MCPHTTPServer",
-    "PluginMCPAdapter",
-    "plugin_mcp_registry",
     "MCPTool",
     "MCPResource",
     "MCPPrompt",
@@ -41,3 +38,4 @@ __all__ = [
     "configure_security",
     "SchemaBasedMCPServer"
 ]
+

@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 
 from agent_system.llm.httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig
-from agent_system.core.cancellation import CancellationToken
+from agent_system.utils.cancellation import CancellationToken
 
 
 # Test fixtures and helper data

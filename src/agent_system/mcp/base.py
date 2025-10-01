@@ -5,17 +5,17 @@ from typing import Any, List, TYPE_CHECKING
 from .core import MCPTool
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentSystemConfig
 
 
 class MCPServer(ABC):
     name: str
 
-    def __init__(self, name: str, agent_config: AgentConfig) -> None:
+    def __init__(self, name: str, agent_config: AgentSystemConfig) -> None:
         self.name = name
         self.agent_config = agent_config
 
-        # Extract SSL setting from AgentConfig
+        # Extract SSL setting from AgentSystemConfig
         self.ssl_verify = agent_config.network.ssl_verify if hasattr(agent_config, 'network') and agent_config.network else True
 
         # SSL verification extracted from agent config

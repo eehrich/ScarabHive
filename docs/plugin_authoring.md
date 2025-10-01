@@ -1221,7 +1221,7 @@ async def _long_operation(self, params: dict):
 Register long-running background tasks for force-cancellation:
 
 ```python
-from agent_system.core.cancellation import get_cancellation_manager
+from agent_system.utils.cancellation import get_cancellation_manager
 
 async def _tool_with_background_tasks(self, params: dict):
     token = params.get("_cancellation_token")
@@ -1452,7 +1452,7 @@ mcp-my-plugin tool my_tool --input "test data"
 For spawning background tasks that should be cancelled:
 
 ```python
-from agent_system.core.cancellation import get_cancellation_manager
+from agent_system.utils.cancellation import get_cancellation_manager
 import asyncio
 
 async def _tool_with_subtasks(self, params: dict):
@@ -1595,7 +1595,7 @@ import asyncio
 import pytest
 from unittest.mock import Mock
 from src.plugins.web_scraper.server import WebScraperServer
-from agent_system.core.cancellation import CancellationToken
+from agent_system.utils.cancellation import CancellationToken
 
 @pytest.mark.asyncio
 async def test_cancellation_during_operation():

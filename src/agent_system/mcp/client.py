@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .core import MCPClient, MCPTool, MCPMessage, MCPTransport
-from .transport import HTTPTransport
+from .http_transport import HTTPTransport
 from .streaming_transport import HTTPStreamingTransport
 from .status import (
     publish_status,

@@ -79,7 +79,7 @@ class MCPSecurityManager:
         return value
 
     @classmethod
-    def from_config(cls, config) -> "MCPSecurityManager":
+    def from_config(cls, config) -> MCPSecurityManager:
         """Create security manager from configuration"""
         manager = cls()
 

@@ -8,8 +8,8 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from ...config.models import AgentConfig
-from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager
+from ...config.models import AgentSystemConfig
+from ...utils.cancellation import get_cancellation_manager, configure_cancellation_manager
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...llm.models import ChatMessage
@@ -40,17 +40,17 @@ class Agent(MCPServer):
     This enables direct agent-to-agent communication without wrapper classes.
     """
 
-    def __init__(self, name: str, config: AgentConfig, registry: MCPRegistry,
+    def __init__(self, name: str, config: AgentSystemConfig, registry: MCPRegistry,
                  llm: object | None = None, llm_factory: object | None = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
 
         Args:
             name: Name of this agent (used when serving as MCP Server)
-            config: Complete agent configuration (includes network settings)
+            config: Complete system configuration (includes llm_system, network, context, etc.)
             registry: MCP Registry with available tools
         """
-        # Initialize as MCPServer with AgentConfig
+        # Initialize as MCPServer with AgentSystemConfig
         super().__init__(name, config)
 
         # Agent-specific initialization (agent_config already set by MCPServer parent)

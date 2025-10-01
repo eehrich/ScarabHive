@@ -1,5 +1,7 @@
 """Configuration management for context window handling."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any
 from enum import Enum
@@ -78,7 +80,7 @@ class ContextConfig:
     token_optimization: Optional[TokenOptimizationConfig] = field(default_factory=lambda: TokenOptimizationConfig())
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "ContextConfig":
+    def from_dict(cls, config_dict: Dict[str, Any]) -> ContextConfig:
         """Create ContextConfig from dictionary."""
         # Convert strategy string to enum
         if "strategy" in config_dict:

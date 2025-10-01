@@ -7,15 +7,15 @@ import pytest
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-from src.agent_system.core.cancellation import (
+from agent_system.utils.cancellation import (
     get_cancellation_manager, 
     cancellable_operation, 
     CancellationError,
     CancellationToken,
     CancellationManager
 )
-from src.agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-from src.plugins.basic_operations.server import BasicOperationsServer
+from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
+from plugins.basic_operations.server import BasicOperationsServer
 
 
 class TestCancellationToken:
