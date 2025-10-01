@@ -15,7 +15,7 @@ from ..mcp.core import MCPServer, MCPTool, MCPCapability
 from .web_adapter import PluginWebInterface, plugin_web_registry
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
