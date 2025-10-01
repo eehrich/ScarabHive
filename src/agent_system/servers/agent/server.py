@@ -164,7 +164,7 @@ class Agent(MCPServer):
         self._request_to_session: Dict[str, str] = {}
 
         # Initialize component managers for better code organization
-        self._mcp_integration_manager = MCPIntegrationManager(self.agent_config)
+        self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
         self._tool_execution_manager = ToolExecutionManager(self.registry, self)
         self._status_event_forwarder = StatusEventForwarder()
         self._context_management_handler = ContextManagementHandler(self.context_manager, self.token_optimizer, self)

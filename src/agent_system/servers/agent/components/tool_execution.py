@@ -2,11 +2,17 @@
 Tool Execution Manager for Agent Server
 Handles execution of both internal plugin tools and external MCP tools.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..server import Agent
+    from ....mcp.base import MCPRegistry
 
 from ....utils.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
 from ....llm.models import ChatMessage
@@ -19,7 +25,7 @@ logger = logging.getLogger(__name__)
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
-    def __init__(self, registry: Any, agent=None):
+    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None):
         self.registry = registry  # Legacy registry (empty for now)
         # Optional Agent instance for centralized counters and MCP integration access
         self._agent = agent

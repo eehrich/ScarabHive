@@ -15,7 +15,7 @@ from ..mcp.core import MCPServer, MCPTool, MCPCapability
 from .web_adapter import PluginWebInterface, plugin_web_registry
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentConfig
+    from agent_system.config.models import AgentConfig, AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -311,35 +311,42 @@ class PluginMCPRegistry:
         """List all available plugins (not necessarily registered)"""
         return list(self.plugin_factories.keys())
 
-    async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any], parent_config: AgentConfig) -> None:
-        """Register plugins from configuration"""
+    async def register_from_config(self, enabled_servers: List[str], servers_config: Dict[str, Any], system_config: AgentSystemConfig) -> None:
+        """Register plugins from configuration.
+        
+        Args:
+            enabled_servers: List of plugin names to register
+            servers_config: Dict[str, MCPConfig] with plugin configurations
+            system_config: Complete AgentSystemConfig (not AgentConfig!)
+        """
         logger.debug(f"MCP register_from_config - servers_config keys: {list(servers_config.keys())}")
 
         for server_name in enabled_servers:
             if server_name in self.plugin_factories:
-                server_overrides = servers_config.get(server_name, {})
-                logger.debug(f"MCP register_from_config - plugin {server_name} overrides: {server_overrides}")
-
-                if server_overrides:
-                    # Use Pydantic's model_copy with update for type-safe overrides
-                    # This automatically handles all fields without hardcoding keys
-                    try:
-                        final_config = parent_config.model_copy(update=server_overrides, deep=True)
-                    except Exception as e:
-                        logger.warning(f"Could not apply server overrides for {server_name}: {e}. Using original config.")
-                        final_config = parent_config
-                else:
-                    # No overrides, use original config
-                    final_config = parent_config
+                # Get MCPConfig for this server
+                server_mcp_config = servers_config.get(server_name)
+                
+                # Import MCPConfig here to avoid circular dependency
+                from agent_system.config.models import MCPConfig as MCPConfigClass
+                if not isinstance(server_mcp_config, MCPConfigClass):
+                    logger.error(f"Plugin {server_name} config is not MCPConfig type: {type(server_mcp_config)}")
+                    continue
+                    
+                logger.debug(f"MCP register_from_config - plugin {server_name} type: {server_mcp_config.type}")
 
                 try:
-                    await self.register_plugin_simple(server_name, final_config)
+                    await self.register_plugin_simple(server_name, system_config, server_mcp_config)
                 except Exception as e:
                     logger.error(f"Failed to register plugin {server_name}: {e}")
 
-    async def register_plugin_simple(self, name: str, config: AgentConfig) -> None:
-        """SIMPLIFIED: Register a plugin with a complete AgentConfig (no complex dict handling)"""
-
+    async def register_plugin_simple(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """SIMPLIFIED: Register a plugin with system_config and mcp_config (modern signature).
+        
+        Args:
+            name: Plugin name
+            system_config: Complete AgentSystemConfig with LLM, network, context, etc.
+            mcp_config: MCPConfig with agent_config, enabled, type, etc.
+        """
         if name not in self.plugin_factories:
             raise Exception(f"Unknown plugin: {name}")
 
@@ -347,12 +354,12 @@ class PluginMCPRegistry:
         if name in self.plugin_servers:
             logger.warning(f"Plugin {name} already registered in MCP registry. Re-registering.")
 
-        # Create plugin instance with simplified factory call
+        # Create plugin instance with modern factory signature: (name, system_config, mcp_config)
         factory = self.plugin_factories[name]
 
         try:
-            logger.info(f"MCP registry creating plugin {name} with AgentConfig")
-            plugin_server = factory(name, config)  # Modern call - clean interface
+            logger.info(f"MCP registry creating plugin {name} with AgentSystemConfig and MCPConfig")
+            plugin_server = factory(name, system_config, mcp_config)  # Modern call - clean interface
         except Exception as e:
             logger.error(f"Failed to create plugin instance {name}: {e}")
             raise

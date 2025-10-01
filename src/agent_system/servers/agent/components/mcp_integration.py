@@ -2,8 +2,13 @@
 MCP Integration Setup for Agent Server
 Handles MCP tool discovery, schema building, and external server integration.
 """
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ....config.models import AgentSystemConfig, AgentConfig
 
 from ....mcp.integration import get_mcp_integration
 
@@ -13,7 +18,14 @@ logger = logging.getLogger(__name__)
 class MCPIntegrationManager:
     """Manages MCP tool integration and schema building for the agent."""
 
-    def __init__(self, agent_config: dict):
+    def __init__(self, system_config: AgentSystemConfig, agent_config: AgentConfig):
+        """Initialize MCP Integration Manager.
+        
+        Args:
+            system_config: AgentSystemConfig object with full system configuration
+            agent_config: AgentConfig object with agent-specific configuration
+        """
+        self.system_config = system_config
         self.agent_config = agent_config
         self.mcp_integration = None
         self.mcp_initialized_locally = False
@@ -37,13 +49,13 @@ class MCPIntegrationManager:
                 # No existing integration available, create new one
                 logger.debug("No existing MCP integration found, creating new one")
 
-            # Create or get a new integration with our config
-            self.mcp_integration = get_mcp_integration(config=self.agent_config)
+            # Create or get a new integration with system_config (not agent_config!)
+            self.mcp_integration = get_mcp_integration(config=self.system_config)
             if not self.mcp_integration.initialized:
-                # Initialize with the full agent configuration directly
-                await self.mcp_integration.initialize(self.agent_config)
+                # Initialize with the full system configuration
+                await self.mcp_integration.initialize(self.system_config)
                 self.mcp_initialized_locally = True
-                logger.debug("Initialized MCP integration for agent with full configuration")
+                logger.debug("Initialized MCP integration for agent with full system configuration")
 
             # Set agent reference for cancellation support if available
             if hasattr(self, '_agent_ref') and self._agent_ref:

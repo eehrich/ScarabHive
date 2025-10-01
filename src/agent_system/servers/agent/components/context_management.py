@@ -2,9 +2,15 @@
 Context Management for Agent Server
 Handles token optimization and context management within the agent loop.
 """
+from __future__ import annotations
+
 import logging
 import time
-from typing import List
+from typing import List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..server import Agent
+    from ....context import ContextManager, TokenOptimizer
 
 from ....llm.models import ChatMessage
 from ....context.agent_tracker import update_agent_context_usage
@@ -16,19 +22,22 @@ logger = logging.getLogger(__name__)
 class ContextManagementHandler:
     """Handles context management operations within the agent loop.
 
-    The handler may receive either the owning Agent instance or just the
-    agent name. When an Agent instance is provided it will be used to
-    obtain globally-unique internal tool-call ids via
-    `agent.next_internal_tool_request_id()`; otherwise the handler falls
-    back to a local counter (legacy behavior).
+    Requires an Agent instance to obtain globally-unique internal tool-call ids via
+    `agent.next_internal_tool_request_id()`.
     """
 
-    def __init__(self, context_manager, token_optimizer, agent_or_name):
+    def __init__(self, context_manager: ContextManager, token_optimizer: TokenOptimizer, agent: Agent):
+        """Initialize context management handler.
+        
+        Args:
+            context_manager: Context manager instance
+            token_optimizer: Token optimizer instance
+            agent: Agent instance (required, no legacy string support)
+        """
         self.context_manager = context_manager
         self.token_optimizer = token_optimizer
-        # agent_or_name may be an Agent instance or a simple agent name string
-        self._agent = agent_or_name if hasattr(agent_or_name, 'next_internal_tool_request_id') else None
-        self.agent_name = agent_or_name.name if getattr(agent_or_name, 'name', None) else str(agent_or_name)
+        self._agent = agent
+        self.agent_name = agent.name
 
         # Token optimizer state
         self._last_optimizer_tokens_snapshot = 0
@@ -36,25 +45,10 @@ class ContextManagementHandler:
         self._optimizer_cooldown_seconds = 10.0  # Increased from 1.0 to 10.0 seconds
         self._optimizer_min_increase_tokens = 200  # Minimum token increase required
         self._skip_optimizer_steps_after_context_mgmt = 0
-        
-        # Local fallback counter in case Agent-provided counter is unavailable
-        self._local_internal_tool_counter = 0
 
     async def _get_next_internal_tool_request_id(self, base_request_id: str) -> str:
-        """Return the next internal tool request id.
-
-        Prefer the Agent-provided centralized counter when available.
-        """
-        if self._agent is not None:
-            try:
-                return await self._agent.next_internal_tool_request_id(base_request_id)
-            except Exception:
-                # Fall back to local counter on any agent-side failure
-                pass
-
-        # Local fallback counter (synchronous increment)
-        self._local_internal_tool_counter += 1
-        return f"{base_request_id}_{self._local_internal_tool_counter:03d}"
+        """Return the next internal tool request id from the agent."""
+        return await self._agent.next_internal_tool_request_id(base_request_id)
 
     async def handle_context_management(self, messages: List[ChatMessage], step: int,
                                       request_id: str) -> tuple[List[ChatMessage], int]:
