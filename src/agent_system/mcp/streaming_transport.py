@@ -11,7 +11,6 @@ Includes support for status event streaming via notifications.
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -25,9 +24,15 @@ logger = logging.getLogger(__name__)
 class HTTPStreamingTransport(MCPTransport):
     """HTTP streaming (SSE) transport implementation for MCP"""
 
-    def __init__(self, base_url: str, config: Optional[Dict[str, Any]] = None, timeout: float = 30.0, ssl_verify: bool = True):
+    def __init__(self, base_url: str, timeout: float = 30.0, ssl_verify: bool = True):
+        """Initialize HTTP streaming transport.
+        
+        Args:
+            base_url: Base URL of the MCP server
+            timeout: Request timeout in seconds
+            ssl_verify: Whether to verify SSL certificates
+        """
         self.base_url = base_url.rstrip('/')
-        self.config = config or {}
         self.timeout = timeout
         self.ssl_verify = ssl_verify
         self.session: Optional[aiohttp.ClientSession] = None
@@ -85,14 +90,8 @@ class HTTPStreamingTransport(MCPTransport):
         self.session_id = None
 
     def _build_url(self) -> str:
-        """Build URL with optional config parameter for streaming transport"""
-        url = f"{self.base_url}/mcp"
-        if self.config:
-            # Encode config as base64 for the transport
-            config_json = json.dumps(self.config)
-            config_b64 = base64.b64encode(config_json.encode()).decode()
-            url += f"?config={config_b64}"
-        return url
+        """Build URL for MCP endpoint"""
+        return f"{self.base_url}/mcp"
 
     async def _send_initialized_notification(self) -> None:
         """Send the initialized notification to complete the MCP handshake"""
@@ -228,7 +227,7 @@ class HTTPStreamingTransport(MCPTransport):
 
             # Debug: log initialize payload and destination when debugging 422 errors
             if message.method == "initialize":
-                logger.debug(f"Sending initialize to {url} with headers={headers} payload={json.dumps(payload)} config={self.config}")
+                logger.debug(f"Sending initialize to {url} with headers={headers} payload={json.dumps(payload)}")
             async with self.session.post(url, json=payload, headers=headers or None) as response:
                 if response.status != 200:
                     error_text = await response.text()

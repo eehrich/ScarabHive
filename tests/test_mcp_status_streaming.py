@@ -144,11 +144,11 @@ class TestMCPStatusStreaming:
     async def test_filtered_status_streaming(self):
         """Test status streaming with server and request_id filters."""
         # Create transport with filters
-        config = {
-            "status_server_filter": "specific_server",
-            "status_request_id_filter": "specific_request"
-        }
-        transport = MCPStatusStreamingTransport("http://localhost:8000", config)
+        transport = MCPStatusStreamingTransport(
+            "http://localhost:8000",
+            server_filter="specific_server",
+            request_id_filter="specific_request"
+        )
         
         # Mock session and subscription
         transport.session = MagicMock()

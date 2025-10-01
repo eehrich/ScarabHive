@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from .core import MCPClient, MCPTool, MCPMessage, MCPTransport
 from .http_transport import HTTPTransport
 from .streaming_transport import HTTPStreamingTransport
+from ..config.models import RemoteMCPConfig
 from .status import (
     publish_status,
     StatusPhase,
@@ -453,7 +454,6 @@ class MCPClientFactory:
         """Create a streaming MCP client"""
         transport = HTTPStreamingTransport(
             base_url=base_url,
-            config=initialization_options or {},
             timeout=timeout,
             ssl_verify=ssl_verify
         )
@@ -471,9 +471,13 @@ class MCPClientFactory:
             raise
 
     @staticmethod
-    async def create_client_from_config(config: Dict[str, Any]) -> StandardMCPClient:
-        """Create an MCP client from configuration"""
-        transport_type = config.get("transport", "http")
+    async def create_client_from_config(config: RemoteMCPConfig) -> StandardMCPClient:
+        """Create an MCP client from configuration.
+        
+        Args:
+            config: RemoteMCPConfig object with server connection details
+        """
+        transport_type = config.transport
 
         # Handle deprecated transport type names
         if transport_type == "smithery":
@@ -481,30 +485,20 @@ class MCPClientFactory:
             logger.warning("Transport type 'smithery' is deprecated. Use 'http' for new configurations.")
 
         if transport_type == "http":
-            # Support both 'url' and 'base_url' for compatibility
-            base_url = config.get("base_url") or config.get("url")
-            if not base_url:
-                raise ValueError("Missing 'url' or 'base_url' in client configuration")
-
             return await MCPClientFactory.create_http_client(
-                base_url=base_url,
-                client_name=config.get("client_name", "AgentSystem"),
-                timeout=config.get("timeout", 30.0),
-                ssl_verify=config.get("ssl_verify", True),
-                initialization_options=config.get("initialization_options")
+                base_url=config.url,
+                client_name="AgentSystem",
+                timeout=30.0,  # TODO: Add timeout to RemoteMCPConfig
+                ssl_verify=True,  # TODO: Add ssl_verify to RemoteMCPConfig
+                initialization_options=config.initialization_options
             )
         elif transport_type == "streaming":
-            # Support both 'url' and 'base_url' for compatibility
-            base_url = config.get("base_url") or config.get("url")
-            if not base_url:
-                raise ValueError("Missing 'url' or 'base_url' in client configuration")
-
             return await MCPClientFactory.create_streaming_client(
-                base_url=base_url,
-                client_name=config.get("client_name", "AgentSystem"),
-                timeout=config.get("timeout", 30.0),
-                ssl_verify=config.get("ssl_verify", True),
-                initialization_options=config.get("initialization_options")
+                base_url=config.url,
+                client_name="AgentSystem",
+                timeout=30.0,  # TODO: Add timeout to RemoteMCPConfig
+                ssl_verify=True,  # TODO: Add ssl_verify to RemoteMCPConfig
+                initialization_options=config.initialization_options
             )
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
@@ -520,8 +514,13 @@ class MCPClientManager:
         self._tools_cache_time = 0.0
         self._tools_cache_ttl = 30.0  # Cache for 30 seconds
 
-    async def add_client(self, name: str, config: Dict[str, Any]) -> None:
-        """Add an MCP client from configuration"""
+    async def add_client(self, name: str, config: RemoteMCPConfig) -> None:
+        """Add an MCP client from configuration.
+        
+        Args:
+            name: Client name
+            config: RemoteMCPConfig object with server connection details
+        """
         try:
             # Announce connection attempt
             try:

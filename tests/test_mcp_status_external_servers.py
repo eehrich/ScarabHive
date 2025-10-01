@@ -11,30 +11,48 @@ import pytest
 from unittest.mock import Mock, AsyncMock
 
 from agent_system.mcp.integration import MCPIntegration
+from agent_system.config.models import (
+    AgentSystemConfig,
+    MCPSystemConfig,
+    ExternalServersConfig,
+    RemoteMCPConfig,
+)
 
 
 @pytest.fixture
 def mock_mcp_config():
-    """Mock MCP configuration with external servers"""
-    return {
-        'mcp': {
-            'external_servers': {
-                'localhost': {
-                    'url': 'http://127.0.0.1:8081',
-                    'description': 'Local streaming MCP server running on localhost.',
-                    'transport': 'streaming'
-                },
-                'remote_server': {
-                    'url': 'http://example.com:8080',
-                    'description': 'Remote MCP server',
-                    'transport': 'streaming'
-                }
-            },
-            'enabled_servers': [],
-            'servers': {},
-            'plugin_dirs': ['src/plugins']
-        }
+    """Create AgentSystemConfig with external servers configured"""
+    # Create remote server configs
+    remote_servers = {
+        'localhost': RemoteMCPConfig(
+            url='http://127.0.0.1:8081',
+            description='Local streaming MCP server running on localhost.',
+            transport='streaming',
+            enabled=True
+        ),
+        'remote_server': RemoteMCPConfig(
+            url='http://example.com:8080',
+            description='Remote MCP server',
+            transport='streaming',
+            enabled=True
+        )
     }
+    
+    # Build external servers config
+    external_servers = ExternalServersConfig(
+        remote_servers=remote_servers
+    )
+    
+    # Build MCP system config
+    mcp_config = MCPSystemConfig(
+        external_servers=external_servers
+    )
+    
+    # Build full agent system config
+    return AgentSystemConfig(
+        mcp_system=mcp_config,
+        servers={}
+    )
 
 
 @pytest.fixture
@@ -66,26 +84,12 @@ def mock_http_server():
 
 
 @pytest.fixture
-async def mcp_integration(mock_client_manager, mock_plugin_registry, mock_http_server):
+async def mcp_integration(mock_client_manager, mock_plugin_registry, mock_http_server, mock_mcp_config):
     """Create MCPIntegration instance with mocked dependencies"""
-    integration = MCPIntegration()
+    integration = MCPIntegration(config=mock_mcp_config)
     integration.client_manager = mock_client_manager
     integration.plugin_registry = mock_plugin_registry
     integration.http_server = mock_http_server
-    
-    # Create a properly configured mock config manager
-    from agent_system.mcp.config import MCPConfig, MCPConfigManager
-    mock_config_manager = Mock(spec=MCPConfigManager)
-    
-    # Configure load_config to return a proper MCPConfig object
-    def mock_load_config(config_data):
-        # Create a real MCPConfig instance
-        mcp_config = MCPConfig()
-        mcp_config.servers = {}  # Empty dict for _setup_external_servers_from_config to iterate over
-        return mcp_config
-    
-    mock_config_manager.load_config = Mock(side_effect=mock_load_config)
-    integration.config_manager = mock_config_manager
     
     return integration
 
@@ -104,10 +108,10 @@ class TestMCPIntegrationExternalServers:
         assert 'localhost' in mcp_integration.configured_external_servers
         assert 'remote_server' in mcp_integration.configured_external_servers
         
-        # Check stored configuration details
+        # Check stored configuration details (RemoteMCPConfig attributes, not Dict keys)
         localhost_config = mcp_integration.configured_external_servers['localhost']
-        assert localhost_config['url'] == 'http://127.0.0.1:8081'
-        assert localhost_config['description'] == 'Local streaming MCP server running on localhost.'
+        assert localhost_config.url == 'http://127.0.0.1:8081'
+        assert localhost_config.description == 'Local streaming MCP server running on localhost.'
     
     async def test_handles_connection_failures_gracefully(self, mcp_integration, mock_mcp_config):
         """Test that failed connections don't prevent initialization"""
@@ -126,7 +130,22 @@ class TestMCPIntegrationExternalServers:
     
     async def test_handles_empty_external_servers(self, mcp_integration):
         """Test handling when no external servers are configured"""
-        config = {'mcp': {'external_servers': {}}}
+        from agent_system.config.models import (
+            AgentSystemConfig,
+            MCPSystemConfig,
+            ExternalServersConfig
+        )
+        
+        # Build empty config
+        mcp_config = MCPSystemConfig(
+            external_servers=ExternalServersConfig(
+                remote_servers={}
+            )
+        )
+        
+        config = AgentSystemConfig(
+            mcp_system=mcp_config
+        )
         
         await mcp_integration.initialize(config)
         
@@ -141,9 +160,9 @@ class TestMCPIntegrationExternalServers:
         stored_config = mcp_integration.configured_external_servers
         assert len(stored_config) == 2
         
-        # Check specific server configurations
-        assert stored_config['localhost']['transport'] == 'streaming'
-        assert stored_config['remote_server']['url'] == 'http://example.com:8080'
+        # Check specific server configurations (RemoteMCPConfig attributes, not Dict keys)
+        assert stored_config['localhost'].transport == 'streaming'
+        assert stored_config['remote_server'].url == 'http://example.com:8080'
 
 
 if __name__ == "__main__":

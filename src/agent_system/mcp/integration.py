@@ -17,9 +17,8 @@ from fastapi import FastAPI
 from .client import MCPClientManager
 from ..plugins.mcp_adapter import plugin_mcp_registry
 from .http_server import MCPHTTPServer
-from .config import MCPConfigManager, MCPConfig
 from .security import configure_security
-from ..config.models import AgentConfig
+from ..config.models import AgentSystemConfig, RemoteMCPConfig, MCPSystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +26,12 @@ logger = logging.getLogger(__name__)
 class MCPIntegration:
     """Main integration class for MCP functionality"""
 
-    def __init__(self, app: Optional[FastAPI] = None, config: AgentConfig = None):
+    def __init__(self, app: Optional[FastAPI] = None, config: AgentSystemConfig = None):
         if config is None:
-            raise ValueError("AgentConfig is required for MCPIntegration initialization")
+            raise ValueError("AgentSystemConfig is required for MCPIntegration initialization")
 
-        # Initialize configuration manager without loading config yet
-        self.config_manager = MCPConfigManager()
-        self.mcp_config = MCPConfig()  # Use default config initially
+        # Store MCP system config
+        self.mcp_system_config: MCPSystemConfig = config.mcp_system if config and config.mcp_system else MCPSystemConfig()
 
         # Configure security with provided config
         configure_security(config)
@@ -42,72 +40,44 @@ class MCPIntegration:
         self.plugin_registry = plugin_mcp_registry
         self.http_server = MCPHTTPServer(app)
         self.initialized = False
-        self.configured_external_servers: Dict[str, Dict[str, Any]] = {}  # Store original configuration
+        self.configured_external_servers: Dict[str, RemoteMCPConfig] = {}  # Type-safe config storage
 
         # Tool list caching to reduce external server queries
         self._tools_cache: Optional[Dict[str, Dict[str, List[Any]]]] = None
         self._tools_cache_time = 0.0
         self._tools_cache_ttl = 30.0  # Cache for 30 seconds
 
-        # Reference to main agent for cancellation support
 
-
-    async def initialize(self, config: AgentConfig) -> None:
+    async def initialize(self, config: AgentSystemConfig) -> None:
         """Initialize MCP integration from configuration"""
         if self.initialized:
             return
 
-        # Load the MCP configuration properly
-        # Convert AgentConfig.mcp to dict for the config manager
-        if config.mcp:
-            mcp_dict = config.mcp.model_dump() if hasattr(config.mcp, 'model_dump') else {}
-            self.mcp_config = self.config_manager.load_config(mcp_dict)
-        else:
-            self.mcp_config = self.config_manager.load_config()
-
-        # Access MCP config from AgentConfig model (not dict)
-        mcp_config = config.mcp if config.mcp else {}
+        # Access MCP system config
+        mcp_config = config.mcp_system if config.mcp_system else MCPSystemConfig()
 
         # Update cache TTL from configuration
-        cache_config = getattr(mcp_config, 'cache', {}) if hasattr(mcp_config, 'cache') else {}
-        self._tools_cache_ttl = cache_config.get('tool_list_ttl', 30.0) if isinstance(cache_config, dict) else 30.0
+        if mcp_config.external_servers and mcp_config.external_servers.cache:
+            self._tools_cache_ttl = mcp_config.external_servers.cache.tool_list_ttl
         logger.debug(f"MCP tools cache TTL set to {self._tools_cache_ttl}s")
 
         # Set cache TTL on client manager as well
         self.client_manager.set_cache_ttl(self._tools_cache_ttl)
 
-        # Load external servers from new configuration format
-        await self._setup_external_servers_from_config()
-
         # Discover and register plugins
-        plugin_dirs = getattr(mcp_config, 'plugin_dirs', ['src/plugins']) if hasattr(mcp_config, 'plugin_dirs') else ['src/plugins']
+        plugin_dirs = ['src/plugins']  # Default plugin directory
         self.plugin_registry.discover_plugins(plugin_dirs)
 
         # Register enabled plugins as MCP servers
-        enabled_servers = getattr(mcp_config, 'enabled_servers', []) if hasattr(mcp_config, 'enabled_servers') else []
-        # Read servers config from the servers section of mcp.yaml, not from mcp_config
-        # which only contains external_servers config
-        servers_config = config.servers if config.servers else {}
-        logger.debug(f"MCP integration - config type: {type(config)}")
-        logger.debug(f"MCP integration - servers_config: {servers_config}")
+        # Use servers from mcp_config.servers (Dict[str, MCPConfig])
+        servers_config = mcp_config.servers if mcp_config.servers else {}
+        enabled_servers = [name for name, server_cfg in servers_config.items() if server_cfg.enabled]
+        
+        logger.debug(f"MCP integration - enabled servers: {enabled_servers}")
+        logger.debug(f"MCP integration - servers_config type: {type(servers_config)}")
 
-        # SIMPLIFIED: Pass complete AgentConfig instead of selective parent_config
-        # This eliminates the need to manually copy specific keys
-        from ..config.models import AgentConfig
-
-        if isinstance(config, dict) and all(key in config for key in ['llm_system', 'agent_llm_profiles']):
-            # Convert dict to AgentConfig if needed (for full config access)
-            try:
-                full_agent_config = AgentConfig.model_validate(config)
-                logger.debug("Converted config dict to AgentConfig for MCP plugin registration")
-            except Exception as e:
-                logger.warning("Could not convert config to AgentConfig: %s. Using dict fallback.", e)
-                full_agent_config = config
-        else:
-            # Assume it's already an AgentConfig or compatible dict
-            full_agent_config = config
-
-        await self.plugin_registry.register_from_config(enabled_servers, servers_config, full_agent_config)
+        # Pass complete AgentSystemConfig for plugin registration
+        await self.plugin_registry.register_from_config(enabled_servers, servers_config, config)
 
         # Register plugin servers with HTTP server
         for server_name in self.plugin_registry.list_servers():
@@ -115,27 +85,28 @@ class MCPIntegration:
             if server:
                 self.http_server.register_server(server_name, server)
 
-        # Connect to external MCP servers (using old format for backward compatibility)
-        external_servers = getattr(mcp_config, 'external_servers', {}) if hasattr(mcp_config, 'external_servers') else {}
-        # Only store enabled servers for runtime connections and status endpoint
-        self.configured_external_servers = {
-            name: config for name, config in external_servers.items()
-            if config.get('enabled', True)
-        }
-        # Store all configured servers (enabled + disabled) for CLI management operations
-        self.all_configured_external_servers = {
-            name: config for name, config in external_servers.items()
-        }
-        for server_name, server_config in external_servers.items():
-            # Only connect to enabled servers
-            if not server_config.get('enabled', True):
-                logger.debug(f"Skipping disabled external MCP server: {server_name}")
-                continue
-            try:
-                await self.client_manager.add_client(server_name, server_config)
-                logger.info(f"Connected to external MCP server: {server_name}")
-            except Exception as e:
-                logger.debug(f"Failed to connect to external MCP server {server_name}: {e}")
+        # Connect to external MCP servers from new config format
+        if mcp_config.external_servers and mcp_config.external_servers.remote_servers:
+            remote_servers = mcp_config.external_servers.remote_servers
+            
+            # Only store enabled servers
+            self.configured_external_servers = {
+                name: server_config
+                for name, server_config in remote_servers.items()
+                if server_config.enabled
+            }
+            
+            # Connect to enabled servers
+            for server_name, server_config in remote_servers.items():
+                if not server_config.enabled:
+                    logger.debug(f"Skipping disabled external MCP server: {server_name}")
+                    continue
+                    
+                try:
+                    await self.client_manager.add_client(server_name, server_config)
+                    logger.info(f"Connected to external MCP server: {server_name}")
+                except Exception as e:
+                    logger.debug(f"Failed to connect to external MCP server {server_name}: {e}")
 
         self.initialized = True
         logger.info("MCP integration initialized successfully")
@@ -146,62 +117,6 @@ class MCPIntegration:
         await self.client_manager.close_all()
         logging.getLogger(__name__).debug("MCPIntegration.shutdown() completed")
         logger.info("MCP integration shut down")
-
-    async def _setup_external_servers_from_config(self) -> None:
-        """Setup external servers from new configuration format"""
-        enabled_servers = [
-            (server_name, server_config)
-            for server_name, server_config in self.mcp_config.servers.items()
-            if server_config.enabled
-        ]
-
-        if not enabled_servers:
-            logger.info("No enabled external MCP servers to connect to")
-            return
-
-        logger.info(f"Connecting to {len(enabled_servers)} external MCP servers...")
-
-        async def connect_server(server_name: str, server_config) -> None:
-            """Connect to a single server"""
-            try:
-                # Map deprecated transport types for backward compatibility
-                transport_type = server_config.transport_type
-                if transport_type == "smithery":
-                    # Legacy support: map smithery to streaming
-                    transport_type = "streaming"
-                    logger.warning(f"Transport type 'smithery' is deprecated for server {server_name}. Use 'http' instead.")
-
-                # Create client config for the server
-                client_config = {
-                    "transport": transport_type,
-                    "url": server_config.url,
-                    "client_name": f"AgentSystem-{server_name}",
-                    "timeout": server_config.timeout,
-                    "ssl_verify": server_config.ssl_verify
-                }
-
-                # Add initialization options if present
-                if server_config.initialization_options:
-                    client_config["initialization_options"] = server_config.initialization_options
-
-                await self.client_manager.add_client(server_name, client_config)
-                logger.info(f"Connected to external MCP server: {server_name} at {server_config.url}")
-            except Exception as e:
-                logger.debug(f"Failed to connect to MCP server {server_name}: {e}")
-
-        # Connect to servers in parallel if enabled
-        if self.mcp_config.parallel_connect:
-            logger.info("Connecting to MCP servers in parallel...")
-            import asyncio
-            tasks = [
-                connect_server(server_name, server_config)
-                for server_name, server_config in enabled_servers
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
-        else:
-            # Connect sequentially (original behavior)
-            for server_name, server_config in enabled_servers:
-                await connect_server(server_name, server_config)
 
     def get_app(self) -> FastAPI:
         """Get the FastAPI app with MCP endpoints"""
@@ -240,18 +155,11 @@ class MCPIntegration:
         external_tools = await self.client_manager.list_all_tools()
         for server_name, tools in external_tools.items():
             # Get server configuration to check blocked tools
-            server_config = self.mcp_config.servers.get(server_name)
+            server_config = self.configured_external_servers.get(server_name)
             blocked_tools = []
-            if server_config:
-                blocked_tools = server_config.blocked_tools
+            if server_config and server_config.tools:
+                blocked_tools = server_config.tools.blocked or []
                 logger.debug(f"Found server config for {server_name}: blocked_tools={blocked_tools}")
-            else:
-                # Fallback: check in configured_external_servers from old format
-                logger.debug(f"No server config found for {server_name} in self.mcp_config.servers")
-                server_info = self.configured_external_servers.get(server_name, {})
-                tools_config = server_info.get("tools", {})
-                blocked_tools = tools_config.get("blocked", [])
-                logger.debug(f"Using fallback from configured_external_servers: blocked_tools={blocked_tools}")
 
             filtered_tools = []
             for tool in tools:
@@ -293,18 +201,11 @@ class MCPIntegration:
         # Check if tool is blocked before calling
         if server_type == "external":
             # Get server configuration to check blocked tools
-            server_config = self.mcp_config.servers.get(server_name)
+            server_config = self.configured_external_servers.get(server_name)
             blocked_tools = []
-            if server_config:
-                blocked_tools = server_config.blocked_tools
+            if server_config and server_config.tools:
+                blocked_tools = server_config.tools.blocked or []
                 logger.debug(f"Found server config for {server_name}: blocked_tools={blocked_tools}")
-            else:
-                # Fallback: check in configured_external_servers from old format
-                logger.debug(f"No server config found for {server_name} in self.mcp_config.servers")
-                server_info = self.configured_external_servers.get(server_name, {})
-                tools_config = server_info.get("tools", {})
-                blocked_tools = tools_config.get("blocked", [])
-                logger.debug(f"Using fallback from configured_external_servers: blocked_tools={blocked_tools}")
 
             if tool_name in blocked_tools:
                 error_msg = f"Tool '{tool_name}' is blocked on server '{server_name}'"
@@ -331,7 +232,7 @@ class MCPIntegration:
             }
         }
 
-    async def register_plugin(self, name: str, config: Optional[AgentConfig] = None) -> None:
+    async def register_plugin(self, name: str, config: Optional[AgentSystemConfig] = None) -> None:
         """Register a plugin as an MCP server"""
         await self.plugin_registry.register_plugin(name, config)
 
@@ -345,20 +246,28 @@ class MCPIntegration:
         await self.plugin_registry.unregister_plugin(name)
         self.http_server.unregister_server(name)
 
-    async def add_external_server(self, name: str, config: Dict[str, Any]) -> None:
+    async def add_external_server(self, name: str, config: RemoteMCPConfig) -> None:
         """Add an external MCP server"""
         await self.client_manager.add_client(name, config)
+        # Update local config storage
+        self.configured_external_servers[name] = config
+        # Invalidate tools cache
+        self.invalidate_tools_cache()
 
     async def remove_external_server(self, name: str) -> None:
         """Remove an external MCP server"""
         await self.client_manager.remove_client(name)
+        # Remove from local config storage
+        self.configured_external_servers.pop(name, None)
+        # Invalidate tools cache
+        self.invalidate_tools_cache()
 
 
 # Global MCP integration instance
 mcp_integration: Optional[MCPIntegration] = None
 
 
-def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentConfig] = None) -> MCPIntegration:
+def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentSystemConfig] = None) -> MCPIntegration:
     """Get or create the global MCP integration instance"""
     global mcp_integration
     # First check if the API has an initialized instance and prefer it
@@ -375,7 +284,7 @@ def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentCon
 
     # If no config provided and no existing instance, we need config to create one
     if config is None:
-        raise ValueError("AgentConfig is required when creating new MCPIntegration instance")
+        raise ValueError("AgentSystemConfig is required when creating new MCPIntegration instance")
 
     # If an app is provided, create a fresh app-bound integration so tests
     # that build an ASGI app get a dedicated integration instance and do not
@@ -387,20 +296,12 @@ def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentCon
     # Fall back to module-level global instance (create if needed)
     mcp_integration = MCPIntegration(app, config)
     return mcp_integration
-async def initialize_mcp(config: Dict[str, Any], app: Optional[FastAPI] = None) -> MCPIntegration:
-    """Initialize MCP integration with configuration"""
-    # Convert dict config to AgentConfig if needed
-    if isinstance(config, dict):
-        from ..config.models import AgentConfig
-        try:
-            agent_config = AgentConfig.model_validate(config)
-        except Exception as e:
-            raise ValueError(f"Invalid configuration for MCPIntegration: {e}") from e
-    else:
-        agent_config = config
 
-    integration = get_mcp_integration(app, agent_config)
-    await integration.initialize(agent_config)
+
+async def initialize_mcp(config: AgentSystemConfig, app: Optional[FastAPI] = None) -> MCPIntegration:
+    """Initialize MCP integration with configuration"""
+    integration = get_mcp_integration(app, config)
+    await integration.initialize(config)
     return integration
 
 

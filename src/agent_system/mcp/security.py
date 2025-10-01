@@ -8,25 +8,11 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, Optional
-from dataclasses import dataclass
+from typing import Dict, Optional
+
+from ..config.models import AgentSystemConfig, MCPAuthConfig
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class MCPAuthConfig:
-    """Configuration for MCP authentication"""
-    auth_type: str = "none"  # none, bearer, api_key, basic
-    api_key: Optional[str] = None
-    api_key_header: str = "Authorization"
-    bearer_token: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    ssl_verify: bool = True
-    timeout: float = 30.0
-    max_retries: int = 3
-    retry_delay: float = 1.0
 
 
 class MCPSecurityManager:
@@ -52,13 +38,13 @@ class MCPSecurityManager:
 
         headers = {}
 
-        if auth_config.auth_type == "bearer" and auth_config.bearer_token:
+        if auth_config.type == "bearer" and auth_config.bearer_token:
             headers["Authorization"] = f"Bearer {auth_config.bearer_token}"
 
-        elif auth_config.auth_type == "api_key" and auth_config.api_key:
+        elif auth_config.type == "api_key" and auth_config.api_key:
             headers[auth_config.api_key_header] = auth_config.api_key
 
-        elif auth_config.auth_type == "basic" and auth_config.username and auth_config.password:
+        elif auth_config.type == "basic" and auth_config.username and auth_config.password:
             import base64
             credentials = f"{auth_config.username}:{auth_config.password}"
             encoded_credentials = base64.b64encode(credentials.encode()).decode()
@@ -79,44 +65,77 @@ class MCPSecurityManager:
         return value
 
     @classmethod
-    def from_config(cls, config) -> MCPSecurityManager:
-        """Create security manager from configuration"""
+    def from_config(cls, config: AgentSystemConfig) -> MCPSecurityManager:
+        """Create security manager from AgentSystemConfig"""
         manager = cls()
 
-        # Handle both dict and AgentConfig objects
-        if hasattr(config, 'servers'):
-            servers_config = config.servers or {}
-        else:
-            servers_config = config.get("servers", {})
-        for server_name, server_config in servers_config.items():
-            auth_config = MCPAuthConfig()
+        # Access MCP system config
+        if not config.mcp_system or not config.mcp_system.external_servers:
+            return manager
+            
+        external_servers = config.mcp_system.external_servers
+        if not external_servers.remote_servers:
+            return manager
+            
+        # Process each remote server configuration
+        for server_name, server_config in external_servers.remote_servers.items():
+            # Build auth config data dictionary
+            auth_data = {
+                "type": "none",
+                "api_key": None,
+                "api_key_header": "Authorization",
+                "bearer_token": None,
+                "username": None,
+                "password": None,
+                "ssl_verify": True,
+                "timeout": 30.0,
+                "max_retries": 3,
+                "retry_delay": 1.0
+            }
 
-            # Resolve authentication settings
-            if "auth" in server_config:
-                auth_section = server_config["auth"]
-                auth_config.auth_type = auth_section.get("type", "none")
+            # Apply authentication settings from RemoteMCPConfig.auth
+            if server_config.auth:
+                auth_section = server_config.auth
+                auth_data["type"] = auth_section.type or "none"
 
                 # Resolve environment variables
-                if "api_key" in auth_section:
-                    auth_config.api_key = cls.resolve_env_vars(auth_section["api_key"])
+                if auth_section.api_key:
+                    auth_data["api_key"] = cls.resolve_env_vars(auth_section.api_key)
 
-                if "bearer_token" in auth_section:
-                    auth_config.bearer_token = cls.resolve_env_vars(auth_section["bearer_token"])
+                if auth_section.bearer_token:
+                    auth_data["bearer_token"] = cls.resolve_env_vars(auth_section.bearer_token)
 
-                if "username" in auth_section:
-                    auth_config.username = cls.resolve_env_vars(auth_section["username"])
+                if auth_section.username:
+                    auth_data["username"] = cls.resolve_env_vars(auth_section.username)
 
-                if "password" in auth_section:
-                    auth_config.password = cls.resolve_env_vars(auth_section["password"])
+                if auth_section.password:
+                    auth_data["password"] = cls.resolve_env_vars(auth_section.password)
 
-                auth_config.api_key_header = auth_section.get("api_key_header", "Authorization")
+                if auth_section.api_key_header:
+                    auth_data["api_key_header"] = auth_section.api_key_header
+                    
+                # Override security settings from auth if present
+                if auth_section.ssl_verify is not None:
+                    auth_data["ssl_verify"] = auth_section.ssl_verify
+                if auth_section.timeout is not None:
+                    auth_data["timeout"] = auth_section.timeout
+                if auth_section.max_retries is not None:
+                    auth_data["max_retries"] = auth_section.max_retries
+                if auth_section.retry_delay is not None:
+                    auth_data["retry_delay"] = auth_section.retry_delay
 
-            # Security settings
-            auth_config.ssl_verify = server_config.get("ssl_verify", True)
-            auth_config.timeout = server_config.get("timeout", 30.0)
-            auth_config.max_retries = server_config.get("max_retries", 3)
-            auth_config.retry_delay = server_config.get("retry_delay", 1.0)
+            # Override with RemoteMCPConfig-level security settings if present
+            if server_config.ssl_verify is not None:
+                auth_data["ssl_verify"] = server_config.ssl_verify
+            if server_config.timeout is not None:
+                auth_data["timeout"] = server_config.timeout
+            if server_config.max_retries is not None:
+                auth_data["max_retries"] = server_config.max_retries
+            if server_config.retry_delay is not None:
+                auth_data["retry_delay"] = server_config.retry_delay
 
+            # Create Pydantic model instance
+            auth_config = MCPAuthConfig(**auth_data)
             manager.add_auth_config(server_name, auth_config)
 
         return manager
@@ -131,8 +150,12 @@ def get_security_manager() -> MCPSecurityManager:
     return security_manager
 
 
-def configure_security(config: Dict[str, Any]) -> None:
-    """Configure global security settings"""
+def configure_security(config: AgentSystemConfig) -> None:
+    """Configure global security settings.
+    
+    Args:
+        config: AgentSystemConfig object
+    """
     global security_manager
     security_manager = MCPSecurityManager.from_config(config)
     logger.info("MCP security configuration updated")

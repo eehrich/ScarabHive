@@ -5,8 +5,6 @@ These tests cover the HTTPStreamingTransport class which implements
 SSE-based HTTP transport for MCP communication.
 """
 
-import json
-import base64
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
 from aiohttp import ClientTimeout, TCPConnector
@@ -23,43 +21,27 @@ class TestHTTPStreamingTransport:
         """Test transport initialization"""
         transport = HTTPStreamingTransport("http://example.com")
         assert transport.base_url == "http://example.com"
-        assert transport.config == {}
         assert transport.timeout == 30.0
         assert transport.ssl_verify is True
         assert transport.session is None
         assert transport.session_id is None
 
-    def test_init_with_config(self):
-        """Test transport initialization with config"""
-        config = {"key": "value", "timeout": 15}
+    def test_init_with_params(self):
+        """Test transport initialization with parameters"""
         transport = HTTPStreamingTransport(
             "http://example.com/", 
-            config=config, 
             timeout=60.0, 
             ssl_verify=False
         )
         assert transport.base_url == "http://example.com"
-        assert transport.config == config
         assert transport.timeout == 60.0
         assert transport.ssl_verify is False
 
-    def test_build_url_without_config(self):
-        """Test URL building without config"""
+    def test_build_url(self):
+        """Test URL building"""
         transport = HTTPStreamingTransport("http://example.com")
         url = transport._build_url()
         assert url == "http://example.com/mcp"
-
-    def test_build_url_with_config(self):
-        """Test URL building with config"""
-        config = {"param": "value", "number": 42}
-        transport = HTTPStreamingTransport("http://example.com", config=config)
-        url = transport._build_url()
-        
-        # Extract and decode config from URL
-        assert url.startswith("http://example.com/mcp?config=")
-        config_b64 = url.split("config=")[1]
-        decoded_config = json.loads(base64.b64decode(config_b64).decode())
-        assert decoded_config == config
 
     @pytest.mark.asyncio
     async def test_connect_creates_session(self):
@@ -141,24 +123,6 @@ class TestHTTPStreamingTransport:
         with pytest.raises(NotImplementedError):
             await transport.receive_message()
 
-    def test_config_base64_encoding_decoding(self):
-        """Test that config is properly encoded and can be decoded"""
-        config = {
-            "complex_data": {
-                "nested": ["array", "values"],
-                "unicode": "test ñ 中文",
-                "numbers": 42.5
-            }
-        }
-        
-        transport = HTTPStreamingTransport("http://example.com", config=config)
-        url = transport._build_url()
-        
-        # Extract and verify config
-        config_b64 = url.split("config=")[1]
-        decoded_config = json.loads(base64.b64decode(config_b64).decode())
-        assert decoded_config == config
-
     @pytest.mark.asyncio
     async def test_ssl_verification_config(self):
         """Test transport with SSL verification configuration"""
@@ -229,11 +193,6 @@ class TestHTTPStreamingTransport:
         transport = HTTPStreamingTransport("http://example.com/path/")
         assert transport.base_url == "http://example.com/path"
 
-    def test_empty_config_handling(self):
-        """Test handling of None config"""
-        transport = HTTPStreamingTransport("http://example.com", config=None)
-        assert transport.config == {}
-
     @pytest.mark.asyncio
     async def test_session_none_during_disconnect(self):
         """Test disconnect when session is already None"""
@@ -246,23 +205,11 @@ class TestHTTPStreamingTransport:
         assert transport.session is None
         assert transport.session_id is None
 
-    def test_url_building_edge_cases(self):
-        """Test URL building with various edge cases"""
-        # Empty config
-        transport = HTTPStreamingTransport("http://example.com", config={})
+    def test_url_building(self):
+        """Test URL building"""
+        transport = HTTPStreamingTransport("http://example.com")
         url = transport._build_url()
         assert url == "http://example.com/mcp"
-        
-        # Config with special characters
-        config = {"key": "value with spaces & symbols!"}
-        transport = HTTPStreamingTransport("http://example.com", config=config)
-        url = transport._build_url()
-        assert "config=" in url
-        
-        # Verify we can decode the special characters
-        config_b64 = url.split("config=")[1]
-        decoded_config = json.loads(base64.b64decode(config_b64).decode())
-        assert decoded_config == config
 
     def test_various_ssl_verify_settings(self):
         """Test various SSL verification settings"""
@@ -283,25 +230,3 @@ class TestHTTPStreamingTransport:
         # Custom timeout
         transport2 = HTTPStreamingTransport("http://example.com", timeout=60.0)
         assert transport2.timeout == 60.0
-
-    def test_complex_config_serialization(self):
-        """Test complex configuration serialization"""
-        config = {
-            "nested": {
-                "array": [1, 2, {"inner": "value"}],
-                "boolean": True,
-                "null": None,
-                "number": 42.5
-            },
-            "unicode": "测试中文",
-            "empty_list": [],
-            "empty_dict": {}
-        }
-        
-        transport = HTTPStreamingTransport("http://example.com", config=config)
-        url = transport._build_url()
-        
-        # Extract and verify complex config
-        config_b64 = url.split("config=")[1]
-        decoded_config = json.loads(base64.b64decode(config_b64).decode())
-        assert decoded_config == config

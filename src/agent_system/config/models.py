@@ -139,6 +139,22 @@ class ExternalServerCacheConfig(BaseModel):
     tool_list_ttl: float = 30.0
 
 
+class MCPAuthConfig(BaseModel):
+    """Authentication configuration for MCP servers"""
+    type: str = "none"  # none, bearer, api_key, basic
+    api_key: Optional[str] = None
+    api_key_header: str = "Authorization"
+    bearer_token: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    
+    # Security settings
+    ssl_verify: bool = True
+    timeout: float = 30.0
+    max_retries: int = 3
+    retry_delay: float = 1.0
+
+
 class RemoteMCPConfig(BaseModel):
     """Configuration for a remote MCP server"""
     url: str
@@ -148,6 +164,13 @@ class RemoteMCPConfig(BaseModel):
     initialization_options: Optional[Dict[str, Any]] = None
     features: Optional[Dict[str, bool]] = None
     tools: Optional[ToolConfig] = None
+    
+    # Authentication and security
+    auth: Optional[MCPAuthConfig] = None
+    ssl_verify: Optional[bool] = True
+    timeout: Optional[float] = 30.0
+    max_retries: Optional[int] = 3
+    retry_delay: Optional[float] = 1.0
 
 
 class ExternalServersConfig(BaseModel):

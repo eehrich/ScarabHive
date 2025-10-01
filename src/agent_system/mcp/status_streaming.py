@@ -16,7 +16,6 @@ from datetime import datetime
 from .core import MCPMessage
 from .streaming_transport import HTTPStreamingTransport
 from .status import status_bus, StatusEvent
-from ..config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +23,20 @@ logger = logging.getLogger(__name__)
 class MCPStatusStreamingTransport(HTTPStreamingTransport):
     """Extended streaming transport that publishes status events as MCP notifications."""
 
-    def __init__(self, base_url: str, config: AgentConfig = None, **kwargs):
-        super().__init__(base_url, config, **kwargs)
+    def __init__(self, base_url: str, server_filter: Optional[str] = None, request_id_filter: Optional[str] = None, **kwargs):
+        """Initialize status streaming transport.
+        
+        Args:
+            base_url: Base URL of the MCP server
+            server_filter: Optional filter for specific server name
+            request_id_filter: Optional filter for specific request ID
+            **kwargs: Additional arguments passed to HTTPStreamingTransport
+        """
+        super().__init__(base_url, **kwargs)
         self._status_subscription: Optional[asyncio.Queue] = None
         self._status_task: Optional[asyncio.Task] = None
-        self._server_filter: Optional[str] = config.get("status_server_filter") if config else None
-        self._request_id_filter: Optional[str] = config.get("status_request_id_filter") if config else None
+        self._server_filter = server_filter
+        self._request_id_filter = request_id_filter
 
     async def connect(self) -> None:
         """Establish HTTP session and start status event streaming."""
@@ -175,11 +182,7 @@ class MCPStatusNotificationHandler:
 # Example usage for MCP server implementing status streaming
 async def create_status_streaming_server(base_url: str, server_filter: Optional[str] = None) -> MCPStatusStreamingTransport:
     """Create an MCP transport with status event streaming enabled."""
-    config = {}
-    if server_filter:
-        config["status_server_filter"] = server_filter
-
-    transport = MCPStatusStreamingTransport(base_url, config)
+    transport = MCPStatusStreamingTransport(base_url, server_filter=server_filter)
     await transport.connect()
     return transport
 

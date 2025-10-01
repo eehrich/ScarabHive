@@ -6,6 +6,7 @@ import pytest
 
 from agent_system.mcp.client import StandardMCPClient, MCPClientFactory, MCPClientManager
 from agent_system.mcp.core import MCPMessage
+from agent_system.config.models import RemoteMCPConfig
 
 
 class MockHTTPTransport:
@@ -227,15 +228,13 @@ class TestMCPClientFactory:
 
     @pytest.mark.asyncio
     async def test_create_client_from_config_http(self):
-        config = {
-            "transport": "http",
-            "base_url": "http://localhost:8000",
-            "client_name": "TestClient",
-            "timeout": 30.0,
-            "ssl_verify": True
-        }
+        config = RemoteMCPConfig(
+            url="http://localhost:8000",
+            transport="http",
+            enabled=True
+        )
 
-        # Mock the HTTPTransport to avoid actual network calls
+        # Mock factory method
         original_create = MCPClientFactory.create_http_client
 
         async def mock_create_http_client(*args, **kwargs):
@@ -249,21 +248,21 @@ class TestMCPClientFactory:
 
         try:
             client = await MCPClientFactory.create_client_from_config(config)
-            assert client.name == "TestClient"
+            assert client.name == "AgentSystem"
             assert client.transport.connected
         finally:
             MCPClientFactory.create_http_client = original_create
 
-    def test_create_client_from_config_invalid_transport(self):
-        config = {
-            "transport": "invalid",
-            "base_url": "http://localhost:8000"
-        }
+    @pytest.mark.asyncio
+    async def test_create_client_from_config_invalid_transport(self):
+        config = RemoteMCPConfig(
+            url="http://localhost:8000",
+            transport="invalid",
+            enabled=True
+        )
 
         with pytest.raises(ValueError, match="Unsupported transport type: invalid"):
-            # This will fail synchronously
-            import asyncio
-            asyncio.run(MCPClientFactory.create_client_from_config(config))
+            await MCPClientFactory.create_client_from_config(config)
 
 
 class TestMCPClientManager:
@@ -287,7 +286,11 @@ class TestMCPClientManager:
         MCPClientFactory.create_client_from_config = mock_create_client
 
         try:
-            config = {"base_url": "http://localhost:8000"}
+            config = RemoteMCPConfig(
+                url="http://localhost:8000",
+                transport="http",
+                enabled=True
+            )
             await client_manager.add_client("test_client", config)
 
             assert "test_client" in client_manager.list_clients()
