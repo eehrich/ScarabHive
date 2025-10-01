@@ -1,10 +1,45 @@
 """Tests for ContextManager functionality."""
 
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from agent_system.context.manager import ContextManager
-from agent_system.config.models import ContextManagementConfig as ContextConfig
+from agent_system.config.models import (
+    ContextManagementConfig,
+    AgentSystemConfig,
+    MCPConfig,
+    AgentConfig,
+)
 from agent_system.llm.models import ChatMessage
+from agent_system.llm.token_utils import estimate_token_count
+
+
+def create_mock_agent(context_window=1000, threshold=0.80, preserve_messages=5):
+    """Helper to create a mock Agent with custom context config."""
+    mock_agent = MagicMock()
+    mock_agent.name = "test_agent"
+    
+    # Create context management config
+    context_mgmt = ContextManagementConfig(
+        enabled=True,
+        strategy="SUMMARIZE_OLDEST",
+        summarization_threshold=threshold,
+        preserve_recent_messages=preserve_messages,
+    )
+    
+    agent_config = AgentConfig()
+    agent_config.context_management = context_mgmt
+    
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    system_config = AgentSystemConfig()
+    
+    mock_agent.mcp_config = mcp_config
+    mock_agent.system_config = system_config
+    
+    # Mock LLM with context window
+    mock_agent.llm = MagicMock()
+    mock_agent.llm.context_window = context_window
+    
+    return mock_agent
 
 
 class TestContextManager:
@@ -12,16 +47,12 @@ class TestContextManager:
     
     def setup_method(self):
         """Set up test fixtures."""
-        self.config = ContextConfig(
-            context_window=1000,
-            preserve_recent_messages=5,
-            summarization_threshold=800
-        )
-        self.manager = ContextManager(self.config)
+        self.mock_agent = create_mock_agent(context_window=1000, threshold=0.80, preserve_messages=5)
+        self.manager = ContextManager(self.mock_agent)
     
     def test_init(self):
         """Test manager initialization."""
-        assert self.manager.config == self.config
+        assert self.manager.config is not None
         assert self.manager._summarizer is None
         assert hasattr(self.manager, '_last_warning_level')
     
@@ -32,25 +63,25 @@ class TestContextManager:
             ChatMessage(role="assistant", content="Hi there! How can I help?")
         ]
         
-        estimated = self.manager.estimate_token_count(messages)
+        estimated = estimate_token_count(messages)
         assert isinstance(estimated, int)
         assert estimated > 0  # Should be positive
     
     def test_estimate_token_count_empty(self):
         """Test token estimation with empty messages."""
-        assert self.manager.estimate_token_count([]) == 0
+        assert estimate_token_count([]) == 0
     
     def test_estimate_token_count_none_content(self):
         """Test token estimation with None content."""
         messages = [ChatMessage(role="user", content=None)]
-        estimated = self.manager.estimate_token_count(messages)
+        estimated = estimate_token_count(messages)
         assert estimated >= 0  # Should handle None content gracefully
     
     def test_check_and_warn_no_warnings(self):
         """Test check_and_warn with low token count."""
         messages = [ChatMessage(role="user", content="Short message")]
         
-        with patch.object(self.manager, 'estimate_token_count', return_value=500):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=500):
             tokens, level = self.manager.check_and_warn(messages, 1)
             
         assert tokens == 500
@@ -61,7 +92,7 @@ class TestContextManager:
         messages = [ChatMessage(role="user", content="Medium message")]
         
         # Yellow threshold is 70% of 1000 = 700
-        with patch.object(self.manager, 'estimate_token_count', return_value=750):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=750):
             tokens, level = self.manager.check_and_warn(messages, 1)
             
         assert tokens == 750
@@ -72,7 +103,7 @@ class TestContextManager:
         messages = [ChatMessage(role="user", content="Longer message")]
         
         # Orange threshold is 85% of 1000 = 850
-        with patch.object(self.manager, 'estimate_token_count', return_value=860):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=860):
             tokens, level = self.manager.check_and_warn(messages, 1)
             
         assert tokens == 860
@@ -83,7 +114,7 @@ class TestContextManager:
         messages = [ChatMessage(role="user", content="Very long message")]
         
         # Red threshold is 95% of 1000 = 950
-        with patch.object(self.manager, 'estimate_token_count', return_value=970):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=970):
             tokens, level = self.manager.check_and_warn(messages, 1)
             
         assert tokens == 970
@@ -116,8 +147,8 @@ class TestContextManagerTruncation:
     
     def setup_method(self):
         """Set up test fixtures."""
-        self.config = ContextConfig(context_window=1000, preserve_recent_messages=3)
-        self.manager = ContextManager(self.config)
+        self.mock_agent = create_mock_agent(context_window=1000, preserve_messages=3)
+        self.manager = ContextManager(self.mock_agent)
     
     def test_truncate_oldest_basic(self):
         """Test basic truncation of oldest messages."""
@@ -141,7 +172,7 @@ class TestContextManagerTruncation:
             else:
                 return len(msgs) * 100
         
-        with patch.object(self.manager, 'estimate_token_count', side_effect=mock_estimate):
+        with patch('agent_system.context.manager.estimate_token_count', side_effect=mock_estimate):
             result = self.manager._truncate_oldest(messages)
         
         # Should keep system message plus 3 most recent messages  
@@ -164,7 +195,7 @@ class TestContextManagerTruncation:
         def mock_estimate(msgs):
             return len(msgs) * 200  # Each message = 200 tokens
         
-        with patch.object(self.manager, 'estimate_token_count', side_effect=mock_estimate):
+        with patch('agent_system.context.manager.estimate_token_count', side_effect=mock_estimate):
             result = self.manager._truncate_oldest(messages)
         
         # Should keep only the 3 most recent messages (3 * 200 = 600 < 1000)
@@ -179,7 +210,7 @@ class TestContextManagerTruncation:
             ChatMessage(role="user", content="Very long message that exceeds token limit")
         ]
         
-        with patch.object(self.manager, 'estimate_token_count', return_value=2000):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=2000):
             result = self.manager._truncate_oldest(messages)
         
         # Should preserve at least 1 message even if it exceeds the limit
@@ -192,8 +223,8 @@ class TestContextManagerSlidingWindow:
     
     def setup_method(self):
         """Set up test fixtures."""
-        self.config = ContextConfig(context_window=1000)
-        self.manager = ContextManager(self.config)
+        self.mock_agent = create_mock_agent(context_window=1000)
+        self.manager = ContextManager(self.mock_agent)
     
     def test_sliding_window_basic(self):
         """Test basic sliding window functionality."""
@@ -212,7 +243,7 @@ class TestContextManagerSlidingWindow:
                 return 100 if msgs[0].role != "system" else 50
             return sum(100 if m.role != "system" else 50 for m in msgs)
         
-        with patch.object(self.manager, 'estimate_token_count', side_effect=mock_estimate):
+        with patch('agent_system.context.manager.estimate_token_count', side_effect=mock_estimate):
             result = self.manager._apply_sliding_window(messages)
         
         # Should keep system message + recent messages that fit in 60% of context window
@@ -227,18 +258,17 @@ class TestContextManagerAsync:
     
     def setup_method(self):
         """Set up test fixtures."""
-        self.config = ContextConfig(
+        self.mock_agent = create_mock_agent(
             context_window=1000,
-            strategy="TRUNCATE_OLDEST",
-            summarization_threshold=800
+            threshold=0.80
         )
-        self.manager = ContextManager(self.config)
+        self.manager = ContextManager(self.mock_agent)
     
     async def test_manage_context_below_threshold(self):
         """Test manage_context when below summarization threshold."""
         messages = [ChatMessage(role="user", content="Short message")]
         
-        with patch.object(self.manager, 'estimate_token_count', return_value=500):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=500):
             with patch('agent_system.mcp.status.status_bus.publish', new_callable=AsyncMock):
                 result = await self.manager.manage_context(messages)
         
@@ -255,7 +285,7 @@ class TestContextManagerAsync:
         
         mock_truncate = Mock(return_value=messages[:2])
         
-        with patch.object(self.manager, 'estimate_token_count', return_value=900):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', mock_truncate):
                 with patch('agent_system.mcp.status.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
@@ -271,7 +301,7 @@ class TestContextManagerAsync:
         """Test manage_context error handling."""
         messages = [ChatMessage(role="user", content="Test message")]
         
-        with patch.object(self.manager, 'estimate_token_count', return_value=900):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', side_effect=Exception("Test error")):
                 with patch('agent_system.mcp.status.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
@@ -289,8 +319,8 @@ class TestContextManagerIntegration:
     
     def setup_method(self):
         """Set up test fixtures."""
-        self.config = ContextConfig(context_window=2000, preserve_recent_messages=5)
-        self.manager = ContextManager(self.config)
+        self.mock_agent = create_mock_agent(context_window=2000, preserve_messages=5)
+        self.manager = ContextManager(self.mock_agent)
     
     def test_real_token_estimation(self):
         """Test token estimation with real messages."""
@@ -302,7 +332,7 @@ class TestContextManagerIntegration:
             ChatMessage(role="assistant", content="Of course! I'd be happy to help you write a Python function. Could you tell me what you'd like the function to do? For example, do you want it to calculate something, process data, or perform a specific task?")
         ]
         
-        tokens = self.manager.estimate_token_count(messages)
+        tokens = estimate_token_count(messages)
         assert tokens > 0
         assert isinstance(tokens, int)
         

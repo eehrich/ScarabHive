@@ -220,7 +220,7 @@ class ContextManager:
             triggers_fired.append(f"RECENT_USAGE: Last call used {recent_usage:,} tokens >= {summarization_threshold:,} threshold")
 
         if level_trigger:
-            triggers_fired.append(f"WARNING_LEVEL: {current_level.value} level reached")
+            triggers_fired.append(f"WARNING_LEVEL: {current_level} level reached")
 
         if triggers_fired:
             logger.info("🔥 Context management triggered by: %s", " | ".join(triggers_fired))
@@ -387,7 +387,7 @@ class ContextManager:
     def _issue_warning(self, level: str, tokens: int, message_count: int):
         """Issue appropriate warning based on level. Warnings are for UI/logging only."""
         percentage = (tokens / self.context_window) * 100
-        threshold_tokens = self.config.get_warning_threshold_tokens(level)
+        threshold_tokens = int(self.context_window * self.config.warning_levels.get(level, 0.70))
 
         if level == "yellow":
             logger.warning(
@@ -410,7 +410,7 @@ class ContextManager:
             total_tokens=tokens,
             message_count=message_count,
             context_window=self.context_window,
-            warning_level=level.value
+            warning_level=level
         )
 
     def _truncate_oldest(self, messages: List[ChatMessage]) -> List[ChatMessage]:

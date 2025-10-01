@@ -1,21 +1,52 @@
 """Test context management fixes for infinite loop prevention."""
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from agent_system.context.manager import ContextManager
-from agent_system.config.models import ContextManagementConfig as ContextConfig
+from agent_system.config.models import (
+    ContextManagementConfig,
+    AgentSystemConfig,
+    MCPConfig,
+    AgentConfig,
+)
 from agent_system.context.summarizer import ConversationSummarizer
 from agent_system.llm.models import ChatMessage
+
+
+def create_mock_agent(context_window=1000, threshold=0.60, preserve_messages=3, strategy="SUMMARIZE_OLDEST"):
+    """Helper to create mock Agent with custom context config."""
+    mock_agent = MagicMock()
+    mock_agent.name = "test_agent"
+    
+    # Create nested config structure
+    context_mgmt = ContextManagementConfig(
+        enabled=True,
+        strategy=strategy,
+        summarization_threshold=threshold,
+        preserve_recent_messages=preserve_messages,
+    )
+    
+    agent_config = AgentConfig()
+    agent_config.context_management = context_mgmt
+    
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    system_config = AgentSystemConfig()
+    
+    mock_agent.mcp_config = mcp_config
+    mock_agent.system_config = system_config
+    mock_agent.llm = MagicMock()
+    mock_agent.llm.context_window = context_window
+    
+    return mock_agent
 
 
 @pytest.fixture
 def small_context_config():
     """Config with small context window for easy testing."""
-    return ContextConfig(
+    return create_mock_agent(
         context_window=1000,
-        summarization_threshold=600,  # 60%
-        prediction_threshold=0.8,  # 80%
-        preserve_recent_messages=3,
+        threshold=0.60,  # 60%
+        preserve_messages=3,
         strategy="SUMMARIZE_OLDEST"
     )
 

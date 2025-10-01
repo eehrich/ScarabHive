@@ -289,3 +289,103 @@ def mock_system_config():
 def mock_mcp_config():
     """Create a mock MCPConfig (dict-like) for plugin tests."""
     return {}
+
+
+@pytest.fixture
+def mock_agent_for_context_manager():
+    """Create a mock Agent instance for ContextManager testing with new config system.
+    
+    Returns a mock Agent that can be used to initialize ContextManager.
+    The agent has proper config structure: agent.mcp_config.agent_config.context_management
+    """
+    from unittest.mock import MagicMock
+    from agent_system.config.models import (
+        AgentSystemConfig,
+        MCPConfig,
+        AgentConfig,
+        ContextManagementConfig,
+    )
+    
+    # Create mock agent with proper nested config structure
+    mock_agent = MagicMock()
+    mock_agent.name = "test_agent"
+    
+    # Create default context management config
+    context_mgmt = ContextManagementConfig(
+        enabled=True,
+        strategy="SUMMARIZE_OLDEST",
+        summarization_threshold=0.80,
+        preserve_recent_messages=10,
+    )
+    
+    # Create agent config with context management
+    agent_config = AgentConfig()
+    agent_config.context_management = context_mgmt
+    
+    # Create MCP config with agent config
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    
+    # Create system config
+    system_config = AgentSystemConfig()
+    
+    # Attach configs to mock agent
+    mock_agent.mcp_config = mcp_config
+    mock_agent.system_config = system_config
+    
+    # Mock LLM with context window
+    mock_agent.llm = MagicMock()
+    mock_agent.llm.context_window = 32768
+    
+    return mock_agent
+
+
+@pytest.fixture
+def mock_agent_with_custom_context(request):
+    """Create a mock Agent with custom context configuration.
+    
+    Use via indirect parametrization:
+    @pytest.mark.parametrize('mock_agent_with_custom_context', [
+        {'context_window': 1000, 'threshold': 0.70}
+    ], indirect=True)
+    """
+    from unittest.mock import MagicMock
+    from agent_system.config.models import (
+        AgentSystemConfig,
+        MCPConfig,
+        AgentConfig,
+        ContextManagementConfig,
+    )
+    
+    # Get custom params from indirect parametrization
+    params = getattr(request, 'param', {})
+    context_window = params.get('context_window', 32768)
+    threshold = params.get('summarization_threshold', 0.80)
+    strategy = params.get('strategy', 'SUMMARIZE_OLDEST')
+    preserve_messages = params.get('preserve_recent_messages', 10)
+    
+    # Create mock agent
+    mock_agent = MagicMock()
+    mock_agent.name = "test_agent"
+    
+    # Create custom context management config
+    context_mgmt = ContextManagementConfig(
+        enabled=True,
+        strategy=strategy,
+        summarization_threshold=threshold,
+        preserve_recent_messages=preserve_messages,
+    )
+    
+    agent_config = AgentConfig()
+    agent_config.context_management = context_mgmt
+    
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    system_config = AgentSystemConfig()
+    
+    mock_agent.mcp_config = mcp_config
+    mock_agent.system_config = system_config
+    
+    # Mock LLM with custom context window
+    mock_agent.llm = MagicMock()
+    mock_agent.llm.context_window = context_window
+    
+    return mock_agent

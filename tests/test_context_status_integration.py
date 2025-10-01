@@ -1,11 +1,43 @@
 """Tests for StatusEvent integration in context management."""
 
 import pytest
-from unittest.mock import AsyncMock, patch, Mock
+from unittest.mock import AsyncMock, patch, Mock, MagicMock
 from agent_system.context.manager import ContextManager
-from agent_system.config.models import ContextManagementConfig as ContextConfig
+from agent_system.config.models import (
+    ContextManagementConfig,
+    AgentSystemConfig,
+    MCPConfig,
+    AgentConfig,
+)
 from agent_system.llm.models import ChatMessage
 from agent_system.mcp.status import StatusPhase
+
+
+def create_mock_agent(context_window=1000, threshold=0.80, strategy="TRUNCATE_OLDEST", preserve_messages=5):
+    """Helper to create mock Agent with custom context config."""
+    mock_agent = MagicMock()
+    mock_agent.name = "test_agent"
+    
+    # Create nested config structure
+    context_mgmt = ContextManagementConfig(
+        enabled=True,
+        strategy=strategy,
+        summarization_threshold=threshold,
+        preserve_recent_messages=preserve_messages,
+    )
+    
+    agent_config = AgentConfig()
+    agent_config.context_management = context_mgmt
+    
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    system_config = AgentSystemConfig()
+    
+    mock_agent.mcp_config = mcp_config
+    mock_agent.system_config = system_config
+    mock_agent.llm = MagicMock()
+    mock_agent.llm.context_window = context_window
+    
+    return mock_agent
 
 
 class TestContextStatusIntegration:
@@ -13,12 +45,12 @@ class TestContextStatusIntegration:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.config = ContextConfig(
+        self.mock_agent = create_mock_agent(
             context_window=1000,
-            strategy="TRUNCATE_OLDEST",
-            summarization_threshold=800
+            threshold=0.80,
+            strategy="TRUNCATE_OLDEST"
         )
-        self.manager = ContextManager(self.config)
+        self.manager = ContextManager(self.mock_agent)
 
     @pytest.mark.asyncio
     async def test_context_management_full_status_flow(self):
@@ -87,12 +119,12 @@ class TestContextStatusIntegration:
         """Test status events from summarizer integration."""
 
         # Create manager with summarizer strategy and low threshold for testing
-        config = ContextConfig(
+        mock_agent = create_mock_agent(
             context_window=1000,
-            strategy="SUMMARIZE_OLDEST",
-            summarization_threshold=800
+            threshold=0.80,
+            strategy="SUMMARIZE_OLDEST"
         )
-        manager = ContextManager(config)
+        manager = ContextManager(mock_agent)
 
         # Mock summarizer
         mock_summarizer = Mock()
@@ -165,8 +197,8 @@ class TestStatusEventMetadata:
     @pytest.mark.asyncio
     async def test_context_manager_metadata_structure(self):
         """Test context manager status event metadata structure."""
-        config = ContextConfig(context_window=1000)
-        manager = ContextManager(config)
+        mock_agent = create_mock_agent(context_window=1000)
+        manager = ContextManager(mock_agent)
         messages = [ChatMessage(role="user", content="Test")]
 
         with patch.object(manager, 'estimate_token_count', return_value=900):
@@ -224,8 +256,8 @@ class TestStatusEventErrorHandling:
     @pytest.mark.asyncio
     async def test_status_publish_failure_resilience(self):
         """Test that status publishing failures don't break context management."""
-        config = ContextConfig(context_window=1000)
-        manager = ContextManager(config)
+        mock_agent = create_mock_agent(context_window=1000)
+        manager = ContextManager(mock_agent)
         messages = [ChatMessage(role="user", content="Test")]
 
         with patch.object(manager, 'estimate_token_count', return_value=900):
@@ -241,8 +273,8 @@ class TestStatusEventErrorHandling:
     @pytest.mark.asyncio
     async def test_error_status_event_content(self):
         """Test error status event contains proper error information."""
-        config = ContextConfig(context_window=1000)
-        manager = ContextManager(config)
+        mock_agent = create_mock_agent(context_window=1000)
+        manager = ContextManager(mock_agent)
         messages = [ChatMessage(role="user", content="Test")]
 
         test_error = Exception("Custom test error")
@@ -260,7 +292,7 @@ class TestStatusEventErrorHandling:
         assert error_call[0][0].level == 'error'
         assert 'Custom test error' in error_call[0][0].message
         assert error_call[0][0].meta['error'] == 'Custom test error'
-        assert error_call[0][0].meta['strategy'] == config.strategy.value
+        assert error_call[0][0].meta['strategy'] == manager.config.strategy.value
 
 
 class TestStatusEventMessageContent:
@@ -269,8 +301,8 @@ class TestStatusEventMessageContent:
     @pytest.mark.asyncio
     async def test_status_messages_are_descriptive(self):
         """Test that status messages contain useful information."""
-        config = ContextConfig(context_window=1000)
-        manager = ContextManager(config)
+        mock_agent = create_mock_agent(context_window=1000)
+        manager = ContextManager(mock_agent)
         messages = [ChatMessage(role="user", content="Test message")]
 
         with patch.object(manager, 'estimate_token_count', return_value=900):

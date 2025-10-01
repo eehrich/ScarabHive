@@ -1,9 +1,42 @@
 """Tests for improved token estimation logic in ContextManager."""
 
 import pytest
-from src.agent_system.context.manager import ContextManager
-from src.agent_system.context.config import ContextConfig
-from src.agent_system.llm.models import ChatMessage
+from unittest.mock import MagicMock
+from agent_system.context.manager import ContextManager
+from agent_system.config.models import (
+    ContextManagementConfig,
+    AgentSystemConfig,
+    MCPConfig,
+    AgentConfig,
+)
+from agent_system.llm.models import ChatMessage
+
+
+def create_mock_agent(context_window=4096):
+    """Helper to create mock Agent with custom context config."""
+    mock_agent = MagicMock()
+    mock_agent.name = "test_agent"
+    
+    # Create nested config structure
+    context_mgmt = ContextManagementConfig(
+        enabled=True,
+        strategy="TRUNCATE_OLDEST",
+        summarization_threshold=0.80,
+        preserve_recent_messages=5,
+    )
+    
+    agent_config = AgentConfig()
+    agent_config.context_management = context_mgmt
+    
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    system_config = AgentSystemConfig()
+    
+    mock_agent.mcp_config = mcp_config
+    mock_agent.system_config = system_config
+    mock_agent.llm = MagicMock()
+    mock_agent.llm.context_window = context_window
+    
+    return mock_agent
 
 
 class TestContextTokenEstimation:
@@ -12,8 +45,8 @@ class TestContextTokenEstimation:
     @pytest.fixture
     def context_manager(self):
         """Create a ContextManager for testing."""
-        config = ContextConfig(context_window=4096)
-        return ContextManager(config)
+        mock_agent = create_mock_agent(context_window=4096)
+        return ContextManager(mock_agent)
 
     def test_estimate_content_tokens_natural_language(self, context_manager):
         """Test token estimation for natural language content."""
