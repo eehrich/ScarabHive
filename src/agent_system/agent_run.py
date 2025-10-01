@@ -22,17 +22,50 @@ import sys
 
 from .config.settings import load_settings, get_mcp_config_by_name
 from .mcp.base import MCPRegistry
+from .mcp.status import status_bus
 from .servers.agent.server import Agent
 
 
 logger = logging.getLogger(__name__)
 
+# Global color mode
+color_mode: str = "auto"
 
-def setup_basic_logging() -> None:
-    """Setup basic logging for the agent runner."""
+
+def _supports_color() -> bool:
+    """Return whether ANSI color sequences should be used.
+
+    Honors the global `color_mode` which can be set to 'auto',
+    'always' or 'never'. In 'auto' mode this checks stdout.isatty().
+    """
+    if color_mode == "never":
+        return False
+    if color_mode == "always":
+        return True
+    # auto
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _colorize(text: str, color_code: str) -> str:
+    """Wrap text in ANSI color codes when supported."""
+    if not _supports_color():
+        return text
+    return f"\x1b[{color_code}m{text}\x1b[0m"
+
+
+def setup_basic_logging(verbose: bool = False) -> None:
+    """Setup basic logging for the agent runner.
+    
+    Args:
+        verbose: If True, set level to DEBUG. Otherwise WARNING.
+    """
+    level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(levelname)s: %(message)s',
+        level=level,
+        format='%(levelname)s: %(message)s' if not verbose else '%(levelname)s: %(name)s: %(message)s',
         handlers=[logging.StreamHandler(sys.stdout)]
     )
 
@@ -97,8 +130,14 @@ async def run_agent_request(agent: Agent, request: str) -> dict:
         raise
 
 
-async def main_async(request: str, agent_name: str | None = None) -> None:
-    """Main async function to execute the agent request."""
+async def main_async(request: str, agent_name: str | None = None, show_status: bool = True) -> None:
+    """Main async function to execute the agent request.
+    
+    Args:
+        request: The user's request/question
+        agent_name: Optional agent name to use (defaults to config.default_agent)
+        show_status: Whether to display status messages (default: True)
+    """
     try:
         # Load configuration
         logger.info("Loading configuration...")
@@ -118,9 +157,61 @@ async def main_async(request: str, agent_name: str | None = None) -> None:
         logger.info("Creating agent...")
         agent = await create_agent(config, registry, agent_name)
         
+        # Subscribe to status events if enabled
+        status_queue = None
+        status_task = None
+        if show_status:
+            status_queue = await status_bus.subscribe()
+            
+            async def _status_subscriber():
+                """Subscribe to local status events and display them"""
+                if not status_queue:
+                    return
+                try:
+                    while True:
+                        event = await status_queue.get()
+                        # Display status event in a clean format using StatusEvent format
+                        phase = event.phase.value if hasattr(event.phase, 'value') else str(event.phase)
+                        phase_disp = phase
+                        if _supports_color():
+                            phase_color_map = {
+                                "start": "36",      # cyan
+                                "progress": "34",   # blue
+                                "end": "32",        # green
+                                "error": "31",      # red
+                            }
+                            c = phase_color_map.get(phase, "34")
+                            phase_disp = _colorize(phase, c)
+
+                        server_col = event.server
+                        txt = event.message
+                        status_line = f"[{phase_disp}] {server_col}: {txt}"
+
+                        # Error phase should be red
+                        if phase == "error" and _supports_color():
+                            status_line = _colorize(status_line, "31")
+                        print(status_line, file=sys.stderr)  # Status to stderr
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    return
+            
+            status_task = asyncio.create_task(_status_subscriber())
+        
         # Execute the request
         logger.info("Executing request...")
-        result = await run_agent_request(agent, request)
+        try:
+            result = await run_agent_request(agent, request)
+        finally:
+            # Cancel status subscriber
+            if status_task:
+                status_task.cancel()
+                try:
+                    await status_task
+                except asyncio.CancelledError:
+                    pass
+            if status_queue:
+                status_bus.unsubscribe(status_queue)  # Not async!
         
         # Print the result
         print("\n" + "="*50)
@@ -158,6 +249,8 @@ Examples:
     agent-run "What's the weather like today?"
     agent-run "Search for information about Python MCP protocol"
     agent-run "Help me analyze this data: [1, 2, 3, 4, 5]"
+    agent-run --no-status "What time is it?"
+    agent-run --no-color "Tell me a joke"
         """
     )
     
@@ -169,7 +262,7 @@ Examples:
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Enable verbose logging"
+        help="Enable verbose logging (DEBUG level)"
     )
     
     parser.add_argument(
@@ -177,21 +270,51 @@ Examples:
         help="Override the default agent (use agent name from config)"
     )
     
+    parser.add_argument(
+        "--color",
+        choices=["auto", "always", "never"],
+        default="always",
+        help="Control color output (default: always)"
+    )
+    
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable color output (same as --color=never)"
+    )
+    
+    parser.add_argument(
+        "--no-status",
+        action="store_true",
+        help="Disable status messages during execution"
+    )
+    
     args = parser.parse_args()
     
-    # Setup logging
-    if args.verbose:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format='%(levelname)s: %(name)s: %(message)s',
-            handlers=[logging.StreamHandler(sys.stdout)]
-        )
+    # Set color mode globally
+    global color_mode
+    if args.no_color:
+        color_mode = "never"
     else:
-        setup_basic_logging()
+        color_mode = args.color
+    
+    # Initialize colorama on Windows for ANSI color support
+    try:
+        if color_mode != "never" and sys.stdout.isatty():
+            import colorama
+            colorama.init()
+    except Exception:
+        pass
+    
+    # Setup logging
+    setup_basic_logging(verbose=args.verbose)
+    
+    # Determine whether to show status
+    show_status = not args.no_status
     
     # Run the async main function
     try:
-        asyncio.run(main_async(args.request, args.agent))
+        asyncio.run(main_async(args.request, args.agent, show_status))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(130)
