@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from agent_system.mcp.core import (
     MCPServer, MCPClient, MCPTool,
-    MCPMessage, MCPError, MCPCapability, MCPRegistry, MCPTransport
+    MCPMessage, MCPError, MCPCapability, MCPTransport
 )
 
 
@@ -109,11 +109,6 @@ def mock_server():
 @pytest.fixture
 def mock_client(mock_transport):
     return MockMCPClient(mock_transport)
-
-
-@pytest.fixture
-def registry():
-    return MCPRegistry()
 
 
 class TestMCPMessage:
@@ -279,23 +274,4 @@ class TestMCPTransport:
         assert received.method == "test"
 
 
-class TestMCPRegistry:
-    """Test MCP registry functionality"""
-
-    def test_register_server(self, registry, mock_server):
-        registry.register_server("test", mock_server)
-
-        assert "test" in registry.list_servers()
-        assert registry.get_server("test") == mock_server
-
-    def test_register_client(self, registry, mock_client):
-        registry.register_client("test", mock_client)
-
-        assert "test" in registry.list_clients()
-        assert registry.get_client("test") == mock_client
-
-    def test_get_nonexistent_server(self, registry):
-        assert registry.get_server("nonexistent") is None
-
-    def test_get_nonexistent_client(self, registry):
-        assert registry.get_client("nonexistent") is None
+# MCPRegistry tests removed - using base.MCPRegistry instead which is tested in other files
