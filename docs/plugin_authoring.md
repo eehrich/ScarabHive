@@ -79,25 +79,38 @@ entrypoint: server:HelloWorldServer
 **Step 3: Create `server.py`**
 ```python
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.config import AgentSystemConfig, MCPConfig
 
 class HelloWorldServer(SchemaBasedMCPServer):
-    def __init__(self, name, config, ssl_verify=True):
-        super().__init__(name, config, ssl_verify)
+    """Simple hello world plugin demonstrating modern API."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        """
+        Modern constructor signature.
         
-        # Read configuration with defaults
-        self.greeting_prefix = self.config.get("greeting_prefix", "Hello")
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration from config.mcp_system.servers[name]
+        """
+        super().__init__(name, system_config, mcp_config)
+        
+        # Extract plugin-specific configuration from mcp_config
+        self.greeting_prefix = mcp_config.get("greeting_prefix", "Hello")
         
         # Log effective configuration
         self.logger.info(f"HelloWorld configured: prefix='{self.greeting_prefix}'")
     
-    async def call(self, tool: str, params: dict):
-        if tool == "say_hello":
-            name = params.get("name", "World")
-            return {
-                "status": "success", 
-                "message": f"{self.greeting_prefix}, {name}!"
-            }
-        return {"status": "error", "error": f"Unknown tool: {tool}"}
+    async def say_hello(self, params: dict) -> dict:
+        """
+        Tool method - automatically called by generic dispatcher.
+        Method name MUST match tool name in schema.yaml exactly.
+        """
+        name = params.get("name", "World")
+        return {
+            "status": "success", 
+            "message": f"{self.greeting_prefix}, {name}!"
+        }
 
 PLUGIN_FACTORY = HelloWorldServer
 ```
@@ -539,43 +552,68 @@ web_ui:
 
 The server is the core of your plugin. It handles tool routing, validation, and execution.
 
+### Modern Plugin Pattern (Recommended)
+
+**Key Principles:**
+1. **Modern Constructor**: `(name, system_config, mcp_config)` signature
+2. **No Manual Routing**: Remove `call()` override - use generic dispatcher
+3. **Tool Methods**: Implement methods matching tool names exactly
+4. **Type Hints**: Use modern Python type hints (`| None` instead of `Optional[]`)
+5. **Configuration**: Extract from `mcp_config` (plugin-specific) and `system_config` (system-wide)
+
 ### Method 1: Schema-Based Server (Recommended)
 
-Use `SchemaBasedMCPServer` for automatic schema loading and consistent behavior:
+Use `SchemaBasedMCPServer` for automatic schema loading and generic dispatching:
 
 ```python
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.config import AgentSystemConfig, MCPConfig
 
 class WebScrapingServer(SchemaBasedMCPServer):
-    def __init__(self, name, config, ssl_verify=True):
-        super().__init__(name, config, ssl_verify)
+    """Modern schema-based plugin with automatic tool routing."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        """
+        Modern constructor signature.
         
-        # Read configuration with validation
-        self.timeout = float(self.config.get("timeout", 30))
-        self.user_agent = self.config.get("user_agent", "AgentSystem/1.0")
-        self.max_retries = int(self.config.get("max_retries", 3))
+        Args:
+            name: Plugin instance name (used for tool prefixing in schema templates)
+            system_config: System-wide configuration (ports, paths, etc.)
+            mcp_config: Plugin-specific configuration from config.mcp_system.servers[name]
+        """
+        super().__init__(name, system_config, mcp_config)
         
+        # Extract plugin-specific configuration from mcp_config
+        self.timeout = float(mcp_config.get("timeout", 30))
+        self.user_agent = mcp_config.get("user_agent", "AgentSystem/1.0")
+        self.max_retries = int(mcp_config.get("max_retries", 3))
+        
+        # Validate configuration
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
         
+        # System-wide config examples (optional)
+        self.base_url = system_config.api_base_url if hasattr(system_config, 'api_base_url') else None
+        
         # Log effective configuration
-        self.logger.info(f"WebScraping configured: timeout={self.timeout}, "
-                        f"user_agent={self.user_agent}, max_retries={self.max_retries}")
+        self.logger.info(
+            f"WebScraping configured: timeout={self.timeout}, "
+            f"user_agent={self.user_agent}, max_retries={self.max_retries}"
+        )
 
-    async def call(self, tool: str, params: dict) -> dict:
-        """Route tool calls to appropriate handlers."""
-        if tool == "fetch_url":
-            return await self._fetch_url(params)
-        elif tool == "parse_html":
-            return await self._parse_html(params)
-        else:
-            return {"status": "error", "error": f"Unknown tool: {tool}"}
-
-    async def _fetch_url(self, params: dict) -> dict:
-        """Fetch content from a URL."""
+    # Tool methods - automatically called by generic dispatcher
+    # Method names MUST match tool names in schema.yaml exactly!
+    
+    async def fetch_url(self, params: dict) -> dict:
+        """
+        Fetch content from a URL.
+        
+        This method is automatically called when the 'fetch_url' tool is invoked.
+        No manual routing needed - MCPServer.call() dispatches automatically.
+        """
         url = params["url"]
         
-        # Extract runtime parameters
+        # Extract runtime parameters (automatically injected by framework)
         status = params.get("_status")
         token = params.get("_cancellation_token")
         request_id = params.get("request_id")
@@ -588,11 +626,15 @@ class WebScrapingServer(SchemaBasedMCPServer):
             return {"status": "cancelled", "request_id": request_id}
         
         try:
-            # Implementation with proper error handling...
             import aiohttp
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(self.timeout)) as session:
-                async with session.get(url, headers={"User-Agent": self.user_agent}) as response:
+            timeout_cfg = aiohttp.ClientTimeout(total=self.timeout)
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+                headers = {"User-Agent": self.user_agent}
+                async with session.get(url, headers=headers) as response:
                     content = await response.text()
+                    
+            if status:
+                await status.complete(f"Fetched {len(content)} bytes from {url}")
                     
             return {
                 "status": "success", 
@@ -603,9 +645,58 @@ class WebScrapingServer(SchemaBasedMCPServer):
         except Exception as e:
             if status:
                 await status.error(f"Failed to fetch {url}: {e}")
-            return {"status": "error", "error": str(e), "request_id": request_id}
+            self.logger.error(f"fetch_url failed: {e}", exc_info=True)
+            return {
+                "status": "error", 
+                "error": str(e), 
+                "request_id": request_id
+            }
+    
+    async def parse_html(self, params: dict) -> dict:
+        """
+        Parse HTML content.
+        
+        Another tool method - also automatically routed by generic dispatcher.
+        """
+        html = params["html"]
+        
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            return {
+                "status": "success",
+                "title": soup.title.string if soup.title else None,
+                "text": soup.get_text(strip=True)
+            }
+        except Exception as e:
+            self.logger.error(f"parse_html failed: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
 
 PLUGIN_FACTORY = WebScrapingServer
+```
+
+**How the Generic Dispatcher Works:**
+
+1. Agent calls tool: `await server.call("fetch_url", {"url": "https://example.com"})`
+2. MCPServer.call() receives request
+3. Generic dispatcher looks for method named `fetch_url`
+4. Automatically invokes `self.fetch_url(params)`
+5. Returns result to caller
+
+**No manual `call()` override needed!** The base class handles all routing automatically.
+
+**Method Naming Rule:**
+- Tool name in `schema.yaml`: `fetch_url`
+- Method name in server: `async def fetch_url(self, params: dict)`
+- They MUST match exactly for automatic routing to work
+
+**Schema Template Constraint:**
+If using `{{ name }}` templates in schema (e.g., `{{ name }}_calculator`), your method must match the resolved name:
+```python
+# schema.yaml: {{ name }}_calculator
+# Plugin instantiated as: ExampleServer("example", ...)
+# Method must be named: async def example_calculator(self, params: dict)
 ```
 
 ### Method 2: Web-Only Plugin
@@ -621,13 +712,16 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 from agent_system.plugins.web_adapter import PluginWebInterface
+from agent_system.config import AgentSystemConfig, MCPConfig
 
 class DashboardWebEndpoints(PluginWebInterface):
     """Web endpoints for dashboard plugin"""
     
-    def __init__(self, name: str, config: dict):
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        """Modern constructor signature for web-only plugins."""
         self.name = name
-        self.config = config
+        self.system_config = system_config
+        self.mcp_config = mcp_config
         
         # Setup templates
         template_dir = Path(__file__).parent / "templates"
@@ -691,12 +785,14 @@ class DashboardWebEndpoints(PluginWebInterface):
 
 # src/plugins/my_dashboard/plugin.py
 from .endpoints import DashboardWebEndpoints
+from agent_system.config import AgentSystemConfig, MCPConfig
 
 class DashboardPlugin:
     """Web-only plugin (no MCP server)"""
     
-    def __init__(self, name: str, config: dict, ssl_verify: bool = True):
-        self.web_endpoints = DashboardWebEndpoints(name, config)
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        """Modern constructor - matches MCP server signature."""
+        self.web_endpoints = DashboardWebEndpoints(name, system_config, mcp_config)
     
     # Web interface delegation
     def get_web_router(self):
@@ -770,21 +866,28 @@ For plugins that provide both MCP tools and web interfaces:
 ```python
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.plugins.web_adapter import PluginWebInterface
+from agent_system.config import AgentSystemConfig, MCPConfig
 from fastapi import APIRouter
 from pathlib import Path
 
 class MyMCPServer(SchemaBasedMCPServer):
-    """MCP server component"""
-    async def call(self, tool: str, params: dict):
-        if tool == "my_tool":
-            return {"status": "success", "result": "MCP result"}
-        return {"status": "error", "error": f"Unknown tool: {tool}"}
+    """MCP server component with modern signature."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        super().__init__(name, system_config, mcp_config)
+    
+    # Tool methods - automatically routed by generic dispatcher
+    async def my_tool(self, params: dict) -> dict:
+        """Tool method matching 'my_tool' in schema.yaml."""
+        return {"status": "success", "result": "MCP result"}
 
 class MyWebEndpoints(PluginWebInterface):
-    """Web endpoints component"""
-    def __init__(self, name: str, config: dict):
+    """Web endpoints component with modern signature."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         self.name = name
-        self.config = config
+        self.system_config = system_config
+        self.mcp_config = mcp_config
 
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router with custom endpoints"""
@@ -811,27 +914,111 @@ class MyWebEndpoints(PluginWebInterface):
         }]
 
 class MyHybridPlugin:
-    """Hybrid plugin combining MCP and web capabilities"""
-    def __init__(self, name: str, config: dict, ssl_verify: bool = True):
-        self.mcp_server = MyMCPServer(name, config, ssl_verify)
-        self.web_endpoints = MyWebEndpoints(name, config)
+    """Hybrid plugin combining MCP and web capabilities."""
+    
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        """Modern constructor signature for hybrid plugins."""
+        self.mcp_server = MyMCPServer(name, system_config, mcp_config)
+        self.web_endpoints = MyWebEndpoints(name, system_config, mcp_config)
     
     # MCP interface delegation
     async def call(self, tool: str, params: dict):
+        """Delegate to MCP server - generic dispatcher handles routing."""
         return await self.mcp_server.call(tool, params)
     
     def get_tools(self):
+        """Delegate to MCP server for tool discovery."""
         return self.mcp_server.get_tools()
     
     # Web interface delegation  
     def get_web_router(self):
+        """Delegate to web endpoints for router."""
         return self.web_endpoints.get_web_router()
     
     def get_panels(self):
+        """Delegate to web endpoints for UI panels."""
         return self.web_endpoints.get_panels()
 
 PLUGIN_FACTORY = MyHybridPlugin
 ```
+
+### Modern Plugin Pattern Summary
+
+**Key Changes from Legacy Pattern:**
+
+1. **Constructor Signature**
+   - ✅ Modern: `(name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig)`
+   - ❌ Legacy: `(name: str, config: dict, ssl_verify: bool = True)`
+
+2. **Tool Routing**
+   - ✅ Modern: Implement methods matching tool names, let generic dispatcher route
+   - ❌ Legacy: Override `call()` with manual if/elif routing logic
+
+3. **Type Hints**
+   - ✅ Modern: Use `| None` for optional types
+   - ❌ Legacy: Use `Optional[]` from typing module
+
+4. **Configuration Access**
+   - ✅ Modern: Extract from `mcp_config` (plugin-specific) and `system_config` (system-wide)
+   - ❌ Legacy: Access `self.config` dictionary
+
+5. **Method Naming**
+   - ✅ Modern: Method names MUST match tool names exactly (e.g., `async def fetch_url(self, params)`)
+   - ❌ Legacy: Private methods with manual routing (e.g., `async def _fetch_url(self, params)`)
+
+**Benefits:**
+- **Less Boilerplate**: No need for 20+ lines of if/elif routing code
+- **Type Safety**: Modern type hints with better IDE support
+- **Clear Configuration**: Separation between system and plugin config
+- **Automatic Routing**: Generic dispatcher eliminates routing bugs
+- **Easier Testing**: Test methods directly, no routing layer to mock
+
+**Example Comparison:**
+
+```python
+# ❌ Legacy Pattern (Don't use)
+class OldPlugin(SchemaBasedMCPServer):
+    def __init__(self, name, config, ssl_verify=True):
+        super().__init__(name, config, ssl_verify)
+        self.timeout = self.config.get("timeout", 30)
+    
+    async def call(self, tool: str, params: dict):
+        if tool == "fetch_url":
+            return await self._fetch_url(params)
+        elif tool == "parse_html":
+            return await self._parse_html(params)
+        else:
+            return {"status": "error", "error": f"Unknown tool: {tool}"}
+    
+    async def _fetch_url(self, params: dict):
+        # Implementation...
+        pass
+
+# ✅ Modern Pattern (Use this)
+class ModernPlugin(SchemaBasedMCPServer):
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        super().__init__(name, system_config, mcp_config)
+        self.timeout = mcp_config.get("timeout", 30)
+    
+    # No call() override needed - generic dispatcher handles routing!
+    
+    async def fetch_url(self, params: dict) -> dict:
+        """Method name matches tool name - automatically routed."""
+        # Implementation...
+        pass
+    
+    async def parse_html(self, params: dict) -> dict:
+        """Another tool - also automatically routed."""
+        # Implementation...
+        pass
+```
+
+**Critical Rules:**
+1. Method names MUST match tool names in `schema.yaml` exactly
+2. If using `{{ name }}` in schema templates, plugin instance name must match method prefixes
+3. No manual `call()` override - let the generic dispatcher work
+4. Extract config from `mcp_config`, not `self.config`
+5. Use modern type hints (`| None` not `Optional[]`)
 
 ## Agent-Based Plugins
 
@@ -896,41 +1083,55 @@ dependencies:
 **3. Agent Implementation (`server.py`):**
 ```python
 from agent_system.agent.agent import Agent
-from agent_system.plugins.schema_loader import SchemaBasedMCPServer
+from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 
 class MyAgent(Agent):
     """Agent-based plugin with full conversation capabilities."""
     
-    def __init__(self, name: str, config: dict, ssl_verify: bool = True):
-        super().__init__(name=name, config=config, ssl_verify=ssl_verify)
-        self.schema_server = SchemaBasedMCPServer(name, schema_file="schema.yaml")
+    def __init__(
+        self, 
+        name: str, 
+        system_config: AgentSystemConfig, 
+        mcp_config: MCPConfig,
+        registry=None,
+        llm=None,
+        llm_factory=None
+    ):
+        """
+        Modern constructor for agent-based plugins.
+        
+        Note: Agent plugins have additional parameters (registry, llm, llm_factory)
+        beyond the standard plugin signature.
+        """
+        super().__init__(
+            name=name, 
+            system_config=system_config,
+            mcp_config=mcp_config,
+            registry=registry,
+            llm=llm,
+            llm_factory=llm_factory
+        )
+        self.schema_server = SchemaBasedMCPServer(name, system_config, mcp_config)
         
     async def get_tools(self):
         """Return available tools from schema."""
         return await self.schema_server.list_tools()
     
-    async def call(self, tool: str, params: dict):
-        """Handle tool calls with agent context."""
+    # Tool methods - automatically routed by generic dispatcher
+    
+    async def execute_task(self, params: dict) -> dict:
+        """
+        Execute complex task using agent capabilities.
+        Method name matches tool name in schema.yaml.
+        """
+        task = params["task"]
+        
         # Extract runtime parameters
         status = params.get("_status")
         token = params.get("_cancellation_token")
         request_id = params.get("request_id") or params.get("requestId")
-        
-        if status:
-            await status.update(f"Executing {tool}")
-        
-        # Route to appropriate handler
-        if tool.endswith("_execute_task"):
-            return await self._execute_task(params, status, token, request_id)
-        elif tool.endswith("_list_tools"):
-            return await self._list_available_tools()
-        else:
-            raise ValueError(f"Unknown tool: {tool}")
-    
-    async def _execute_task(self, params: dict, status, token, request_id: str):
-        """Execute complex task using agent capabilities."""
-        task = params["task"]
         context = params.get("context", "")
         
         if status:
@@ -1033,9 +1234,11 @@ tbd.
 
 For MCP-enabled plugins, your server class must implement:
 
-1. **`__init__(self, name, config, ssl_verify=True)`** - Constructor
-2. **`async def call(self, tool: str, params: dict)`** - Tool execution
-3. **`async def list_tools(self)`** - Return available tools (or inherit from SchemaBasedMCPServer)
+1. **Constructor**: `__init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig)`
+2. **Tool Methods**: Implement methods matching tool names from `schema.yaml` (e.g., `async def fetch_url(self, params: dict)`)
+3. **Tool Discovery**: Inherit from `SchemaBasedMCPServer` for automatic `list_tools()` or implement manually
+
+**No `call()` override needed** - the generic dispatcher in `MCPServer` automatically routes tool calls to matching methods.
 
 ### Runtime Parameters
 
@@ -1045,7 +1248,7 @@ The agent passes these special parameters in `params`:
 - **`_cancellation_token`**: CancellationToken for cooperative cancellation  
 - **`request_id`/`requestId`**: String for correlation and logging
 
-Always extract these early in your tool handlers:
+Always extract these early in your tool methods:
 
 ```python
 async def _my_tool(self, params: dict):
@@ -1506,18 +1709,24 @@ servers:
 ### Reading Configuration in Your Plugin
 
 ```python
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.config import AgentSystemConfig, MCPConfig
+
 class WebScraperServer(SchemaBasedMCPServer):
-    def __init__(self, name, config, ssl_verify=True):
-        super().__init__(name, config, ssl_verify)
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        super().__init__(name, system_config, mcp_config)
         
-        # Read configuration with defaults
-        self.timeout = float(self.config.get("timeout", 30))
-        self.user_agent = self.config.get("user_agent", "AgentSystem/1.0")
-        self.max_retries = int(self.config.get("max_retries", 3))
+        # Extract plugin-specific configuration from mcp_config
+        self.timeout = float(mcp_config.get("timeout", 30))
+        self.user_agent = mcp_config.get("user_agent", "AgentSystem/1.0")
+        self.max_retries = int(mcp_config.get("max_retries", 3))
         
         # Validate configuration
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
+        
+        # Access system-wide configuration (optional)
+        # system_config.api_base_url, system_config.log_level, etc.
         
         # Log effective configuration
         self.logger.info(
@@ -1532,18 +1741,20 @@ For sensitive configuration, use environment variables:
 
 ```python
 import os
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.config import AgentSystemConfig, MCPConfig
 
 class APIClientServer(SchemaBasedMCPServer):
-    def __init__(self, name, config, ssl_verify=True):
-        super().__init__(name, config, ssl_verify)
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        super().__init__(name, system_config, mcp_config)
         
         # Sensitive config from environment
         self.api_key = os.getenv("API_CLIENT_KEY")
         if not self.api_key:
             raise ValueError("API_CLIENT_KEY environment variable required")
         
-        # Non-sensitive config from mcp.yaml
-        self.base_url = self.config.get("base_url", "https://api.example.com")
+        # Non-sensitive config from mcp_config
+        self.base_url = mcp_config.get("base_url", "https://api.example.com")
 ```
 
 ## Testing and Quality Assurance

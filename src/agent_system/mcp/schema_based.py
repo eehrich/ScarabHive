@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 import importlib.util
 
 from .base import MCPServer
+
+if TYPE_CHECKING:
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +27,15 @@ class SchemaBasedMCPServer(MCPServer):
     
     Plugins can simply inherit from this class and their schema.yaml file
     will be automatically loaded and parsed.
-    """
     
-    if TYPE_CHECKING:
-        from agent_system.config.models import AgentConfig
+    The generic call() dispatcher in MCPServer will automatically route
+    tool calls to methods matching the tool names.
+    """
 
-    def __init__(self, name: str, agent_config: AgentConfig):
-        super().__init__(name, agent_config)
-        self._tools_cache: Optional[list[dict[str, Any]]] = None
-        self._schema_cache: Optional[dict[str, Any]] = None
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+        super().__init__(name, system_config, mcp_config)
+        self._tools_cache: list[dict[str, Any]] | None = None
+        self._schema_cache: dict[str, Any] | None = None
     
     def _get_plugin_directory(self) -> Path:
         """Get the directory containing the plugin module.
