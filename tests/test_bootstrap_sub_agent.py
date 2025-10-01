@@ -1,7 +1,7 @@
 """
 Integration test for Agent bootstrap functionality.
 """
-from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+from agent_system.config.models import AgentSystemConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.servers.agent.server import Agent
@@ -21,7 +21,7 @@ def create_test_config(**overrides):
         )
     }
     base_config.update(overrides)
-    return AgentConfig(**base_config)
+    return AgentSystemConfig(**base_config)
 
 
 class TestBootstrapSubAgent:

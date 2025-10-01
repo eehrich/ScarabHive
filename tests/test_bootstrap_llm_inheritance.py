@@ -3,12 +3,12 @@ Tests for LLM config inheritance when bootstrapping servers.
 """
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.mcp.base import MCPRegistry
-from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+from agent_system.config.models import AgentSystemConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 
 
 
 def test_agent_inherits_global_llm():
-    cfg = AgentConfig(
+    cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
                 "test-model": LLMModelConfig(provider="openai", model="test-model")
@@ -31,7 +31,7 @@ def test_agent_inherits_global_llm():
 
 
 def test_agent_server_override():
-    cfg = AgentConfig(
+    cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
                 "test-model": LLMModelConfig(provider="openai", model="test-model")
@@ -71,7 +71,7 @@ def test_web_research_agent_server_override():
     if "web_research_agent" not in plugins:
         pytest.skip("web_research_agent plugin not discovered in test environment")
     
-    cfg = AgentConfig(
+    cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
                 "llama3.1:8b": LLMModelConfig(provider="ollama", model="llama3.1:8b"),

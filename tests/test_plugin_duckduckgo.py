@@ -7,7 +7,6 @@ from agent_system.plugins import discover_all_plugins
 from plugins.duckduckgo_search.server import DuckDuckGoSearchServer
 
 
-@pytest.mark.skip(reason="Plugin discovery bootstrap needs modernization")
 @pytest.mark.asyncio
 async def test_duckduckgo_plugin_discovered():
     repo_root = Path(__file__).resolve().parents[1]
@@ -20,7 +19,7 @@ async def test_duckduckgo_plugin_discovered():
     assert 'duckduckgo_search' in plugins
     factory = plugins['duckduckgo_search']
     # Ensure factory is callable / instantiable
-    inst = factory('duckduckgo_search', {})
+    inst = factory('duckduckgo_search', {}, {})
     assert inst is not None
 
 

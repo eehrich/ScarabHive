@@ -1,13 +1,13 @@
 """Test server-level LLM overrides in bootstrap functionality."""
 
-from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+from agent_system.config.models import AgentSystemConfig, MCPConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 
 
 def test_server_llm_override():
     """Test that server-level LLM config overrides work correctly."""
-    config = AgentConfig(
+    config = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
                 "base-model": LLMModelConfig(provider="openai", model="gpt-3.5-turbo", openai_api_key="base-key")
@@ -55,7 +55,7 @@ def test_server_llm_override():
 
 def test_server_no_override():
     """Test that server without overrides inherits base LLM config."""
-    config = AgentConfig(
+    config = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
                 "base-model": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="base-key")

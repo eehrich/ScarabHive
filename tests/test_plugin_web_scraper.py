@@ -7,7 +7,6 @@ from agent_system.plugins import discover_all_plugins
 from plugins.web_scraper.server import WebScraperServer
 
 
-@pytest.mark.skip(reason="Plugin discovery bootstrap needs modernization")
 @pytest.mark.asyncio
 async def test_web_scraper_plugin_discovered():
     repo_root = Path(__file__).resolve().parents[1]
@@ -19,7 +18,7 @@ async def test_web_scraper_plugin_discovered():
     plugins = discover_all_plugins([default_dir])
     assert "web_scraper" in plugins
     factory = plugins["web_scraper"]
-    inst = factory("web_scraper", {})
+    inst = factory("web_scraper", {}, {})
     assert inst is not None
 
 

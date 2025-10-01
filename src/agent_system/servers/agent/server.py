@@ -8,7 +8,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from ...config.models import AgentSystemConfig
+from ...config.models import AgentSystemConfig, MCPConfig
 from ...utils.cancellation import get_cancellation_manager, configure_cancellation_manager
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
@@ -40,22 +40,39 @@ class Agent(MCPServer):
     This enables direct agent-to-agent communication without wrapper classes.
     """
 
-    def __init__(self, name: str, config: AgentSystemConfig, registry: MCPRegistry,
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
+                 registry: MCPRegistry | None = None,
                  llm: object | None = None, llm_factory: object | None = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
+        
+        Modern signature matching plugin pattern:
+        - system_config: Complete system configuration
+        - mcp_config: MCP configuration object (contains agent_config, type, enabled)
+        - registry: MCP Registry with available tools (required for agents)
 
         Args:
             name: Name of this agent (used when serving as MCP Server)
-            config: Complete system configuration (includes llm_system, network, context, etc.)
+            system_config: Complete system configuration (includes llm_system, network, context, etc.)
+            mcp_config: MCP configuration object (MCPConfig with agent_config)
             registry: MCP Registry with available tools
+            llm: Optional LLM client instance (for testing)
+            llm_factory: Optional LLM factory for creating client (for testing)
         """
-        # Initialize as MCPServer with AgentSystemConfig
-        super().__init__(name, config)
+        from ...config.models import AgentConfig as ConfigAgentConfig
+        
+        # Initialize as MCPServer with MCPConfig object
+        super().__init__(name, system_config, mcp_config)
 
-        # Agent-specific initialization (agent_config already set by MCPServer parent)
-        # self.agent_config = config  # Already done by MCPServer.__init__()
-        self.registry = registry
+        # Extract agent_config from MCPConfig for easy access
+        if mcp_config.agent_config:
+            self.agent_config = mcp_config.agent_config
+        else:
+            # Fallback: create default agent config
+            self.agent_config = ConfigAgentConfig()
+        
+        # Agent-specific initialization
+        self.registry = registry or MCPRegistry()  # Fallback for direct instantiation
         # Mark this Agent as internal by default so it doesn't show up in UI lists
         # Consumers who want it visible can set `agent._mcp_public = True` after construction.
         self._mcp_public = False
@@ -88,10 +105,10 @@ class Agent(MCPServer):
                     from ...llm.factory import resolve_llm_config_for_agent
                     
                     # Use new profile-based resolution with agent name
-                    llm_kwargs = resolve_llm_config_for_agent(config, name)
+                    llm_kwargs = resolve_llm_config_for_agent(system_config, name)
                     
                     # Store profile information for status display
-                    self.llm_profile_info = self._extract_profile_info(config, name, llm_kwargs)
+                    self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
                     
                     from ...llm.clients import make_llm
                     self.llm = make_llm(
@@ -102,7 +119,7 @@ class Agent(MCPServer):
                         llm_kwargs["context_window"],
                         llm_kwargs["ollama_mode"],
                         llm_kwargs["request_timeout"],
-                        ssl_verify=getattr(config, "network").ssl_verify if getattr(config, "network", None) else None,
+                        ssl_verify=getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None,
                         httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
                     )
                 except Exception as e:
@@ -123,10 +140,10 @@ class Agent(MCPServer):
         self._init_context_management()
 
         # Configure cancellation system with agent config values
-        if hasattr(config, 'cancellation') and config.cancellation:
+        if hasattr(system_config, 'cancellation') and system_config.cancellation:
             configure_cancellation_manager(
-                cleanup_timeout=config.cancellation.cleanup_timeout,
-                monitor_interval=config.cancellation.monitor_interval
+                cleanup_timeout=system_config.cancellation.cleanup_timeout,
+                monitor_interval=system_config.cancellation.monitor_interval
             )
         else:
             # Use defaults if no cancellation config is provided

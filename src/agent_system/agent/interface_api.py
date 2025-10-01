@@ -305,7 +305,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     config = config.model_copy(update=updates)
         except Exception:
             pass
-        selected_agent = CoreAgent(entry_name, config, registry)
+        
+        # Create MCPConfig for agent
+        from agent_system.config.models import MCPConfig
+        if config.mcp_system and config.mcp_system.default_config:
+            mcp_cfg = config.mcp_system.default_config
+        else:
+            mcp_cfg = MCPConfig(type="agent", enabled=True)
+        
+        selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry)
         registry.register(entry_name, selected_agent)
     else:
         # Ensure reused agent is bound to current registry (in case plugin created with isolated one)
