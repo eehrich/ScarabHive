@@ -26,24 +26,33 @@ class ContextManagementHandler:
     `agent.next_internal_tool_request_id()`.
     """
 
-    def __init__(self, context_manager: ContextManager, token_optimizer: TokenOptimizer, agent: Agent):
+    def __init__(self, context_manager: ContextManager, token_optimizer: TokenOptimizer, agent: Agent, 
+                 token_optimization_config = None):
         """Initialize context management handler.
         
         Args:
             context_manager: Context manager instance
             token_optimizer: Token optimizer instance
             agent: Agent instance (required, no legacy string support)
+            token_optimization_config: Optional TokenOptimizationConfig for optimizer settings
         """
         self.context_manager = context_manager
         self.token_optimizer = token_optimizer
         self._agent = agent
         self.agent_name = agent.name
 
-        # Token optimizer state
+        # Token optimizer state - use config values or fallback to safer defaults
         self._last_optimizer_tokens_snapshot = 0
         self._last_optimizer_run_time = 0.0
-        self._optimizer_cooldown_seconds = 10.0  # Increased from 1.0 to 10.0 seconds
-        self._optimizer_min_increase_tokens = 200  # Minimum token increase required
+        
+        if token_optimization_config:
+            self._optimizer_cooldown_seconds = token_optimization_config.cooldown_seconds
+            self._optimizer_min_increase_tokens = token_optimization_config.min_token_increase
+        else:
+            # Fallback to safer defaults (more frequent than old hardcoded values)
+            self._optimizer_cooldown_seconds = 2.0
+            self._optimizer_min_increase_tokens = 50
+            
         self._skip_optimizer_steps_after_context_mgmt = 0
 
     async def _get_next_internal_tool_request_id(self, base_request_id: str) -> str:
@@ -95,14 +104,18 @@ class ContextManagementHandler:
             now = time.time()
             estimated_tokens_now = self.context_manager.estimate_token_count(messages)
 
-            tokens_growth = estimated_tokens_now - getattr(self, '_last_optimizer_tokens_snapshot', 0)
-            time_since_last = now - getattr(self, '_last_optimizer_run_time', 0.0)
+            tokens_growth = estimated_tokens_now - self._last_optimizer_tokens_snapshot
+            time_since_last = now - self._last_optimizer_run_time
 
             should_run_optimizer = False
-            if tokens_growth >= getattr(self, '_optimizer_min_increase_tokens', 200):
+            if tokens_growth >= self._optimizer_min_increase_tokens:
                 should_run_optimizer = True
-            elif time_since_last >= getattr(self, '_optimizer_cooldown_seconds', 10.0):
+                logger.debug("🎯 Token optimizer triggered by growth: %d >= %d tokens", 
+                           tokens_growth, self._optimizer_min_increase_tokens)
+            elif time_since_last >= self._optimizer_cooldown_seconds:
                 should_run_optimizer = True
+                logger.debug("🎯 Token optimizer triggered by time: %.2fs >= %.2fs", 
+                           time_since_last, self._optimizer_cooldown_seconds)
 
             if should_run_optimizer:
                 # Generate unique request ID for this token optimizer call

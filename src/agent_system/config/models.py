@@ -80,6 +80,10 @@ class TokenOptimizationConfig(BaseModel):
     optimize_json: bool = False
     remove_verbose_patterns: bool = False
     max_tool_result_tokens: int = 1000  # Maximum tokens to preserve from tool results
+    
+    # Optimizer execution control
+    cooldown_seconds: float = 2.0  # Minimum seconds between optimizer runs (default: 2.0, previous: 10.0)
+    min_token_increase: int = 50  # Minimum token growth to trigger optimizer (default: 50, previous: 200)
 
 
 class ContextManagementConfig(BaseModel):

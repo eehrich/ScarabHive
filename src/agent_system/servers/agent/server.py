@@ -167,7 +167,13 @@ class Agent(MCPServer):
         self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
         self._tool_execution_manager = ToolExecutionManager(self.registry, self)
         self._status_event_forwarder = StatusEventForwarder()
-        self._context_management_handler = ContextManagementHandler(self.context_manager, self.token_optimizer, self)
+                    
+        self._context_management_handler = ContextManagementHandler(
+            self.context_manager, 
+            self.token_optimizer, 
+            self,
+            self.agent_config.context_management.token_optimization
+        )
         
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
@@ -178,32 +184,31 @@ class Agent(MCPServer):
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
-        try:
-            # Check if we have the new LLM system configuration
-            if config.llm_system and config.llm_system.models and config.llm_system.profiles:
-                # Determine which profile was used
-                profile_name = None
-                
-                # 1. Check agent-specific assignment
-                if agent_name and config.agent_llm_profiles:
-                    profile_name = config.agent_llm_profiles.get(agent_name)
-                
-                # 2. Fall back to default profile
-                if not profile_name:
-                    profile_name = config.llm_system.default_profile
-                
-                # Get model info
-                model = llm_kwargs.get("model", "unknown")
-                provider = llm_kwargs.get("provider", "unknown")
-                
-                return f"{profile_name}:{provider}/{model}"
-            else:
-                # No LLM system config
-                model = llm_kwargs.get("model", "unknown")
-                provider = llm_kwargs.get("provider", "unknown")
-                return f"unknown:{provider}/{model}"
-        except Exception:
-            return "unknown"
+        model = llm_kwargs.get("model", "unknown")
+        provider = llm_kwargs.get("provider", "unknown")
+        
+        # Get profile name - priority order:
+        # 1. From llm_kwargs (directly resolved profile used for this LLM)
+        # 2. From agent_config.llm_profile (agent's configured profile)
+        # 3. From agent_llm_profiles mapping (agent-specific override)
+        # 4. From default_profile (system default)
+        profile_name = llm_kwargs.get("profile_name")
+        
+        if not profile_name and hasattr(self, 'agent_config') and self.agent_config:
+            profile_name = getattr(self.agent_config, 'llm_profile', None)
+        
+        if not profile_name and config.llm_system and config.llm_system.profiles:
+            # Check agent-specific assignment
+            if agent_name and hasattr(config, 'agent_llm_profiles') and config.agent_llm_profiles:
+                profile_name = config.agent_llm_profiles.get(agent_name)
+            # Fall back to default profile
+            if not profile_name:
+                profile_name = getattr(config.llm_system, 'default_profile', None)
+        
+        # Return with profile name if available, otherwise just provider/model
+        if profile_name:
+            return f"{profile_name}:{provider}/{model}"
+        return f"{provider}/{model}"
 
     async def next_internal_tool_request_id(self, base_request_id: str) -> str:
         """Return the next internal tool request id with a 3-digit suffix.
@@ -260,18 +265,10 @@ class Agent(MCPServer):
             self.context_manager.set_summarizer(summarizer)
 
             # Initialize optimizer only when compression/optimization is enabled
-            token_opt = self.mcp_config.agent_config.context_management.token_optimization
-            if token_opt and token_opt.enable_compression:
+            if self.mcp_config.agent_config.context_management.token_optimization.enable_compression:
                 self.token_optimizer = TokenOptimizer()
             else:
                 self.token_optimizer = None
-
-            # Optimizer run guard
-            self._last_optimizer_tokens_snapshot = 0
-            self._last_optimizer_run_time = 0.0
-            self._optimizer_cooldown_seconds = 10.0
-            self._optimizer_min_increase_tokens = max(200, int(self.context_manager.context_window * 0.05))
-            self._skip_optimizer_steps_after_context_mgmt = 0
 
             logger.info("Context management initialized - window: %d, strategy: %s",
                       self.context_manager.context_window,
@@ -932,9 +929,9 @@ class Agent(MCPServer):
                 # Emit thinking event before LLM call
                 yield {"type": "thinking", "step": step + 1}
 
-                # Signal LLM call using status_worker
-                llm_info = f" ({self.llm_profile_info})" if self.llm_profile_info else ""
-                await status_worker.progress(f"Calling LLM{llm_info}", meta={"step": step + 1})
+                # Signal LLM call using status_worker with profile info
+                llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else "unkown LLM"
+                await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
                 # Validate messages before LLM call to ensure API compliance
                 from agent_system.llm.message_validator import validate_messages_before_llm
