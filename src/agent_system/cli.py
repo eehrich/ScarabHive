@@ -18,7 +18,7 @@ except Exception:
     tabulate = None
 
 from .config.settings import load_settings
-from .config.models import ToolConfig
+from .config.models import MCPConfig
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
@@ -100,19 +100,16 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
     """List configured external MCP servers."""
     servers = []
 
-    # List servers from configuration - use all_configured_external_servers for CLI management
-    # This includes both enabled and disabled servers for management operations
-    for name, server_config in mcp_integration.all_configured_external_servers.items():
-        # Check if there's a connected client
+    for name, server_config in mcp_integration.configured_external_servers.items():
         client = await _maybe_await_get_client(mcp_integration, name)
         is_connected = client is not None
 
         server_info = {
             "name": name,
-            "address": server_config.get("url", ""),
+            "address": server_config.url,
             "connected": is_connected,
-            "enabled": server_config.get("enabled", False),
-            "description": server_config.get("description", "")
+            "enabled": server_config.enabled,
+            "description": server_config.description or ""
         }
         servers.append(server_info)
 
@@ -161,23 +158,21 @@ async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
 
 async def _mcp_connect_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
     """Connect to an external MCP server."""
-    if server_name not in mcp_integration.mcp_config.servers:
+    if server_name not in mcp_integration.configured_external_servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
 
-    server_config = mcp_integration.mcp_config.servers[server_name]
+    server_config = mcp_integration.configured_external_servers[server_name]
     if not server_config.enabled:
         print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
         return
 
     try:
-        # Create client config
         client_config = {
-            "transport": server_config.transport_type,
+            "transport": server_config.transport,
             "url": server_config.url
         }
 
-        # Add initialization options if present
         if server_config.initialization_options:
             client_config["initialization_options"] = server_config.initialization_options
 
@@ -199,12 +194,11 @@ async def _mcp_disconnect_server(mcp_integration: MCPIntegration, server_name: s
 async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str | None, args: Any) -> None:
     """Show status of external MCP servers."""
     if server_name:
-        # Status for specific server
-        if server_name not in mcp_integration.mcp_config.servers:
+        if server_name not in mcp_integration.configured_external_servers:
             print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
             return
 
-        server_config = mcp_integration.mcp_config.servers[server_name]
+        server_config = mcp_integration.configured_external_servers[server_name]
         client = await _maybe_await_get_client(mcp_integration, server_name)
         is_connected = client is not None
 
@@ -233,11 +227,11 @@ async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str 
 
 async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
     """Test connectivity and basic functionality of an external MCP server."""
-    if server_name not in mcp_integration.mcp_config.servers:
+    if server_name not in mcp_integration.configured_external_servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
 
-    server_config = mcp_integration.mcp_config.servers[server_name]
+    server_config = mcp_integration.configured_external_servers[server_name]
     if not server_config.enabled:
         print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
         return
@@ -245,18 +239,13 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
     client_created_for_test = False
 
     try:
-        # Check if already connected, if not connect
         client = await _maybe_await_get_client(mcp_integration, server_name)
         if not client:
             client_config = {
-                "transport": server_config.transport_type,
-                "url": server_config.url,
-                "client_name": f"AgentSystem-{server_name}",
-                "timeout": server_config.timeout,
-                "ssl_verify": server_config.ssl_verify
+                "transport": server_config.transport,
+                "url": server_config.url
             }
 
-            # Add initialization options if present
             if server_config.initialization_options:
                 client_config["initialization_options"] = server_config.initialization_options
 
@@ -299,7 +288,7 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
 
 async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
     """Manage tools for a specific MCP server (list, allow, block)."""
-    if server_name not in mcp_integration.mcp_config.servers:
+    if server_name not in mcp_integration.configured_external_servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
 
@@ -329,25 +318,19 @@ async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str
 
 async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
     """List all available tools for a server and show filtering configuration."""
-    server_config = mcp_integration.mcp_config.servers[server_name]
+    server_config = mcp_integration.configured_external_servers[server_name]
 
-    # Get current tool filtering config from nested tools structure
     allowed_tools = server_config.tools.allowed if server_config.tools else None
     blocked_tools = server_config.tools.blocked if server_config.tools else None
 
-    # Try to connect and list tools
     try:
         client = await _maybe_await_get_client(mcp_integration, server_name)
         client_created = False
 
         if not client and server_config.enabled:
-            # Create temporary client to list tools
             client_config = {
-                "transport": server_config.transport_type,
-                "url": server_config.url,
-                "client_name": f"AgentSystem-{server_name}",
-                "timeout": server_config.timeout,
-                "ssl_verify": server_config.ssl_verify
+                "transport": server_config.transport,
+                "url": server_config.url
             }
 
             if server_config.initialization_options:
@@ -429,14 +412,15 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
 
 
 async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
-    """Add a tool to the allowed_tools list for a server."""
-    # Use MCP integration's all configured servers (including disabled) for management operations
-    # This ensures consistency with the list command and works regardless of working directory
-    if server_name not in mcp_integration.all_configured_external_servers:
+    """Add a tool to the allowed list for a server.
+    
+    Note: This function manipulates raw YAML dicts to preserve file formatting,
+    comments, and key ordering. Using Pydantic models would lose these.
+    """
+    if server_name not in mcp_integration.configured_external_servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
 
-    # Still need to modify the config file, so read it for updates
     cfg_path = Path("config/mcp.yaml")
     if not cfg_path.exists():
         print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
@@ -448,28 +432,28 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
         print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
         return
 
+    # Navigate YAML structure (dict manipulation required for file updates)
     mcp_block = raw.get("mcp", raw)
-    servers = mcp_block.get("external_servers", {})
-    if server_name not in servers:
+    external_servers_block = mcp_block.get("external_servers", {})
+    remote_servers = external_servers_block.get("remote_servers", {})
+    
+    if server_name not in remote_servers:
         print(json.dumps({"error": f"Server {server_name} not found in config file"}, ensure_ascii=False))
         return
 
-    server_cfg = servers[server_name] or {}
-    
-    # Handle both old (allowed_tools) and new (tools.allowed) formats
+    server_cfg = remote_servers[server_name] or {}
     tools_dict = server_cfg.get("tools", {})
     if not tools_dict:
         tools_dict = {}
         server_cfg["tools"] = tools_dict
     
-    allowed = list(tools_dict.get("allowed") or server_cfg.get("allowed_tools") or [])
-    blocked = list(tools_dict.get("blocked") or server_cfg.get("blocked_tools") or [])
+    allowed = list(tools_dict.get("allowed") or [])
+    blocked = list(tools_dict.get("blocked") or [])
 
     if tool_name in allowed:
         print(json.dumps({"message": "Tool already allowed", "server": server_name, "tool": tool_name}, ensure_ascii=False))
         return
 
-    # Ensure tool is not in blocked list
     if tool_name in blocked:
         blocked.remove(tool_name)
         tools_dict["blocked"] = blocked
@@ -477,13 +461,10 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     allowed.append(tool_name)
     tools_dict["allowed"] = allowed
     
-    # Remove legacy fields if they exist
-    server_cfg.pop("allowed_tools", None)
-    server_cfg.pop("blocked_tools", None)
+    remote_servers[server_name] = server_cfg
+    external_servers_block["remote_servers"] = remote_servers
+    mcp_block["external_servers"] = external_servers_block
     
-    servers[server_name] = server_cfg
-    mcp_block["external_servers"] = servers
-    # Put back into top-level structure if original used mcp key
     if "mcp" in raw:
         raw["mcp"] = mcp_block
     else:
@@ -498,14 +479,15 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
 
 
 async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
-    """Add a tool to the blocked_tools list for a server."""
-    # Use MCP integration's all configured servers (including disabled) for management operations
-    # This ensures consistency with the list command and works regardless of working directory
-    if server_name not in mcp_integration.all_configured_external_servers:
+    """Add a tool to the blocked list for a server.
+    
+    Note: This function manipulates raw YAML dicts to preserve file formatting,
+    comments, and key ordering. Using Pydantic models would lose these.
+    """
+    if server_name not in mcp_integration.configured_external_servers:
         print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
         return
 
-    # Still need to modify the config file, so read it for updates
     cfg_path = Path("config/mcp.yaml")
     if not cfg_path.exists():
         print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
@@ -517,28 +499,28 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
         print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
         return
 
+    # Navigate YAML structure (dict manipulation required for file updates)
     mcp_block = raw.get("mcp", raw)
-    servers = mcp_block.get("external_servers", {})
-    if server_name not in servers:
+    external_servers_block = mcp_block.get("external_servers", {})
+    remote_servers = external_servers_block.get("remote_servers", {})
+    
+    if server_name not in remote_servers:
         print(json.dumps({"error": f"Server {server_name} not found in config file"}, ensure_ascii=False))
         return
 
-    server_cfg = servers[server_name] or {}
-    
-    # Handle both old (allowed_tools) and new (tools.allowed) formats
+    server_cfg = remote_servers[server_name] or {}
     tools_dict = server_cfg.get("tools", {})
     if not tools_dict:
         tools_dict = {}
         server_cfg["tools"] = tools_dict
     
-    allowed = list(tools_dict.get("allowed") or server_cfg.get("allowed_tools") or [])
-    blocked = list(tools_dict.get("blocked") or server_cfg.get("blocked_tools") or [])
+    allowed = list(tools_dict.get("allowed") or [])
+    blocked = list(tools_dict.get("blocked") or [])
 
     if tool_name in blocked:
         print(json.dumps({"message": "Tool already blocked", "server": server_name, "tool": tool_name}, ensure_ascii=False))
         return
 
-    # Ensure tool is not in allowed list
     if tool_name in allowed:
         allowed.remove(tool_name)
         tools_dict["allowed"] = allowed
@@ -546,13 +528,21 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     blocked.append(tool_name)
     tools_dict["blocked"] = blocked
     
-    # Remove legacy fields if they exist
-    server_cfg.pop("allowed_tools", None)
-    server_cfg.pop("blocked_tools", None)
+    remote_servers[server_name] = server_cfg
+    external_servers_block["remote_servers"] = remote_servers
+    mcp_block["external_servers"] = external_servers_block
     
-    servers[server_name] = server_cfg
-    mcp_block["external_servers"] = servers
     if "mcp" in raw:
+        raw["mcp"] = mcp_block
+    else:
+        raw = mcp_block
+
+    try:
+        data = yaml.safe_dump(raw, sort_keys=False)
+        _atomic_write_text(cfg_path, data)
+        print(json.dumps({"message": "blocked_tools updated", "server": server_name, "tool": tool_name}, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to write config: {str(e)}"}, ensure_ascii=False))
         raw["mcp"] = mcp_block
     else:
         raw = mcp_block
@@ -597,7 +587,7 @@ def main() -> None:
     # then parse the remaining args (subcommand + subargs). This avoids confusing option values
     # with subcommands when we need to insert an implicit 'run'.
     prelim = argparse.ArgumentParser(add_help=False)
-    prelim.add_argument("--config", dest="config", default=str(Path("config/agent.yaml")))
+    prelim.add_argument("--config", dest="config", default=str(Path("config/config.yaml")))
     prelim.add_argument("-v", "--verbose", dest="verbose", action="store_true")
     # color can be set to auto/always/never; --no-color is alias for never
     prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always")
@@ -655,7 +645,7 @@ def main() -> None:
     argv = [sys.argv[0]] + final_args + rest
 
     parser = argparse.ArgumentParser(description="Agent System CLI")
-    parser.add_argument("--config", dest="config", default=str(Path("config/agent.yaml")), help="Path to config")
+    parser.add_argument("--config", dest="config", default=str(Path("config/config.yaml")), help="Path to config")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
     parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always", help="Colorize output (auto|always|never)")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
@@ -774,7 +764,7 @@ def main() -> None:
         # config file directory, so we can trust these paths as provided by
         # the user. If no plugin dirs are configured, pass None to
         # `discover_all_plugins()` to discover only entrypoint plugins.
-        dirs = [Path(p) for p in (config.mcp.plugin_dirs or []) if p]
+        dirs = [Path(p) for p in (config.mcp_system.plugin_dirs or []) if p]
         plugins = discover_all_plugins(dirs if dirs else None)
 
         def to_list():
@@ -784,8 +774,8 @@ def main() -> None:
                 # metadata loading is handled centrally in discover_all_plugins();
                 # keep local code minimal.
                 # include whether this plugin is enabled in the current config
-                enabled_set = set((config.mcp.enabled_servers or []) or [])
-                enabled_flag = name in enabled_set
+                enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+                enabled_flag = name in enabled_servers
                 out.append({
                     "name": name,
                     "description": meta.get("description"),
@@ -823,7 +813,8 @@ def main() -> None:
                     "factory_module": fm,
                 }
                 out = {"name": target, "metadata": meta, **factory_info}
-                out["enabled"] = target in set((config.mcp.enabled_servers or []) or [])
+                enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+                out["enabled"] = target in enabled_servers
                 if args.out_format == "table":
                     # Print header and key/value lines
                     print(f"NAME: {target}")
@@ -843,7 +834,8 @@ def main() -> None:
                 print(f"DESCRIPTION: {meta.get('description', '')}")
                 print(f"VERSION: {meta.get('version', '')}")
                 # show enabled status for this plugin
-                enabled_flag = target in set((config.mcp.enabled_servers or []) or [])
+                enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+                enabled_flag = target in enabled_servers
                 enabled_text = "YES" if enabled_flag else "NO"
                 display_enabled = enabled_text
                 if _supports_color():
@@ -1051,11 +1043,11 @@ def main() -> None:
                         raw = yaml.safe_load(mcp_file.read_text(encoding="utf-8")) or {}
                         mcp_block = raw.get("mcp", raw)
                     except Exception:
-                        mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
+                        mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
                 else:
-                    mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
+                    mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
             except Exception:
-                mcp_block = (config.mcp.model_dump() if hasattr(config.mcp, "model_dump") else getattr(config.mcp, "__dict__", {}))
+                mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
 
             # Use direct AgentConfig approach for consistency with main CLI bootstrapping
             mcp_integration = MCPIntegration(config=config)
@@ -1076,8 +1068,8 @@ def main() -> None:
                     if not server_name:
                         print(json.dumps({"error": "server name required for enable/disable action"}, ensure_ascii=False))
                         return
-                    # Find the managed mcp file path same way earlier: try to resolve config.mcp.config_file if present
-                    cfg_path = Path(config.mcp.config_file) if getattr(config.mcp, 'config_file', None) else Path("config/mcp.yaml")
+                    # Find the managed mcp file path same way earlier: try to resolve config.mcp_system.config_file if present
+                    cfg_path = Path(config.mcp_system.config_file) if getattr(config.mcp_system, 'config_file', None) else Path("config/mcp.yaml")
                     if not cfg_path.is_absolute():
                         cfg_path = Path("config") / cfg_path.name
 
@@ -1128,7 +1120,7 @@ def main() -> None:
                         return
 
                     # Read managed config file
-                    cfg_path = Path(config.mcp.config_file) if getattr(config.mcp, 'config_file', None) else Path("config/mcp.yaml")
+                    cfg_path = Path(config.mcp_system.config_file) if getattr(config.mcp_system, 'config_file', None) else Path("config/mcp.yaml")
                     if not cfg_path.is_absolute():
                         cfg_path = Path("config") / cfg_path.name
                     managed_data = {}
@@ -1316,136 +1308,62 @@ def main() -> None:
     except Exception as e:
         logger.warning("Failed to initialize MCP integration: %s", e)
         vprint(f"[cli] Warning: MCP integration failed: {e}")
-    # Create a CLI-specific AgentConfig at runtime by loading the global
-    # system prompt, appending a one-line hint, and keeping it in-memory
-    # on the `prompts.system_prompt` attribute so we don't write any files.
-    try:
-        import copy
-        cli_agent_config = copy.deepcopy(config)
-        # Read the global prompt template path and try to load the file.
-        template_path = getattr(config.prompts, 'system_template', None)
-        original = None
-        if template_path:
-            try:
-                # template_path may be a pathlib.Path or string
-                tp = Path(template_path)
-                if not tp.is_absolute():
-                    # Preserve any subdirectory structure in relative paths
-                    tp = Path.cwd().joinpath(tp)
-                if tp.exists():
-                    original = tp.read_text(encoding='utf-8')
-            except Exception:
-                original = None
+    
+    # Determine CLI agent name from config
+    entry_name = config.default_agent
 
-        # Append the CLI-only hint in English as an extra sentence. Keep in-memory only.
-        hint = "\nNote: No follow-up questions are allowed. Please answer the request directly without asking clarifying questions.\n"
-
-        if original is not None:
-            # Store the combined prompt template string on the runtime config.
-            combined = original + "\n" + hint
-            # The PromptsConfig may be a pydantic model that disallows arbitrary
-            # attributes. Replace the prompts object with a lightweight namespace
-            # that has both `system_template` (for fallback) and `system_prompt`
-            # (the raw in-memory template) so server rendering picks it up.
-            try:
-                from types import SimpleNamespace
-                cli_agent_config.prompts = SimpleNamespace(system_template=config.prompts.system_template, system_prompt=combined)
-            except Exception:
-                # If that fails for any reason, fallback to leaving prompts unchanged
-                cli_agent_config = config
-        else:
-            # Couldn't read original template; leave config unchanged and fallback to file-based behavior
-            cli_agent_config = config
-
-    except Exception:
-        # Fallback to original config if anything fails
-        cli_agent_config = config
-
-    # Determine CLI agent name: prefer configured entry_agent so CLI runs through same primary agent
-    # unless user explicitly wants an isolated cli_agent (future flag could control). For now we align
-    # with dynamic entry agent selection to ensure consistent allowed_tools filtering & behavior.
-    entry_name = getattr(config, 'entry_agent', None) or 'agent'
-
-    # If the entry agent already exists in the registry (bootstrapped plugin or core), reuse it.
-    # Otherwise create a new core Agent under that name. Maintain backward compatibility alias
-    # 'cli_agent' ONLY when entry_agent differs, so existing scripts expecting cli_agent still work.
-    try:
-        from .servers.agent.server import Agent as _Agent
-        if entry_name in registry.list():
-            existing = registry.get(entry_name)
-            if isinstance(existing, _Agent):
-                agent = existing
-                # Ensure the existing agent's registry reference points to the full CLI registry
-                try:
-                    agent.registry = registry  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-                # If the CLI layer constructed an in-memory system_prompt (cli_agent_config.prompts.system_prompt)
-                # propagate it into the reused agent's agent_config (without mutating shared object unless needed).
-                try:  # pragma: no cover - defensive
-                    raw_cli_prompt = getattr(getattr(cli_agent_config, 'prompts', object()), 'system_prompt', None)
-                    if raw_cli_prompt and not getattr(getattr(agent.agent_config, 'prompts', object()), 'system_prompt', None):
-                        import copy
-                        # Deep-copy agent_config to avoid side effects on other references (e.g. API process)
-                        new_cfg = copy.deepcopy(agent.agent_config)
-                        # Replace prompts with a lightweight namespace carrying both system_template & system_prompt
+    # Get or create the agent
+    from .servers.agent.server import Agent as _Agent
+    
+    agent = None
+    if entry_name in registry.list():
+        existing = registry.get(entry_name)
+        if isinstance(existing, _Agent):
+            agent = existing
+            agent.registry = registry  # type: ignore[attr-defined]
+            
+            # Inject CLI-specific system prompt hint if needed
+            prompts_cfg = getattr(agent.agent_config, 'prompts', None)
+            if prompts_cfg and hasattr(prompts_cfg, 'system_template'):
+                # Load template and append hint
+                template_path = Path(prompts_cfg.system_template)
+                if not template_path.is_absolute():
+                    template_path = Path.cwd() / template_path
+                
+                if template_path.exists():
+                    try:
+                        original = template_path.read_text(encoding='utf-8')
+                        hint = "\nNote: No follow-up questions are allowed. Please answer the request directly without asking clarifying questions.\n"
+                        combined = original + "\n" + hint
+                        
+                        # Create SimpleNamespace with both system_template and system_prompt
                         from types import SimpleNamespace
-                        new_cfg.prompts = SimpleNamespace(system_template=getattr(agent.agent_config.prompts, 'system_template', None),
-                                                           system_prompt=raw_cli_prompt)
+                        import copy
+                        new_cfg = copy.deepcopy(agent.agent_config)
+                        new_cfg.prompts = SimpleNamespace(
+                            system_template=prompts_cfg.system_template,
+                            system_prompt=combined
+                        )
                         agent.agent_config = new_cfg  # type: ignore[attr-defined]
-                        logger.debug("Injected CLI system_prompt into reused agent '%s'", entry_name)
-                except Exception:
-                    logger.debug("Failed to inject CLI system_prompt into reused agent '%s'", entry_name)
-                # Merge/propagate server agent_config patterns if present and not already set
-                try:
-                    server_cfg = (getattr(config, 'servers', {}) or {}).get(entry_name, {})
-                    server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
-                    if isinstance(server_agent_cfg, dict):
-                        # Only apply if agent currently has no allow list (keeps runtime modifications intact)
-                        update_needed = False
-                        updates = {}
-
-                        # Handle both old (allowed_tools) and new (tools.allowed) format
-                        tools_config = server_agent_cfg.get('tools', {})
-                        allowed_list = tools_config.get('allowed') if tools_config else server_agent_cfg.get('allowed_tools')
-                        blocked_list = tools_config.get('blocked') if tools_config else server_agent_cfg.get('blocked_tools')
-                        
-                        current_allowed = agent.agent_config.tools.allowed if agent.agent_config.tools else None
-                        current_blocked = agent.agent_config.tools.blocked if agent.agent_config.tools else None
-                        
-                        if not current_allowed and allowed_list:
-                            if 'tools' not in updates:
-                                updates['tools'] = agent.agent_config.tools.model_copy() if agent.agent_config.tools else ToolConfig()
-                            updates['tools'].allowed = list(allowed_list)
-                            update_needed = True
-                        if not current_blocked and blocked_list:
-                            if 'tools' not in updates:
-                                updates['tools'] = agent.agent_config.tools.model_copy() if agent.agent_config.tools else ToolConfig()
-                            updates['tools'].blocked = list(blocked_list)
-                            update_needed = True
-
-                        if update_needed:
-                            # Create new config with updated values using Pydantic model_copy
-                            agent.agent_config = agent.agent_config.model_copy(update=updates)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-            else:
-                # Not an Agent instance -> will be handled by bootstrap_servers
-                pass
-        else:
-            # Agent will be created by bootstrap_servers with proper config
-            pass
-    except Exception:
-        # Fallback will be handled by bootstrap_servers
-        pass
-
-    # Removed legacy alias registration for 'cli_agent'. Historical scripts should be updated to
-    # reference the configured entry agent directly.
+                        logger.debug("CLI: Injected no-follow-up hint into agent '%s'", entry_name)
+                    except Exception as e:
+                        logger.warning("Failed to inject CLI prompt hint: %s", e)
+    
+    if agent is None:
+        # Create new agent
+        logger.info("Creating new Agent instance '%s'", entry_name)
+        mcp_config = config.mcp_system.servers.get(entry_name) if config.mcp_system else None
+        if not mcp_config:
+            logger.warning("No MCPConfig found for agent '%s', using default_config", entry_name)
+            mcp_config = config.mcp_system.default_config if config.mcp_system else MCPConfig()
+        
+        agent = _Agent(entry_name, config, mcp_config, registry)
+        registry.register(entry_name, agent)
+        vprint(f"[cli] created agent: {entry_name}")
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
-    # Stream execution and show MCP call/results on the fly in a human readable way.
-    # Modern execution with status events and optional MCP call display
+    
     async def _stream_and_run_with_status(agent: Agent, task: str, show_mcp: bool = False, show_status: bool = True) -> dict:
         final_result: Dict[str, Any] = {"task": task, "calls": []}
 

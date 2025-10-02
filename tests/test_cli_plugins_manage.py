@@ -28,14 +28,17 @@ def test_cli_plugins_enable_disable(monkeypatch, tmp_path, capsys):
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "pm_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
 
     # Monkeypatch load_settings to return a config with plugin_dirs pointing to our pdir
-    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
-    cfg = AgentConfig(
+    from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, LLMSystemConfig, LLMModelConfig
+    cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
-            default_model="test-model"
+            profiles={}
+        ),
+        mcp_system=MCPSystemConfig(
+            plugin_dirs=[str(pdir)],
+            servers={}
         )
     )
-    cfg.mcp = MCPConfig(plugin_dirs=[str(pdir)])
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
     # Enable the plugin
@@ -61,14 +64,17 @@ def test_cli_plugins_search(monkeypatch, tmp_path, capsys):
     (plugin_dir / "plugin.py").write_text('PLUGIN_NAME = "search_example"\nPLUGIN_FACTORY = lambda name, config, ssl_verify=True: None\n')
     (plugin_dir / "plugin.yaml").write_text('description: "Searchable plugin"\nversion: "0.0"\n')
 
-    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
-    cfg = AgentConfig(
+    from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, LLMSystemConfig, LLMModelConfig
+    cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
-            default_model="test-model"
+            profiles={}
+        ),
+        mcp_system=MCPSystemConfig(
+            plugin_dirs=[str(pdir)],
+            servers={}
         )
     )
-    cfg.mcp = MCPConfig(plugin_dirs=[str(pdir)])
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "search", "searchable"])

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-import sys
-import pytest
 
 from agent_system import cli
 
@@ -21,16 +18,24 @@ def test_cli_plugins_list(monkeypatch, tmp_path, capsys):
     meta_file = plugin_dir / "plugin.yaml"
     meta_file.write_text('description: "Example plugin"\nversion: "0.1"\n')
 
-    # Monkeypatch config to point to a minimal AgentConfig with plugin_dirs
-    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    # Use new AgentSystemConfig structure
+    from agent_system.config.models import (
+        AgentSystemConfig, 
+        MCPSystemConfig, 
+        LLMSystemConfig, 
+        LLMModelConfig
+    )
 
-    cfg = AgentConfig(
+    cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
-            default_model="test-model"
+            profiles={}
+        ),
+        mcp_system=MCPSystemConfig(
+            plugin_dirs=[str(pdir)],
+            servers={}
         )
     )
-    cfg.mcp = MCPConfig(plugin_dirs=[str(pdir)])
 
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
