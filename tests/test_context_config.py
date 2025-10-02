@@ -1,4 +1,4 @@
-"""Tests for ContextConfig class - FIXED VERSION."""
+"""Tests for ContextManagementConfig class."""
 
 from agent_system.config.models import ContextManagementConfig as ContextConfig
 
@@ -10,82 +10,53 @@ class TestContextConfig:
         """Test default configuration values."""
         config = ContextConfig()
         
-        assert config.context_window == 32768
-        assert config.summarization_threshold == 25600  # 80% of 32768 
+        assert config.enabled is True
+        assert config.summarization_threshold == 0.70  # 70%
         assert config.strategy == "SUMMARIZE_OLDEST"
         assert config.preserve_recent_messages == 10
+        assert config.summarizer_llm_profile == "turbo"
         
-        # Test default warning thresholds (percentages)
-        assert config.warning_thresholds["yellow"] == 0.7   # 70%
-        assert config.warning_thresholds["orange"] == 0.85  # 85%
-        assert config.warning_thresholds["red"] == 0.95     # 95%
+        # Test default warning levels (percentages)
+        assert config.warning_levels["yellow"] == 0.70   # 70%
+        assert config.warning_levels["orange"] == 0.85  # 85%
+        assert config.warning_levels["red"] == 0.95     # 95%
     
     def test_custom_config(self):
         """Test custom configuration values."""
         config = ContextConfig(
-            context_window=64000,
-            summarization_threshold=50000,
+            summarization_threshold=0.80,
             strategy="TRUNCATE_OLDEST",
-            preserve_recent_messages=5
+            preserve_recent_messages=5,
+            summarizer_llm_profile="normal"
         )
         
-        assert config.context_window == 64000
-        assert config.summarization_threshold == 50000
+        assert config.summarization_threshold == 0.80
         assert config.strategy == "TRUNCATE_OLDEST"
         assert config.preserve_recent_messages == 5
-    
-    def test_should_summarize(self):
-        """Test should_summarize method."""
-        config = ContextConfig(summarization_threshold=1000)
-        
-        assert not config.should_summarize(500)   # Below threshold
-        assert not config.should_summarize(999)   # Just below threshold
-        assert config.should_summarize(1000)      # At threshold
-        assert config.should_summarize(1500)      # Above threshold
-    
-    def test_get_current_warning_level(self):
-        """Test get_current_warning_level method."""
-        config = ContextConfig(context_window=1000)
-        
-        assert config.get_current_warning_level(500) is None          # Below all thresholds
-        assert config.get_current_warning_level(700) == "yellow"  # 70%
-        assert config.get_current_warning_level(850) == "orange"  # 85%
-        assert config.get_current_warning_level(950) == "red"     # 95%
-    
-    def test_get_warning_threshold_tokens(self):
-        """Test get_warning_threshold_tokens method."""
-        config = ContextConfig(context_window=1000)
-        
-        assert config.get_warning_threshold_tokens("yellow") == 700   # 70%
-        assert config.get_warning_threshold_tokens("orange") == 850   # 85%
-        assert config.get_warning_threshold_tokens("red") == 950      # 95%
+        assert config.summarizer_llm_profile == "normal"
     
     def test_context_strategies(self):
         """Test all context strategies are valid."""
-        for strategy in ContextStrategy:
+        valid_strategies = ["TRUNCATE_OLDEST", "SUMMARIZE_OLDEST", "SLIDING_WINDOW", "SMART_COMPRESSION"]
+        for strategy in valid_strategies:
             config = ContextConfig(strategy=strategy)
             assert config.strategy == strategy
     
-    def test_warning_levels_enum(self):
-        """Test warning level enumeration."""
-        levels = list(WarningLevel)
-        assert "yellow" in levels
-        assert "orange" in levels
-        assert "red" in levels
+    def test_warning_levels(self):
+        """Test warning level configuration."""
+        custom_levels = {
+            "yellow": 0.60,
+            "orange": 0.80,
+            "red": 0.90
+        }
+        config = ContextConfig(warning_levels=custom_levels)
+        assert config.warning_levels["yellow"] == 0.60
+        assert config.warning_levels["orange"] == 0.80
+        assert config.warning_levels["red"] == 0.90
 
 
 class TestContextConfigEdgeCases:
     """Test edge cases for ContextConfig."""
-    
-    def test_zero_context_window(self):
-        """Test configuration with zero context window."""
-        config = ContextConfig(context_window=0)
-        assert config.get_warning_threshold_tokens("yellow") == 0
-    
-    def test_large_context_window(self):
-        """Test configuration with large context window."""
-        config = ContextConfig(context_window=2000000)
-        assert config.get_warning_threshold_tokens("yellow") == 1400000  # 70%
     
     def test_preserve_messages_boundary(self):
         """Test boundary conditions for preserve_recent_messages."""
@@ -97,37 +68,24 @@ class TestContextConfigEdgeCases:
     
     def test_summarization_threshold_boundary(self):
         """Test boundary conditions for summarization threshold.""" 
+        config = ContextConfig(summarization_threshold=0.95)
+        assert config.summarization_threshold == 0.95
+        
+        config = ContextConfig(summarization_threshold=0.50)
+        assert config.summarization_threshold == 0.50
+    
+    def test_prediction_threshold(self):
+        """Test prediction threshold configuration."""
+        config = ContextConfig(prediction_threshold=0.90)
+        assert config.prediction_threshold == 0.90
+    
+    def test_summarization_settings(self):
+        """Test summarization configuration."""
         config = ContextConfig(
-            context_window=1000,
-            summarization_threshold=1000
+            summarization_ratio=0.40,
+            max_summary_words=3000,
+            tool_result_preview_chars=300
         )
-        assert config.should_summarize(1000)  # Exactly at threshold
-        assert not config.should_summarize(999)  # Just below threshold
-    
-    def test_from_dict_conversion(self):
-        """Test creating config from dictionary."""
-        config_dict = {
-            "context_window": 50000,
-            "strategy": "TRUNCATE_OLDEST",
-            "warning_thresholds": {
-                "yellow": 0.6,
-                "orange": 0.8,
-                "red": 0.9
-            }
-        }
-        
-        config = ContextConfig.from_dict(config_dict)
-        assert config.context_window == 50000
-        assert config.strategy == "TRUNCATE_OLDEST"
-        assert config.warning_thresholds["yellow"] == 0.6
-        assert config.warning_thresholds["orange"] == 0.8
-        assert config.warning_thresholds["red"] == 0.9
-    
-    def test_from_dict_with_enum_strategy(self):
-        """Test creating config from dictionary with enum strategy."""
-        config_dict = {
-            "strategy": "SLIDING_WINDOW"
-        }
-        
-        config = ContextConfig.from_dict(config_dict)
-        assert config.strategy == "SLIDING_WINDOW"
+        assert config.summarization_ratio == 0.40
+        assert config.max_summary_words == 3000
+        assert config.tool_result_preview_chars == 300

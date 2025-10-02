@@ -118,6 +118,7 @@ class AgentConfig(BaseModel):
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning
     tools: ToolConfig = Field(default_factory=ToolConfig)
     context_management: ContextManagementConfig = Field(default_factory=ContextManagementConfig)
+    system_template: Optional[str] = None  # Path to system prompt template file
 
 
 class MCPConfig(BaseModel):
@@ -212,8 +213,8 @@ class LoggingConfig(BaseModel):
     enabled: bool = True
     level: str = "DEBUG"
     file: str = "logs/agent.log"
-    file_cli: str = "logs/cli.log"
-    file_api: str = "logs/api.log"
+    file_cli: Optional[str] = None
+    file_api: Optional[str] = None
     cancellation: Optional[CancellationConfig] = None
 
 

@@ -15,6 +15,35 @@ class TestBasicAgentIntegration:
 
     def setup_method(self):
         """Set up test fixtures with proper LLM configuration."""
+        from agent_system.config.models import (
+            AgentSystemConfig, MCPConfig, AgentConfig,
+            LLMSystemConfig, LLMModelConfig, LLMProfile
+        )
+        
+        # Create proper config objects
+        self.system_config = AgentSystemConfig(
+            llm_system=LLMSystemConfig(
+                models={
+                    "gpt-5-nano": LLMModelConfig(provider="openai", model="gpt-5-nano")
+                },
+                profiles={
+                    "normal": LLMProfile(model_ref="gpt-5-nano"),
+                    "fast": LLMProfile(model_ref="gpt-5-nano")
+                },
+                default_profile="normal"
+            )
+        )
+        
+        self.mcp_config = MCPConfig(
+            type="basic_agent",
+            enabled=True,
+            agent_config=AgentConfig(
+                llm_system=self.system_config.llm_system,
+                max_steps=10
+            )
+        )
+        
+        # Keep old dict for backward compat if needed
         self.config = {
             "parent_llm": {
                 "llm_system": {
@@ -37,7 +66,7 @@ class TestBasicAgentIntegration:
     async def test_execute_task_with_mocked_events(self):
         """Test task execution with mocked agent events."""
         # Create agent instance
-        agent = PLUGIN_FACTORY("integration_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("integration_agent", self.system_config, self.mcp_config)
         
         # Mock the run_events method to simulate agent execution
         mock_events = [
@@ -78,7 +107,7 @@ class TestBasicAgentIntegration:
     @pytest.mark.asyncio
     async def test_execute_task_with_error_event(self):
         """Test task execution handling error events."""
-        agent = PLUGIN_FACTORY("error_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("error_agent", self.system_config, self.mcp_config)
         
         # Mock events with error
         mock_events = [
@@ -113,7 +142,7 @@ class TestBasicAgentIntegration:
     @pytest.mark.asyncio
     async def test_execute_task_with_exception(self):
         """Test task execution with exception handling."""
-        agent = PLUGIN_FACTORY("exception_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("exception_agent", self.system_config, self.mcp_config)
         
         # Mock run_events to raise exception (needs to be async generator)
         async def mock_run_events(*args, **kwargs):
@@ -140,7 +169,7 @@ class TestBasicAgentIntegration:
     @pytest.mark.asyncio
     async def test_list_tools_integration(self):
         """Test list_tools integration with real registry."""
-        agent = PLUGIN_FACTORY("list_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("list_agent", self.system_config, self.mcp_config)
         
         # Test list_tools call
         params = {}
@@ -158,7 +187,7 @@ class TestBasicAgentIntegration:
     @pytest.mark.asyncio
     async def test_multiple_tool_calls_tracking(self):
         """Test tracking of multiple tool calls in execution."""
-        agent = PLUGIN_FACTORY("multi_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("multi_agent", self.system_config, self.mcp_config)
         
         # Mock events with multiple tool calls
         mock_events = [
@@ -198,7 +227,7 @@ class TestBasicAgentIntegration:
     @pytest.mark.asyncio
     async def test_task_execution_without_status(self):
         """Test task execution when no status object is provided."""
-        agent = PLUGIN_FACTORY("no_status_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("no_status_agent", self.system_config, self.mcp_config)
         
         # Mock simple successful execution
         mock_events = [
@@ -225,7 +254,7 @@ class TestBasicAgentIntegration:
 
     def test_plugin_schema_consistency(self):
         """Test that plugin schema is consistent with implementation."""
-        agent = PLUGIN_FACTORY("schema_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("schema_agent", self.system_config, self.mcp_config)
         
         # Get schema tools
         tools = agent.get_tools()
@@ -251,7 +280,7 @@ class TestBasicAgentIntegration:
     @pytest.mark.asyncio
     async def test_parameter_filtering(self):
         """Test that internal parameters are filtered from tool call tracking."""
-        agent = PLUGIN_FACTORY("filter_agent", self.config, ssl_verify=False)
+        agent = PLUGIN_FACTORY("filter_agent", self.system_config, self.mcp_config)
         
         # Mock events with internal parameters
         mock_events = [

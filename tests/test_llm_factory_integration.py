@@ -71,8 +71,7 @@ class TestLLMFactoryIntegration:
     
     def test_all_configured_agents_can_create_llm(self, system_config):
         """Test that all configured agents can create LLM clients."""
-        if not system_config.mcp_system or not system_config.mcp_system.servers:
-            pytest.skip("No MCP servers configured")
+        assert system_config.mcp_system and system_config.mcp_system.servers, "No MCP servers configured in system settings"
         
         # Test a few key servers
         test_servers = ["basic_agent", "web_research_agent", "duckduckgo_search"]

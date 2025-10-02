@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent_system.plugins import discover_all_plugins
 from plugins.twitter_search.server import TwitterSearchServer
 
 
@@ -17,7 +16,12 @@ async def test_twitter_plugin_discovered(mock_system_config, mock_mcp_config):
             default_dir = alt
     # Note: Factory now requires (name, system_config, mcp_config) signature
     # This test will be updated when bootstrap system is modernized
-    pytest.skip("Plugin discovery test needs bootstrap system update")
+        from agent_system.plugins import discover_all_plugins
+
+        plugins = discover_all_plugins([default_dir])
+        assert 'twitter_search' in plugins, "twitter_search plugin must be present in repository for this test"
+        factory = plugins['twitter_search']
+        assert callable(factory), "twitter_search factory should be callable"
 
 
 class TestTwitterSearchServer:
@@ -31,8 +35,12 @@ class TestTwitterSearchServer:
 
     def test_twitter_server_initialization_with_config(self, mock_system_config, mock_mcp_config):
         """Test Twitter Search server initialization with config."""
+        from agent_system.config.models import MCPConfig, AgentConfig
+        
         mock_system_config.ssl_verify = False
-        mcp_config = {"timeout": 30}
+        mcp_config = MCPConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 30
+        
         server = TwitterSearchServer("twitter", mock_system_config, mcp_config)
         assert server.name == "twitter"
         assert server.ssl_verify is False
@@ -125,9 +133,12 @@ class TestTwitterSearchPluginFactory:
     def test_plugin_factory_with_config(self, mock_system_config, mock_mcp_config):
         """Test plugin factory with configuration."""
         from plugins.twitter_search.plugin import PLUGIN_FACTORY
+        from agent_system.config.models import MCPConfig, AgentConfig
 
         mock_system_config.ssl_verify = False
-        mcp_config = {"timeout": 60}
+        mcp_config = MCPConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 60
+        
         server = PLUGIN_FACTORY("twitter", mock_system_config, mcp_config)
         assert server.name == "twitter"
         assert server.ssl_verify is False

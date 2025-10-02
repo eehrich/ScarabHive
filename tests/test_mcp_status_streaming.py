@@ -193,8 +193,15 @@ class TestMCPStatusStreaming:
         mock_cm.__aenter__.return_value = mock_response
         mock_session.post = Mock(return_value=mock_cm)
         
-        # Start transport first, then replace session with mock
+        # Start transport first; if it created a real session, close it before
+        # replacing with our mocked session to avoid leaving sessions open.
         await transport.connect()
+        # If a real session was created, disconnect to close it
+        if transport.session and not isinstance(transport.session, AsyncMock):
+            try:
+                await transport.disconnect()
+            except Exception:
+                pass
         transport.session = mock_session
         
         try:

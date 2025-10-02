@@ -1020,9 +1020,9 @@ def main() -> None:
     if args.subcommand == "mcp":
         # Load MCP configuration and create integration
         # Prefer reading the included managed `config/mcp.yaml` so external_servers
-        # entries are preserved and visible to MCPIntegration (AgentConfig.mcp
+        # entries are preserved and visible to MCPIntegration (AgentConfig.mcp_system
         # may be a pydantic model that doesn't keep the raw 'external_servers' block).
-        config_path = getattr(config.mcp, 'config_file', None) or "config/mcp.yaml"
+        config_path = getattr(config.mcp_system, 'config_file', None) or "config/mcp.yaml"
 
         async def handle_mcp_command():
             # Read the managed MCP file directly if present, otherwise fall back
@@ -1321,33 +1321,6 @@ def main() -> None:
         if isinstance(existing, _Agent):
             agent = existing
             agent.registry = registry  # type: ignore[attr-defined]
-            
-            # Inject CLI-specific system prompt hint if needed
-            prompts_cfg = getattr(agent.agent_config, 'prompts', None)
-            if prompts_cfg and hasattr(prompts_cfg, 'system_template'):
-                # Load template and append hint
-                template_path = Path(prompts_cfg.system_template)
-                if not template_path.is_absolute():
-                    template_path = Path.cwd() / template_path
-                
-                if template_path.exists():
-                    try:
-                        original = template_path.read_text(encoding='utf-8')
-                        hint = "\nNote: No follow-up questions are allowed. Please answer the request directly without asking clarifying questions.\n"
-                        combined = original + "\n" + hint
-                        
-                        # Create SimpleNamespace with both system_template and system_prompt
-                        from types import SimpleNamespace
-                        import copy
-                        new_cfg = copy.deepcopy(agent.agent_config)
-                        new_cfg.prompts = SimpleNamespace(
-                            system_template=prompts_cfg.system_template,
-                            system_prompt=combined
-                        )
-                        agent.agent_config = new_cfg  # type: ignore[attr-defined]
-                        logger.debug("CLI: Injected no-follow-up hint into agent '%s'", entry_name)
-                    except Exception as e:
-                        logger.warning("Failed to inject CLI prompt hint: %s", e)
     
     if agent is None:
         # Create new agent

@@ -24,9 +24,9 @@ class HTTPServer(SchemaBasedMCPServer):
 
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
         super().__init__(name, system_config, mcp_config)
-        http_config = mcp_config.get("http_server", {})
-        self.host = http_config.get("host") or os.getenv("HOST", "127.0.0.1")
-        self.port = http_config.get("port") or int(os.getenv("PORT", "9000"))
+        # Extract config from MCPConfig object using getattr
+        self.host = getattr(mcp_config, 'host', None) or os.getenv("HOST", "127.0.0.1")
+        self.port = int(getattr(mcp_config, 'port', None) or os.getenv("PORT", "9000"))
         self.wrapped_server = None
 
     def wrap_server(self, server: MCPServer) -> None:

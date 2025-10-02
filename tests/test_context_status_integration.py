@@ -60,7 +60,8 @@ class TestContextStatusIntegration:
             for _ in range(10)  # Create messages that exceed threshold
         ]
 
-        with patch.object(self.manager, 'estimate_token_count', return_value=900):
+        # Mock the global estimate_token_count function, not the instance method
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', return_value=messages[:5]):
                 with patch('agent_system.context.manager.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     await self.manager.manage_context(messages)
@@ -95,7 +96,8 @@ class TestContextStatusIntegration:
         """Test error status events during context management failures."""
         messages = [ChatMessage(role="user", content="Test message")]
 
-        with patch.object(self.manager, 'estimate_token_count', return_value=900):
+        # Mock the global estimate_token_count function
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(self.manager, '_truncate_oldest', side_effect=Exception("Truncation failed")):
                 with patch('agent_system.context.manager.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     result = await self.manager.manage_context(messages)
@@ -140,7 +142,8 @@ class TestContextStatusIntegration:
             ChatMessage(role="user", content="Recent message")
         ]
 
-        with patch.object(manager, 'estimate_token_count', return_value=900):
+        # Mock the global estimate_token_count function
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch('agent_system.context.manager.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                 await manager.manage_context(messages)
 
@@ -201,7 +204,8 @@ class TestStatusEventMetadata:
         manager = ContextManager(mock_agent)
         messages = [ChatMessage(role="user", content="Test")]
 
-        with patch.object(manager, 'estimate_token_count', return_value=900):
+        # Mock the global estimate_token_count function
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', return_value=messages):
                 with patch('agent_system.context.manager.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     await manager.manage_context(messages)
@@ -260,7 +264,8 @@ class TestStatusEventErrorHandling:
         manager = ContextManager(mock_agent)
         messages = [ChatMessage(role="user", content="Test")]
 
-        with patch.object(manager, 'estimate_token_count', return_value=900):
+        # Mock the global estimate_token_count function
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', return_value=messages):
                 with patch('agent_system.context.manager.status_bus.publish',
                           new_callable=AsyncMock, side_effect=Exception("Status publish failed")):
@@ -279,7 +284,8 @@ class TestStatusEventErrorHandling:
 
         test_error = Exception("Custom test error")
 
-        with patch.object(manager, 'estimate_token_count', return_value=900):
+        # Mock the global estimate_token_count function
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', side_effect=test_error):
                 with patch('agent_system.context.manager.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     await manager.manage_context(messages)
@@ -292,7 +298,8 @@ class TestStatusEventErrorHandling:
         assert error_call[0][0].level == 'error'
         assert 'Custom test error' in error_call[0][0].message
         assert error_call[0][0].meta['error'] == 'Custom test error'
-        assert error_call[0][0].meta['strategy'] == manager.config.strategy.value
+        # Strategy is already a string, not an enum
+        assert error_call[0][0].meta['strategy'] == manager.config.strategy
 
 
 class TestStatusEventMessageContent:
@@ -305,7 +312,8 @@ class TestStatusEventMessageContent:
         manager = ContextManager(mock_agent)
         messages = [ChatMessage(role="user", content="Test message")]
 
-        with patch.object(manager, 'estimate_token_count', return_value=900):
+        # Mock the global estimate_token_count function
+        with patch('agent_system.context.manager.estimate_token_count', return_value=900):
             with patch.object(manager, '_truncate_oldest', return_value=messages):
                 with patch('agent_system.context.manager.status_bus.publish', new_callable=AsyncMock) as mock_publish:
                     await manager.manage_context(messages)

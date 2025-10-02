@@ -21,19 +21,18 @@ def test_no_color_and_always_color(monkeypatch, capsys):
     assert "YES" in out2 or "NO" in out2
 def test_enable_atomic_write(tmp_path, monkeypatch, capsys):
     # Create a master manifest that includes a separate mcp.yaml (managed file)
-    cfg = tmp_path / "agent.yaml"
+    cfg = tmp_path / "config.yaml"
     managed = tmp_path / "mcp.yaml"
     managed.write_text('{"mcp": {"enabled_servers": []}}')
     cfg.write_text('{"includes": ["mcp.yaml"]}')
     # monkeypatch load_settings to minimal config with no plugin_dirs (we won't discover plugins here)
-    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
-    cfg_model = AgentConfig(
+    from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, LLMSystemConfig, LLMModelConfig
+    cfg_model = AgentSystemConfig(
         llm_system=LLMSystemConfig(
-            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
-            default_model="test-model"
-        )
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")}
+        ),
+        mcp_system=MCPSystemConfig(plugin_dirs=[])
     )
-    cfg_model.mcp = MCPConfig(plugin_dirs=[])
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg_model)
 
     # run enable action with --yes to skip prompt

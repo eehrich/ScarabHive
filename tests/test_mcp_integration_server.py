@@ -246,7 +246,7 @@ async def test_mcp_tools_call_and_auth():
 
         # now create a client that should send Authorization header via HTTPTransport
         # Build a pre-configured aiohttp session with Authorization header and attach it to HTTPTransport
-        from agent_system.mcp.transport import HTTPTransport
+        from agent_system.mcp.http_transport import HTTPTransport
         from agent_system.mcp.client import StandardMCPClient
 
         session = aiohttp.ClientSession(

@@ -17,6 +17,8 @@ from plugins.weather.server import WeatherServer
 from plugins.weather import sources
 from agent_system.mcp.status import status_bus, StatusPhase
 from agent_system.config import AgentSystemConfig, MCPConfig
+from plugins.weather.__main__ import main, build_parser, cli_main
+from agent_system.plugins import discover_all_plugins
 
 
 def _get_tool_name(tool):
@@ -202,41 +204,14 @@ class TestWeatherCLIAndFactory:
                 default_dir = alt
         from agent_system.plugins import discover_all_plugins
         plugins = discover_all_plugins([default_dir])
-        assert 'weather' in plugins
-        # Note: Factory now requires (name, system_config, mcp_config) signature
-        # This test will be updated when bootstrap system is modernized
-        pytest.skip("Plugin discovery test needs bootstrap system update")
+        assert 'weather' in plugins, "weather plugin must be present in repository for this test"
+        factory = plugins['weather']
+        assert callable(factory), "weather factory should be callable"
 
     def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
         from plugins.weather.plugin import PLUGIN_FACTORY
         server = PLUGIN_FACTORY("weather", mock_system_config, mock_mcp_config)
         assert server.name == "weather"
-
-from pathlib import Path
-import pytest
-import json
-import asyncio
-from unittest.mock import AsyncMock, Mock, patch
-from io import StringIO
-import sys
-
-from agent_system.plugins import discover_all_plugins
-from plugins.weather.server import WeatherServer
-from plugins.weather.__main__ import main, build_parser, cli_main
-
-
-def test_weather_plugin_discovered():
-    repo_root = Path(__file__).resolve().parents[1]
-    default_dir = repo_root / 'plugins'
-    if not default_dir.exists():
-        alt = repo_root / 'src' / 'plugins'
-        if alt.exists():
-            default_dir = alt
-    plugins = discover_all_plugins([default_dir])
-    assert 'weather' in plugins
-    factory = plugins['weather']
-    inst = factory('weather', {}, {})
-    assert inst is not None
 
 
 class TestWeatherCLI:
@@ -340,8 +315,13 @@ class TestWeatherServer:
 
     def test_weather_server_initialization_with_config(self, mock_system_config, mock_mcp_config):
         """Test weather server initialization with config."""
+        from agent_system.config.models import MCPConfig, AgentConfig
+        
         mock_system_config.ssl_verify = False
-        mcp_config = {"timeout": 30, "retries": 3}
+        mcp_config = MCPConfig(type="weather", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 30
+        mcp_config.retries = 3
+        
         server = WeatherServer("weather", mock_system_config, mcp_config)
         assert server.name == "weather"
         assert server.ssl_verify is False
@@ -702,10 +682,13 @@ class TestWeatherPluginFactory:
     def test_plugin_factory_with_config(self, mock_system_config, mock_mcp_config):
         """Test plugin factory with configuration."""
         from plugins.weather.plugin import PLUGIN_FACTORY
+        from agent_system.config.models import MCPConfig, AgentConfig
 
         # Mock system config with ssl_verify=False
         mock_system_config.ssl_verify = False
-        mcp_config = {"timeout": 60}
+        mcp_config = MCPConfig(type="weather", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 60
+        
         server = PLUGIN_FACTORY("weather", mock_system_config, mcp_config)
         assert server.name == "weather"
         assert server.ssl_verify is False

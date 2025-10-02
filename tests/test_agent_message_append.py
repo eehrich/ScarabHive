@@ -3,7 +3,7 @@ from agent_system.utils.id import short_id
 
 from agent_system.servers.agent.server import Agent
 from agent_system.mcp.base import MCPRegistry
-from agent_system.config.loader import load_config
+from agent_system.config.settings import load_settings as load_config
 
 
 class DummyLLM:
@@ -19,10 +19,23 @@ class DummyLLM:
 
 @pytest.mark.asyncio
 async def test_append_message_consumed(tmp_path):
-    # Load default config
-    cfg = load_config("config/agent.yaml")
+    from agent_system.config.models import MCPConfig
+    
+    # Load default config - returns AgentSystemConfig
+    system_config = load_config("config/config.yaml")
+    
+    # Get agent config from system config (should have default agent config)
+    agent_config = system_config.agent_config if hasattr(system_config, 'agent_config') and system_config.agent_config else None
+    
+    if not agent_config:
+        # Create minimal agent config for test
+        from agent_system.config.models import AgentConfig
+        agent_config = AgentConfig()
+    
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     registry = MCPRegistry()
-    agent = Agent("test_agent", cfg, registry)
+    
+    agent = Agent("test_agent", system_config, mcp_config, registry)
     # Inject dummy LLM
     agent.llm = DummyLLM()
 

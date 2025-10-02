@@ -23,8 +23,14 @@ def test_http_append_consumed(tmp_path):
                     if ev.get("type") == "start":
                         request_id = ev.get("request_id")
                         break
-
-            assert request_id is not None
+            # Ensure the streaming response is closed to release underlying sockets
+            try:
+                assert request_id is not None
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
         # POST append to the request (outside the stream context to avoid stream consumption issues)
         append_resp = client.post(f"/events/{request_id}/append", json={"content": "Integration follow-up"})

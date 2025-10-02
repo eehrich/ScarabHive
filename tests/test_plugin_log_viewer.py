@@ -89,13 +89,18 @@ class TestLogViewerWebIntegration:
     
     def test_plugin_web_endpoints(self):
         """Test plugin web endpoints work correctly"""
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        
         # Create app with plugin
         app = FastAPI()
         registry = PluginWebRegistry()
         
-        # Create plugin and register
-        config = {'log_files': ['test.log']}
-        plugin = LogViewerHybridPlugin("log_viewer", config)
+        # Create plugin and register with proper config objects
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+        mcp_config.log_files = ['test.log']
+        
+        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
         registry.register_web_plugin("log_viewer", plugin)
         
         # Apply to app
@@ -113,13 +118,18 @@ class TestLogViewerWebIntegration:
     @patch('pathlib.Path.exists')
     def test_list_log_files_endpoint(self, mock_exists):
         """Test the list log files endpoint"""
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        
         # Setup mock
         mock_exists.return_value = True
         
         # Create app with plugin
         app = FastAPI()
-        config = {'log_files': ['test.log', 'test2.log']}
-        plugin = LogViewerHybridPlugin("log_viewer", config)
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+        mcp_config.log_files = ['test.log', 'test2.log']
+        
+        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
         
         router = plugin.get_web_router()
         app.include_router(router)
@@ -145,9 +155,14 @@ class TestLogViewerWebIntegration:
     
     def test_panel_html_endpoint(self):
         """Test the panel HTML endpoint"""
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        
         app = FastAPI()
-        config = {'log_files': ['test.log']}
-        plugin = LogViewerHybridPlugin("log_viewer", config)
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+        mcp_config.log_files = ['test.log']
+        
+        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
         
         router = plugin.get_web_router()
         app.include_router(router)
@@ -167,9 +182,14 @@ class TestLogViewerWebIntegration:
     
     def test_download_endpoint_security(self):
         """Test download endpoint security (only allows configured files)"""
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        
         app = FastAPI()
-        config = {'log_files': ['allowed.log']}
-        plugin = LogViewerHybridPlugin("log_viewer", config)
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+        mcp_config.log_files = ['allowed.log']
+        
+        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
         
         router = plugin.get_web_router()
         app.include_router(router)
@@ -185,9 +205,14 @@ class TestLogViewerWebIntegration:
     
     def test_stream_endpoint_security(self):
         """Test streaming endpoint security"""
-        app = FastAPI()  
-        config = {'log_files': ['allowed.log']}
-        plugin = LogViewerHybridPlugin("log_viewer", config)
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        
+        app = FastAPI()
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+        mcp_config.log_files = ['allowed.log']
+        
+        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
         
         router = plugin.get_web_router()
         app.include_router(router)
@@ -203,9 +228,14 @@ class TestLogViewerWebIntegration:
     
     def test_static_file_serving(self):
         """Test that static files are served correctly"""
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        
         app = FastAPI()
-        config = {'log_files': ['logs/test.log']}
-        plugin = LogViewerHybridPlugin("log_viewer", config)
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+        mcp_config.log_files = ['logs/test.log']
+        
+        plugin = LogViewerHybridPlugin("log_viewer", system_config, mcp_config)
         
         router = plugin.get_web_router()
         app.include_router(router)
@@ -235,10 +265,14 @@ class TestLogViewerPluginFactory:
     def test_plugin_factory_export(self):
         """Test that PLUGIN_FACTORY is properly exported"""
         from plugins.log_viewer.plugin import PLUGIN_FACTORY
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
         
         assert PLUGIN_FACTORY is not None
         
         # Test factory can create instances
-        plugin = PLUGIN_FACTORY("test", {})
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="log_viewer", enabled=True, agent_config=AgentConfig())
+        
+        plugin = PLUGIN_FACTORY("test", system_config, mcp_config)
         assert isinstance(plugin, LogViewerHybridPlugin)
         assert plugin.name == "test"

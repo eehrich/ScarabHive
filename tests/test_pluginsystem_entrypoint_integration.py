@@ -65,8 +65,13 @@ async def test_plugins_integration_discover_entrypoint_and_filesystem(monkeypatc
     fs_factory = plugins_map['example']
     ep_factory = plugins_map['ep_example']
 
-    fs_server = fs_factory('example', {})
-    ep_server = ep_factory('ep_example', {})
+    from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+    system_config = AgentSystemConfig()
+    mcp_config_fs = MCPConfig(type="example", enabled=True, agent_config=AgentConfig())
+    mcp_config_ep = MCPConfig(type="ep_example", enabled=True, agent_config=AgentConfig())
+
+    fs_server = fs_factory('example', system_config, mcp_config_fs)
+    ep_server = ep_factory('ep_example', system_config, mcp_config_ep)
 
     # Call their call() methods (filesystem plugin is async)
     res1 = await fs_server.call("example_status", {})

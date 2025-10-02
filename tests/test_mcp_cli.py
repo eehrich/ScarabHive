@@ -3,7 +3,6 @@
 import subprocess
 import sys
 from pathlib import Path
-import pytest
 
 # Add the src directory to the Python path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -75,20 +74,9 @@ class TestMCPServerCLI:
         assert "--provider" in result.stdout
         assert "--model" in result.stdout
     
-    def test_google_search_cli_help(self):
-        """Test Google Search server CLI help."""
-        pytest.skip("Google Search plugin not implemented yet")
-        result = subprocess.run([
-            sys.executable, "-m", "plugins.google_search",
-            "--help"
-    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
-        
-        assert result.returncode == 0
-        assert "Google Search MCP Server" in result.stdout
-        assert "--query" in result.stdout
-        assert "--max-results" in result.stdout
-        assert "--api-key" in result.stdout
-        assert "--cx" in result.stdout
+    # The Google Search plugin was removed from the project. Tests that
+    # referenced it have been deleted or updated to use existing search
+    # plugins such as DuckDuckGo. Keep other server CLI help tests intact.
     
     def test_datetime_cli_help(self):
         """Test DateTime server CLI help."""

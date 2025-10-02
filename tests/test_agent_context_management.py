@@ -260,7 +260,7 @@ def test_agent_tracks_context_usage():
 
 
 def test_context_manager_optimizer_guards():
-    """Agent has optimizer run guards configured."""
+    """Agent has token optimizer configured when token optimization is enabled."""
     token_opt = TokenOptimizationConfig(
         enable_compression=True,
         compress_tool_results=True
@@ -278,12 +278,10 @@ def test_context_manager_optimizer_guards():
     
     agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
     
-    # Optimizer guards should be initialized
-    assert agent._last_optimizer_tokens_snapshot == 0
-    assert agent._last_optimizer_run_time == 0.0
-    assert agent._optimizer_cooldown_seconds == 10.0
-    assert agent._optimizer_min_increase_tokens > 0  # Based on context window
-    assert agent._skip_optimizer_steps_after_context_mgmt == 0
+    # Token optimizer should be initialized when compression is enabled
+    assert agent.token_optimizer is not None
+    assert hasattr(agent, 'context_manager')
+    assert agent.context_manager is not None
 
 
 def test_context_manager_no_redundant_config_storage():

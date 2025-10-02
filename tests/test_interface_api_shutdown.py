@@ -18,16 +18,14 @@ async def test_server_with_connection():
     
     # Start the server as a subprocess
     logger.info("Starting API server...")
+    # Launch server without capturing stdout/stderr to avoid leftover reader
+    # threads that may cause ResourceWarning during pytest cleanup. We still
+    # monitor the process via polling and only communicate if it exits.
     server_process = subprocess.Popen(
         [sys.executable, "-m", "agent_system.agent.interface_api"],
         cwd=Path(__file__).parent.parent,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        # Open pipes in text mode with explicit encoding and errors policy
-        # to avoid UnicodeDecodeError inside subprocess reader threads.
-        text=True,
-        encoding='utf-8',
-        errors='replace'
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
     )
     
     # Wait for server to start with timeout and health check
@@ -57,6 +55,18 @@ async def test_server_with_connection():
         await asyncio.sleep(1)
     else:
         logger.error("Server failed to start within timeout")
+        # Ensure the subprocess is terminated to avoid ResourceWarning in
+        # Popen.__del__ if the process remains running when garbage-collected.
+        try:
+            if server_process.poll() is None:
+                server_process.terminate()
+                try:
+                    server_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    server_process.kill()
+                    server_process.wait(timeout=1)
+        except Exception:
+            pass
         return False
     
     try:
@@ -111,39 +121,23 @@ async def test_server_with_connection():
                 
     finally:
         # Ensure server is stopped with proper cleanup
-        if server_process.poll() is None:
-            logger.info("Force terminating server process...")
-            server_process.terminate()
-            try:
-                server_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.warning("Server did not terminate, killing...")
-                server_process.kill()
-                server_process.wait(timeout=2)
-        
-        # Get the server output (only if process finished)
         try:
-            stdout, stderr = server_process.communicate(timeout=1)
-            stdout = stdout or ""
-            stderr = stderr or ""
-        except subprocess.TimeoutExpired:
-            logger.warning("Timeout getting server output")
-            stdout, stderr = "", ""
-        
+            if server_process.poll() is None:
+                logger.info("Force terminating server process...")
+                server_process.terminate()
+                try:
+                    server_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning("Server did not terminate, killing...")
+                    server_process.kill()
+                    server_process.wait(timeout=2)
+        except Exception:
+            pass
+
+        # We don't attempt to read stdout/stderr because we launched the
+        # process with DEVNULL to avoid threads and leftover handles.
         logger.info(f"Server exit code: {server_process.returncode}")
-        if stdout:
-            logger.info("Server stdout (last 500 chars):")
-            logger.info(stdout[-500:])
-        if stderr:
-            logger.info("Server stderr (last 500 chars):")
-            logger.info(stderr[-500:])
-            
-        # Check if we see the expected shutdown messages
-        if stderr and ("shutting down gracefully" in stderr.lower() or "shutdown complete" in stderr.lower()):
-            logger.info("✅ Graceful shutdown detected in logs")
-        else:
-            logger.warning("⚠️  Graceful shutdown messages not found in stderr")
-            
+
         return server_process.returncode == 0
 
 

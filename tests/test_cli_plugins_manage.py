@@ -10,14 +10,14 @@ from agent_system import cli
 
 
 def _write_cfg(tmp_path: Path, data: dict):
-    p = tmp_path / "agent.yaml"
+    p = tmp_path / "config.yaml"
     p.write_text(json.dumps(data))
     return p
 
 
 def test_cli_plugins_enable_disable(monkeypatch, tmp_path, capsys):
     # Prepare empty config file
-    cfg_file = tmp_path / "agent.yaml"
+    cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text("")
 
     # Create plugins dir

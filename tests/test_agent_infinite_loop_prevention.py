@@ -8,7 +8,7 @@ from test_agent_comprehensive import MockMCPServer
 
 def create_test_config():
     """Create a test configuration with the new LLM system structure."""
-    return AgentConfig(
+    cfg = AgentConfig(
         llm_system=LLMSystemConfig(
             models={
                 "test-model": LLMModelConfig(provider="openai", model="test-model")
@@ -20,6 +20,9 @@ def create_test_config():
         ),
         max_steps=10
     )
+    # Allow all tools in tests by default so registry-registered mock tools are reachable
+    cfg.tools.allowed = ["*"]
+    return cfg
 
 
 class MockLLMClient:
@@ -47,13 +50,17 @@ class MockLLMClient:
 @pytest.mark.asyncio
 async def test_agent_prevents_infinite_loop_empty_responses():
     """Test that agent breaks out of loop when getting consecutive empty responses."""
-    config = create_test_config()
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    
+    agent_config = create_test_config()
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     registry = MCPRegistry()
     
     # Mock LLM that returns empty responses
     mock_llm = MockLLMClient("empty")
     
-    agent = Agent("test_agent", config, registry, llm=mock_llm)
+    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
     
     # Run agent and collect events
     events = []
@@ -74,13 +81,17 @@ async def test_agent_prevents_infinite_loop_empty_responses():
 @pytest.mark.asyncio
 async def test_agent_prevents_infinite_loop_no_tool_calls():
     """Test that agent breaks out of loop when getting consecutive responses without tool calls."""
-    config = create_test_config()
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    
+    agent_config = create_test_config()
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     registry = MCPRegistry()
     
     # Mock LLM that returns content but no tool calls
     mock_llm = MockLLMClient("content_only")
     
-    agent = Agent("test_agent", config, registry, llm=mock_llm)
+    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
     
     # Run agent and collect events
     events = []
@@ -105,7 +116,17 @@ async def test_agent_prevents_infinite_loop_no_tool_calls():
 @pytest.mark.asyncio 
 async def test_agent_normal_execution_not_affected():
     """Test that normal agent execution with tool calls is not affected by the safeguards."""
-    config = create_test_config()
+    from agent_system.config.models import AgentSystemConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
+    
+    agent_config = create_test_config()
+    system_config = AgentSystemConfig(
+        llm_system=LLMSystemConfig(
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
+            default_profile="normal",
+            profiles={"normal": {"model_ref": "test-model"}}
+        )
+    )
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     registry = MCPRegistry()
     
     # Add a mock tool to registry
@@ -139,7 +160,7 @@ async def test_agent_normal_execution_not_affected():
                 }
     
     mock_llm = NormalMockLLM()
-    agent = Agent("test_agent", config, registry, llm=mock_llm)
+    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
     
     # Run agent and collect events
     events = []

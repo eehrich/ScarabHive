@@ -7,17 +7,19 @@ from agent_system import cli
 
 
 def _make_cfg_with_managed(managed_path: Path):
-    # Return a minimal config object with `mcp.config_file` attribute
+    # Return a minimal config object with `mcp_system.config_file` attribute
     from types import SimpleNamespace
 
     cfg = SimpleNamespace()
-    cfg.mcp = SimpleNamespace()
-    cfg.mcp.config_file = str(managed_path)
+    cfg.mcp_system = SimpleNamespace()
+    cfg.mcp_system.config_file = str(managed_path)
+    cfg.mcp_system.external_servers = SimpleNamespace()
+    cfg.mcp_system.external_servers.remote_servers = {}
     return cfg
 
 
 def test_mcp_feature_list_no_probe(monkeypatch, tmp_path, capsys):
-    master = tmp_path / "agent.yaml"
+    master = tmp_path / "config.yaml"
     master.write_text("mcp: {}")
 
     managed = tmp_path / "mcp.yaml"
@@ -37,7 +39,7 @@ def test_mcp_feature_list_no_probe(monkeypatch, tmp_path, capsys):
 
 
 def test_mcp_feature_set_persists(monkeypatch, tmp_path, capsys):
-    master = tmp_path / "agent.yaml"
+    master = tmp_path / "config.yaml"
     master.write_text("mcp: {}")
 
     managed = tmp_path / "mcp.yaml"

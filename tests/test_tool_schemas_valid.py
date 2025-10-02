@@ -1,7 +1,7 @@
 import pytest
 from agent_system.servers.agent.server import Agent
 from agent_system.mcp.base import MCPRegistry
-from agent_system.config.loader import load_config
+from agent_system.config.settings import load_settings as load_config
 
 class DummyLLMNoop:
     async def chat(self, messages):
@@ -11,9 +11,19 @@ class DummyLLMNoop:
 
 @pytest.mark.asyncio
 async def test_all_tool_schemas_have_type(tmp_path):
-    cfg = load_config("config/agent.yaml")
+    from agent_system.config.models import MCPConfig, AgentConfig
+    
+    cfg = load_config("config/config.yaml")
     registry = MCPRegistry()
-    agent = Agent("test_agent", cfg, registry)
+    
+    # Create MCPConfig for agent
+    mcp_config = MCPConfig(
+        type="test_agent",
+        enabled=True,
+        agent_config=AgentConfig()
+    )
+    
+    agent = Agent("test_agent", cfg, mcp_config, registry)
     agent.llm = DummyLLMNoop()
 
     # Collect available tools the same way Agent.run_events would

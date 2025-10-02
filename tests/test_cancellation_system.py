@@ -232,7 +232,14 @@ class TestBasicOperationsCancellation:
     @pytest.fixture
     def server(self):
         """Create a BasicOperations server for testing."""
-        return BasicOperationsServer("test-server")
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, LLMSystemConfig
+        
+        system_config = AgentSystemConfig(
+            llm_system=LLMSystemConfig(models={}, profiles={})
+        )
+        mcp_config = MCPConfig(type="basic_operations", enabled=True)
+        
+        return BasicOperationsServer("test-server", system_config, mcp_config)
     
     @pytest.fixture
     def mock_status(self):

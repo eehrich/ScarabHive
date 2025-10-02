@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import MagicMock
 from agent_system.context.manager import ContextManager
+from agent_system.llm import token_utils
 from agent_system.config.models import (
     ContextManagementConfig,
     AgentSystemConfig,
@@ -16,7 +17,7 @@ def create_mock_agent(context_window=4096):
     """Helper to create mock Agent with custom context config."""
     mock_agent = MagicMock()
     mock_agent.name = "test_agent"
-    
+
     # Create nested config structure
     context_mgmt = ContextManagementConfig(
         enabled=True,
@@ -24,18 +25,18 @@ def create_mock_agent(context_window=4096):
         summarization_threshold=0.80,
         preserve_recent_messages=5,
     )
-    
+
     agent_config = AgentConfig()
     agent_config.context_management = context_mgmt
-    
+
     mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     system_config = AgentSystemConfig()
-    
+
     mock_agent.mcp_config = mcp_config
     mock_agent.system_config = system_config
     mock_agent.llm = MagicMock()
     mock_agent.llm.context_window = context_window
-    
+
     return mock_agent
 
 
@@ -52,7 +53,7 @@ class TestContextTokenEstimation:
         """Test token estimation for natural language content."""
         # Natural language should use ~0.75 tokens per word
         content = "Hello, how are you doing today? I hope everything is going well."
-        tokens = context_manager._estimate_content_tokens(content)
+        tokens = token_utils.estimate_content_tokens(content)
         word_count = len(content.split())  # 12 words
         expected = int(word_count * 0.75)  # ~9 tokens
         assert abs(tokens - expected) <= 2  # Allow small variance
@@ -65,7 +66,7 @@ def hello_world():
     print("Hello, world!")
     return True
 """
-        tokens = context_manager._estimate_content_tokens(content)
+        tokens = token_utils.estimate_content_tokens(content)
         word_count = len(content.split())  # 6 words
         expected = int(word_count * 1.2)  # ~7 tokens
         assert abs(tokens - expected) <= 3
@@ -73,7 +74,7 @@ def hello_world():
     def test_estimate_content_tokens_json(self, context_manager):
         """Test token estimation for JSON/structured content."""
         content = '{"name": "test", "values": [1, 2, 3], "active": true}'
-        tokens = context_manager._estimate_content_tokens(content)
+        tokens = token_utils.estimate_content_tokens(content)
         word_count = len(content.split())  # 7 words (structural chars removed in estimation)
         expected = int(word_count * 1.1)  # ~8 tokens for JSON
         assert abs(tokens - expected) <= 2
@@ -81,13 +82,13 @@ def hello_world():
     def test_estimate_json_tokens(self, context_manager):
         """Test JSON-specific token estimation."""
         json_content = '{"user": "john", "data": {"items": [1, 2, 3]}, "active": true}'
-        tokens = context_manager._estimate_json_tokens(json_content)
+        tokens = token_utils.estimate_json_tokens(json_content)
 
         # Should account for structural characters
         structural_chars = json_content.count('{') + json_content.count('}') + \
-                          json_content.count('[') + json_content.count(']') + \
-                          json_content.count('"') + json_content.count(':') + \
-                          json_content.count(',')
+            json_content.count('[') + json_content.count(']') + \
+            json_content.count('"') + json_content.count(':') + \
+            json_content.count(',')
 
         # Should be more than just length/4 due to structure
         assert tokens > len(json_content) // 4
@@ -96,16 +97,16 @@ def hello_world():
     def test_estimate_tool_result_tokens_json(self, context_manager):
         """Test tool result estimation for JSON responses."""
         json_response = '{"status": "success", "results": [{"id": 1, "name": "test"}]}'
-        tokens = context_manager._estimate_tool_result_tokens(json_response)
+        tokens = token_utils.estimate_tool_result_tokens(json_response)
 
         # Should detect as JSON and use JSON estimation
-        json_tokens = context_manager._estimate_json_tokens(json_response)
+        json_tokens = token_utils.estimate_json_tokens(json_response)
         assert tokens == json_tokens
 
     def test_estimate_tool_result_tokens_html(self, context_manager):
         """Test tool result estimation for HTML content."""
         html_content = '<div class="test"><p>Hello world</p><span>More text</span></div>'
-        tokens = context_manager._estimate_tool_result_tokens(html_content)
+        tokens = token_utils.estimate_tool_result_tokens(html_content)
 
         # Should use HTML ratio (1.4 tokens per word)
         word_count = len(html_content.split())  # 4 words
@@ -115,7 +116,7 @@ def hello_world():
     def test_estimate_tool_result_tokens_plain_text(self, context_manager):
         """Test tool result estimation for plain text."""
         text_content = "This is a simple plain text response from a tool."
-        tokens = context_manager._estimate_tool_result_tokens(text_content)
+        tokens = token_utils.estimate_tool_result_tokens(text_content)
 
         # Should use natural language ratio (0.75 tokens per word)
         word_count = len(text_content.split())  # 10 words
@@ -133,7 +134,7 @@ def hello_world():
         ]
 
         for code in code_samples:
-            assert context_manager._is_code_content(code), f"Should detect as code: {code}"
+            assert token_utils.is_code_content(code), f"Should detect as code: {code}"
 
         # Should not detect as code
         text_samples = [
@@ -143,7 +144,7 @@ def hello_world():
         ]
 
         for text in text_samples:
-            assert not context_manager._is_code_content(text), f"Should not detect as code: {text}"
+            assert not token_utils.is_code_content(text), f"Should not detect as code: {text}"
 
     def test_is_structured_data_detection(self, context_manager):
         """Test structured data detection."""
@@ -156,7 +157,7 @@ def hello_world():
         ]
 
         for data in structured_samples:
-            assert context_manager._is_structured_data(data), f"Should detect as structured: {data}"
+            assert token_utils.is_structured_data(data), f"Should detect as structured: {data}"
 
         # Should not detect as structured
         text_samples = [
@@ -166,7 +167,7 @@ def hello_world():
         ]
 
         for text in text_samples:
-            assert not context_manager._is_structured_data(text), f"Should not detect as structured: {text}"
+            assert not token_utils.is_structured_data(text), f"Should not detect as structured: {text}"
 
     def test_full_message_estimation(self, context_manager):
         """Test full message token estimation with various message types."""
@@ -202,10 +203,10 @@ def hello_world():
 
     def test_empty_content_handling(self, context_manager):
         """Test handling of empty or None content."""
-        assert context_manager._estimate_content_tokens("") == 0
-        assert context_manager._estimate_content_tokens(None) == 0
-        assert context_manager._estimate_json_tokens("") == 0
-        assert context_manager._estimate_tool_result_tokens("") == 0
+        assert token_utils.estimate_content_tokens("") == 0
+        assert token_utils.estimate_content_tokens(None) == 0
+        assert token_utils.estimate_json_tokens("") == 0
+        assert token_utils.estimate_tool_result_tokens("") == 0
 
     def test_comparison_with_old_method(self, context_manager):
         """Test that new method gives different (hopefully better) estimates than old simple method."""

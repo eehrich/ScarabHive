@@ -148,12 +148,8 @@ class TestLLMRouterServerNew:
         with pytest.raises(ValueError, match="not found"):
             await server.call("unknown_tool", {"_status": AsyncMock()})
 
-    @pytest.mark.skip(reason="get_default_action() removed in modernization - dispatcher handles routing")
-    @pytest.mark.asyncio
-    async def test_default_action(self, mock_system_config, mock_mcp_config):
-        """Test default action is chat."""
-        server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
-        assert server.get_default_action() == "chat_agent"
+    # get_default_action() removed in modernization; dispatcher handles routing.
+    # Old default-action test removed as obsolete.
 
     @pytest.mark.asyncio
     async def test_chat_with_profile_success(self, mock_system_config, mock_mcp_config):

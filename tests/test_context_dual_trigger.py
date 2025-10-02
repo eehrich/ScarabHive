@@ -82,10 +82,11 @@ class TestDualTriggerContextManagement:
 
     def test_dual_trigger_prediction_based(self, context_manager):
         """Test that prediction-based trigger activates context management."""
-        # Create messages that would trigger prediction threshold (90% of 10000 = 9000)
+        # Create messages that would trigger prediction threshold (95% of 10000 = 9500)
         messages = [ChatMessage(role="user", content="x" * 9500)]  # Simulate large message
 
-        with patch.object(context_manager, 'estimate_token_count', return_value=9500):
+        # Mock the global estimate_token_count function
+        with patch('agent_system.context.manager.estimate_token_count', return_value=9500):
             estimated_tokens, warning_level = context_manager.check_and_warn(messages)
             should_manage = context_manager.should_manage_context(estimated_tokens, warning_level)
 
@@ -128,7 +129,7 @@ class TestDualTriggerContextManagement:
         assert stats['actual_usage']['prompt_tokens'] == 4000
         assert stats['actual_usage']['completion_tokens'] == 1000
         assert stats['context_window'] == 10000
-        assert stats['prediction_threshold'] == 0.90
+        assert stats['prediction_threshold'] == 0.95  # Default from ContextManagementConfig
         assert stats['summarization_threshold'] == 8000
 
     def test_no_trigger_below_thresholds(self, context_manager):
@@ -191,7 +192,7 @@ class TestDualTriggerContextManagement:
             ChatMessage(role="assistant", content="Response"),
         ]
 
-        with patch.object(context_manager, 'estimate_token_count', return_value=9500):
+        with patch('agent_system.context.manager.estimate_token_count', return_value=9500):
             # Should trigger context management
             estimated_tokens, warning_level = context_manager.check_and_warn(messages)
             should_manage = context_manager.should_manage_context(estimated_tokens, warning_level)

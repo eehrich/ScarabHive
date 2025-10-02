@@ -5,15 +5,29 @@ import pytest
 from unittest.mock import AsyncMock
 
 from agent_system.mcp.base import MCPRegistry, MCPServer
-from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile, ContextConfig, PromptsConfig
+from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile, ContextConfig
 from agent_system.servers.agent.server import Agent
 
 
 class MockMCPServer(MCPServer):
     """Mock MCP server for testing."""
     
-    def __init__(self, name: str, config: dict = None, ssl_verify: bool = True):
-        super().__init__(name, config, ssl_verify)
+    def __init__(self, name: str, config_dict: dict = None):
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        
+        # Create proper config objects
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type=name, enabled=True, agent_config=AgentConfig())
+        
+        # Store the config dict for test assertions
+        self.config = config_dict or {}
+        
+        # Copy config_dict attributes to mcp_config
+        if config_dict:
+            for key, value in config_dict.items():
+                setattr(mcp_config, key, value)
+        
+        super().__init__(name, system_config, mcp_config)
         self.call_history = []
     
     @property
@@ -140,28 +154,37 @@ class TestAgent:
                 default_profile="normal"
             ),
             context=ContextConfig(auto_datetime=False),  # Disable for testing
-            prompts=PromptsConfig(system_template="config/prompts/system_prompt.yaml"),
+            system_template="config/prompts/system_prompt.yaml",
             max_steps=3,
             servers={}
         )
     
     def test_agent_initialization_without_llm(self):
         """Test agent initialization when LLM fails."""
-        config = self.create_test_config()
+        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        
+        agent_config = self.create_test_config()
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
         registry = MCPRegistry()
         
         # Agent should initialize even if LLM fails
-        agent = Agent("test_agent", config, registry)
+        agent = Agent("test_agent", system_config, mcp_config, registry)
         assert agent.llm is None
-        assert agent.agent_config is config
+        assert agent.agent_config is agent_config
         assert agent.registry is registry
     
     @pytest.mark.asyncio
     async def test_agent_run_without_llm(self):
         """Test agent run when no LLM is available."""
-        config = self.create_test_config()
+        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        
+        agent_config = self.create_test_config()
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
         registry = MCPRegistry()
-        agent = Agent("test_agent", config, registry)
+        
+        agent = Agent("test_agent", system_config, mcp_config, registry)
         
         from agent_system.servers.agent.result_utils import collect_final_result
         result = await collect_final_result(agent, "test task")
@@ -172,7 +195,11 @@ class TestAgent:
     
     def test_agent_with_mock_registry(self):
         """Test agent with mock registry setup."""
-        config = self.create_test_config()
+        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        
+        agent_config = self.create_test_config()
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
         registry = MCPRegistry()
         
         # Add mock servers
@@ -182,7 +209,7 @@ class TestAgent:
         registry.register("search", server1)
         registry.register("weather", server2)
         
-        agent = Agent("test_agent", config, registry)
+        agent = Agent("test_agent", system_config, mcp_config, registry)
         
         # Verify registry is properly set up
         assert agent.registry.list() == ["search", "weather"]
@@ -206,7 +233,7 @@ class TestAgentEventStream:
                 default_profile="normal"
             ),
             context=ContextConfig(auto_datetime=False),
-            prompts=PromptsConfig(system_template="config/prompts/system_prompt.yaml"),
+            system_template="config/prompts/system_prompt.yaml",
             max_steps=2,
             servers={}
         )
@@ -214,9 +241,14 @@ class TestAgentEventStream:
     @pytest.mark.asyncio
     async def test_event_stream_without_llm(self):
         """Test event stream when no LLM is available."""
-        config = self.create_test_config()
+        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        
+        agent_config = self.create_test_config()
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
         registry = MCPRegistry()
-        agent = Agent("test_agent", config, registry)
+        
+        agent = Agent("test_agent", system_config, mcp_config, registry)
         
         events = []
         async for event in agent.run_events("test task"):
@@ -254,14 +286,18 @@ class TestAgentValidation:
     @pytest.mark.asyncio
     async def test_agent_action_validation(self):
         """Test that agent validates actions against server schemas."""
-        config = self.create_test_config()
+        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        
+        agent_config = self.create_test_config()
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
         registry = MCPRegistry()
         
         # Create a mock server with specific actions
         server = MockMCPServer("test_server")
         registry.register("test", server)
         
-        agent = Agent("test_agent", config, registry)
+        agent = Agent("test_agent", system_config, mcp_config, registry)
         
         # Mock the LLM to return a specific tool call
         mock_llm = AsyncMock()
@@ -347,7 +383,12 @@ def test_config():
 @pytest.fixture
 def test_agent(test_config, mock_registry):
     """Fixture providing a test agent."""
-    return Agent("test_agent", test_config, mock_registry)
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=test_config)
+    
+    return Agent("test_agent", system_config, mcp_config, mock_registry)
 
 
 class TestWithFixtures:

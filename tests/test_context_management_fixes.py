@@ -128,7 +128,7 @@ class TestTriggerLogic:
         estimated_tokens = context_manager.estimate_token_count(messages)
         
         # Verify we actually exceed threshold
-        threshold = context_manager.config.get_summarization_threshold_tokens()
+        threshold = context_manager.get_summarization_threshold_tokens()
         assert estimated_tokens > threshold, f"Estimated {estimated_tokens} should exceed threshold {threshold}"
         
         # Should trigger based on estimated tokens
@@ -174,6 +174,9 @@ class TestSummaryDetection:
         
     async def test_preserve_existing_summaries_in_summarizer(self, summarizer, small_context_config):
         """Test that summarizer preserves existing summaries."""
+        # Extract the actual ContextManagementConfig from the mock agent
+        config = small_context_config.mcp_config.agent_config.context_management
+        
         # Create messages with existing summary and new content
         messages = [
             ChatMessage(role="system", content="System prompt"),
@@ -185,7 +188,7 @@ class TestSummaryDetection:
             ChatMessage(role="user", content="New message 3"),  # Will be preserved
         ]
         
-        result = await summarizer.summarize_conversation(messages, small_context_config)
+        result = await summarizer.summarize_conversation(messages, config)
         
         # Should preserve system prompt, existing summary, and recent messages
         assert len(result) >= 5  # system + existing summary + new summary + 3 preserved
@@ -220,6 +223,9 @@ class TestInfiniteLoopPrevention:
     
     async def test_summarization_with_multiple_existing_summaries(self, summarizer, small_context_config):
         """Test handling of multiple existing summaries."""
+        # Extract the actual ContextManagementConfig from the mock agent
+        config = small_context_config.mcp_config.agent_config.context_management
+        
         messages = [
             create_summary_message("First summary"),
             create_summary_message("Second summary"),
@@ -229,7 +235,7 @@ class TestInfiniteLoopPrevention:
             ChatMessage(role="user", content="Recent message 3"),
         ]
         
-        result = await summarizer.summarize_conversation(messages, small_context_config)
+        result = await summarizer.summarize_conversation(messages, config)
         
         # Should preserve both existing summaries
         existing_summaries = [msg for msg in result if msg.content and "[CONVERSATION SUMMARY]" in msg.content]

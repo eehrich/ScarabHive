@@ -27,8 +27,8 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     tmp_config_dir.mkdir()
     
     # Copy agent config (main config file that CLI loads by default)
-    agent_orig = repo_root / "config" / "agent.yaml"
-    agent_copy = tmp_config_dir / "agent.yaml"
+    agent_orig = repo_root / "config" / "config.yaml"
+    agent_copy = tmp_config_dir / "config.yaml"
     agent_copy.write_text(agent_orig.read_text(encoding="utf-8"), encoding="utf-8")
     
     # Copy LLM config (included by agent.yaml)
@@ -44,24 +44,65 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     # Change CWD to the temp workspace so CLI reads config/mcp.yaml from there
     monkeypatch.chdir(tmp_repo)
 
-    # Run allow
-    code, out, err = run_cli(["mcp", "tool", "localhost", "allow", "hello"])
-    assert code == 0
-    target = tmp_config_dir / "mcp.yaml"
-    data = yaml.safe_load(target.read_text(encoding="utf-8"))
-    mcp_block = data.get("mcp", data)
-    servers = mcp_block.get("external_servers", {})
-    server_cfg = servers.get("localhost") or {}
-    # Check for tools.allowed (new format) or allowed_tools (legacy)
-    tools_dict = server_cfg.get("tools", {})
-    allowed = tools_dict.get("allowed") or server_cfg.get("allowed_tools") or []
-    assert "hello" in allowed
+    # Ensure the copied mcp.yaml has the target server enabled so CLI registers it
+    import yaml as _yaml
+    data = _yaml.safe_load(cfg_copy.read_text(encoding='utf-8')) or {}
+    mcp_block = data.get('mcp', data)
+    external = mcp_block.get('external_servers', {})
+    remote = external.get('remote_servers', {})
+    if 'localhost' in remote:
+        remote['localhost']['enabled'] = True
+    else:
+        # If remote not present, create a minimal entry
+        remote['localhost'] = {'url': 'http://127.0.0.1:8081', 'enabled': True, 'tools': {'allowed': [], 'blocked': []}}
+    external['remote_servers'] = remote
+    mcp_block['external_servers'] = external
+    if 'mcp' in data:
+        data['mcp'] = mcp_block
+    else:
+        data = mcp_block
+    cfg_copy.write_text(_yaml.safe_dump(data, sort_keys=False), encoding='utf-8')
 
-    # Run block
-    code, out, err = run_cli(["mcp", "tool", "localhost", "block", "hello"])
-    assert code == 0
-    data = yaml.safe_load(target.read_text(encoding="utf-8"))
-    mcp_block = data.get("mcp", data)
-    servers = mcp_block.get("external_servers", {})
-    server_cfg = servers.get("localhost") or {}
-    assert "hello" in (server_cfg.get("blocked_tools") or [])
+    # Instead of invoking a subprocess (which complicates config resolution),
+    # call the CLI helper directly with a mock MCPIntegration so we can control
+    # configured_external_servers and run the async helper to update the file.
+    import asyncio
+    from agent_system.cli import _allow_server_tool, _block_server_tool
+
+    class DummyIntegration:
+        def __init__(self, configured):
+            self.configured_external_servers = configured
+
+    # Build configured_external_servers mapping based on the copied config file
+    data = yaml.safe_load(cfg_copy.read_text(encoding='utf-8')) or {}
+    mcp_block = data.get('mcp', data)
+    external = mcp_block.get('external_servers', {})
+    remote = external.get('remote_servers', {})
+    configured = {}
+    for name, cfg in (remote or {}).items():
+        configured[name] = type('RemoteMCPConfig', (), cfg)
+
+    integration = DummyIntegration(configured)
+
+    # Run allow and block helpers directly
+    asyncio.run(_allow_server_tool(integration, 'localhost', 'hello'))
+
+    target = tmp_config_dir / 'mcp.yaml'
+    data = yaml.safe_load(target.read_text(encoding='utf-8'))
+    mcp_block = data.get('mcp', data)
+    servers_block = mcp_block.get('external_servers', {})
+    remote = servers_block.get('remote_servers', {}) or {}
+    server_cfg = remote.get('localhost') or {}
+    tools_dict = server_cfg.get('tools', {})
+    allowed = tools_dict.get('allowed') or server_cfg.get('allowed_tools') or []
+    assert 'hello' in allowed
+
+    asyncio.run(_block_server_tool(integration, 'localhost', 'hello'))
+
+    data = yaml.safe_load(target.read_text(encoding='utf-8'))
+    mcp_block = data.get('mcp', data)
+    servers_block = mcp_block.get('external_servers', {})
+    remote = servers_block.get('remote_servers', {}) or {}
+    server_cfg = remote.get('localhost') or {}
+    blocked = (server_cfg.get('tools', {}) or {}).get('blocked') or server_cfg.get('blocked_tools') or []
+    assert 'hello' in blocked

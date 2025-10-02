@@ -9,7 +9,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_system.servers.agent.server import Agent
-from agent_system.config.models import AgentSystemConfig
+from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
 class TestWebUICancellation:
@@ -20,10 +20,14 @@ class TestWebUICancellation:
         """Create a mock agent for testing."""
         from tests.test_utils import create_test_config
         
-        config = create_test_config()
+        system_config = create_test_config()
+        from agent_system.config.models import AgentConfig
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=AgentConfig())
+
         agent = Agent(
-            name="test_agent",
-            config=config,
+            "test_agent",
+            system_config,
+            mcp_config,
             registry=MagicMock(),
             llm=MagicMock()
         )

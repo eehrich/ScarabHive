@@ -1,27 +1,31 @@
 import json
-import subprocess
-from pathlib import Path
+import io
+import sys
+from contextlib import redirect_stdout, redirect_stderr
+import agent_system.cli as cli
 
 
 def test_cli_plugins_list_show_metadata(tmp_path, monkeypatch):
     """Integration-style test: run the CLI to list plugins with --show-metadata in JSON
     and assert that the output is valid JSON and contains metadata keys for discovered plugins.
     """
-    # Run the CLI in a subprocess to exercise the full entrypoint behavior.
-    cmd = [
-        str(Path(".venv") / "Scripts" / "python.exe"),
-        "-m",
-        "agent_system.cli",
-        "plugins",
-        "list",
-        "--format",
-        "json",
-        "--show-metadata",
-    ]
-    # Use the repository root as cwd so discovery of filesystem plugins works
-    proc = subprocess.run(cmd, cwd=Path.cwd(), capture_output=True, text=True, encoding='utf-8', errors='replace')
-    assert proc.returncode == 0, f"CLI failed: {proc.stderr}"
-    out = proc.stdout.strip()
+    # Run the CLI in-process to exercise the entrypoint behavior and capture output.
+    argv_backup = sys.argv[:] if hasattr(sys, 'argv') else None
+    out_buf = io.StringIO()
+    err_buf = io.StringIO()
+    try:
+        sys.argv = [sys.executable, 'plugins', 'list', '--format', 'json', '--show-metadata']
+        with redirect_stdout(out_buf), redirect_stderr(err_buf):
+            try:
+                cli.main()
+            except SystemExit:
+                # main may call sys.exit(); ignore
+                pass
+    finally:
+        if argv_backup is not None:
+            sys.argv = argv_backup
+
+    out = out_buf.getvalue().strip()
     data = json.loads(out)
     assert isinstance(data, list)
     # If any plugins are discovered, they should include a 'metadata' key

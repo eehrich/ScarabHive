@@ -571,14 +571,8 @@ class TestMCPServerIntegration:
         assert isinstance(tools, list)
         assert len(tools) > 0
 
-    @pytest.mark.skip(reason="get_default_action() removed in modernization - dispatcher handles routing")
-    def test_mcpserver_get_default_action(self, mock_system_config, mock_mcp_config):
-        """Test MCP server get_default_action method."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
-        
-        default_action = server.get_default_action()
-        assert isinstance(default_action, str)
-        assert default_action == "execute_python_sandbox"
+    # get_default_action() removed in modernization; dispatcher now handles routing.
+    # The old test asserting get_default_action is obsolete and removed.
 
     @pytest.mark.asyncio
     async def test_mcpserver_handles_unknown_tool(self, mock_system_config, mock_mcp_config):

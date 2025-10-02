@@ -7,7 +7,7 @@ from agent_system import cli
 
 def test_enable_writes_managed_file(monkeypatch, tmp_path, capsys):
     # create master config and plugins dir
-    master = tmp_path / "agent.yaml"
+    master = tmp_path / "config.yaml"
     master.write_text('{"mcp": {"plugin_dirs": ["plugins"], "managed_file": "managed.yaml"}}')
 
     pdir = tmp_path / "plugins"
@@ -20,14 +20,13 @@ def test_enable_writes_managed_file(monkeypatch, tmp_path, capsys):
     managed = tmp_path / "managed.yaml"
     assert not managed.exists()
 
-    from agent_system.config.models import AgentConfig, MCPConfig, LLMSystemConfig, LLMModelConfig
-    cfg = AgentConfig(
+    from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, LLMSystemConfig, LLMModelConfig
+    cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
-            models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
-            default_model="test-model"
-        )
+            models={"test-model": LLMModelConfig(provider="openai", model="test-model")}
+        ),
+        mcp_system=MCPSystemConfig(plugin_dirs=[str(pdir)])
     )
-    cfg.mcp = MCPConfig(plugin_dirs=[str(pdir)])
     # load_settings should return config but the CLI will read master to find managed_file
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 

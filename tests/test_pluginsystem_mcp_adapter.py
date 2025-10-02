@@ -217,12 +217,16 @@ class TestPluginMCPRegistry:
         registry.plugin_factories["plugin2"] = mock_factory2
 
         enabled_servers = ["plugin1", "plugin2"]
+        
+        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+        system_config = AgentSystemConfig()
+        
         servers_config = {
-            "plugin1": {"param1": "value1"},
-            "plugin2": {"param2": "value2"}
+            "plugin1": MCPConfig(type="plugin1", enabled=True, agent_config=AgentConfig()),
+            "plugin2": MCPConfig(type="plugin2", enabled=True, agent_config=AgentConfig())
         }
 
-        await registry.register_from_config(enabled_servers, servers_config)
+        await registry.register_from_config(enabled_servers, servers_config, system_config)
 
         assert len(registry.list_servers()) == 2
         assert "plugin1" in registry.list_servers()

@@ -31,7 +31,12 @@ class TestWebScraperServer:
         assert server.ssl_verify is True
 
     def test_scraper_server_initialization_with_config(self, mock_system_config):
-        mcp_config = {"timeout": 30, "user_agent": "test-agent"}
+        from agent_system.config.models import MCPConfig, AgentConfig
+        
+        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 30
+        mcp_config.user_agent = "test-agent"
+        
         server = WebScraperServer("scraper", mock_system_config, mcp_config)
         assert server.name == "scraper"
         assert server.ssl_verify is True
@@ -105,8 +110,12 @@ class TestWebScraperPluginFactory:
 
     def test_plugin_factory_with_config(self, mock_system_config):
         from plugins.web_scraper.plugin import PLUGIN_FACTORY
+        from agent_system.config.models import MCPConfig, AgentConfig
 
-        mcp_config = {"timeout": 60, "user_agent": "custom-agent"}
+        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 60
+        mcp_config.user_agent = "custom-agent"
+        
         server = PLUGIN_FACTORY("scraper", mock_system_config, mcp_config)
         assert server.name == "scraper"
         assert server.ssl_verify is True
@@ -249,7 +258,12 @@ class TestIntegration:
 
     def test_scraper_server_initialization_with_config(self, mock_system_config):
         """Test Web Scraper server initialization with config."""
-        mcp_config = {"timeout": 30, "user_agent": "test-agent"}
+        from agent_system.config.models import MCPConfig, AgentConfig
+        
+        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 30
+        mcp_config.user_agent = "test-agent"
+        
         server = WebScraperServer("scraper", mock_system_config, mcp_config)
         assert server.name == "scraper"
         assert server.ssl_verify is True
@@ -334,8 +348,12 @@ class TestWebScraperPluginFactory:
     def test_plugin_factory_with_config(self, mock_system_config):
         """Test plugin factory with configuration."""
         from plugins.web_scraper.plugin import PLUGIN_FACTORY
+        from agent_system.config.models import MCPConfig, AgentConfig
 
-        mcp_config = {"timeout": 60, "user_agent": "custom-agent"}
+        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+        mcp_config.timeout = 60
+        mcp_config.user_agent = "custom-agent"
+        
         server = PLUGIN_FACTORY("scraper", mock_system_config, mcp_config)
         assert server.name == "scraper"
         assert server.ssl_verify is True

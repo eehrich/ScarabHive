@@ -123,8 +123,11 @@ class TestDuckDuckGoSearchPluginFactory:
     def test_plugin_factory_with_config(self, mock_system_config, mock_mcp_config):
         """Test plugin factory with configuration."""
         from plugins.duckduckgo_search.plugin import PLUGIN_FACTORY
+        from agent_system.config.models import MCPConfig, AgentConfig
 
-        mcp_config = {"cache_ttl": 600}
+        mcp_config = MCPConfig(type="duckduckgo_search", enabled=True, agent_config=AgentConfig())
+        mcp_config.cache_ttl = 600
+        
         server = PLUGIN_FACTORY("ddg", mock_system_config, mcp_config)
         assert server.name == "ddg"
 

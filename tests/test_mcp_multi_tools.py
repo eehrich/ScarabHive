@@ -5,11 +5,25 @@ import pytest
 from typing import Any
 
 from agent_system.mcp.base import MCPServer
+from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
 from plugins.example.server import ExampleServer
+
+
+@pytest.fixture
+def test_configs():
+    """Fixture providing test config objects."""
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="test", enabled=True, agent_config=AgentConfig())
+    return system_config, mcp_config
 
 
 class SingleToolMockServer(MCPServer):
     """Mock server implementing single-tool interface using new list_tools() method."""
+    
+    def __init__(self, name: str):
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type=name, enabled=True, agent_config=AgentConfig())
+        super().__init__(name, system_config, mcp_config)
     
     async def list_tools(self) -> list[dict[str, Any]]:
         return [{
@@ -36,6 +50,11 @@ class SingleToolMockServer(MCPServer):
 
 class OldStyleServer(MCPServer):
     """Mock server implementing the new interface with single tool."""
+    
+    def __init__(self, name: str):
+        system_config = AgentSystemConfig()
+        mcp_config = MCPConfig(type=name, enabled=True, agent_config=AgentConfig())
+        super().__init__(name, system_config, mcp_config)
     
     async def list_tools(self) -> list[dict[str, Any]]:
         return [{
@@ -87,20 +106,22 @@ def _get_tool_description(tool):
 class TestEnhancedMCPServer:
     """Test the enhanced MCPServer interface."""
 
-    async def test_multi_tool_server_get_tools(self):
+    async def test_multi_tool_server_get_tools(self, test_configs):
         """Test that multi-tool server returns multiple tools."""
-        server = ExampleServer(name="test")
+        system_config, mcp_config = test_configs
+        server = ExampleServer("example", system_config, mcp_config)
         tools = await server.list_tools()
 
         assert len(tools) == 3
         tool_names = [_get_tool_name(t) for t in tools]
-        assert "test_calculator" in tool_names
-        assert "test_formatter" in tool_names
-        assert "test_status" in tool_names
+        assert "example_calculator" in tool_names
+        assert "example_formatter" in tool_names
+        assert "example_status" in tool_names
 
-    async def test_multi_tool_server_get_schema_backward_compat(self):
+    async def test_multi_tool_server_get_schema_backward_compat(self, test_configs):
+        system_config, mcp_config = test_configs
         """Test that get_schema() works for multi-tool servers (returns first tool)."""
-        server = ExampleServer(name="test")
+        server = ExampleServer("example", system_config, mcp_config)
         tools = await server.list_tools()
         schema = tools[0]  # Get first tool as schema
 
@@ -108,21 +129,25 @@ class TestEnhancedMCPServer:
         fname = _get_tool_name(schema)
         fdesc = _get_tool_description(schema)
 
-        assert fname == "test_calculator"
+        assert fname == "example_calculator"
         assert "arithmetic operations" in (fdesc or "")
 
-    def test_multi_tool_server_get_default_action(self):
-        """Test that get_default_action() returns the server name."""
-        server = ExampleServer(name="test")
-        default_action = server.get_default_action()
+    def test_multi_tool_server_has_name(self, test_configs):
+        """Test that server has a name attribute."""
+        system_config, mcp_config = test_configs
+        server = ExampleServer("example", system_config, mcp_config)
+        
+        # Server should have name attribute
+        assert server.name == "example"
+        assert isinstance(server.name, str)
 
-        assert default_action == "test"
-
-    async def test_multi_tool_server_calculator_call(self):
+    async def test_multi_tool_server_calculator_call(self, test_configs):
         """Test calling the calculator tool."""
-        server = ExampleServer(name="test")
+        system_config, mcp_config = test_configs
+        server = ExampleServer("example", system_config, mcp_config)
 
-        result = await server.call("test_calculator", {
+        # Tool is named using the server name prefix: test_calculator
+        result = await server.call("example_calculator", {
             "operation": "add",
             "a": 5,
             "b": 3
@@ -132,11 +157,12 @@ class TestEnhancedMCPServer:
         assert result["operands"] == [5.0, 3.0]
         assert result["result"] == 8.0
 
-    async def test_multi_tool_server_formatter_call(self):
+    async def test_multi_tool_server_formatter_call(self, test_configs):
+        system_config, mcp_config = test_configs
         """Test calling the formatter tool."""
-        server = ExampleServer(name="test")
+        server = ExampleServer("example", system_config, mcp_config)
 
-        result = await server.call("test_formatter", {
+        result = await server.call("example_formatter", {
             "text": "hello world",
             "format": "uppercase"
         })
@@ -145,31 +171,34 @@ class TestEnhancedMCPServer:
         assert result["format"] == "uppercase"
         assert result["formatted"] == "HELLO WORLD"
 
-    async def test_multi_tool_server_status_call(self):
+    async def test_multi_tool_server_status_call(self, test_configs):
+        system_config, mcp_config = test_configs
         """Test calling the status tool."""
-        server = ExampleServer(name="test")
+        server = ExampleServer("example", system_config, mcp_config)
 
-        result = await server.call("test_status", {"verbose": True})
+        result = await server.call("example_status", {"verbose": True})
 
-        assert result["server_name"] == "test"
+        assert result["server_name"] == "example"
         assert result["status"] == "active"
         assert result["tools_count"] == 3
         assert "available_tools" in result
         assert len(result["available_tools"]) == 3
 
-    async def test_multi_tool_server_invalid_tool(self):
+    async def test_multi_tool_server_invalid_tool(self, test_configs):
+        system_config, mcp_config = test_configs
         """Test calling an invalid tool raises error."""
-        server = ExampleServer(name="test")
+        server = ExampleServer("example", system_config, mcp_config)
 
-        with pytest.raises(ValueError, match="Unknown tool"):
-            await server.call("test_invalid", {})
+        with pytest.raises(ValueError, match="Tool .* not found"):
+            await server.call("example_invalid", {})
 
-    async def test_calculator_division_by_zero(self):
+    async def test_calculator_division_by_zero(self, test_configs):
+        system_config, mcp_config = test_configs
         """Test division by zero error handling."""
-        server = ExampleServer(name="test")
+        server = ExampleServer("example", system_config, mcp_config)
 
         with pytest.raises(ValueError, match="Division by zero"):
-            await server.call("test_calculator", {
+            await server.call("example_calculator", {
                 "operation": "divide",
                 "a": 10,
                 "b": 0
@@ -222,42 +251,42 @@ class TestEnhancedMCPServer:
 class TestErrorConditions:
     """Test error conditions and edge cases."""
     
-    async def test_empty_tools_error(self):
+    async def test_empty_tools_error(self, test_configs):
         """Test server with empty tools list."""
+        system_config, mcp_config = test_configs
         
         class EmptyToolsServer(MCPServer):
+            def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+                super().__init__(name, system_config, mcp_config)
+            
             async def list_tools(self) -> list[dict[str, Any]]:
                 return []
             
             async def call(self, tool: str, params: dict[str, Any]) -> Any:
                 return {}
         
-        server = EmptyToolsServer(name="empty")
+        server = EmptyToolsServer("empty", system_config, mcp_config)
         
         # Should return empty list, not raise error
         tools = await server.list_tools()
         assert tools == []
     
-    async def test_missing_implementation_fallback(self):
-        """Test server missing implementations falls back to default tool."""
+    async def test_missing_implementation_fallback(self, test_configs):
+        """Test server missing list_tools implementation raises NotImplementedError."""
+        system_config, mcp_config = test_configs
         
         class IncompleteServer(MCPServer):
+            def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+                super().__init__(name, system_config, mcp_config)
+            
             async def call(self, tool: str, params: dict[str, Any]) -> Any:
                 return {}
         
-        server = IncompleteServer(name="incomplete")
+        server = IncompleteServer("incomplete", system_config, mcp_config)
         
-        # Should create a default tool using server name
-        tools = await server.list_tools()
-        assert len(tools) == 1
-        # Extract name and description robustly
-        t0 = tools[0]
-        name = _get_tool_name(t0) or getattr(t0, "name", None)
-        # description may be nested in function
-        desc = _get_tool_description(t0)
-
-        assert name == "incomplete"
-        assert desc is not None and "Default action for incomplete" in desc
+        # Should raise NotImplementedError if list_tools() or get_tools() not implemented
+        with pytest.raises(NotImplementedError, match="must implement list_tools"):
+            await server.list_tools()
 
 
 if __name__ == "__main__":

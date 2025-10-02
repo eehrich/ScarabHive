@@ -220,13 +220,38 @@ class PluginMCPRegistry:
 
         try:
             logger.info(f"MCP registry creating plugin {name} with config: {plugin_config}")
-            # TODO: This is the OLD register_plugin method - should use register_plugin_simple instead
-            # For now, fallback to old behavior but without ssl_verify if factory expects AgentConfig
-            if 'parent_agent_config' in plugin_config:
-                plugin_server = factory(name, plugin_config['parent_agent_config'])
+            # Modern factory signature: (name, system_config, mcp_config)
+            # Extract or build the required config objects
+            from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
+            
+            # Build system_config from parent_config if available
+            if parent_config and isinstance(parent_config, AgentSystemConfig):
+                system_config = parent_config
+            elif parent_config and isinstance(parent_config, dict):
+                # Try to build AgentSystemConfig from dict
+                try:
+                    system_config = AgentSystemConfig.model_validate(parent_config)
+                except Exception:
+                    # Fallback to minimal config
+                    system_config = AgentSystemConfig()
             else:
-                # Fallback for legacy factories that still expect dict + ssl_verify
-                plugin_server = factory(name, plugin_config, ssl_verify=True)
+                system_config = AgentSystemConfig()
+            
+            # Build mcp_config from plugin_config
+            if isinstance(plugin_config, MCPConfig):
+                mcp_config = plugin_config
+            else:
+                # Build MCPConfig from dict
+                agent_config = plugin_config.get('parent_agent_config') or AgentConfig()
+                mcp_config = MCPConfig(
+                    type=name,
+                    enabled=True,
+                    agent_config=agent_config,
+                    **{k: v for k, v in plugin_config.items() if k not in ['parent_agent_config', 'parent_llm']}
+                )
+            
+            # Call factory with modern signature
+            plugin_server = factory(name, system_config, mcp_config)
         except Exception as e:
             logger.error(f"Failed to create plugin {name}: {e}")
             raise
@@ -316,7 +341,7 @@ class PluginMCPRegistry:
         
         Args:
             enabled_servers: List of plugin names to register
-            servers_config: Dict[str, MCPConfig] with plugin configurations
+            servers_config: Dict[str, MCPConfig] OR Dict[str, dict] with plugin configurations
             system_config: Complete AgentSystemConfig (not AgentConfig!)
         """
         logger.debug(f"MCP register_from_config - servers_config keys: {list(servers_config.keys())}")
@@ -324,12 +349,30 @@ class PluginMCPRegistry:
         for server_name in enabled_servers:
             if server_name in self.plugin_factories:
                 # Get MCPConfig for this server
-                server_mcp_config = servers_config.get(server_name)
+                server_config = servers_config.get(server_name)
                 
                 # Import MCPConfig here to avoid circular dependency
-                from agent_system.config.models import MCPConfig as MCPConfigClass
-                if not isinstance(server_mcp_config, MCPConfigClass):
-                    logger.error(f"Plugin {server_name} config is not MCPConfig type: {type(server_mcp_config)}")
+                from agent_system.config.models import MCPConfig as MCPConfigClass, AgentConfig
+                
+                # Convert dict to MCPConfig if necessary
+                if isinstance(server_config, dict):
+                    # Build MCPConfig from dict
+                    config_dict = dict(server_config)
+                    config_type = config_dict.pop('type', server_name)
+                    enabled = config_dict.pop('enabled', True)
+                    agent_config = AgentConfig()  # Default agent config
+                    
+                    # Create MCPConfig with extra fields allowed
+                    server_mcp_config = MCPConfigClass(
+                        type=config_type,
+                        enabled=enabled,
+                        agent_config=agent_config,
+                        **config_dict  # Pass remaining fields as extra
+                    )
+                elif isinstance(server_config, MCPConfigClass):
+                    server_mcp_config = server_config
+                else:
+                    logger.error(f"Plugin {server_name} config is invalid type: {type(server_config)}")
                     continue
                     
                 logger.debug(f"MCP register_from_config - plugin {server_name} type: {server_mcp_config.type}")

@@ -23,8 +23,14 @@ class TestHTTPServer:
 
     def test_http_server_initialization_with_config(self, mock_system_config, mock_mcp_config):
         """Test HTTP server initialization with custom config."""
-        mock_mcp_config["http_server"] = {"host": "0.0.0.0", "port": 8080}
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
+        from agent_system.config.models import MCPConfig, AgentConfig
+        
+        # Create MCPConfig with custom host and port
+        mcp_config = MCPConfig(type="http_server", enabled=True, agent_config=AgentConfig())
+        mcp_config.host = "0.0.0.0"
+        mcp_config.port = 8080
+        
+        server = HTTPServer("http_server", mock_system_config, mcp_config)
         assert server.host == "0.0.0.0"
         assert server.port == 8080
 
@@ -39,11 +45,8 @@ class TestHTTPServer:
         assert "health" in tools[0]["function"]["parameters"]["properties"]["operation"]["enum"]
         assert "call" in tools[0]["function"]["parameters"]["properties"]["operation"]["enum"]
 
-    @pytest.mark.skip(reason="get_default_action() removed in modernization - dispatcher handles routing")
-    def test_http_server_default_action(self, mock_system_config, mock_mcp_config):
-        """Test HTTP server default action."""
-        server = HTTPServer("http_server", mock_system_config, mock_mcp_config)
-        assert server.get_default_action() == "health"
+    # get_default_action() removed in modernization; dispatcher handles routing.
+    # Old default-action test removed as obsolete.
 
     @pytest.mark.asyncio
     async def test_http_server_call_without_wrapped_server(self, mock_system_config, mock_mcp_config):
@@ -142,17 +145,33 @@ class TestHTTPPluginFactory:
 
     def test_plugin_factory_with_config(self, mock_system_config, mock_mcp_config):
         """Test plugin factory with configuration."""
-        mock_mcp_config["http_server"] = {"host": "0.0.0.0", "port": 8080}
-        server = PLUGIN_FACTORY("http_server", mock_system_config, mock_mcp_config)
+        from agent_system.config.models import MCPConfig, AgentConfig
+        
+        # Create MCPConfig with custom host and port
+        mcp_config = MCPConfig(type="http_server", enabled=True, agent_config=AgentConfig())
+        mcp_config.host = "0.0.0.0"
+        mcp_config.port = 8080
+        
+        server = PLUGIN_FACTORY("http_server", mock_system_config, mcp_config)
         assert server.host == "0.0.0.0"
         assert server.port == 8080
 
-    @pytest.mark.skip(reason="http_server doesn't use ssl_verify (no HTTP requests, only exposes API)")
     def test_plugin_factory_ssl_verify(self, mock_system_config, mock_mcp_config):
-        """Test plugin factory SSL verification setting."""
+        """Test plugin factory SSL verification handling.
+
+        The HTTP server plugin wraps other MCP servers and does not perform
+        outbound HTTP requests itself. The test asserts that providing
+        ssl_verify in the system config does not cause an error and that any
+        ssl-related setting is not unexpectedly required.
+        """
+        # The plugin may not expose `ssl_verify` attribute; ensure no exception
+        # and that behavior is stable when system config toggles ssl_verify.
         mock_system_config.ssl_verify = False
         server = PLUGIN_FACTORY("http_server", mock_system_config, mock_mcp_config)
-        assert server.ssl_verify is False
+        # If the plugin exposes ssl_verify, it should reflect the system setting;
+        # otherwise, just ensure attribute access doesn't raise.
+        if hasattr(server, 'ssl_verify'):
+            assert server.ssl_verify is False
 
 
 class TestHTTPCLI:

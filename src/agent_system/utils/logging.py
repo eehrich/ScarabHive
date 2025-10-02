@@ -139,16 +139,47 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     lvl = getattr(logging, level.upper(), logging.INFO)
 
     root = logging.getLogger()
-    # Remove existing handlers to prevent duplicates or inherited settings
+    # Remove existing handlers to prevent duplicates or inherited settings.
+    # Close only handlers that own file-like resources to avoid closing
+    # shared stdio streams (sys.stdout / sys.stderr) or handlers managed by
+    # external frameworks (pytest, uvicorn). Closing shared streams can
+    # break capturing and other tooling.
     for h in list(root.handlers):
         try:
             root.removeHandler(h)
         except Exception:
             pass
+
+        # Best-effort: only close handlers that are file-based or that have
+        # a stream that is not the global stdout/stderr. For rotating/file
+        # handlers, `baseFilename` is typically present. Otherwise, if the
+        # handler exposes a `stream`, only close it when it's not stdout/stderr.
+        try:
+            # FileHandler and its derivatives usually have `baseFilename`
+            if getattr(h, 'baseFilename', None):
+                try:
+                    h.close()
+                except Exception:
+                    pass
+                continue
+
+            stream = getattr(h, 'stream', None)
+            if stream and stream not in (sys.stdout, sys.stderr):
+                try:
+                    h.close()
+                except Exception:
+                    pass
+        except Exception:
+            # swallow any unexpected errors during best-effort close
+            pass
     # Capture everything at root; handlers will filter by their levels
     root.setLevel(logging.DEBUG)
 
-    # File handler (truncate on each start) - strip ANSI codes for files
+    # File handler (truncate on each start) - strip ANSI codes for files.
+    # Use a context-aware approach: create the handler and rely on the
+    # atexit/handler.close() behavior, but also keep it attached to root so
+    # tests that inspect root handlers see it. We ensure earlier handlers
+    # were closed above to avoid duplicate open descriptors.
     file_handler = logging.FileHandler(file_path, mode="w", encoding="utf-8")
     file_handler.setLevel(lvl)
     file_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=False)

@@ -54,11 +54,9 @@ async def test_api_stream_heartbeat_only_then_event():
         body = resp.text.splitlines()
         assert any(l.startswith(':hb') or l==':ok' for l in body)
 
-async def test_cli_status_json_mode():
-    # NOTE: This test was for the old 'status' subcommand which has been removed.
-    # The status subcommand was replaced with status events shown during normal 'run' operations.
-    # Test is now obsolete and skipped.
-    pytest.skip("CLI status subcommand has been removed - status events now shown during run operations")
+# The old CLI status subcommand has been removed and replaced with status events
+# shown during normal 'run' operations. The previous test verifying a standalone
+# status subcommand is obsolete and intentionally removed.
 
 async def test_error_phase_level_escalation(monkeypatch):
     captured = {}
