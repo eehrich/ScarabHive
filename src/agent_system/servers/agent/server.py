@@ -306,15 +306,14 @@ class Agent(MCPServer):
 
         Order of precedence:
           1. Subclass hook `get_custom_system_prompt`
-          2. In-memory raw `prompts.system_prompt`
-          3. File/template based `prompts.system_template` (render_prompts)
+          2. In-memory raw `agent_config.system_prompt`
+          3. File/template based `agent_config.system_template` (render_prompts)
 
         Returns:
             (system_prompt, tools_prompt_or_None)
         """
-        prompts_cfg = getattr(self.agent_config, 'prompts', None)
         context_vals = {"tools": available_tools, "max_steps": max_steps-1}
-        
+
         # Get datetime context from system_config.context, not agent_config
         if hasattr(self.system_config, 'context') and self.system_config.context.auto_datetime:
             dt_ctx = get_datetime_context(self.system_config.context.timezone, self.system_config.context.location)
@@ -331,24 +330,27 @@ class Agent(MCPServer):
             logger.debug("Agent %s using subclass custom system prompt (len=%d)", self.name, len(custom_prompt))
             return custom_prompt, None
 
-        if prompts_cfg and getattr(prompts_cfg, 'system_prompt', None):
-            logger.debug("Agent %s using in-memory system_prompt (length=%s)", self.name, len(getattr(prompts_cfg, 'system_prompt', '') or ''))
+        # Check for an in-memory raw prompt
+        system_prompt_raw = getattr(self.agent_config, 'system_prompt', None)
+        if system_prompt_raw:
+            logger.debug("Agent %s using in-memory system_prompt (length=%s)", self.name, len(system_prompt_raw or ''))
             try:
-                rendered_system = Template(prompts_cfg.system_prompt).render(**context_vals)
+                rendered_system = Template(system_prompt_raw).render(**context_vals)
             except Exception:
                 rendered_system = "You are an assistant agent."
             return rendered_system, None
 
-        # Template based - only if prompts config exists
-        if not prompts_cfg or not getattr(prompts_cfg, 'system_template', None):
+        # Template based
+        system_template_path = getattr(self.agent_config, 'system_template', None)
+        if not system_template_path:
             logger.debug("Agent %s has no prompts config, using default system prompt", self.name)
             return "You are an assistant agent.", None
-            
+
         logger.debug(
             "Agent %s rendering system_template from path: %s",
-            self.name, getattr(prompts_cfg, 'system_template', 'N/A'))
+            self.name, system_template_path)
         rendered = render_prompts(
-            prompts_cfg.system_template,
+            system_template_path,
             context_vals,
             auto_datetime=self.system_config.context.auto_datetime if hasattr(self.system_config, 'context') else False,
             timezone=self.system_config.context.timezone if hasattr(self.system_config, 'context') else None,

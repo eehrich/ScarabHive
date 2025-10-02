@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 
 from ..config.models import AgentSystemConfig
+from ..config.settings import get_mcp_config_by_name
 from ..mcp.base import MCPRegistry
 from ..plugins import discover_all_plugins
 
@@ -59,7 +60,12 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     # Instantiate enabled servers (each gets its MCPConfig from mcp_system.servers)
     enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
     for key in enabled_servers:
-        server_mcp_cfg = config.mcp_system.servers[key]
+        # Use get_mcp_config_by_name to merge default_config with server-specific config
+        server_mcp_cfg = get_mcp_config_by_name(key, config)
+        if not server_mcp_cfg:
+            logger.warning("Failed to resolve MCP config for server '%s', skipping", key)
+            continue
+            
         logger.debug(f"Bootstrap server '{key}': type={server_mcp_cfg.type}, enabled={server_mcp_cfg.enabled}")
         typ = server_mcp_cfg.type
         
