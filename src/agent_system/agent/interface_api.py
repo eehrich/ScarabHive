@@ -39,10 +39,7 @@ from ..context.agent_tracker import record_agent_summarization
 # Global registry for MCP endpoints access
 _app_registry: Optional[MCPRegistry] = None
 _app_config: Optional[AgentConfig] = None
-_mcp_integration = None  # Global reference to the initialized MCP integration
-
-
-# Note: we set cache-control for static files via a small middleware in build_app()
+_mcp_integration = None
 
 
 @asynccontextmanager
@@ -77,83 +74,50 @@ _app_start_time = None
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
 
-    cfg_path = config_path or str(Path(__file__).parents[3] / "config" / "agent.yaml")
+    # Load configuration from config.yaml (includes llm.yaml and mcp.yaml)
+    if not config_path:
+        cfg_path = str(Path(__file__).parents[3] / "config" / "config.yaml")
+    else:
+        cfg_path = config_path
+        
     config = load_settings(cfg_path)
+    
+    # Log configuration status
+    logger = logging.getLogger(__name__)
+    logger.info(f"Loading configuration from: {cfg_path}")
+    if config.llm_system:
+        logger.debug(f"LLM system loaded with {len(config.llm_system.profiles)} profiles")
+    else:
+        logger.warning("No llm_system configuration loaded")
+    if config.mcp_system:
+        logger.debug(f"MCP system loaded with {len(config.mcp_system.servers or {})} servers")
+    else:
+        logger.warning("No mcp_system configuration loaded")
 
-    # Initialize MCP integration helper function
+    # Initialize MCP integration
     async def _init_mcp_for_app(app: FastAPI):
         global _mcp_integration
         logger = logging.getLogger(__name__)
         logger.info("Starting MCP integration initialization...")
         try:
-            # Use only the MCP configuration from the loaded agent.yaml config.
-            # Do NOT read separate mcp.yaml files; all configuration should be
-            # included via agent.yaml.
-            try:
-                # Accept either a pydantic model or a plain dict from load_config
-                if hasattr(config.mcp, "model_dump"):
-                    mcp_block = config.mcp.model_dump()
-                elif isinstance(config.mcp, dict):
-                    mcp_block = dict(config.mcp)
-                else:
-                    mcp_block = getattr(config.mcp, "__dict__", {})
-
-                # Add global network settings to MCP config
-                if not mcp_block.get('connection'):
-                    mcp_block['connection'] = {}
-
-                # Use global ssl_verify setting if not specifically set in MCP config
-                if 'ssl_verify' not in mcp_block['connection']:
-                    mcp_block['connection']['ssl_verify'] = config.network.ssl_verify
-
-                logger.info(f"MCP config loaded: external_servers={len(mcp_block.get('external_servers', {}))}")
-                logger.debug(f"MCP config block: {mcp_block}")
-            except Exception:
-                mcp_block = getattr(config.mcp, "__dict__", {})
-                logger.warning("Failed to get MCP config with model_dump, using __dict__")
-
-            # Use direct AgentConfig approach for consistency with CLI
-            # This avoids serialization/deserialization and potential field loss
             mcp_integration = await initialize_mcp(config, app)
-            # Ensure configured_external_servers includes any entries provided by the
-            # app-level config. Merge and override existing entries so per-app
-            # configuration takes precedence during TestClient lifespan.
-            try:
-                if isinstance(mcp_block, dict):
-                    ext = mcp_block.get('external_servers') or mcp_block.get('mcp', {}).get('external_servers', {})
-                    if ext:
-                        try:
-                            merged = dict(getattr(mcp_integration, 'configured_external_servers', {}) or {})
-                            # provided app config should override existing entries
-                            merged.update(ext)
-                            mcp_integration.configured_external_servers = merged
-                        except Exception:
-                            mcp_integration.configured_external_servers = dict(ext)
-            except Exception:
-                # Non-fatal; proceed without raising to keep startup resilient
-                pass
-            _mcp_integration = mcp_integration  # Store the initialized instance globally
-            try:
-                # Mirror the app-bound instance into the mcp.integration module
-                from ..mcp import integration as _mcp_mod
-                _mcp_mod.mcp_integration = mcp_integration
-            except Exception:
-                # Non-fatal if this can't be done (tests will still work via returned instance)
-                pass
+            _mcp_integration = mcp_integration
+            
+            # Make integration accessible to mcp module
+            from ..mcp import integration as _mcp_mod
+            _mcp_mod.mcp_integration = mcp_integration
+            
             logger.info("MCP integration initialized for API")
 
-            # Initialize plugin web capabilities after MCP is ready
-            try:
-                from ..plugins.web_adapter import plugin_web_registry
-                plugin_web_registry.apply_to_app(app)
-                logger.info("Plugin web capabilities applied to app")
-            except Exception as e:
-                logger.warning(f"Failed to apply plugin web capabilities: {e}")
+            # Apply plugin web capabilities
+            from ..plugins.web_adapter import plugin_web_registry
+            plugin_web_registry.apply_to_app(app)
+            logger.info("Plugin web capabilities applied to app")
 
         except Exception as e:
             logger.exception("Failed to initialize MCP integration for API: %s", e)
 
-    # Create a custom lifespan for this app instance
+    # FastAPI lifespan management
     @asynccontextmanager
     async def custom_lifespan(app: FastAPI):
         # Startup
@@ -172,61 +136,55 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.exception("Error shutting down MCP integration during lifespan: %s", e)
 
-    # Create a new FastAPI app instance for this build
+    # Create FastAPI app
     app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
 
-    # Configure static files with cache control based on configuration
+    # Mount static files
     if static_path.exists():
         static_files = StaticFiles(directory=str(static_path))
         app.mount("/static", static_files, name="static")
 
-        # middleware to add no-cache headers for static files when configured
+        # Add no-cache headers for static files when cache is disabled
         if config.network.disable_cache:
             @app.middleware("http")
             async def _no_cache_static_middleware(request: Request, call_next: Callable):
-                # only intercept static paths
                 if request.url.path.startswith("/static"):
                     response = await call_next(request)
                     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                     response.headers["Pragma"] = "no-cache"
                     response.headers["Expires"] = "0"
                     return response
-
                 return await call_next(request)
 
-    # Initialize logging. Use a role-specific logfile so the API server does
-    # not write into the same file as the CLI (e.g., create `logs/agent-api.log`).
+    # Initialize logging with role-specific logfile
     def _role_logfile(base: str, role: str) -> str:
-        try:
-            p = Path(base)
-            stem = p.stem or "agent"
-            suffix = "".join(p.suffixes) or ".log"
-            return str(p.with_name(f"{stem}-{role}{suffix}"))
-        except Exception:
-            # If path construction fails, fall back to default
-            return str(Path("logs") / f"agent-{role}.log")
+        p = Path(base)
+        stem = p.stem or "agent"
+        suffix = "".join(p.suffixes) or ".log"
+        return str(p.with_name(f"{stem}-{role}{suffix}"))
 
-    # Determine logfile for API: prefer explicit per-role setting if provided.
-    log_path = config.logging.file_api or _role_logfile(config.logging.file or "logs/agent.log", "api")
+    # Use file_api config or generate from default file
+    if not config.logging.file_api:
+        default_log = _role_logfile(config.logging.file or "logs/agent.log", "api")
+        logging.getLogger(__name__).warning(
+            "No file_api configured in logging settings, falling back to default: %s", default_log
+        )
+        log_path = default_log
+    else:
+        log_path = config.logging.file_api
 
-    # Allow overriding the configured log level via environment variable
-    # (useful for temporary runs or CI). If AGENT_LOG_LEVEL is set, prefer it
-    # over the value in config.logging.level. We still honor config.logging.enabled.
+    # Check for environment variable override
     env_level = os.getenv("AGENT_LOG_LEVEL")
     level_to_use = env_level if env_level else config.logging.level
-    # If possible, mutate the config object so other code sees the override
-    try:
-        if env_level and hasattr(config, "logging") and hasattr(config.logging, "level"):
-            config.logging.level = env_level
-    except Exception:
-        # Non-fatal if we can't assign back into the config model
-        pass
+    if env_level:
+        logging.getLogger(__name__).info("Overriding log level from environment: %s", env_level)
+        config.logging.level = env_level
 
     log_file = setup_logging(config.logging.enabled, level_to_use, log_path)
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
 
-    # Configure SSL verification
+    # Disable SSL verification if configured
     if not config.network.ssl_verify:
         os.environ["PYTHONHTTPSVERIFY"] = "0"
         os.environ.setdefault("SSL_CERT_FILE", "")
@@ -234,14 +192,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
         logging.getLogger(__name__).info("SSL verification disabled - set environment variables for global SSL bypass")
 
-    # Initialize agent registry and bootstrap plugin servers
+    # Bootstrap MCP servers and plugin registry
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
 
-    # Determine desired entry agent name (configured or default)
-    entry_name = getattr(config, 'entry_agent', None) or 'agent'
+    # Get entry agent from config
+    entry_name = config.default_agent or 'agent'
+    logging.getLogger(__name__).debug(f"Using entry agent: '{entry_name}'")
 
-    # If an agent with that key already exists (plugin provided), reuse it.
+    # Reuse existing agent from registry if available
     selected_agent = None
     try:
         if entry_name in registry.list():
@@ -249,9 +208,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from ..servers.agent.server import Agent as _Agent
             if isinstance(candidate, _Agent):
                 selected_agent = candidate
-                # Apply server-level overrides (allowed_tools, blocked_tools, max_steps) without mutating shared config
-                try:  # pragma: no cover - defensive
-                    if(not config.servers):
+                # Apply server-level configuration overrides
+                try:
+                    if not config.servers:
                         ValueError("No servers config to apply overrides from")
 
                     server_cfg = config.servers.get(entry_name, {})
@@ -276,18 +235,26 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 except Exception:
                                     pass
                             if updates:
-                                selected_agent.agent_config = selected_agent.agent_config.model_copy(update=updates)  # type: ignore[attr-defined]
+                                selected_agent.agent_config = selected_agent.agent_config.model_copy(update=updates)
                             logging.getLogger(__name__).debug("Applied entry agent server overrides for %s", entry_name)
                 except Exception:
                     logging.getLogger(__name__).debug("Failed to apply entry agent overrides for %s", entry_name)
     except Exception:
         selected_agent = None
 
-    # If not present, create a new core Agent server under the desired name (attach to main registry)
+    # Create new agent if not found in registry
     if selected_agent is None:
         from ..servers.agent.server import Agent as CoreAgent
         try:
-            server_cfg = (config.servers or {}).get(entry_name, {}) if config.servers else {}
+            if not config.servers:
+                logging.getLogger(__name__).warning(
+                    "No 'servers' configuration found, using empty server config for agent '%s'", entry_name
+                )
+                server_cfg = {}
+            else:
+                server_cfg = config.servers.get(entry_name, {})
+                
+            # Apply agent-specific overrides from server config
             server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
             if isinstance(server_agent_cfg, dict):
                 updates = {}
@@ -306,23 +273,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception:
             pass
         
-        # Create MCPConfig for agent
-        from agent_system.config.models import MCPConfig
+        # Build MCPConfig for agent
+        from agent_system.config.models import MCPConfig, AgentConfig, ToolConfig
         if config.mcp_system and config.mcp_system.default_config:
             mcp_cfg = config.mcp_system.default_config
         else:
-            mcp_cfg = MCPConfig(type="agent", enabled=True)
+            # Create default MCPConfig if not found
+            logging.getLogger(__name__).warning(
+                "No mcp_system.default_config found in configuration, creating default MCPConfig with llm_profile='normal'"
+            )
+            tool_cfg = ToolConfig()
+            agent_cfg = AgentConfig(llm_profile="normal", tools=tool_cfg)
+            mcp_cfg = MCPConfig(type="agent", enabled=True, agent_config=agent_cfg)
         
         selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry)
         registry.register(entry_name, selected_agent)
     else:
-        # Ensure reused agent is bound to current registry (in case plugin created with isolated one)
+        # Bind reused agent to current registry
         try:
-            selected_agent.registry = registry  # type: ignore[attr-defined]
+            selected_agent.registry = registry
         except Exception:
             pass
 
-    # Backward compatibility: also register 'agent' alias if different name
+    # Register 'agent' alias for backward compatibility
     if entry_name != 'agent':
         try:
             registry.register('agent', selected_agent)
@@ -330,26 +303,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             pass
     agent = selected_agent
 
-    # Store registry and config globally for MCP endpoint access
+    # Store registry and config globally
     global _app_registry, _app_config
     _app_registry = registry
     _app_config = config
 
-    # Include API router for debug endpoints
+    # Include API router
     app.include_router(api_router)
 
-    # Define route handlers
+    # Health check endpoint
     @app.get("/health")
     def health():
         global _app_start_time
 
-        # Calculate uptime
         uptime_seconds = time.time() - _app_start_time if _app_start_time else 0
 
-        # Load agent config for version info
         agent_config = {}
         try:
-            agent_config_path = Path(__file__).parents[3] / "config" / "agent.yaml"
+            agent_config_path = Path(__file__).parents[3] / "config" / "config.yaml"
             with open(agent_config_path, 'r', encoding='utf-8') as f:
                 agent_config = yaml.safe_load(f) or {}
         except Exception:
@@ -600,9 +571,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     from fastapi import HTTPException
                     raise HTTPException(status_code=404, detail="Session not found")
 
-            # Run optimizer and summarizer synchronously within event loop context
-            # Use agent.context_manager and agent.token_optimizer if available
-            # Return a summary of actions taken
+            # Run optimizer and summarizer
             actions = {"optimizer": False, "summarizer": False}
 
             if getattr(agent, 'token_optimizer', None):
@@ -808,25 +777,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        # Updated to new Starlette signature: TemplateResponse(request, name)
         response = templates.TemplateResponse(request, "index.html")
 
-        # Add cache control headers if caching is disabled
+        # Disable caching if configured
         if config.network.disable_cache:
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
 
         return response
-
     @app.get("/status", response_class=HTMLResponse)
     async def status_page(request: Request):
-        # Redirect to main page since status is now integrated
+        # Redirect to main page with integrated status
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/", status_code=302)
 
     @app.get("/status/meta")
-    async def status_meta(request: Request):  # pragma: no cover - simple diagnostics
+    async def status_meta(request: Request):
         if os.getenv("AGENT_STATUS_REQUIRE_AUTH") == "1":
             expected = os.getenv("AGENT_STATUS_TOKEN", "")
             provided = request.headers.get("X-Status-Token", "")
@@ -884,9 +851,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Get the agent from registry if available
             agent = None
             if _app_registry:
-                agent_servers = [s for s in _app_registry.list() if s == "agent"]
-                if agent_servers:
-                    agent = _app_registry.get("agent")
+                # Use the configured entry agent name instead of hardcoded "agent"
+                entry_name = config.default_agent or 'agent'
+                agent = _app_registry.get(entry_name)
 
             if not agent or not hasattr(agent, 'context_manager'):
                 return {
@@ -915,12 +882,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             # Skip if conversion fails
                             continue
 
-                    estimated_tokens = agent.context_manager.estimate_token_count([msg]) if agent.context_manager else None
+                    # Use context manager's estimate_token_count method
+                    estimated_tokens = agent.context_manager.estimate_token_count([msg])
                     messages.append({
-                        "role": getattr(msg, 'role', 'unknown'),
-                        "content": getattr(msg, 'content', ''),
+                        "role": msg.role,
+                        "content": msg.content,
                         "estimated_tokens": estimated_tokens,
-                        "has_tool_calls": bool(getattr(msg, 'tool_calls', None))
+                        "has_tool_calls": bool(msg.tool_calls)
                     })
 
             return {
@@ -1067,7 +1035,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     stats.peak_tokens = 0
                     stats.total_llm_calls = 0
                     stats.total_tokens_processed = 0
-                    # reset session_start and last_activity to now
+                    # Reset timestamps
                     now = __import__('time').time()
                     stats.session_start = now
                     stats.last_activity = now
@@ -1091,18 +1059,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         try:
             if server_info.get("type") == "plugin":
-                # For plugins, check if they're in the active registry and functioning
+                # For plugins, if they're in the registry, they're connected
                 server_name = server_info.get("id", "")
                 if _app_registry and hasattr(_app_registry, "_servers"):
                     server_obj = _app_registry._servers.get(server_name)
-                    if server_obj:
-                        try:
-                            # Test if we can call a basic method
-                            server_obj.get_default_action()
-                            return True
-                        except Exception as e:
-                            logger.debug(f"Local server {server_name} basic method test failed: {e}")
-                            return False
+                    # If server exists in registry, it's connected (loaded and available)
+                    return server_obj is not None
                 return False
 
             elif server_info.get("type") == "external":
@@ -1221,16 +1183,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 except Exception as e:
                     logger.debug(f"Failed to get MCP servers: {e}")
 
-            # Keep track of already processed servers to avoid duplicates
+            # Track processed servers to avoid duplicates
             processed_server_ids = {server["id"] for server in servers}
 
-            # Also add plugin servers from bootstrap registry (for backward compatibility)
+            # Add plugin servers from bootstrap registry
             for server_id, server_obj in _app_registry._servers.items():
                 try:
-                    # Skip if already processed from MCP registry
+                    # Skip if already processed
                     if server_id in processed_server_ids:
                         continue
-                    # Skip servers that explicitly mark themselves as internal/private
+                    # Skip internal/private servers
                     if getattr(server_obj, '_mcp_public', True) is False:
                         continue
 
@@ -1291,14 +1253,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Get external servers from client manager (these are connected ones)
                     connected_servers = _mcp_integration.client_manager.list_clients()
 
-                    # Get originally configured external servers (including failed connections)
+                    # Get configured external servers (including failed connections)
                     configured_servers = getattr(_mcp_integration, 'configured_external_servers', {})
 
-                    # Some callers (e.g. test harnesses or earlier merge logic) may
-                    # populate `configured_external_servers` with entries that are
-                    # explicitly disabled in config. Ensure we only expose enabled
-                    # servers in the UI/status response so disabled servers do not
-                    # appear as "Disconnected" in the web UI.
+                    # Filter out disabled servers to prevent them from appearing
+                    # as "Disconnected" in the web UI
                     try:
                         configured_servers = {
                             name: cfg
@@ -1364,10 +1323,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         if reachable:
                             connected = True
                         elif server_name in connected_servers and len(tool_names) > 0:
-                            # Server is in client list and has tools - likely connected
+                            # Server has active client connection with available tools
                             connected = True
                         else:
-                            # Either not reachable or no tools available - mark disconnected
+                            # Not reachable or no tools available
                             connected = False
 
                         servers.append({
@@ -1386,9 +1345,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.error(f"MCP status: Exception getting external servers: {e}")
                 import traceback
                 logger.error(f"MCP status traceback: {traceback.format_exc()}")
-                pass
 
-            # Separate plugins and external servers for expected response format
+            # Separate plugins and external servers
             plugins = {}
             external_servers = {}
 
@@ -1453,7 +1411,7 @@ def run() -> None:
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
     # Load configuration
-    cfg_path = str(Path(__file__).parents[3] / "config" / "agent.yaml")
+    cfg_path = str(Path(__file__).parents[3] / "config" / "config.yaml")
     config = load_settings(cfg_path)
 
     # Build the application
@@ -1473,7 +1431,7 @@ def run() -> None:
 
     # Configure log level. Allow AGENT_LOG_LEVEL to override for the running
     # uvicorn process as well so console logging can be forced without editing
-    # `agent.yaml`.
+    # config.yaml.
     uvicorn_log_level = (os.getenv("AGENT_LOG_LEVEL") or (config.logging.level if config.logging.enabled else "info")).lower()
 
     # Run the server - uvicorn handles SIGINT/SIGTERM gracefully by default

@@ -40,7 +40,7 @@ class TestAPIDebugEndpoints:
             Mock(role="assistant", content="Hi there!", tool_calls=None, tool_call_id=None)
         ]
 
-        # Mock context manager with usage stats
+        # Mock context manager with usage stats and estimate_token_count method
         mock_context_manager = Mock(spec=ContextManager)
         mock_context_manager.get_usage_stats.return_value = {
             "context_window": 4096,

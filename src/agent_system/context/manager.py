@@ -156,6 +156,20 @@ class ContextManager:
             'warning_levels': self.config.warning_levels  # Already a dict of str: float
         }
 
+    def estimate_token_count(self, messages: List[ChatMessage]) -> int:
+        """Estimate token count for a list of messages.
+        
+        This method provides the architectural boundary for token estimation,
+        delegating to the utility function while maintaining encapsulation.
+        
+        Args:
+            messages: List of ChatMessage objects to estimate tokens for
+            
+        Returns:
+            Estimated total token count
+        """
+        return estimate_token_count(messages)
+
     def check_and_warn(self, messages: List[ChatMessage], step: int = 0) -> Tuple[int, Optional[str]]:
         """Check token count and issue appropriate warnings."""
         estimated_tokens = estimate_token_count(messages)

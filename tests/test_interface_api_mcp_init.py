@@ -3,11 +3,6 @@ from fastapi.testclient import TestClient
 
 from agent_system.agent.interface_api import build_app
 from agent_system.mcp.integration import get_mcp_integration
-import yaml
-from fastapi.testclient import TestClient
-
-from agent_system.agent.interface_api import build_app
-from agent_system.mcp.integration import get_mcp_integration
 
 
 def test_api_initializes_mcp(tmp_path, monkeypatch):
@@ -16,17 +11,27 @@ def test_api_initializes_mcp(tmp_path, monkeypatch):
     cfg_dir.mkdir()
     agent_yaml = cfg_dir / "agent.yaml"
     
-    # Include mcp configuration directly in agent.yaml (no separate mcp.yaml)
+    # Include mcp configuration directly in agent.yaml using the correct structure
     agent_config = {
-        "mcp": {
-            "external_servers": {
-                "test_local": {
-                    "url": "http://127.0.0.1:9999",
-                    "enabled": True,
-                    "transport": "http"
+        "mcp_system": {
+            "default_config": {
+                "type": "agent",
+                "enabled": True,
+                "agent_config": {
+                    "llm_profile": "normal",
+                    "tools": {}
                 }
             },
-            "enabled_servers": []
+            "external_servers": {
+                "remote_servers": {
+                    "test_local": {
+                        "url": "http://127.0.0.1:9999",
+                        "enabled": True,
+                        "transport": "http"
+                    }
+                }
+            },
+            "servers": {}
         },
         "network": {
             "host": "127.0.0.1",
