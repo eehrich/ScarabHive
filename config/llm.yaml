@@ -90,14 +90,6 @@ llm_system:
       model_ref: gpt-4.1
       description: "Expensive model with big context window, legacy and medium powerful."
       max_steps: 100
-    audio:
-      model_ref: gpt-audio
-      description: "model for audio processing"
-      max_steps: 100
-    image:
-      model_ref: gpt-realtime
-      description: "model for image processing"
-      max_steps: 100
     deepseek:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks"
