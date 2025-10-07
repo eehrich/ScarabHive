@@ -59,6 +59,17 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Initialize chat form
+  // Initialize file upload module
+  if (window.fileUploadModule && typeof window.fileUploadModule.init === 'function') {
+    try {
+      window.fileUploadModule.init();
+    } catch (err) {
+      console.error('fileUploadModule.init() failed', err);
+    }
+  } else {
+    console.warn('fileUploadModule not available; file upload disabled');
+  }
+  
   // Initialize chat module (extracted)
   if (window.chatModule && typeof window.chatModule.init === 'function') {
     try {

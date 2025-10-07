@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="{{ url_for('static', path='css/debug.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/chat.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/components.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/file_upload.css') }}" />
   <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
   </head>
   <body>
@@ -47,7 +48,16 @@
         <span id="headerSessionId">--</span>
       </div>
       <form id="f">
-        <input id="task" type="text" placeholder="Ask the agent…" autocomplete="on" />
+        <div class="input-wrapper">
+          <input id="task" type="text" placeholder="Ask the agent…" autocomplete="on" />
+          <label for="fileInput" class="file-upload-btn" title="Attach images">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </label>
+          <input id="fileInput" type="file" accept="image/*" multiple style="display:none" />
+        </div>
+        <div id="filePreview" class="file-preview"></div>
         <button id="runBtn" type="submit">Run</button>
         <button id="stopBtn" type="button" style="display: none;">Stop</button>
       </form>
@@ -60,6 +70,7 @@
     <script src="{{ url_for('static', path='js/status_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/debug_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/context_debug_module.js') }}"></script>
+    <script src="{{ url_for('static', path='js/file_upload_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/chat_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/main.js') }}"></script>
   </body>
