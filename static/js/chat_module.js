@@ -91,10 +91,46 @@
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
 
-  function addUser(chatContainer, text) {
+  function addUser(chatContainer, text, images = []) {
+    // Ensure text is always a string
+    const displayText = typeof text === 'string' ? text : String(text);
     const row = document.createElement('div');
     row.className = 'row';
-    row.innerHTML = `<div class="msg user">${escapeHtml(text)}</div>`;
+    
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg user';
+    
+    // Add text content
+    const textSpan = document.createElement('div');
+    textSpan.innerHTML = escapeHtml(displayText);
+    msgDiv.appendChild(textSpan);
+    
+    // Add image previews if any
+    if (images && images.length > 0) {
+      const previewContainer = document.createElement('div');
+      previewContainer.className = 'user-image-previews';
+      
+      images.forEach(file => {
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(file);
+        img.alt = file.name;
+        img.title = file.name;
+        
+        // Revoke object URL after image loads to free memory
+        img.onload = () => URL.revokeObjectURL(img.src);
+        
+        // Optional: click to view full size
+        img.onclick = () => {
+          window.open(img.src, '_blank');
+        };
+        
+        previewContainer.appendChild(img);
+      });
+      
+      msgDiv.appendChild(previewContainer);
+    }
+    
+    row.appendChild(msgDiv);
     chatContainer.appendChild(row);
     scrollBottom();
   }
@@ -588,8 +624,9 @@
     // Stop button event listener
     stopBtn.addEventListener('click', async function() {
       if (currentRequestId) {
-        // Sofortiges Feedback geben
-        stopBtn.textContent = 'Canceling';
+        // Sofortiges Feedback geben: preserve icon, update accessible label and tooltip
+        stopBtn.setAttribute('title', 'Canceling');
+        stopBtn.setAttribute('aria-label', 'Canceling');
         stopBtn.disabled = true;
         stopBtn.classList.add('cancelling');
 
@@ -601,11 +638,13 @@
           // Kurze Verzögerung für besseres UX-Feedback
           setTimeout(() => {
             if (result.status === 'cancelled') {
-              stopBtn.textContent = 'Done';
+              stopBtn.setAttribute('title', 'Done');
+              stopBtn.setAttribute('aria-label', 'Done');
               stopBtn.classList.remove('cancelling');
               stopBtn.classList.add('cancelled');
             } else {
-              stopBtn.textContent = 'Failed';
+              stopBtn.setAttribute('title', 'Failed');
+              stopBtn.setAttribute('aria-label', 'Failed');
               stopBtn.classList.remove('cancelling');
               stopBtn.classList.add('cancel-failed');
             }
@@ -613,7 +652,8 @@
 
         } catch (error) {
           console.error('Failed to cancel request:', error);
-          stopBtn.textContent = 'Failed';
+          stopBtn.setAttribute('title', 'Failed');
+          stopBtn.setAttribute('aria-label', 'Failed');
           stopBtn.classList.remove('cancelling');
           stopBtn.classList.add('cancel-failed');
         }
@@ -621,7 +661,8 @@
         // Nach 2 Sekunden wieder zurücksetzen (falls Anfrage noch läuft)
         setTimeout(() => {
           if (stopBtn.style.display !== 'none') { // Nur zurücksetzen wenn Button noch sichtbar
-            stopBtn.textContent = 'Stop';
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           }
@@ -632,12 +673,29 @@
     chatForm.addEventListener('submit', async function(e) {
       e.preventDefault();
       const task = taskInput.value.trim();
-      if (!task) return;
-      addUser(chatContainer, task);
+      
+      // Check if we have files to upload
+      const hasFiles = window.fileUploadModule && window.fileUploadModule.hasValidFiles();
+      const files = hasFiles ? window.fileUploadModule.getFiles() : [];
+      
+      // Require either task text or files
+      if (!task && !hasFiles) return;
+      
+      // Add user message to chat (with file indicator if files present)
+      let displayText = task || '(Image upload)';
+      if (files.length > 0) {
+        if (task) {
+          displayText += ` [${files.length} image${files.length > 1 ? 's' : ''}]`;
+        } else {
+          displayText = `[${files.length} image${files.length > 1 ? 's' : ''}]`;
+        }
+      }
+      addUser(chatContainer, displayText, files);
       taskInput.value = '';
 
       // If there's an active request, append the user message to it
-      if (currentRequestId && currentEventSource) {
+      // Note: Multimodal append not yet supported, only text append
+      if (currentRequestId && currentEventSource && !hasFiles) {
         try {
           // immediate UX feedback: show thinking block if none
           const blk = addAssistantBlock(chatContainer);
@@ -667,12 +725,210 @@
         }
       }
 
-      // No active request: start a new SSE-based request
+      // No active request or has files: start a new request
       const blk = addAssistantBlock(chatContainer);
       runBtn.style.display = 'none'; // Hide run button
       stopBtn.style.display = 'block'; // Show stop button
       currentRequestId = null; // Will be set when SSE 'start' event arrives
 
+      // Shared SSE event handler for both EventSource and manual fetch() parsing
+      const handleSSEEvent = (data, blk) => {
+        switch (data.type) {
+          case 'start':
+            currentRequestId = data.request_id;
+            currentSessionId = data.session_id;
+            // update exported values
+            try { global.currentSessionId = currentSessionId; } catch (e) {}
+            console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
+            
+            // Update header session ID display
+            updateHeaderSessionId();
+            
+            // Update request ID display  
+            updateRequestId();
+            break;
+          case 'cancelled':
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
+            break;
+          case 'thinking':
+            if (data.assistant) {
+              if (data.assistant.content) {
+                blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
+              }
+              if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
+                blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+                data.assistant.tool_calls.forEach((tc, i) => {
+                  const func = tc.function || {};
+                  blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
+                });
+                blk.think.textContent += '\n';
+              }
+            } else {
+              blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
+            }
+            break;
+          case 'final':
+            const content = data.summary || data.content || '';
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
+            break;
+          case 'end':
+            if (currentEventSource) {
+              currentEventSource.close();
+              currentEventSource = null;
+            }
+            // Don't close statusEs here - let status updates continue after response completion
+            runBtn.style.display = 'block'; // Show run button
+            stopBtn.style.display = 'none'; // Hide stop button
+            // Reset stop button state
+            stopBtn.textContent = 'Stop';
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            break;
+          case 'error':
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
+            if (currentEventSource) {
+              currentEventSource.close();
+              currentEventSource = null;
+            }
+            if (currentStatusEventSource) {
+              currentStatusEventSource.close();
+              currentStatusEventSource = null;
+            }
+            runBtn.style.display = 'block'; // Show run button
+            stopBtn.style.display = 'none'; // Hide stop button
+            // Reset stop button state
+            stopBtn.textContent = 'Stop';
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            break;
+        }
+        scrollBottom();
+      };
+
+      // Use FormData for all requests (supports both text-only and multimodal)
+      if (hasFiles) {
+        // Build FormData for multimodal request
+        const formData = new FormData();
+        formData.append('task', task);
+        files.forEach(file => {
+          formData.append('files', file);
+        });
+
+        try {
+          showSection(blk.t);
+          blk.t.innerHTML = '<div class="response-text">Processing images...</div>';
+
+          // Close any existing status event source before starting a new one
+          if (currentStatusEventSource) {
+            currentStatusEventSource.close();
+            currentStatusEventSource = null;
+          }
+          
+          // Open status stream for MCP call updates
+          let statusEs = null;
+          try {
+            statusEs = new EventSource('/status/stream');
+            currentStatusEventSource = statusEs; // Track current status event source
+            statusEs.onmessage = (ev) => {
+              try {
+                const statusData = JSON.parse(ev.data);
+                addStatusEvent(blk.status, statusData);
+              } catch (err) {
+                // ignore JSON parse errors
+              }
+            };
+          } catch (err) {
+            console.warn('Status stream not available:', err);
+          }
+
+          // Stream SSE response from /run endpoint
+          const response = await fetch('/run', {
+            method: 'POST',
+            body: formData
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            let errorMsg = 'Request failed';
+            try {
+              const errorJson = JSON.parse(errorText);
+              errorMsg = errorJson.detail || errorMsg;
+            } catch (e) {
+              errorMsg = errorText || errorMsg;
+            }
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text error">${escapeHtml(errorMsg)}</div>`;
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            return;
+          }
+
+                    // Response is SSE stream - parse it manually
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let sseOk = false;
+
+          while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, {stream: true});
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // Keep incomplete line in buffer
+
+            for (const line of lines) {
+              if (line.startsWith(':')) {
+                sseOk = true;
+                continue;
+              }
+              if (line.startsWith('event:')) {
+                continue;
+              }
+              if (line.startsWith('data:')) {
+                const jsonStr = line.substring(5).trim();
+                if (!jsonStr) continue;
+                try {
+                  const ev = JSON.parse(jsonStr);
+                  handleSSEEvent(ev, blk);
+                } catch (e) {
+                  console.error('Failed to parse SSE data:', e);
+                }
+              }
+            }
+          }
+
+          if (!sseOk) {
+            showSection(blk.t);
+            blk.t.innerHTML = '<div class="response-text error">SSE connection failed</div>';
+          }
+
+          // Clear files after successful send
+          if (window.fileUploadModule) {
+            window.fileUploadModule.clearFiles();
+          }
+
+        } catch (err) {
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(err))}</div>`;
+          // Close status stream on error
+          if (currentStatusEventSource) {
+            currentStatusEventSource.close();
+            currentStatusEventSource = null;
+          }
+        } finally {
+          runBtn.style.display = 'block';
+          stopBtn.style.display = 'none';
+          currentRequestId = null;
+          currentEventSource = null;
+        }
+        return;
+      }
+
+      // Text-only SSE-based request
       let sseOk = false;
       const eventUrl = currentSessionId 
         ? `/events?task=${encodeURIComponent(task)}&session_id=${encodeURIComponent(currentSessionId)}`
@@ -708,78 +964,7 @@
       es.onmessage = ev => {
         try {
           const data = JSON.parse(ev.data);
-          switch (data.type) {
-            case 'start':
-              currentRequestId = data.request_id;
-              currentSessionId = data.session_id;
-              // update exported values
-              try { global.currentSessionId = currentSessionId; } catch (e) {}
-              console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
-              
-              // Update header session ID display
-              updateHeaderSessionId();
-              
-              // Update request ID display  
-              updateRequestId();
-              break;
-            case 'cancelled':
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
-              break;
-            case 'thinking':
-              if (data.assistant) {
-                if (data.assistant.content) {
-                  blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
-                }
-                if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-                  blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
-                  data.assistant.tool_calls.forEach((tc, i) => {
-                    const func = tc.function || {};
-                    blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-                  });
-                  blk.think.textContent += '\n';
-                }
-              } else {
-                blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
-              }
-              break;
-            case 'final':
-              const content = data.summary || data.content || '';
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
-              break;
-            case 'end':
-              es.close();
-              // Don't close statusEs here - let status updates continue after response completion
-              // statusEs will be closed when a new request starts or on explicit error
-              runBtn.style.display = 'block'; // Show run button
-              stopBtn.style.display = 'none'; // Hide stop button
-              // Reset stop button state
-              stopBtn.textContent = 'Stop';
-              stopBtn.disabled = false;
-              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-              // Keep currentRequestId and Request ID display visible after completion
-              currentEventSource = null;
-              break;
-            case 'error':
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
-              es.close();
-              if (statusEs) {
-                statusEs.close();
-                currentStatusEventSource = null;
-              }
-              runBtn.style.display = 'block'; // Show run button
-              stopBtn.style.display = 'none'; // Hide stop button
-              // Reset stop button state
-              stopBtn.textContent = 'Stop';
-              stopBtn.disabled = false;
-              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-              // Keep currentRequestId and Request ID display visible after error
-              currentEventSource = null;
-              break;
-          }
-          scrollBottom();
+          handleSSEEvent(data, blk);
         } catch (err) {
           // ignore JSON parse errors
         }

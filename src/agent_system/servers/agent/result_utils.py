@@ -1,11 +1,16 @@
 """
 Utility functions for agent execution and result collection.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from .server import Agent
+from ...llm.models import ChatMessage
 
 
-async def collect_final_result(agent: Agent, task: str, request_id: Optional[str] = None) -> Dict[str, Any]:
+async def collect_final_result(
+    agent: Agent, 
+    task: Union[str, ChatMessage], 
+    request_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Collect final result from agent.run_events() into a structured result dict.
     
@@ -14,13 +19,29 @@ async def collect_final_result(agent: Agent, task: str, request_id: Optional[str
     
     Args:
         agent: The agent instance to execute
-        task: The task to execute
+        task: The task to execute (string or ChatMessage with multimodal content)
         request_id: Optional request ID for correlation
         
     Returns:
         Dict containing task, calls, summary, and optionally errors
     """
-    result = {"task": task, "calls": []}
+    # Extract task text for result logging
+    if isinstance(task, ChatMessage):
+        if isinstance(task.content, str):
+            task_text = task.content
+        elif isinstance(task.content, list):
+            # Handle Pydantic models (TextContent, ImageContent)
+            text_parts = []
+            for item in task.content:
+                if hasattr(item, 'type') and item.type == "text":
+                    text_parts.append(getattr(item, 'text', ''))
+            task_text = " ".join(text_parts) if text_parts else "[multimodal input]"
+        else:
+            task_text = "[multimodal input]"
+    else:
+        task_text = task
+    
+    result = {"task": task_text, "calls": []}
     
     async for event in agent.run_events(task, request_id=request_id):
         event_type = event.get("type")

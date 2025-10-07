@@ -132,7 +132,29 @@ window.AgentSystem.Debug = {
         let messagesHtml = '';
         if (data.messages && data.messages.length > 0) {
           messagesHtml = data.messages.map((msg, index) => {
-            const fullContent = msg.content || '';
+            // Handle both string and array content (multimodal)
+            let fullContent = '';
+            if (typeof msg.content === 'string') {
+              fullContent = msg.content;
+            } else if (Array.isArray(msg.content)) {
+              // Multimodal content - format nicely
+              fullContent = msg.content.map(item => {
+                if (item.type === 'text') {
+                  return item.text || '';
+                } else if (item.type === 'image_url') {
+                  const url = item.image_url?.url || '';
+                  if (url.startsWith('data:image/')) {
+                    return `[🖼️ Image: ${url.substring(0, 50)}...]`;
+                  }
+                  return `[🖼️ Image: ${url}]`;
+                } else {
+                  return `[${item.type || 'unknown'}]`;
+                }
+              }).join('\n');
+            } else {
+              fullContent = String(msg.content || '');
+            }
+            
             const maxPreview = 200;
             const needsTruncate = fullContent.length > maxPreview;
             const preview = needsTruncate ? fullContent.substring(0, maxPreview) + '...' : fullContent;

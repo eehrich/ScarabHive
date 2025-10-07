@@ -14,8 +14,8 @@
   /* Allow panels to be resized up to viewport limits with buffer */
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 100px);
-  background: linear-gradient(180deg, #0b1220, #07111a);
-  border: 1px solid #243244;
+  background: linear-gradient(180deg, var(--bg-darkest), var(--bg-dark));
+  border: 1px solid var(--border-normal);
   border-radius: 10px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.6);
   z-index: 1000;
@@ -27,19 +27,19 @@
 /* Ensure no focus outline in any state */
 .floating-panel:focus {
   outline: none !important;
-  border: 1px solid #243244 !important; /* Keep original border */
+  border: 1px solid var(--border-normal) !important; /* Keep original border */
   box-shadow: 0 8px 30px rgba(0,0,0,0.6) !important; /* Keep original shadow */
 }
 
 .floating-panel:focus-visible {
   outline: none !important;
-  border: 1px solid #243244 !important; /* Keep original border */
+  border: 1px solid var(--border-normal) !important; /* Keep original border */
   box-shadow: 0 8px 30px rgba(0,0,0,0.6) !important; /* Keep original shadow */
 }
 
 .floating-panel:focus-within {
   outline: none !important;
-  border: 1px solid #243244 !important; /* Keep original border */
+  border: 1px solid var(--border-normal) !important; /* Keep original border */
   box-shadow: 0 8px 30px rgba(0,0,0,0.6) !important; /* Keep original shadow */
 }
 
@@ -82,8 +82,8 @@
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: linear-gradient(180deg, #07111a, #0b1220);
-  border-bottom: 1px solid #16202b;
+  background: linear-gradient(180deg, var(--bg-darkest), var(--bg-dark));
+  border-bottom: 1px solid var(--border-subtle);
   cursor: grab;
   flex-shrink: 0;
 }
@@ -99,8 +99,8 @@
   justify-content: center;
   width: 36px;
   height: 36px;
-  background: #0b1220;
-  border: 1px solid #243244;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
   color: #9ab;
   padding: 6px;
   border-radius: 10px;
@@ -110,7 +110,7 @@
 }
 
 .floating-panel-header .icon-btn:hover {
-  background: #122034;
+  background: var(--bg-dark);
   transform: translateY(-1px);
 }
 
@@ -176,7 +176,7 @@
   width: 20px;
   height: 20px;
   cursor: nw-resize;
-  background: linear-gradient(135deg, transparent 0%, transparent 40%, #4a5568 50%, transparent 60%, transparent 100%);
+  background: linear-gradient(135deg, transparent 0%, transparent 40%, var(--bg-light) 50%, transparent 60%, transparent 100%);
   background-size: 4px 4px;
   background-repeat: no-repeat;
   background-position: center;
@@ -191,13 +191,13 @@
   width: 0;
   height: 0;
   border-left: 12px solid transparent;
-  border-bottom: 12px solid #4a5568;
+  border-bottom: 12px solid var(--bg-light);
   opacity: 0.6;
 }
 
 .resize-handle:hover::before {
   opacity: 1;
-  border-bottom-color: #6b7280;
+  border-bottom-color: var(--bg-light);
 }
 
 /* MCP badge and connection indicator */
@@ -205,8 +205,8 @@
   display: inline-block;
   padding: 2px 8px;
   border-radius: 999px;
-  background: #0b1220;
-  border: 1px solid #243244;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
   color: #9ab;
   font-size: 12px;
   margin-left: 8px;
@@ -216,9 +216,9 @@
 }
 
 .mcp-badge:hover {
-  background: #1a2332;
-  border-color: #394B5C;
-  color: #cbd5e1;
+  background: var(--bg-dark);
+  border-color: var(--border-strong);
+  color: var(--bg-light);
 }
 
 /* Custom toggle switches */
@@ -229,8 +229,8 @@
 .toggle-track {
   width: 44px;
   height: 22px;
-  background: #27323b;
-  border: 1px solid #243244;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-normal);
   border-radius: 12px;
   position: relative;
   transition: background 0.2s ease, border-color 0.2s ease;
@@ -238,8 +238,8 @@
 }
 
 .toggle-track:hover {
-  background: #394958;
-  border-color: #4a5568;
+  background: var(--bg-medium);
+  border-color: var(--border-strong);
 }
 
 .toggle-track.active {
@@ -273,8 +273,8 @@
   width: 66px;
   padding: 6px 8px;
   border-radius: 6px;
-  border: 1px solid #243244;
-  background: #07111a;
+  border: 1px solid var(--border-normal);
+  background: var(--bg-darkest);
   color: #e6edf3;
   font-size: 13px;
   margin-right: 8px;

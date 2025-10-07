@@ -14,6 +14,17 @@ llm_system:
       openai_api_key: ***REMOVED***
       context_window: 1000000
       request_timeout: 60
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: false
+        video_input: false
+        streaming: true
+        json_mode: true
+        max_image_size: 20971520  # 20MB
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
 
     gpt-5-nano:
       provider: openai_httpx
@@ -21,6 +32,12 @@ llm_system:
       openai_api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 60
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: false
+        streaming: true
+        json_mode: true
 
     gpt-5-mini:
       provider: openai_httpx
@@ -33,13 +50,33 @@ llm_system:
         read: 240.0
         write: 10.0
         pool: 5.0
-
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: true
+        json_mode: true
+        max_image_size: 20971520  # 20MB
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+        
     gpt-5:
       provider: openai_httpx
       model: gpt-5
       openai_api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: false
+        video_input: false
+        streaming: true
+        json_mode: true
+        max_image_size: 20971520  # 20MB
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
 
     gpt-realtime:
       provider: openai
@@ -47,6 +84,11 @@ llm_system:
       openai_api_key: ***REMOVED***
       context_window: 27900
       request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        audio_input: true
+        streaming: true
 
     gpt-audio:
       provider: openai
@@ -54,6 +96,11 @@ llm_system:
       openai_api_key: ***REMOVED***
       context_window: 100000
       request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        audio_input: true
+        streaming: true
 
     ollama-gpt-oss-20b:
       provider: ollama
@@ -62,6 +109,10 @@ llm_system:
       ollama_mode: native
       request_timeout: 180
       context_window: 65535
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
 
     deepseek-chat:
       provider: ollama
@@ -71,6 +122,11 @@ llm_system:
       ollama_mode: openai_compat
       context_window: 100000 # 128K context size totally
       request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
 
 
   profiles:
@@ -79,7 +135,7 @@ llm_system:
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 100
     normal:
-      model_ref: deepseek-chat
+      model_ref: gpt-5-mini #deepseek-chat
       description: "Fast model for quick responses"
       max_steps: 100
     think:
@@ -89,14 +145,6 @@ llm_system:
     big:
       model_ref: gpt-4.1
       description: "Expensive model with big context window, legacy and medium powerful."
-      max_steps: 100
-    audio:
-      model_ref: gpt-audio
-      description: "model for audio processing"
-      max_steps: 100
-    image:
-      model_ref: gpt-realtime
-      description: "model for image processing"
       max_steps: 100
     deepseek:
       model_ref: deepseek-chat

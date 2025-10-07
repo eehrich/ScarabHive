@@ -25,16 +25,8 @@ class OllamaNativeAsyncClient(LLMClient):
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for m in messages:
-            d: dict[str, Any] = {"role": m.role}
-            if m.content is not None:
-                d["content"] = m.content
-            if m.role == "tool":
-                if m.name:
-                    d["tool_name"] = m.name
-                if m.tool_call_id:
-                    d["tool_call_id"] = m.tool_call_id
-            elif m.role == "assistant" and m.tool_calls:
-                d["tool_calls"] = m.tool_calls
+            # Use model_dump() to properly serialize nested Pydantic models
+            d = m.model_dump(exclude_none=True)
             out.append(d)
         return out
 

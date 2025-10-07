@@ -13,9 +13,9 @@
   gap: 20px;
   flex-wrap: wrap;
   padding: 10px;
-  background: #1a1a1a;
+  background: var(--bg-dark);
   border-radius: 8px;
-  border: 1px solid #333;
+  border: 1px solid var(--border-normal);
 }
 
 .context-metrics-summary .metric {
@@ -63,9 +63,9 @@
 }
 
 .context-chart-container {
-  background: #1a1a1a;
+  background: var(--bg-dark);
   border-radius: 8px;
-  border: 1px solid #333;
+  border: 1px solid var(--border-normal);
   padding: 15px;
   min-height: 420px;
   display: flex;
@@ -76,14 +76,14 @@
 .context-chart-container canvas {
   max-width: 100%;
   height: auto;
-  background: #0a0a0a;
+  background: var(--bg-darkest);
   border-radius: 4px;
 }
 
 .context-statistics {
-  background: #1a1a1a;
+  background: var(--bg-dark);
   border-radius: 8px;
-  border: 1px solid #333;
+  border: 1px solid var(--border-normal);
   padding: 15px;
 }
 
@@ -99,7 +99,7 @@
   color: #9ab;
   font-size: 14px;
   font-weight: 500;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border-normal);
   padding-bottom: 4px;
 }
 
@@ -119,7 +119,7 @@
   display: flex;
   justify-content: space-between;
   padding: 4px 0;
-  border-bottom: 1px solid #222;
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 13px;
 }
 
@@ -167,7 +167,7 @@
 }
 .icon-btn:hover {
   background: rgba(255,255,255,0.02);
-  border-color: #2f3d4f;
+  border-color: var(--border-strong);
 }
 .icon-btn svg {
   width: 18px;
@@ -201,7 +201,7 @@
   cursor: text;
 }
 .session-id-display:hover {
-  border-color: #2f3d4f;
+  border-color: var(--border-strong);
 }
 
 /* Responsive adjustments */
@@ -227,9 +227,9 @@
 
 /* Agent Statistics Styles */
 .agent-statistics {
-  background: #1a1a1a;
+  background: var(--bg-dark);
   border-radius: 8px;
-  border: 1px solid #333;
+  border: 1px solid var(--border-normal);
   padding: 15px;
   margin-top: 15px;
 }
@@ -245,13 +245,13 @@
   font-size: 12px;
   margin-bottom: 15px;
   padding-bottom: 10px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border-normal);
 }
 
 .agent-stat-group {
   margin-bottom: 20px;
   padding: 12px;
-  background: #242424;
+  background: var(--bg-medium);
   border-radius: 6px;
   border-left: 3px solid #4ade80;
 }
@@ -338,9 +338,9 @@
 .accumulated-stats {
   margin-top: 15px;
   padding: 12px;
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-medium) 100%);
   border-radius: 8px;
-  border: 1px solid #2a4a6b;
+  border: 1px solid var(--border-strong);
   box-shadow: 0 2px 8px rgba(42, 74, 107, 0.2);
 }
 
@@ -352,7 +352,7 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 10px;
-  border-bottom: 1px solid #2a4a6b;
+  border-bottom: 1px solid var(--border-strong);
   padding-bottom: 5px;
 }
 

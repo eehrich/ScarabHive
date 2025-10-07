@@ -181,7 +181,7 @@ window.AgentSystem.PluginManager = {
 
         // Create a loading wrapper to hide content until styles load
         const loadingWrapper = document.createElement('div');
-        loadingWrapper.style.cssText = 'display: flex; align-items: center; justify-content: center; height: 100%; color: #c9d1d9; background: #0d1117;';
+        loadingWrapper.style.cssText = 'display: flex; align-items: center; justify-content: center; height: 100%; color: #c9d1d9; background: var(--bg-darkest, #0a0e13);';
         loadingWrapper.textContent = 'Loading plugin...';
         shadowRoot.appendChild(loadingWrapper);
 

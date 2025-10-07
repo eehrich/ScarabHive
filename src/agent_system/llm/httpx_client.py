@@ -107,8 +107,8 @@ class HTTPXOpenAIClient(LLMClient):
         message_dicts = []
         for msg in messages:
             if hasattr(msg, 'model_dump'):
-                # ChatMessage object - convert to dict
-                message_dicts.append(msg.model_dump())
+                # ChatMessage object - convert to dict, exclude None values for API compatibility
+                message_dicts.append(msg.model_dump(exclude_none=True))
             elif isinstance(msg, dict):
                 # Already a dict
                 message_dicts.append(msg)

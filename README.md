@@ -19,6 +19,7 @@ This README is a concise developer and user guide matching this repository layou
 ## Features
 * Modular agent core with MCP integration (consume & expose tool servers)
 * Pluggable plugin system (local + external MCP servers)
+* **Multimodal vision support** with image uploads via WebUI and API (see [Vision Support](docs/vision_support.md))
 * Backlog & status management
 * Context window management (summarization / truncation strategies)
 * Streaming events API (SSE)
@@ -360,6 +361,20 @@ If your VS Code uses Git Bash, the task runner will execute commands like:
 ```
 
 If you prefer a different terminal, adjust the `options.shell.executable` in `.vscode/tasks.json`.
+
+## Documentation
+
+Comprehensive guides are available in the `docs/` directory:
+
+- **[Vision Support](docs/vision_support.md)** — Complete guide to multimodal image input via WebUI and API
+- **[MCP Configuration](docs/mcp_configuration.md)** — External MCP server setup and configuration
+- **[HTTP Streaming Transport](docs/http_streaming_transport.md)** — SSE-based MCP communication details
+- **[Plugin Authoring](docs/plugin_authoring.md)** — Create custom plugins and tools
+- **[Plugin Caching](docs/plugin_caching.md)** — Optimize plugin loading with smart caching
+- **[Plugin Web API Design](docs/plugin_web_api_design.md)** — Design principles for plugin APIs
+- **[Context Management](docs/context_management.md)** — Token budget and context window strategies
+- **[Status Design](docs/status_design.md)** — Real-time status streaming architecture
+- **[Backlog Tool](docs/backlog_tool.md)** — Backlog management CLI reference
 
 ## Maintenance notes
 

@@ -9,7 +9,7 @@
   gap: 8px;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #243244;
+  border-bottom: 1px solid var(--border-normal);
   flex-shrink: 0;
 }
 
@@ -27,8 +27,8 @@
 
 /* Individual MCP Server Styling */
 .mcp-server {
-  background: #0a1420;
-  border: 1px solid #243244;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
   border-radius: 8px;
   padding: 12px;
   cursor: pointer;
@@ -36,8 +36,8 @@
 }
 
 .mcp-server:hover {
-  border-color: #394B5C;
-  background: #0e1825;
+  border-color: var(--border-strong);
+  background: var(--bg-dark);
 }
 
 /* MCP Server Header */
@@ -50,7 +50,7 @@
 
 .mcp-server-name {
   font-weight: 600;
-  color: #cbd5e1;
+  color: var(--bg-light);
   font-size: 14px;
 }
 
@@ -70,14 +70,14 @@
 }
 
 .server-name-type strong {
-  color: #cbd5e1;
+  color: #9ab;
   font-size: 14px;
 }
 
 .server-type {
   font-size: 12px;
   color: #9ab;
-  background: #1e2a3a;
+  background: var(--bg-dark);
   padding: 2px 6px;
   border-radius: 4px;
   font-weight: 500;
@@ -86,7 +86,7 @@
 .mcp-server-type {
   font-size: 12px;
   color: #9ab;
-  background: #1e2a3a;
+  background: var(--bg-dark);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -146,18 +146,18 @@
 }
 
 .expand-indicator:hover {
-  color: #cbd5e1;
-  border-left-color: #cbd5e1;
+  color: var(--bg-light);
+  border-left-color: var(--bg-light);
 }
 
 .expand-indicator.expanded {
   transform: rotate(90deg);
-  border-left-color: #cbd5e1;
+  border-left-color: var(--bg-light);
 }
 
 .mcp-expand-btn {
   background: none;
-  border: 1px solid #243244;
+  border: 1px solid var(--border-normal);
   color: #9ab;
   font-size: 12px;
   padding: 2px 6px;
@@ -167,16 +167,16 @@
 }
 
 .mcp-expand-btn:hover {
-  background: #1e2a3a;
-  border-color: #394B5C;
-  color: #cbd5e1;
+  background: var(--bg-dark);
+  border-color: var(--border-strong);
+  color: var(--bg-light);
 }
 
 /* Server Details Section */
 .server-details {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #243244;
+  border-top: 1px solid var(--border-normal);
 }
 
 .mcp-server-description {
@@ -192,8 +192,8 @@
   padding: 6px;
   border-radius: 4px;
   font-size: 12px;
-  background: #0f1820;
-  border: 1px solid #1e3a8a;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-strong);
   color: #93c5fd;
 }
 
@@ -202,16 +202,16 @@
   padding: 6px;
   border-radius: 4px;
   font-size: 12px;
-  background: #1f1013;
-  border: 1px solid #dc2626;
+  background: var(--bg-darkest);
+  border: 1px solid #ef4444;
   color: #fca5a5;
 }
 
 .mcp-server-url {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--bg-light);
   font-family: monospace;
-  background: #0b1220;
+  background: var(--bg-darkest);
   padding: 2px 6px;
   border-radius: 4px;
   word-break: break-all;
@@ -225,11 +225,11 @@
 /* No Servers Message */
 .no-servers {
   text-align: center;
-  color: #6b7280;
+  color: var(--bg-light);
   font-style: italic;
   padding: 20px;
-  background: #0a1420;
-  border: 1px dashed #243244;
+  background: var(--bg-darkest);
+  border: 1px dashed var(--border-normal);
   border-radius: 8px;
 }
 
@@ -237,7 +237,7 @@
 .mcp-server-tools {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #243244;
+  border-top: 1px solid var(--border-normal);
 }
 
 .tools-list {
@@ -249,7 +249,7 @@
 .tools-list h4 {
   margin: 0 0 8px 0;
   font-size: 13px;
-  color: #cbd5e1;
+  color: #9ab;
 }
 
 .tools-container {
@@ -263,8 +263,8 @@
 
 /* Individual Tool Item Styling */
 .tool-item {
-  background: #050a0f;
-  border: 1px solid #1e2a3a;
+  background: var(--bg-darkest);
+  border: 1px solid var(--bg-dark);
   border-radius: 4px;
   padding: 6px 8px;
   margin: 0;
@@ -272,8 +272,8 @@
 }
 
 .tool-item:hover {
-  background: #0a1018;
-  border-color: #2a3a4a;
+  background: var(--bg-darkest);
+  border-color: var(--border-strong);
 }
 
 .tool-header {
@@ -282,7 +282,7 @@
 
 .tool-name {
   font-weight: 600;
-  color: #cbd5e1;
+  color: #9ab;
   font-size: 12px;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   margin: 0 0 2px 0;
@@ -299,23 +299,23 @@
 /* Blocked Tools Styling */
 .tool-item.tool-blocked {
   opacity: 0.5;
-  background: #0a0a0a;
-  border-color: #2a2a2a;
+  background: var(--bg-darkest);
+  border-color: var(--border-normal);
 }
 
 .tool-item.tool-blocked:hover {
-  background: #0f0f0f;
-  border-color: #3a3a3a;
+  background: var(--bg-dark);
+  border-color: var(--border-strong);
 }
 
 .tool-item.tool-blocked .tool-name,
 .tool-item.tool-blocked .tool-description {
-  color: #6b7280;
+  color: #9ab;
 }
 
 .tool-status.blocked {
   display: inline-block;
-  background: #dc2626;
+  background: #ef4444;
   color: #ffffff;
   font-size: 9px;
   font-weight: 600;
@@ -342,12 +342,12 @@
 }
 
 .tool-schema summary:hover {
-  color: #cbd5e1;
+  color: var(--bg-light);
 }
 
 .tool-schema pre {
-  background: #0b1220;
-  border: 1px solid #243244;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
   border-radius: 4px;
   padding: 8px;
   margin: 4px 0 0 0;
@@ -359,6 +359,6 @@
 
 /* Collapsible panel styling for MCP details */
 details {
-  background: #0b1220;
-  border: 1px solid #243244;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
 }
