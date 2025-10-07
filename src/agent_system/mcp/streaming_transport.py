@@ -14,6 +14,18 @@ Key Protocol Features:
 
 This transport does NOT use persistent SSE streams that remain open across multiple requests.
 Each POST is independent and may open its own short-lived SSE stream for the response.
+
+COMPLIANCE STATUS:
+✅ REQUIRED: POST requests for all messages
+✅ REQUIRED: Accept header with application/json, text/event-stream
+✅ REQUIRED: Handle 202 Accepted for notifications-only
+✅ REQUIRED: Handle JSON and SSE responses for requests
+✅ REQUIRED: Session management with Mcp-Session-Id header
+✅ REQUIRED: Standalone SSE stream support (GET requests)
+✅ REQUIRED: Proper SSE stream consumption
+❌ OPTIONAL: Message batching (arrays of messages)
+❌ OPTIONAL: SSE resumability (event IDs, Last-Event-ID header)
+❌ OPTIONAL: Server-initiated messages in request SSE streams
 """
 
 from __future__ import annotations
