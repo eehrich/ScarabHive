@@ -1301,8 +1301,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                         # Get tools (may be empty if server is down)
                         tools = servers_with_tools.get(server_name, [])
-                        # Filter out blocked tools for tool_names, but keep blocked info for detailed_tools
-                        tool_names = [tool["name"] for tool in tools if not tool.get("blocked", False)]
+                        # Include all tools in tool_names - blocked status is in detailed_tools
+                        tool_names = [tool["name"] for tool in tools]
                         detailed_tools = [{
                             'name': tool.get("name", "unknown"),
                             'description': tool.get("description", f"Tool from {description}"),
