@@ -23,6 +23,38 @@ class HTTPXTimeoutConfig(BaseModel):
     pool: float = 5.0          # Pool timeout (getting connection from pool)
 
 
+class ModelCapabilitiesConfig(BaseModel):
+    """Model capabilities configuration"""
+    tools: bool = True
+    function_calling: bool = True
+    image_input: bool = False
+    audio_input: bool = False
+    video_input: bool = False
+    streaming: bool = True
+    json_mode: bool = False
+    
+    # Image input limits
+    max_image_size: Optional[int] = None  # bytes
+    max_image_resolution: Optional[List[int]] = None  # [width, height]
+    min_image_resolution: Optional[List[int]] = None  # [width, height]
+    supported_image_formats: List[str] = Field(default_factory=list)
+    image_detail_control: bool = False
+    
+    # Audio input limits
+    max_audio_size: Optional[int] = None  # bytes
+    max_audio_duration: Optional[int] = None  # seconds
+    supported_audio_formats: List[str] = Field(default_factory=list)
+    
+    # Video input limits
+    max_video_size: Optional[int] = None  # bytes
+    max_video_duration: Optional[int] = None  # seconds
+    supported_video_formats: List[str] = Field(default_factory=list)
+    
+    # Provider-specific features
+    supports_files_api: bool = False
+    supports_file_uploads: bool = False
+
+
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
     provider: Literal["ollama", "openai", "openai_httpx"] = "ollama"
@@ -33,6 +65,7 @@ class LLMModelConfig(BaseModel):
     ollama_mode: Literal["openai_compat", "native"] = "openai_compat"
     request_timeout: int = 120  # seconds for LLM API calls
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides
+    capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
 
 
 class LLMProfile(BaseModel):
