@@ -311,7 +311,8 @@ class ToolExecutionManager:
             else:
                 # Fallback - this should not happen in normal operation
                 raise RuntimeError("Cannot access MCP integration without agent config")
-            tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, params, "external")
+            # Use serializable_params to avoid passing non-JSON-serializable objects (like CancellationToken) to external servers
+            tool_result = await mcp_integration.call_tool(server_name, actual_tool_name, serializable_params, "external")
             logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
 
             results.append({
