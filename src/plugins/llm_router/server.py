@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import Any, Dict, TYPE_CHECKING
 
 from agent_system.llm.models import ChatMessage
 from agent_system.llm.clients import make_llm
@@ -78,7 +78,7 @@ class LLMRouterServer(SchemaBasedMCPServer):
                 model_ref = serializable_config.get('model_ref', 'unknown')
                 
                 # Look up model details
-                model_details = models.get(model_ref, {})
+                model_details: Dict[str, Any] = models.get(model_ref, {})
                 # Make model_details serializable too
                 serializable_model_details = self._make_serializable(model_details)
                 

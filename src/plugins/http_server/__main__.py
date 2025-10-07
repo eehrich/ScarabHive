@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import sys
+from typing import Dict, Any
 
 from agent_system.plugins import discover_all_plugins
 from agent_system.utils.logging import setup_logging
@@ -82,7 +83,7 @@ def cli_main() -> None:
 
     # Create the target server
     server_factory = plugins[args.server_name]
-    server_config = {}  # Could be loaded from config file if provided
+    server_config: Dict[str, Any] = {}  # Could be loaded from config file if provided
 
     try:
         target_server = server_factory(args.server_name, server_config, ssl_verify=not args.no_ssl_verify)

@@ -30,7 +30,7 @@ def short_id_base36(length: int = 10) -> str:
     """
     n = uuid.uuid4().int
     alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
-    out = []
+    out: list[str] = []
     while n and len(out) < length:
         n, r = divmod(n, 36)
         out.append(alphabet[r])

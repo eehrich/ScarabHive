@@ -23,7 +23,7 @@ class TokenAccumulator:
             # Default to logs directory
             logs_dir = Path("logs")
             logs_dir.mkdir(exist_ok=True)
-            storage_file = logs_dir / "agent_token_accumulator.json"
+            storage_file = str(logs_dir / "agent_token_accumulator.json")
 
         self.storage_file = Path(storage_file)
         self._accumulated_stats: Dict[str, Dict[str, Any]] = {}

@@ -842,7 +842,7 @@ class Agent(MCPServer):
             tool_name_mapping.update(external_mapping)
 
             # Build schemas for internal plugin tools and update available_tools for multi-tool plugins
-            plugin_tools_to_add = []  # Individual tool names to add to available_tools
+            plugin_tools_to_add: List[str] = []  # Individual tool names to add to available_tools
             if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
                 plugin_registry = self._mcp_integration_manager.mcp_integration.plugin_registry
                 for tool_name in available_tools.copy():  # Use copy to avoid modifying during iteration
@@ -971,13 +971,13 @@ class Agent(MCPServer):
                                 
                                 # Force summarization by temporarily changing strategy and lowering thresholds
                                 original_strategy = context_manager.config.strategy
-                                original_window = context_manager.config.context_window
+                                original_window = context_manager.context_window
                                 original_threshold = context_manager.config.summarization_threshold
                                 
                                 # Set emergency summarization parameters
                                 context_manager.config.strategy = "SUMMARIZE_OLDEST"
                                 # Set a very low window to force aggressive summarization
-                                context_manager.config.context_window = min(50000, original_window // 4)
+                                context_manager.context_window = min(50000, original_window // 4)
                                 context_manager.config.summarization_threshold = 1000  # Very low threshold
                                 
                                 logger.info("Attempting emergency summarization to preserve context")
@@ -990,7 +990,7 @@ class Agent(MCPServer):
                                 
                                 # Restore original settings
                                 context_manager.config.strategy = original_strategy
-                                context_manager.config.context_window = original_window
+                                context_manager.context_window = original_window
                                 context_manager.config.summarization_threshold = original_threshold
                                 
                                 if len(summarized_messages) < len(messages):

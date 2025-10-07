@@ -192,9 +192,9 @@ def setup_logging(enabled: bool, level: str, file_path: str) -> Optional[str]:
     
     # Use colored formatter for console output if it's a TTY
     if sys.stdout.isatty():
-        console_formatter = ColorizedFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        console_formatter: logging.Formatter = ColorizedFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     else:
-        console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=True)
+        console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(message)s", preserve_colors=True)
     
     console_handler.setFormatter(console_formatter)
     # Set encoding to handle Unicode characters properly

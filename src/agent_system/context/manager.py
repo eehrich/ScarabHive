@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, Tuple, TYPE_CHECKING, Any
 from ..llm.models import ChatMessage
 from ..llm.token_utils import estimate_token_count
 from ..config.models import ContextManagementConfig
@@ -43,7 +43,7 @@ class ContextManager:
         self.context_window = self._get_context_window_from_agent()
         
         self._last_warning_level: Optional[str] = None  # "yellow", "orange", "red"
-        self._summarizer = None  # Will be set when summarizer is available
+        self._summarizer: Optional[Any] = None  # Will be set when summarizer is available
         self._summarization_in_progress = False  # Prevent recursive summarization loops
         self._context_managed_this_step = False  # Prevent duplicate context management in same step
         
@@ -454,7 +454,7 @@ class ContextManager:
         target_tokens = int(self.context_window * 0.6)  # Aim for 60% usage
 
         # Start with recent messages and work backwards
-        result = []
+        result: List[ChatMessage] = []
         current_tokens = 0
 
         for msg in reversed(messages):

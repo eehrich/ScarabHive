@@ -3,12 +3,12 @@
 import re
 import unicodedata
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
 
 
-def sanitize_for_llm(text: Optional[str]) -> str:
+def sanitize_for_llm(text: Optional[Union[str, bytes]]) -> str:
     """
     Sanitize text content to ensure it's safe for LLM consumption.
     
@@ -33,8 +33,6 @@ def sanitize_for_llm(text: Optional[str]) -> str:
             except Exception as e:
                 logger.warning("Failed to decode bytes to UTF-8, returning empty string: %s", e)
                 return ""
-        else:
-            text = str(text)
     
     try:
         # Step 1: Ensure proper UTF-8 encoding
