@@ -22,7 +22,7 @@ from .config.models import MCPConfig
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
-from .mcp.integration import MCPIntegration, initialize_mcp
+from .mcp.integration import MCPIntegration, initialize_mcp, shutdown_mcp
 from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
@@ -1533,14 +1533,23 @@ def main() -> None:
     show_mcp = getattr(args, "show_mcp", False)
     show_status = not getattr(args, "no_status", False)
 
-    if getattr(args, "raw", False):
-        # Raw mode: use run_events with result collection
-        from .servers.agent.result_utils import collect_final_result
-        result = asyncio.run(collect_final_result(agent, args.task))
-    else:
-        result = asyncio.run(_stream_and_run_with_status(agent, args.task, show_mcp=show_mcp, show_status=show_status))
-    vprint("[cli] done")
-    logger.info("Task completed")
+    try:
+        if getattr(args, "raw", False):
+            # Raw mode: use run_events with result collection
+            from .servers.agent.result_utils import collect_final_result
+            result = asyncio.run(collect_final_result(agent, args.task))
+        else:
+            result = asyncio.run(_stream_and_run_with_status(agent, args.task, show_mcp=show_mcp, show_status=show_status))
+        vprint("[cli] done")
+        logger.info("Task completed")
+    finally:
+        # Ensure MCP integration is properly shut down to close aiohttp sessions
+        try:
+            asyncio.run(shutdown_mcp())
+            vprint("[cli] MCP integration shut down")
+            logger.info("MCP integration shut down successfully")
+        except Exception as e:
+            logger.warning("Failed to shutdown MCP integration: %s", e)
 
     # Human-readable final output
     def _pretty_print_result(res: dict, show_mcp: bool = False) -> None:

@@ -963,7 +963,7 @@ class Agent(MCPServer):
                             llm_out = {"assistant": {"role": "assistant", "content": ""}}
                         elif self._context_management_handler.context_manager:
                             self._emergency_context_attempts += 1
-                            logger.info(f"Applying emergency context management due to token limit (attempt {self._emergency_context_attempts}/{self._max_emergency_attempts})")
+                            logger.info(f"Applying emergency context management due to token limit (attempt {self._emergency_attempts}/{self._max_emergency_attempts})")
                             
                             try:
                                 # First, try intelligent summarization if available
@@ -1349,6 +1349,25 @@ class Agent(MCPServer):
                 yield status_event
         
         yield {"type": "end"}
+
+    async def shutdown(self) -> None:
+        """Shutdown the agent and clean up resources"""
+        logger.info("Agent shutdown initiated")
+        
+        # Shutdown MCP integration to close external server connections
+        if hasattr(self, '_mcp_integration_manager') and self._mcp_integration_manager:
+            try:
+                if self._mcp_integration_manager.mcp_integration:
+                    await self._mcp_integration_manager.mcp_integration.shutdown()
+                    logger.debug("MCP integration shutdown completed")
+            except Exception as e:
+                logger.warning(f"Error during MCP integration shutdown: {e}")
+        
+        # Clear sessions and request mappings
+        self._sessions.clear()
+        self._request_to_session.clear()
+        
+        logger.info("Agent shutdown completed")
 
     # MCPServer interface implementation
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
