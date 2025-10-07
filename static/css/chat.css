@@ -69,27 +69,84 @@
   bottom: 0;
   left: 0;
   right: 0;
-  background: #0f172a;
-  border-top: 1px solid #1e293b;
+  background: transparent;
+  border-top: none;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 12px;
+}
+
+/* Input Bar Container - subtle background box */
+.input-bar-container {
+  width: 100%;
+  max-width: 900px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 8px 16px;
+  box-sizing: border-box;
+}
+
+/* Input Bar Top - controls row (now at bottom) */
+.input-bar-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 8px;
+  gap: 16px;
+}
+
+.input-bar-top .selector-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input-bar-top .selector-group label {
+  color: #64748b;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.input-bar-top .selector-group select {
+  background: #0f172a;
+  color: #e6edf3;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.input-bar-top .selector-group select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.input-bar-top .input-actions {
+  margin-left: auto;
 }
 
 /* Chat Form */
 form {
   display: flex;
   flex-direction: column;
-  max-width: 100%;
+  width: 100%;
   margin: 0;
+  padding: 0;
 }
 
 /* Input Container (textarea + buttons) */
 .input-container {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
-  padding: 12px 16px 8px;
-  background: #0f172a;
+  padding: 0;
+  background: transparent;
+  width: 100%;
 }
 
 /* Textarea Input */
@@ -97,26 +154,29 @@ form {
   flex: 1;
   background: #1e293b;
   color: #e6edf3;
-  border: 1px solid #334155;
+  border: none;
   border-radius: 8px;
   padding: 10px 12px;
   outline: none;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.5;
   resize: none;
-  min-height: 40px;
+  min-height: 44px;
   max-height: 200px;
   overflow-y: auto;
-  transition: border-color 0.2s;
+  transition: none;
+  box-shadow: none;
 }
 
 #task:focus {
-  border-color: #3b82f6;
+  outline: none;
+  box-shadow: none;
 }
 
 #task::placeholder {
   color: #64748b;
+  font-size: 16px;
 }
 
 /* Auto-resize textarea with JavaScript */
@@ -134,7 +194,6 @@ form {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-bottom: 2px;
 }
 
 /* Icon Buttons (shared style) */
@@ -149,8 +208,10 @@ form {
   align-items: center;
   justify-content: center;
   transition: all 0.2s;
+  min-width: 36px;
   width: 36px;
   height: 36px;
+  flex-shrink: 0;
 }
 
 .icon-btn:hover {
@@ -215,34 +276,41 @@ form {
 /* Attached Files List (VS Code style) */
 .attached-files {
   display: none; /* Hidden by default, shown by JS when files are added */
-  flex-direction: column;
-  gap: 4px;
-  padding: 0 16px 8px;
-  max-height: 150px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 6px 0;
+  max-height: 120px;
   overflow-y: auto;
 }
 
 .attached-files:not(:empty) {
-  padding-top: 8px;
-  padding-bottom: 8px;
+  display: flex;
 }
 
 .attached-file-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: #1e293b;
+  gap: 4px;
+  padding: 3px 6px;
+  background: #0f172a;
   border: 1px solid #334155;
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: 4px;
+  font-size: 12px;
   color: #e6edf3;
+  white-space: nowrap;
+  transition: background 0.2s;
+}
+
+.attached-file-item:hover {
+  background: #1a2332;
+  border-color: #475569;
 }
 
 .attached-file-icon {
-  width: 16px;
-  height: 16px;
-  color: #3b82f6;
+  width: 14px;
+  height: 14px;
+  color: #60a5fa;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -255,46 +323,60 @@ form {
 }
 
 .attached-file-name {
-  flex: 1;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 180px;
 }
 
 .attached-file-size {
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
   flex-shrink: 0;
+  margin-left: 4px;
 }
 
 .attached-file-remove {
   background: transparent;
   border: none;
-  color: #64748b;
+  color: #ffffff;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
   font-size: 18px;
+  font-weight: bold;
   line-height: 1;
-  transition: all 0.2s;
+  transition: all 0.15s;
   flex-shrink: 0;
+  margin-left: 4px;
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
 }
 
 .attached-file-remove:hover {
-  background: #334155;
-  color: #ef4444;
+  background: #ef4444;
+  color: white;
+  opacity: 1;
 }
 
 /* Bottom Bar */
 .bottom-bar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
-  padding: 8px 16px;
-  background: #0b0f14;
-  border-top: 1px solid #1e293b;
+  padding: 8px 0 0 0;
+  background: transparent;
+  border-top: none;
   font-size: 12px;
   color: #64748b;
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
 }
 
 .bottom-bar-left {
@@ -304,9 +386,7 @@ form {
 }
 
 .bottom-bar-right {
-  display: flex;
-  gap: 16px;
-  align-items: center;
+  display: none; /* Session moved to header */
 }
 
 .selector-group {
@@ -368,42 +448,6 @@ input[type="text"] {
 .inputBar form button[type="submit"]:not(.icon-btn),
 .inputBar form button[type="button"]:not(.icon-btn) {
   display: none; /* Hide old text buttons */
-}
-
-/* Stop Button */
-#stopBtn {
-  position: relative;
-  background: #dc2626;
-  color: white;
-  border: none;
-  padding: 10px 14px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: opacity 0.2s ease;
-  width: 80px;
-  height: 44px;
-}
-
-#stopBtn:hover {
-  background: #b91c1c;
-}
-
-#stopBtn:disabled {
-  opacity: .6;
-  cursor: not-allowed;
-}
-
-/* Stop Button States */
-#stopBtn.cancelling {
-  background: #ea580c !important; /* Orange für "Cancelling..." */
-}
-
-#stopBtn.cancelled {
-  background: #16a34a !important; /* Grün für erfolgreiches Cancel */
-}
-
-#stopBtn.cancel-failed {
-  background: #dc2626 !important; /* Rot für fehlgeschlagenes Cancel */
 }
 
 /* Cancelled Response */

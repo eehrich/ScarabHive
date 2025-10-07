@@ -30,7 +30,7 @@ header h1 {
 .header-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   flex: 1;
 }
 
@@ -44,6 +44,12 @@ header h1 {
   border-radius: 6px;
   font-family: 'Courier New', monospace;
   white-space: nowrap;
+}
+
+.session-id-display .label {
+  font-weight: 500;
+  margin-right: 4px;
+  color: #64748b;
 }
 
 /* Request ID display in main content */
