@@ -782,7 +782,8 @@
             runBtn.style.display = 'block'; // Show run button
             stopBtn.style.display = 'none'; // Hide stop button
             // Reset stop button state
-            stopBtn.textContent = 'Stop';
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
             break;
@@ -800,7 +801,8 @@
             runBtn.style.display = 'block'; // Show run button
             stopBtn.style.display = 'none'; // Hide stop button
             // Reset stop button state
-            stopBtn.textContent = 'Stop';
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
             break;
@@ -986,7 +988,8 @@
           runBtn.style.display = 'block'; // Show run button
           stopBtn.style.display = 'none'; // Hide stop button
           // Reset stop button state
-          stopBtn.textContent = 'Stop';
+          stopBtn.setAttribute('title', 'Stop');
+          stopBtn.setAttribute('aria-label', 'Stop');
           stopBtn.disabled = false;
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           // Keep currentRequestId and Request ID display visible
@@ -1008,7 +1011,8 @@
         runBtn.style.display = 'block'; // Show run button
         stopBtn.style.display = 'none'; // Hide stop button
         // Reset stop button state
-        stopBtn.textContent = 'Stop';
+        stopBtn.setAttribute('title', 'Stop');
+        stopBtn.setAttribute('aria-label', 'Stop');
         stopBtn.disabled = false;
         stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
         // Keep currentRequestId and Request ID display visible
