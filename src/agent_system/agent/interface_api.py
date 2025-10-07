@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 import uvicorn
-from fastapi import FastAPI, Request, Query, Header
+from fastapi import FastAPI, Request, Query, Header, File, UploadFile, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -432,6 +432,132 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.info("/run invoked, task=%s, request_id=%s", task, request_id)
         from agent_system.servers.agent.result_utils import collect_final_result
         return await collect_final_result(agent, task, request_id=request_id)
+
+    @app.post("/run/multimodal")
+    async def run_multimodal(
+        task: str = Form(...),
+        files: list[UploadFile] = File(default=[]),
+        traceparent: Optional[str] = Header(default=None)
+    ):
+        """Run agent with multimodal input (text + images).
+        
+        Args:
+            task: The user's text prompt
+            files: List of image files to include in the request
+            traceparent: Optional tracing header
+            
+        Returns:
+            Agent response with result
+        """
+        logger = logging.getLogger(__name__)
+        request_id = short_id()
+        logger.info("/run/multimodal invoked, task=%s, files=%d, request_id=%s", 
+                   task, len(files), request_id)
+        
+        # Import capability checking
+        from ..llm.capabilities import get_model_capabilities, ImageFormat
+        import base64
+        
+        # Validate model supports images if files provided
+        if files:
+            model_name = agent.llm.model if hasattr(agent.llm, 'model') else None
+            if model_name:
+                caps = get_model_capabilities(model_name)
+                if not caps.image_input:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model {model_name} does not support image input"
+                    )
+        
+        # Process uploaded files
+        image_contents = []
+        for file in files:
+            # Validate file type
+            content_type = file.content_type or ""
+            if not content_type.startswith("image/"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File {file.filename} is not an image (type: {content_type})"
+                )
+            
+            # Extract format
+            format_str = content_type.split("/")[-1].lower()
+            try:
+                img_format = ImageFormat(format_str)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported image format: {format_str}"
+                )
+            
+            # Check if model supports this format
+            model_name = agent.llm.model if hasattr(agent.llm, 'model') else None
+            if model_name:
+                caps = get_model_capabilities(model_name)
+                if img_format not in caps.supported_image_formats:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model {model_name} does not support {format_str} format"
+                    )
+            
+            # Read and validate file size
+            content = await file.read()
+            file_size = len(content)
+            
+            if model_name:
+                caps = get_model_capabilities(model_name)
+                if caps.max_image_size and file_size > caps.max_image_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Image {file.filename} exceeds max size of {caps.max_image_size} bytes"
+                    )
+            
+            # Encode to base64
+            base64_data = base64.b64encode(content).decode('utf-8')
+            
+            # Create image content in OpenAI format
+            image_contents.append({
+                "type": "image_url",
+                "image_url": f"data:{content_type};base64,{base64_data}"
+            })
+            
+            logger.info("Processed image: %s, size=%d bytes, format=%s", 
+                       file.filename, file_size, format_str)
+        
+        # Build multimodal message if we have images
+        if image_contents:
+            # Create a single message with text + images
+            multimodal_content = [
+                {"type": "text", "text": task}
+            ] + image_contents
+            
+            # Store original task for agent processing
+            # We'll modify the agent's conversation handling to support multimodal
+            # For now, we'll add a special marker and pass images separately
+            logger.info("Created multimodal message with %d images", len(image_contents))
+            
+            # Use the agent's internal message appending to add multimodal message
+            # Create a ChatMessage with multimodal content
+            multimodal_msg = ChatMessage(role="user", content=multimodal_content)
+            
+            # Temporarily add to conversation
+            if hasattr(agent, 'conversation'):
+                agent.conversation.append(multimodal_msg)
+                logger.debug("Added multimodal message to conversation")
+            
+            try:
+                from agent_system.servers.agent.result_utils import collect_final_result
+                # Pass empty task since message is already in conversation
+                result = await collect_final_result(agent, "", request_id=request_id)
+                return result
+            finally:
+                # Remove the message we added (it will be re-added by agent logic)
+                if hasattr(agent, 'conversation') and agent.conversation and agent.conversation[-1] == multimodal_msg:
+                    agent.conversation.pop()
+        else:
+            # No images, fall back to regular text processing
+            from agent_system.servers.agent.result_utils import collect_final_result
+            return await collect_final_result(agent, task, request_id=request_id)
 
     @app.get("/events")
     async def events(task: str, session_id: Optional[str] = Query(default=None)):
