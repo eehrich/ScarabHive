@@ -10,7 +10,6 @@ Integrates MCP functionality with the AgentSystem:
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 
@@ -18,6 +17,7 @@ from .client import MCPClientManager
 from ..plugins.mcp_adapter import plugin_mcp_registry
 from .http_server import MCPHTTPServer
 from .security import configure_security
+from .tool_cache import ToolCache
 from ..config.models import AgentSystemConfig, RemoteMCPConfig, MCPSystemConfig
 
 logger = logging.getLogger(__name__)
@@ -42,10 +42,16 @@ class MCPIntegration:
         self.initialized = False
         self.configured_external_servers: Dict[str, RemoteMCPConfig] = {}  # Type-safe config storage
 
-        # Tool list caching to reduce external server queries
-        self._tools_cache: Optional[Dict[str, Dict[str, List[Any]]]] = None
-        self._tools_cache_time = 0.0
-        self._tools_cache_ttl = 30.0  # Cache for 30 seconds
+        # Tool caching with config-aware invalidation
+        cache_enabled = self.mcp_system_config.external_servers.cache.enabled if (
+            self.mcp_system_config.external_servers and 
+            self.mcp_system_config.external_servers.cache
+        ) else True
+        cache_max_size = self.mcp_system_config.external_servers.cache.max_size if (
+            self.mcp_system_config.external_servers and 
+            self.mcp_system_config.external_servers.cache
+        ) else None
+        self._tool_cache = ToolCache(enabled=cache_enabled, max_size=cache_max_size)
 
 
     async def initialize(self, config: AgentSystemConfig) -> None:
@@ -56,13 +62,11 @@ class MCPIntegration:
         # Access MCP system config
         mcp_config = config.mcp_system if config.mcp_system else MCPSystemConfig()
 
-        # Update cache TTL from configuration
+        # Set cache TTL on client manager (for their internal caching)
         if mcp_config.external_servers and mcp_config.external_servers.cache:
-            self._tools_cache_ttl = mcp_config.external_servers.cache.tool_list_ttl
-        logger.debug(f"MCP tools cache TTL set to {self._tools_cache_ttl}s")
-
-        # Set cache TTL on client manager as well
-        self.client_manager.set_cache_ttl(self._tools_cache_ttl)
+            ttl = mcp_config.external_servers.cache.tool_list_ttl
+            self.client_manager.set_cache_ttl(ttl)
+            logger.debug(f"MCP client manager cache TTL set to {ttl}s")
 
         # Discover and register plugins
         plugin_dirs = ['src/plugins']  # Default plugin directory
@@ -124,14 +128,26 @@ class MCPIntegration:
 
     async def list_all_tools(self) -> Dict[str, Dict[str, List[Any]]]:
         """List all available tools from plugins and external servers"""
-        # Check cache validity
-        now = time.time()
-        if (self._tools_cache is not None and
-            (now - self._tools_cache_time) < self._tools_cache_ttl):
-            logger.debug("Returning cached tools list (age: %.1fs)", now - self._tools_cache_time)
-            return self._tools_cache
+        # Compute config hash for cache invalidation
+        cache_config = {
+            "external_servers": {
+                name: {
+                    "url": server.url,
+                    "blocked_tools": server.tools.blocked if server.tools else []
+                }
+                for name, server in self.configured_external_servers.items()
+            },
+            "plugins": self.plugin_registry.list_servers()
+        }
+        config_hash = self._tool_cache.compute_config_hash(cache_config)
+        
+        # Try to get from cache
+        cached_result = await self._tool_cache.get("all_tools", config_hash)
+        if cached_result is not None:
+            logger.debug("Returning cached tools list")
+            return cached_result
 
-        logger.debug("Refreshing tools list cache...")
+        logger.debug("Fetching fresh tools list...")
 
         result: Dict[str, Dict[str, List[Any]]] = {
             "plugins": {},
@@ -174,18 +190,20 @@ class MCPIntegration:
 
             result["external_servers"][server_name] = filtered_tools
 
-        # Update cache
-        self._tools_cache = result
-        self._tools_cache_time = now
-        logger.debug("Tools list cache updated")
+        # Store in cache
+        await self._tool_cache.set("all_tools", result, config_hash)
+        logger.debug("Tools list cached")
 
         return result
 
-    def invalidate_tools_cache(self) -> None:
+    async def invalidate_tools_cache(self) -> None:
         """Invalidate the tools cache when connections change"""
-        self._tools_cache = None
-        self._tools_cache_time = 0.0
+        await self._tool_cache.invalidate()
         logger.debug("Tools cache invalidated")
+
+    async def get_cache_statistics(self) -> Dict[str, Any]:
+        """Get tool cache statistics for monitoring"""
+        return await self._tool_cache.get_statistics()
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any], server_type: str = "auto") -> Any:
         """Call a tool on a server (plugin or external)"""
@@ -252,7 +270,7 @@ class MCPIntegration:
         # Update local config storage
         self.configured_external_servers[name] = config
         # Invalidate tools cache
-        self.invalidate_tools_cache()
+        await self.invalidate_tools_cache()
 
     async def remove_external_server(self, name: str) -> None:
         """Remove an external MCP server"""
@@ -260,7 +278,7 @@ class MCPIntegration:
         # Remove from local config storage
         self.configured_external_servers.pop(name, None)
         # Invalidate tools cache
-        self.invalidate_tools_cache()
+        await self.invalidate_tools_cache()
 
 
 # Global MCP integration instance

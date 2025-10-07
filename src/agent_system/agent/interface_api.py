@@ -1384,6 +1384,53 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {"error": f"Failed to get MCP status: {str(e)}"}
 
+    @app.get("/mcp/cache/statistics")
+    async def mcp_cache_statistics():
+        """Get MCP tool cache statistics for monitoring."""
+        try:
+            global _mcp_integration
+
+            if not _mcp_integration:
+                return {"error": "MCP integration not initialized"}
+
+            # Get cache statistics from MCP integration
+            stats = await _mcp_integration.get_cache_statistics()
+            return {
+                "success": True,
+                "cache": stats
+            }
+
+        except Exception as e:
+            import traceback
+            logger = logging.getLogger(__name__)
+            logger.error(f"MCP cache statistics error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"error": f"Failed to get cache statistics: {str(e)}"}
+
+    @app.post("/mcp/cache/invalidate")
+    async def mcp_cache_invalidate():
+        """Manually invalidate the MCP tool cache."""
+        try:
+            global _mcp_integration
+
+            if not _mcp_integration:
+                return {"error": "MCP integration not initialized"}
+
+            # Invalidate the cache
+            await _mcp_integration.invalidate_tools_cache()
+
+            return {
+                "success": True,
+                "message": "Cache invalidated successfully"
+            }
+
+        except Exception as e:
+            import traceback
+            logger = logging.getLogger(__name__)
+            logger.error(f"MCP cache invalidation error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"error": f"Failed to invalidate cache: {str(e)}"}
+
     @app.get("/favicon.ico")
     async def favicon():
         favicon_path = Path(__file__).parents[3] / "static" / "favicon.ico"

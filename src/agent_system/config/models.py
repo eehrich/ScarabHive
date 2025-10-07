@@ -138,7 +138,9 @@ class ExternalServerConnectionConfig(BaseModel):
 
 class ExternalServerCacheConfig(BaseModel):
     """Configuration for external server caching"""
-    tool_list_ttl: float = 30.0
+    enabled: bool = True  # Enable tool list caching
+    tool_list_ttl: float = 30.0  # TTL for MCPClientManager internal cache
+    max_size: Optional[int] = None  # Maximum cache entries (None = unlimited)
 
 
 class MCPAuthConfig(BaseModel):
