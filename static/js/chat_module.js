@@ -624,8 +624,9 @@
     // Stop button event listener
     stopBtn.addEventListener('click', async function() {
       if (currentRequestId) {
-        // Sofortiges Feedback geben
-        stopBtn.textContent = 'Canceling';
+        // Sofortiges Feedback geben: preserve icon, update accessible label and tooltip
+        stopBtn.setAttribute('title', 'Canceling');
+        stopBtn.setAttribute('aria-label', 'Canceling');
         stopBtn.disabled = true;
         stopBtn.classList.add('cancelling');
 
@@ -637,11 +638,13 @@
           // Kurze Verzögerung für besseres UX-Feedback
           setTimeout(() => {
             if (result.status === 'cancelled') {
-              stopBtn.textContent = 'Done';
+              stopBtn.setAttribute('title', 'Done');
+              stopBtn.setAttribute('aria-label', 'Done');
               stopBtn.classList.remove('cancelling');
               stopBtn.classList.add('cancelled');
             } else {
-              stopBtn.textContent = 'Failed';
+              stopBtn.setAttribute('title', 'Failed');
+              stopBtn.setAttribute('aria-label', 'Failed');
               stopBtn.classList.remove('cancelling');
               stopBtn.classList.add('cancel-failed');
             }
@@ -649,7 +652,8 @@
 
         } catch (error) {
           console.error('Failed to cancel request:', error);
-          stopBtn.textContent = 'Failed';
+          stopBtn.setAttribute('title', 'Failed');
+          stopBtn.setAttribute('aria-label', 'Failed');
           stopBtn.classList.remove('cancelling');
           stopBtn.classList.add('cancel-failed');
         }
@@ -657,7 +661,8 @@
         // Nach 2 Sekunden wieder zurücksetzen (falls Anfrage noch läuft)
         setTimeout(() => {
           if (stopBtn.style.display !== 'none') { // Nur zurücksetzen wenn Button noch sichtbar
-            stopBtn.textContent = 'Stop';
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           }

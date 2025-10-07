@@ -4,8 +4,8 @@
 
 /* Collapsible panels */
 details {
-  background: #0b1220;
-  border: 1px solid #243244;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
   border-radius: 12px;
   padding: 10px 12px;
   margin-bottom: 12px;
@@ -129,20 +129,20 @@ h1 {
 
 /* Background colors */
 .bg-primary {
-  background: #0b1220;
+  background: var(--bg-darkest);
 }
 
 .bg-secondary {
-  background: #0a1420;
+  background: var(--bg-dark);
 }
 
 .bg-dark {
-  background: #07111a;
+  background: var(--bg-darkest);
 }
 
 /* Border utilities */
 .border {
-  border: 1px solid #243244;
+  border: 1px solid var(--border-normal);
 }
 
 .border-radius {
@@ -322,17 +322,17 @@ h1 {
 }
 
 ::-webkit-scrollbar-track {
-  background: #0b1220;
+  background: var(--bg-darkest);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #243244;
+  background: var(--border-normal);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: var(--border-strong);
 }
 
 /* Firefox scrollbar styling */

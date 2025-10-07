@@ -6,9 +6,9 @@
 header {
   position: sticky;
   top: 0;
-  background: linear-gradient(180deg, #0b0f14, #0b0f14cc 70%, transparent);
+  background: linear-gradient(180deg, var(--bg-darkest), rgba(10,14,19,0.8) 70%, transparent);
   padding: 12px 18px;
-  border-bottom: 1px solid #1f2937;
+  border-bottom: 1px solid var(--border-subtle);
   backdrop-filter: blur(6px);
   z-index: 10;
   display: flex;
@@ -38,8 +38,8 @@ header h1 {
 .session-id-display {
   color: #9ab;
   font-size: 12px;
-  background: #0b1220;
-  border: 1px solid #243244;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-normal);
   padding: 4px 8px;
   border-radius: 6px;
   font-family: 'Courier New', monospace;
@@ -59,8 +59,8 @@ header h1 {
   right: 8px;
   color: #9ab;
   font-size: 11px;
-  background: rgba(11,18,32,0.95);
-  border: 1px solid #243244;
+  background: rgba(10,14,19,0.95);
+  border: 1px solid var(--border-normal);
   padding: 6px 10px;
   border-radius: 6px;
   font-family: 'Courier New', monospace;
@@ -81,8 +81,8 @@ header h1 {
   right: 8px;
   color: #9ab;
   font-size: 10px;
-  background: rgba(11,18,32,0.95);
-  border: 1px solid #243244;
+  background: rgba(10,14,19,0.95);
+  border: 1px solid var(--border-normal);
   padding: 4px 8px;
   border-radius: 4px;
   font-family: 'Courier New', monospace;
@@ -111,8 +111,8 @@ header .header-buttons {
 #contextDebugToggleBtn {
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid #243244;
-  background: #0b1220;
+  border: 1px solid var(--border-normal);
+  background: var(--bg-darkest);
   color: #9ab;
   font-size: 13px;
   cursor: pointer;
@@ -126,8 +126,8 @@ header .header-buttons {
 #debugToggleBtn:hover,
 .header-button:hover,
 #contextDebugToggleBtn:hover {
-  background: #16202b;
-  border-color: #354155;
+  background: var(--bg-dark);
+  border-color: var(--border-strong);
   color: #b3c5d4;
 }
 
@@ -136,7 +136,7 @@ header .header-buttons {
 #debugToggleBtn:active,
 .header-button:active,
 #contextDebugToggleBtn:active {
-  background: #0a1018;
+  background: var(--bg-darkest);
   transform: translateY(1px);
 }
 
@@ -175,7 +175,7 @@ header .header-buttons {
   justify-content: space-between;
   align-items: center;
   padding: 6px 8px;
-  background: #0b1220;
+  background: var(--bg-darkest);
   border-radius: 4px;
   font-size: 12px;
 }
@@ -195,8 +195,8 @@ header .header-buttons {
   align-items: flex-start;
   padding: 4px 8px;
   margin: 3px 0;
-  border-left: 3px solid #2e3e4f;
-  background: #0a1420;
+  border-left: 3px solid var(--border-strong);
+  background: var(--bg-darkest);
   border-radius: 4px;
   font-size: 13px;
   animation: fadeIn .2s ease;
@@ -281,8 +281,8 @@ header .header-buttons {
   transform: translateY(-50%);
   color: #9ab;
   font-size: 12px;
-  background: rgba(11,18,32,0.9);
-  border: 1px solid #243244;
+  background: rgba(10,14,19,0.9);
+  border: 1px solid var(--border-normal);
   padding: 6px 10px;
   border-radius: 6px;
   font-family: 'Courier New', monospace;
@@ -332,8 +332,8 @@ header .header-buttons {
   flex-direction: column;
   overflow: hidden; /* Prevent content from spilling out of the panel */
   border-radius: 8px;
-  background: linear-gradient(180deg,#071019,#071019cc);
-  border: 1px solid rgba(255,255,255,0.04);
+  background: linear-gradient(180deg, var(--bg-darkest), rgba(10,14,19,0.8));
+  border: 1px solid var(--border-subtle);
 }
 
 .floating-panel .floating-panel-body {

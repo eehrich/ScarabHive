@@ -24,13 +24,14 @@
   border-radius: 14px;
   line-height: 1.45;
   box-shadow: 0 1px 0 #0008 inset, 0 0 0 1px #ffffff12 inset;
+  /* unify bubble appearance */
+  background: var(--bg-dark);
+  border: 1px solid var(--border-subtle);
 }
 
 /* User Message Styling */
 .user {
   margin-left: auto;
-  background: #1f2937;
-  border: 1px solid #334155;
 }
 
 /* User Image Previews */
@@ -45,23 +46,20 @@
   max-width: 200px;
   max-height: 200px;
   border-radius: 4px;
-  border: 1px solid #334155;
+  border: 1px solid var(--border-normal);
   object-fit: contain;
-  background: #111827;
+  background: var(--bg-darkest);
   transition: transform 0.2s ease;
 }
 
 .user-image-previews img:hover {
   transform: scale(1.05);
-  border-color: #4b5563;
+  border-color: var(--border-strong);
   cursor: pointer;
 }
 
 /* Assistant Message Styling */
-.assistant {
-  background: #0f172a;
-  border: 1px solid #243244;
-}
+/* assistant uses .msg appearance */
 
 /* Input Bar */
 .inputBar {
@@ -76,14 +74,15 @@
   align-items: center;
   padding-top: 0;
   padding-bottom: 12px;
+  z-index: 20; /* ensure input bar sits above request id display */
 }
 
 /* Input Bar Container - subtle background box */
 .input-bar-container {
   width: 100%;
   max-width: 900px;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--bg-medium);
+  border: 1px solid var(--border-normal);
   border-radius: 12px;
   padding: 8px 16px;
   box-sizing: border-box;
@@ -111,9 +110,9 @@
 }
 
 .input-bar-top .selector-group select {
-  background: #0f172a;
+  background: var(--bg-medium);
   color: #e6edf3;
-  border: 1px solid #334155;
+  border: 1px solid var(--border-normal);
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 12px;
@@ -152,17 +151,18 @@ form {
 /* Textarea Input */
 #task {
   flex: 1;
-  background: #1e293b;
+  background: var(--bg-medium);
   color: #e6edf3;
   border: none;
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 0; /* align with icon buttons */
+  padding-top: 10px;
   outline: none;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 16px;
   line-height: 1.5;
   resize: none;
-  min-height: 44px;
+  min-height: 40px; /* match 40x40 buttons */
   max-height: 200px;
   overflow-y: auto;
   transition: none;
@@ -185,7 +185,7 @@ form {
 }
 
 #task::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: var(--border-strong);
   border-radius: 3px;
 }
 
@@ -199,9 +199,10 @@ form {
 /* Icon Buttons (shared style) */
 .icon-btn {
   background: transparent;
-  border: 1px solid #334155;
+  border: 1px solid var(--border-normal);
   border-radius: 6px;
   padding: 8px;
+  box-sizing: border-box;
   cursor: pointer;
   color: #94a3b8;
   display: flex;
@@ -214,10 +215,20 @@ form {
   flex-shrink: 0;
 }
 
+/* Unified icon action sizing for run/stop/upload */
+.icon-action {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 8px;
+}
+
 .icon-btn:hover {
-  background: #1e293b;
+  background: var(--bg-medium);
   color: #e6edf3;
-  border-color: #475569;
+  border-color: var(--border-strong);
 }
 
 .icon-btn:active {
@@ -240,21 +251,52 @@ form {
   color: white;
 }
 
+/* Ensure Run button matches Stop button size & icon scale */
+/* run-btn uses .icon-action for sizing */
+
+.run-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  margin: 0 auto;
+  fill: currentColor;
+}
+
 /* Stop Button (Square icon) */
 .stop-btn {
   border-color: #ef4444;
   color: #ef4444;
+  /* exact outer size like other icon buttons and perfect centering */
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
 }
 
 .stop-btn:hover:not(:disabled) {
-  background: #ef4444;
+  background: rgba(239,68,68,0.14);
   color: white;
 }
+
+.stop-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  margin: 0 auto;
+  fill: currentColor;
+}
+
+.stop-btn.cancelling { background: rgba(239,68,68,0.12); color: white; }
+.stop-btn.cancelled { background: rgba(16,185,129,0.12); color: #10b981; }
+.stop-btn.cancel-failed { background: rgba(239,68,68,0.12); color: #ef4444; }
 
 /* File Upload Button */
 .file-upload-btn {
   background: transparent;
-  border: 1px solid #334155;
+  border: 1px solid var(--border-normal);
   border-radius: 6px;
   padding: 8px;
   cursor: pointer;
@@ -268,9 +310,9 @@ form {
 }
 
 .file-upload-btn:hover {
-  background: #1e293b;
+  background: var(--bg-medium);
   color: #e6edf3;
-  border-color: #475569;
+  border-color: var(--border-strong);
 }
 
 /* Attached Files List (VS Code style) */
@@ -293,8 +335,8 @@ form {
   align-items: center;
   gap: 4px;
   padding: 3px 6px;
-  background: #0f172a;
-  border: 1px solid #334155;
+  background: var(--bg-medium);
+  border: 1px solid var(--border-normal);
   border-radius: 4px;
   font-size: 12px;
   color: #e6edf3;
@@ -303,8 +345,8 @@ form {
 }
 
 .attached-file-item:hover {
-  background: #1a2332;
-  border-color: #475569;
+  background: var(--bg-light);
+  border-color: var(--border-strong);
 }
 
 .attached-file-icon {
@@ -401,9 +443,9 @@ form {
 }
 
 .selector-group select {
-  background: #1e293b;
+  background: var(--bg-medium);
   color: #e6edf3;
-  border: 1px solid #334155;
+  border: 1px solid var(--border-normal);
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 12px;
@@ -467,13 +509,13 @@ input[type="text"] {
 
 .container-section .response-text h1 {
   font-size: 1.5em;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--border-subtle);
   padding-bottom: 8px;
 }
 
 .container-section .response-text h2 {
   font-size: 1.3em;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--border-subtle);
   padding-bottom: 6px;
 }
 
@@ -493,7 +535,7 @@ input[type="text"] {
 }
 
 .container-section .response-text code {
-  background: #21262d;
+  background: var(--bg-dark);
   color: #f85149;
   padding: 2px 4px;
   border-radius: 3px;
@@ -501,8 +543,8 @@ input[type="text"] {
 }
 
 .container-section .response-text pre {
-  background: #161b22;
-  border: 1px solid #21262d;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 12px;
   margin: 12px 0;
@@ -556,24 +598,24 @@ input[type="text"] {
   border-collapse: collapse;
   margin: 12px 0;
   width: 100%;
-  background: #0d1117;
-  border: 1px solid #21262d;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .container-section .response-text .markdown-table th {
-  background: #21262d;
+  background: var(--border-normal);
   color: #f0f6fc;
   font-weight: 600;
   padding: 8px 12px;
   text-align: left;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .container-section .response-text .markdown-table td {
   padding: 8px 12px;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--border-subtle);
   color: #e6edf3;
 }
 
@@ -582,7 +624,7 @@ input[type="text"] {
 }
 
 .container-section .response-text .markdown-table tr:nth-child(even) {
-  background: #161b22;
+  background: var(--bg-darkest);
 }
 
 /* Progress View */
@@ -617,15 +659,15 @@ input[type="text"] {
 }
 
 .operation-progress[data-depth="1"] .progress-line {
-  border-left: 2px solid #30363d;
+  border-left: 2px solid var(--border-strong);
 }
 
 .operation-progress[data-depth="2"] .progress-line {
-  border-left: 2px solid #21262d;
+  border-left: 2px solid var(--border-normal);
 }
 
 .operation-progress[data-depth="3"] .progress-line {
-  border-left: 2px solid #161b22;
+  border-left: 2px solid var(--border-subtle);
 }
 
 /* Indent deeper levels progressively */
@@ -636,7 +678,7 @@ input[type="text"] {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: #30363d;
+  background: var(--border-strong);
 }
 
 .progress-icon {
@@ -714,7 +756,7 @@ input[type="text"] {
 
 /* Thinking Animation */
 .thinking-indicator .response-header {
-  background: linear-gradient(-45deg, #1a2332, #1f2837, #1a2332, #1f2837);
+  background: linear-gradient(-45deg, var(--bg-dark), var(--bg-medium), var(--bg-dark), var(--bg-medium));
   background-size: 400% 400%;
   animation: thinkingGradient 2s ease-in-out infinite;
 }
@@ -760,8 +802,8 @@ input[type="text"] {
 /* Better code block styling */
 .response-text pre {
   position: relative;
-  background: #0d1117;
-  border: 1px solid #30363d;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   padding: 16px;
   margin: 16px 0;
@@ -803,8 +845,8 @@ input[type="text"] {
 /* Unified Container Design */
 .container-section {
   margin: 8px 0;
-  background: #0f172a;
-  border: 1px solid #1f2937;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -874,20 +916,20 @@ div .container-section .container-header .toggle-arrow {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: #1a2332;
-  border-bottom: 1px solid #334155;
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border-normal);
   cursor: pointer;
   user-select: none;
   transition: all 0.2s ease;
 }
 
 .container-header:hover {
-  background: #1e293b;
-  border-bottom-color: #475569;
+  background: var(--bg-medium);
+  border-bottom-color: var(--border-strong);
 }
 
 .container-header:active {
-  background: #0f172a;
+  background: var(--bg-darkest);
   transform: translateY(1px);
 }
 
@@ -905,20 +947,20 @@ div .container-section .container-header .toggle-arrow {
 }
 
 .container-body {
-  background: #1a2332;
+  background: var(--bg-dark);
 }
 
 /* Make thinking background same as response body */
 .container-section [data-toggle="thinking"] + .container-body,
 .container-section [data-toggle="thinking"] ~ .container-body {
-  background: #1a2332;
+  background: var(--bg-dark);
 }
 
 /* Thinking Container Specific */
 .container-section .container-body pre {
   margin: 0;
   padding: 16px;
-  background: #1a2332;
+  background: var(--bg-dark);
   border: none;
   border-radius: 0;
   font-family: 'SF Mono', Monaco, 'Inconsolata', 'Roboto Mono', 'Source Code Pro', monospace;
@@ -949,7 +991,7 @@ div .container-section .container-header .toggle-arrow {
   color: #e6edf3;
   font-size: 15px;
   padding: 12px;
-  background: #1a2332;
+  background: var(--bg-dark);
 }
 
 /* Debug messages area: allow it to grow inside the panel and scroll when needed */
@@ -971,14 +1013,14 @@ div .container-section .container-header .toggle-arrow {
   overflow-y: auto;
   max-height: none; /* remove fixed limit */
   padding: 8px;
-  background: #0d141a;
-  border: 1px solid #21262d;
+  background: var(--bg-darkest);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
 }
 
 .debug-message {
   padding: 8px 10px;
-  border-bottom: 1px solid #16202b;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .debug-message:last-child {
@@ -996,16 +1038,16 @@ div .container-section .container-header .toggle-arrow {
 }
 
 .container-section .container-body pre::-webkit-scrollbar-track {
-  background: #161b22;
+  background: var(--bg-darkest);
 }
 
 .container-section .container-body pre::-webkit-scrollbar-thumb {
-  background: #30363d;
+  background: var(--border-strong);
   border-radius: 4px;
 }
 
 .container-section .container-body pre::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
+  background: var(--bg-light);
 }
 
 /* Operation Progress (VS Code-style) */
@@ -1037,7 +1079,7 @@ div .container-section .container-header .toggle-arrow {
 .spinner {
   width: 12px;
   height: 12px;
-  border: 2px solid #21262d;
+  border: 2px solid var(--border-subtle);
   border-top: 2px solid #58a6ff;
   border-radius: 50%;
   animation: spin 1s linear infinite;
@@ -1115,10 +1157,10 @@ div .container-section .container-header .toggle-arrow {
 .operation-request-id {
   color: #79c0ff;
   font-size: 11px;
-  background: #0d1117;
+  background: var(--bg-darkest);
   padding: 1px 4px;
   border-radius: 3px;
-  border: 1px solid #21262d;
+  border: 1px solid var(--border-subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   flex-shrink: 0;
 }
@@ -1131,7 +1173,7 @@ div .container-section .container-header .toggle-arrow {
   top: 0;
   bottom: 50%;
   width: 1px;
-  background: #30363d;
+  background: var(--border-strong);
 }
 
 /* Tree connector improvements */
@@ -1177,7 +1219,7 @@ div .container-section .container-header .toggle-arrow {
 }
 
 .tree-expand-btn:hover {
-  background-color: #21262d;
+  background-color: var(--border-normal);
 }
 
 .expand-icon {
