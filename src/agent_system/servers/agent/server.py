@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from ...config.models import AgentSystemConfig, MCPConfig
 from ...utils.cancellation import get_cancellation_manager, configure_cancellation_manager
@@ -716,8 +716,19 @@ class Agent(MCPServer):
             logger.error(f"Failed to list tools: {e}")
             return []
 
-    async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None):
-        """Run the agent and yield structured events for UI streaming."""
+    async def run_events(
+        self, 
+        task: Union[str, ChatMessage], 
+        request_id: Optional[str] = None, 
+        session_id: Optional[str] = None
+    ):
+        """Run the agent and yield structured events for UI streaming.
+        
+        Args:
+            task: Either a string task description or a ChatMessage with multimodal content
+            request_id: Optional request ID for tracking
+            session_id: Optional session ID for conversation history
+        """
 
         # Generate request ID if not provided
         if request_id is None:
@@ -726,6 +737,24 @@ class Agent(MCPServer):
         # If no session_id provided, generate one and persist empty history
         if not session_id:
             session_id = short_id()
+
+        # Handle Union[str, ChatMessage] input
+        initial_message: Optional[ChatMessage] = None
+        task_text: str = ""
+        
+        if isinstance(task, ChatMessage):
+            # Extract task text from ChatMessage content for logging/tracking
+            initial_message = task
+            if isinstance(task.content, str):
+                task_text = task.content
+            elif isinstance(task.content, list):
+                # Extract text from content items (Pydantic models, not dicts)
+                text_parts = [getattr(item, "text", "") for item in task.content if hasattr(item, "type") and getattr(item, "type") == "text"]
+                task_text = " ".join(text_parts) if text_parts else "[multimodal input]"
+            else:
+                task_text = "[multimodal input]"
+        else:
+            task_text = task
 
         # Create suffixed request IDs for coordinator and worker so their
         # status messages can be correlated separately while still linking
@@ -736,10 +765,35 @@ class Agent(MCPServer):
 
         async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
                    status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
-            async for event in self._run_events(task, request_id=request_id, session_id=session_id, status_coordinator=status_coordinator, status_worker=status_worker):
+            async for event in self._run_events(
+                task_text, 
+                request_id=request_id, 
+                session_id=session_id, 
+                status_coordinator=status_coordinator, 
+                status_worker=status_worker,
+                initial_message=initial_message
+            ):
                 yield event
 
-    async def _run_events(self, task: str, request_id: str, session_id: str, status_coordinator: StatusScope, status_worker: StatusScope):
+    async def _run_events(
+        self, 
+        task: str, 
+        request_id: str, 
+        session_id: str, 
+        status_coordinator: StatusScope, 
+        status_worker: StatusScope,
+        initial_message: Optional[ChatMessage] = None
+    ):
+        """Internal implementation of run_events with optional multimodal message.
+        
+        Args:
+            task: Text task description (may be empty if initial_message is provided)
+            request_id: Request ID for tracking
+            session_id: Session ID for conversation history
+            status_coordinator: Status scope for coordinator
+            status_worker: Status scope for worker
+            initial_message: Optional ChatMessage with multimodal content to use instead of task
+        """
         # Initialize step counter at function level so it's accessible in finally blocks and cleanup
         step = 0
         
@@ -818,7 +872,11 @@ class Agent(MCPServer):
             if session_msgs:
                 messages.extend(session_msgs)
             # add the new user input as last message
-            messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
+            # Use initial_message if provided (for multimodal input), otherwise create from task
+            if initial_message:
+                messages.append(initial_message)
+            else:
+                messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
 
             # Also include any appended messages already queued for this request
             async with self._request_lock:
@@ -1289,6 +1347,7 @@ class Agent(MCPServer):
                     yield {"type": "error", "message": f"Failed to get final answer: {e}"}
 
         except Exception as e:
+            logger.exception("Agent execution failed with exception:")
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
         finally:
             # Clean up cancellation token

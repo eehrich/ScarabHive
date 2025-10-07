@@ -231,14 +231,8 @@ class OpenAIAsyncClient(LLMClient):
         logger = logging.getLogger(__name__)
         msgs: list[dict] = []
         for m in messages:
-            d = {"role": m.role}
-            if m.content is not None:
-                d["content"] = m.content
-            if m.role == "tool":
-                if m.tool_call_id:
-                    d["tool_call_id"] = str(m.tool_call_id)
-            elif m.role == "assistant" and m.tool_calls:
-                d["tool_calls"] = m.tool_calls
+            # Use model_dump() to properly serialize nested Pydantic models
+            d = m.model_dump(exclude_none=True)
             msgs.append(d)
 
         normalized_tools: list[dict] = []

@@ -53,10 +53,13 @@ llm_system:
       capabilities:
         tools: true
         function_calling: true
-        image_input: false
+        image_input: true
         streaming: true
         json_mode: true
-
+        max_image_size: 20971520  # 20MB
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+        
     gpt-5:
       provider: openai_httpx
       model: gpt-5
@@ -132,7 +135,7 @@ llm_system:
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 100
     normal:
-      model_ref: deepseek-chat
+      model_ref: gpt-5-mini #deepseek-chat
       description: "Fast model for quick responses"
       max_steps: 100
     think:

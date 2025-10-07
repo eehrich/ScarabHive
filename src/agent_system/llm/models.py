@@ -118,12 +118,13 @@ class ChatMessage(BaseModel):
         """Check if message contains multimodal content."""
         if isinstance(self.content, list):
             for item in self.content:
-                if isinstance(item, dict):
-                    content_type = item.get("type", "")
+                if isinstance(item, (ImageContent, AudioContent, VideoContent)):
+                    return True
+                elif hasattr(item, "type"):
+                    # Pydantic model - check type attribute
+                    content_type = getattr(item, "type", "")
                     if content_type in ("image", "image_url", "audio", "video"):
                         return True
-                elif isinstance(item, (ImageContent, AudioContent, VideoContent)):
-                    return True
                 elif not isinstance(item, (str, TextContent)):
                     return True
         return False
@@ -139,8 +140,9 @@ class ChatMessage(BaseModel):
                     texts.append(item)
                 elif isinstance(item, TextContent):
                     texts.append(item.text)
-                elif isinstance(item, dict) and item.get("type") == "text":
-                    texts.append(item.get("text", ""))
+                elif hasattr(item, "type") and getattr(item, "type") == "text":
+                    # Pydantic model with text
+                    texts.append(getattr(item, "text", ""))
             return " ".join(texts)
         return ""
     
@@ -150,8 +152,9 @@ class ChatMessage(BaseModel):
             for item in self.content:
                 if isinstance(item, ImageContent):
                     return True
-                elif isinstance(item, dict):
-                    content_type = item.get("type", "")
+                elif hasattr(item, "type"):
+                    # Pydantic model - check type attribute
+                    content_type = getattr(item, "type", "")
                     if content_type in ("image", "image_url"):
                         return True
         return False
@@ -164,8 +167,9 @@ class ChatMessage(BaseModel):
         for item in self.content:
             if isinstance(item, ImageContent):
                 count += 1
-            elif isinstance(item, dict):
-                content_type = item.get("type", "")
+            elif hasattr(item, "type"):
+                # Pydantic model - check type attribute
+                content_type = getattr(item, "type", "")
                 if content_type in ("image", "image_url"):
                     count += 1
         return count

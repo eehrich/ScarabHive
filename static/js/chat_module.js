@@ -91,10 +91,46 @@
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
 
-  function addUser(chatContainer, text) {
+  function addUser(chatContainer, text, images = []) {
+    // Ensure text is always a string
+    const displayText = typeof text === 'string' ? text : String(text);
     const row = document.createElement('div');
     row.className = 'row';
-    row.innerHTML = `<div class="msg user">${escapeHtml(text)}</div>`;
+    
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg user';
+    
+    // Add text content
+    const textSpan = document.createElement('div');
+    textSpan.innerHTML = escapeHtml(displayText);
+    msgDiv.appendChild(textSpan);
+    
+    // Add image previews if any
+    if (images && images.length > 0) {
+      const previewContainer = document.createElement('div');
+      previewContainer.className = 'user-image-previews';
+      
+      images.forEach(file => {
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(file);
+        img.alt = file.name;
+        img.title = file.name;
+        
+        // Revoke object URL after image loads to free memory
+        img.onload = () => URL.revokeObjectURL(img.src);
+        
+        // Optional: click to view full size
+        img.onclick = () => {
+          window.open(img.src, '_blank');
+        };
+        
+        previewContainer.appendChild(img);
+      });
+      
+      msgDiv.appendChild(previewContainer);
+    }
+    
+    row.appendChild(msgDiv);
     chatContainer.appendChild(row);
     scrollBottom();
   }
@@ -632,18 +668,24 @@
     chatForm.addEventListener('submit', async function(e) {
       e.preventDefault();
       const task = taskInput.value.trim();
-      if (!task) return;
       
       // Check if we have files to upload
       const hasFiles = window.fileUploadModule && window.fileUploadModule.hasValidFiles();
       const files = hasFiles ? window.fileUploadModule.getFiles() : [];
       
+      // Require either task text or files
+      if (!task && !hasFiles) return;
+      
       // Add user message to chat (with file indicator if files present)
-      let displayText = task;
+      let displayText = task || '(Image upload)';
       if (files.length > 0) {
-        displayText += ` [${files.length} image${files.length > 1 ? 's' : ''}]`;
+        if (task) {
+          displayText += ` [${files.length} image${files.length > 1 ? 's' : ''}]`;
+        } else {
+          displayText = `[${files.length} image${files.length > 1 ? 's' : ''}]`;
+        }
       }
-      addUser(chatContainer, displayText);
+      addUser(chatContainer, displayText, files);
       taskInput.value = '';
 
       // If there's an active request, append the user message to it
@@ -684,7 +726,84 @@
       stopBtn.style.display = 'block'; // Show stop button
       currentRequestId = null; // Will be set when SSE 'start' event arrives
 
-      // Use multimodal endpoint if files present
+      // Shared SSE event handler for both EventSource and manual fetch() parsing
+      const handleSSEEvent = (data, blk) => {
+        switch (data.type) {
+          case 'start':
+            currentRequestId = data.request_id;
+            currentSessionId = data.session_id;
+            // update exported values
+            try { global.currentSessionId = currentSessionId; } catch (e) {}
+            console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
+            
+            // Update header session ID display
+            updateHeaderSessionId();
+            
+            // Update request ID display  
+            updateRequestId();
+            break;
+          case 'cancelled':
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
+            break;
+          case 'thinking':
+            if (data.assistant) {
+              if (data.assistant.content) {
+                blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
+              }
+              if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
+                blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+                data.assistant.tool_calls.forEach((tc, i) => {
+                  const func = tc.function || {};
+                  blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
+                });
+                blk.think.textContent += '\n';
+              }
+            } else {
+              blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
+            }
+            break;
+          case 'final':
+            const content = data.summary || data.content || '';
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
+            break;
+          case 'end':
+            if (currentEventSource) {
+              currentEventSource.close();
+              currentEventSource = null;
+            }
+            // Don't close statusEs here - let status updates continue after response completion
+            runBtn.style.display = 'block'; // Show run button
+            stopBtn.style.display = 'none'; // Hide stop button
+            // Reset stop button state
+            stopBtn.textContent = 'Stop';
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            break;
+          case 'error':
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
+            if (currentEventSource) {
+              currentEventSource.close();
+              currentEventSource = null;
+            }
+            if (currentStatusEventSource) {
+              currentStatusEventSource.close();
+              currentStatusEventSource = null;
+            }
+            runBtn.style.display = 'block'; // Show run button
+            stopBtn.style.display = 'none'; // Hide stop button
+            // Reset stop button state
+            stopBtn.textContent = 'Stop';
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            break;
+        }
+        scrollBottom();
+      };
+
+      // Use FormData for all requests (supports both text-only and multimodal)
       if (hasFiles) {
         // Build FormData for multimodal request
         const formData = new FormData();
@@ -697,7 +816,31 @@
           showSection(blk.t);
           blk.t.innerHTML = '<div class="response-text">Processing images...</div>';
 
-          const response = await fetch('/run/multimodal', {
+          // Close any existing status event source before starting a new one
+          if (currentStatusEventSource) {
+            currentStatusEventSource.close();
+            currentStatusEventSource = null;
+          }
+          
+          // Open status stream for MCP call updates
+          let statusEs = null;
+          try {
+            statusEs = new EventSource('/status/stream');
+            currentStatusEventSource = statusEs; // Track current status event source
+            statusEs.onmessage = (ev) => {
+              try {
+                const statusData = JSON.parse(ev.data);
+                addStatusEvent(blk.status, statusData);
+              } catch (err) {
+                // ignore JSON parse errors
+              }
+            };
+          } catch (err) {
+            console.warn('Status stream not available:', err);
+          }
+
+          // Stream SSE response from /run endpoint
+          const response = await fetch('/run', {
             method: 'POST',
             body: formData
           });
@@ -718,10 +861,45 @@
             return;
           }
 
-          const result = await response.json();
-          const content = result.summary || JSON.stringify(result, null, 2);
-          showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
+                    // Response is SSE stream - parse it manually
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let sseOk = false;
+
+          while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, {stream: true});
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // Keep incomplete line in buffer
+
+            for (const line of lines) {
+              if (line.startsWith(':')) {
+                sseOk = true;
+                continue;
+              }
+              if (line.startsWith('event:')) {
+                continue;
+              }
+              if (line.startsWith('data:')) {
+                const jsonStr = line.substring(5).trim();
+                if (!jsonStr) continue;
+                try {
+                  const ev = JSON.parse(jsonStr);
+                  handleSSEEvent(ev, blk);
+                } catch (e) {
+                  console.error('Failed to parse SSE data:', e);
+                }
+              }
+            }
+          }
+
+          if (!sseOk) {
+            showSection(blk.t);
+            blk.t.innerHTML = '<div class="response-text error">SSE connection failed</div>';
+          }
 
           // Clear files after successful send
           if (window.fileUploadModule) {
@@ -731,9 +909,16 @@
         } catch (err) {
           showSection(blk.t);
           blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(err))}</div>`;
+          // Close status stream on error
+          if (currentStatusEventSource) {
+            currentStatusEventSource.close();
+            currentStatusEventSource = null;
+          }
         } finally {
           runBtn.style.display = 'block';
           stopBtn.style.display = 'none';
+          currentRequestId = null;
+          currentEventSource = null;
         }
         return;
       }
@@ -774,78 +959,7 @@
       es.onmessage = ev => {
         try {
           const data = JSON.parse(ev.data);
-          switch (data.type) {
-            case 'start':
-              currentRequestId = data.request_id;
-              currentSessionId = data.session_id;
-              // update exported values
-              try { global.currentSessionId = currentSessionId; } catch (e) {}
-              console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
-              
-              // Update header session ID display
-              updateHeaderSessionId();
-              
-              // Update request ID display  
-              updateRequestId();
-              break;
-            case 'cancelled':
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
-              break;
-            case 'thinking':
-              if (data.assistant) {
-                if (data.assistant.content) {
-                  blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
-                }
-                if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-                  blk.think.textContent += `🧠 Step ${data.step}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
-                  data.assistant.tool_calls.forEach((tc, i) => {
-                    const func = tc.function || {};
-                    blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-                  });
-                  blk.think.textContent += '\n';
-                }
-              } else {
-                blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
-              }
-              break;
-            case 'final':
-              const content = data.summary || data.content || '';
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
-              break;
-            case 'end':
-              es.close();
-              // Don't close statusEs here - let status updates continue after response completion
-              // statusEs will be closed when a new request starts or on explicit error
-              runBtn.style.display = 'block'; // Show run button
-              stopBtn.style.display = 'none'; // Hide stop button
-              // Reset stop button state
-              stopBtn.textContent = 'Stop';
-              stopBtn.disabled = false;
-              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-              // Keep currentRequestId and Request ID display visible after completion
-              currentEventSource = null;
-              break;
-            case 'error':
-              showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
-              es.close();
-              if (statusEs) {
-                statusEs.close();
-                currentStatusEventSource = null;
-              }
-              runBtn.style.display = 'block'; // Show run button
-              stopBtn.style.display = 'none'; // Hide stop button
-              // Reset stop button state
-              stopBtn.textContent = 'Stop';
-              stopBtn.disabled = false;
-              stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-              // Keep currentRequestId and Request ID display visible after error
-              currentEventSource = null;
-              break;
-          }
-          scrollBottom();
+          handleSSEEvent(data, blk);
         } catch (err) {
           // ignore JSON parse errors
         }

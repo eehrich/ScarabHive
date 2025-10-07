@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Optional, Callable
 
 import uvicorn
-from fastapi import FastAPI, Request, Query, Header, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, Request, Query, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 # Response is not needed here; FastAPI/Starlette response classes are imported where required
@@ -426,138 +427,141 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return {"error": str(e), "agent": agent_name}
 
     @app.post("/run")
-    async def run(task: str, traceparent: Optional[str] = Header(default=None)):
-        logger = logging.getLogger(__name__)
-        request_id = short_id()
-        logger.info("/run invoked, task=%s, request_id=%s", task, request_id)
-        from agent_system.servers.agent.result_utils import collect_final_result
-        return await collect_final_result(agent, task, request_id=request_id)
+    async def run(request: Request, traceparent: Optional[str] = Header(default=None)):
+        """Run agent with optional multimodal input (text + images).
 
-    @app.post("/run/multimodal")
-    async def run_multimodal(
-        task: str = Form(...),
-        files: list[UploadFile] = File(default=[]),
-        traceparent: Optional[str] = Header(default=None)
-    ):
-        """Run agent with multimodal input (text + images).
-        
-        Args:
-            task: The user's text prompt
-            files: List of image files to include in the request
-            traceparent: Optional tracing header
-            
-        Returns:
-            Agent response with result
+        This handler accepts either:
+        - multipart/form-data with fields 'task' and repeated 'files' entries, or
+        - application/json with {"task": "..."}, or
+        - query param ?task=... (fallback used by some clients)
+
         """
         logger = logging.getLogger(__name__)
         request_id = short_id()
-        logger.info("/run/multimodal invoked, task=%s, files=%d, request_id=%s", 
-                   task, len(files), request_id)
-        
-        # Import capability checking
-        from ..llm.capabilities import get_model_capabilities, ImageFormat
-        import base64
-        
-        # Validate model supports images if files provided
-        if files:
-            model_name = agent.llm.model if hasattr(agent.llm, 'model') else None
-            if model_name:
-                caps = get_model_capabilities(model_name)
-                if not caps.image_input:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Model {model_name} does not support image input"
-                    )
-        
-        # Process uploaded files
-        image_contents = []
-        for file in files:
-            # Validate file type
-            content_type = file.content_type or ""
-            if not content_type.startswith("image/"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"File {file.filename} is not an image (type: {content_type})"
-                )
-            
-            # Extract format
-            format_str = content_type.split("/")[-1].lower()
+
+        # Try to parse task and files from the request in a flexible way
+        task = None
+        upload_files: list[UploadFile] = []
+        content_type = request.headers.get('content-type', '')
+        logger.debug("/run content-type: %s", content_type)
+
+        # JSON body: {"task": "..."}
+        if content_type.startswith('application/json'):
+            body = await request.json()
+            logger.debug("/run parsed JSON body: %s", body)
+            task = body.get('task') if isinstance(body, dict) else None
+
+        # multipart/form-data: parse form and files
+        elif content_type.startswith('multipart/form-data'):
+            form = await request.form()
             try:
-                img_format = ImageFormat(format_str)
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported image format: {format_str}"
-                )
+                logger.debug("/run parsed form keys: %s", list(form.keys()))
+            except Exception:
+                logger.debug("/run parsed form (unable to list keys)")
+            # Extract task field
+            if 'task' in form:
+                task = form['task']
+            # Collect UploadFile instances - use getlist() for repeated fields
+            if hasattr(form, 'getlist'):
+                files_list = form.getlist('files')
+            else:
+                files_list = [form.get('files')] if 'files' in form else []
             
-            # Check if model supports this format
-            model_name = agent.llm.model if hasattr(agent.llm, 'model') else None
-            if model_name:
-                caps = get_model_capabilities(model_name)
-                if img_format not in caps.supported_image_formats:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Model {model_name} does not support {format_str} format"
-                    )
-            
-            # Read and validate file size
-            content = await file.read()
-            file_size = len(content)
-            
-            if model_name:
-                caps = get_model_capabilities(model_name)
-                if caps.max_image_size and file_size > caps.max_image_size:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"Image {file.filename} exceeds max size of {caps.max_image_size} bytes"
-                    )
-            
-            # Encode to base64
-            base64_data = base64.b64encode(content).decode('utf-8')
-            
-            # Create image content in OpenAI format
-            image_contents.append({
-                "type": "image_url",
-                "image_url": f"data:{content_type};base64,{base64_data}"
-            })
-            
-            logger.info("Processed image: %s, size=%d bytes, format=%s", 
-                       file.filename, file_size, format_str)
-        
-        # Build multimodal message if we have images
-        if image_contents:
-            # Create a single message with text + images
-            multimodal_content = [
-                {"type": "text", "text": task}
-            ] + image_contents
-            
-            # Store original task for agent processing
-            # We'll modify the agent's conversation handling to support multimodal
-            # For now, we'll add a special marker and pass images separately
-            logger.info("Created multimodal message with %d images", len(image_contents))
-            
-            # Use the agent's internal message appending to add multimodal message
-            # Create a ChatMessage with multimodal content
-            multimodal_msg = ChatMessage(role="user", content=multimodal_content)
-            
-            # Temporarily add to conversation
-            if hasattr(agent, 'conversation'):
-                agent.conversation.append(multimodal_msg)
-                logger.debug("Added multimodal message to conversation")
-            
-            try:
-                from agent_system.servers.agent.result_utils import collect_final_result
-                # Pass empty task since message is already in conversation
-                result = await collect_final_result(agent, "", request_id=request_id)
-                return result
-            finally:
-                # Remove the message we added (it will be re-added by agent logic)
-                if hasattr(agent, 'conversation') and agent.conversation and agent.conversation[-1] == multimodal_msg:
-                    agent.conversation.pop()
-        else:
-            # No images, fall back to regular text processing
-            from agent_system.servers.agent.result_utils import collect_final_result
+            for file_val in files_list:
+                if file_val and isinstance(file_val, UploadFile):
+                    upload_files.append(file_val)
+            logger.debug("/run collected upload_files count=%d", len(upload_files))
+
+        # Fallback: query param
+        if not task:
+            query_task = request.query_params.get('task')
+            if query_task:
+                task = query_task
+
+        logger.info("/run invoked, task=%s, files=%d, request_id=%s", task, len(upload_files), request_id)
+
+        from agent_system.servers.agent.result_utils import collect_final_result
+
+        # If no uploaded files, treat as text-only
+        if not upload_files:
+            if not task:
+                raise HTTPException(status_code=400, detail="Missing 'task' in request")
             return await collect_final_result(agent, task, request_id=request_id)
+
+        # Process uploaded files for multimodal input
+        from ..llm.capabilities import get_model_capabilities
+        from ..utils.image_processor import create_multimodal_message, ImageProcessingError
+        import tempfile
+        from pathlib import Path
+
+        # Validate model supports images
+        model_name = agent.llm.model if hasattr(agent.llm, 'model') else None
+        if model_name:
+            caps = get_model_capabilities(model_name)
+            if not caps.image_input:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model {model_name} does not support image input"
+                )
+
+        # Save uploaded files to temp directory
+        temp_files = []
+        image_paths = []
+        try:
+            temp_dir = Path(tempfile.mkdtemp())
+
+            for upload_file in upload_files:
+                temp_path = temp_dir / upload_file.filename
+                with open(temp_path, 'wb') as f:
+                    content = await upload_file.read()
+                    f.write(content)
+                temp_files.append(temp_path)
+                image_paths.append(str(temp_path))
+                logger.debug("Saved uploaded file %s (%d bytes) -> %s", upload_file.filename, len(content), temp_path)
+
+            # Create multimodal message
+            try:
+                multimodal_msg = create_multimodal_message(task, image_paths)
+                logger.info("Created multimodal message with %d image(s)", len(image_paths))
+            except ImageProcessingError as e:
+                logger.exception("Image processing failed while creating multimodal message: %s", e)
+                raise HTTPException(status_code=400, detail=str(e))
+
+            # Stream events for multimodal message (same as /events endpoint)
+            async def event_stream():
+                yield ":ok\n\n"
+                try:
+                    async for event in agent.run_events(multimodal_msg, request_id=request_id):
+                        event_type = event.get("type")
+                        yield f"event: {event_type}\n"
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        if event_type == "end":
+                            break
+                except Exception as e:
+                    logger.exception("Error streaming multimodal events: %s", e)
+                    error_event = {"type": "error", "message": str(e)}
+                    yield "event: error\n"
+                    yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+                finally:
+                    # Cleanup temp files after streaming completes
+                    for temp_file in temp_files:
+                        try:
+                            temp_file.unlink()
+                        except Exception as e:
+                            logger.warning("Failed to delete temp file %s: %s", temp_file, e)
+                    if temp_files:
+                        try:
+                            temp_dir.rmdir()
+                        except Exception as e:
+                            logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
+
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Unexpected error in /run: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/events")
     async def events(task: str, session_id: Optional[str] = Query(default=None)):

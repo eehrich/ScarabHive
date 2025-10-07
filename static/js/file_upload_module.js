@@ -29,63 +29,67 @@
 
   function createFilePreviewItem(file, index) {
     const item = document.createElement('div');
-    item.className = 'file-preview-item';
+    item.className = 'attached-file-item';
     item.dataset.index = index;
 
     const validation = isValidImageFile(file);
-    if (!validation.valid) {
-      item.classList.add('file-preview-item-error');
-    }
 
-    // Create image preview
-    const img = document.createElement('img');
-    img.alt = file.name;
-    
-    // Read file and create preview
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+    // File icon (using SVG)
+    const icon = document.createElement('div');
+    icon.className = 'attached-file-icon';
+    icon.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+        <circle cx="8.5" cy="8.5" r="1.5"/>
+        <polyline points="21 15 16 10 5 21"/>
+      </svg>
+    `;
 
     // File name
     const name = document.createElement('div');
-    name.className = 'file-preview-item-name';
+    name.className = 'attached-file-name';
     name.textContent = file.name;
     name.title = file.name;
 
     // File size
     const size = document.createElement('div');
-    size.className = 'file-preview-item-size';
+    size.className = 'attached-file-size';
     size.textContent = formatFileSize(file.size);
 
     // Remove button
     const removeBtn = document.createElement('button');
-    removeBtn.className = 'file-preview-item-remove';
+    removeBtn.className = 'attached-file-remove';
     removeBtn.innerHTML = '×';
     removeBtn.type = 'button';
+    removeBtn.title = 'Remove file';
     removeBtn.onclick = () => removeFile(index);
 
-    item.appendChild(removeBtn);
-    item.appendChild(img);
+    item.appendChild(icon);
     item.appendChild(name);
     item.appendChild(size);
+    item.appendChild(removeBtn);
 
     if (!validation.valid) {
-      const errorMsg = document.createElement('div');
-      errorMsg.className = 'file-preview-item-error-msg';
-      errorMsg.textContent = validation.error;
-      item.appendChild(errorMsg);
+      item.style.borderColor = '#ef4444';
+      item.style.color = '#ef4444';
+      name.textContent += ` (${validation.error})`;
     }
 
     return item;
   }
 
   function updatePreview() {
-    const preview = document.getElementById('filePreview');
+    const preview = document.getElementById('attachedFiles');
     if (!preview) return;
 
     preview.innerHTML = '';
+    
+    if (selectedFiles.length === 0) {
+      preview.style.display = 'none';
+      return;
+    }
+    
+    preview.style.display = 'flex';
     selectedFiles.forEach((file, index) => {
       const item = createFilePreviewItem(file, index);
       preview.appendChild(item);
@@ -119,10 +123,11 @@
   // Initialize file upload UI
   function init() {
     const fileInput = document.getElementById('fileInput');
-    const inputWrapper = document.querySelector('.input-wrapper');
+    const inputContainer = document.querySelector('.input-container');
+    const textarea = document.getElementById('task');
     
-    if (!fileInput || !inputWrapper) {
-      console.warn('File upload elements not found');
+    if (!fileInput) {
+      console.warn('File upload input not found');
       return;
     }
 
@@ -135,29 +140,31 @@
       }
     });
 
-    // Drag and drop support
-    inputWrapper.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      inputWrapper.classList.add('drag-over');
-    });
+    // Drag and drop support on textarea
+    if (textarea) {
+      textarea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        textarea.style.borderColor = '#3b82f6';
+      });
 
-    inputWrapper.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      inputWrapper.classList.remove('drag-over');
-    });
+      textarea.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        textarea.style.borderColor = '';
+      });
 
-    inputWrapper.addEventListener('drop', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      inputWrapper.classList.remove('drag-over');
-      
-      const files = e.dataTransfer.files;
-      if (files.length > 0) {
-        addFiles(files);
-      }
-    });
+      textarea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        textarea.style.borderColor = '';
+        
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+          addFiles(files);
+        }
+      });
+    }
 
     // Paste support
     document.addEventListener('paste', (e) => {
@@ -176,6 +183,8 @@
         e.preventDefault();
       }
     });
+    
+    console.log('File upload module initialized');
   }
 
   // Export API

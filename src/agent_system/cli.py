@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 import yaml
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
@@ -19,6 +19,7 @@ except Exception:
 
 from .config.settings import load_settings
 from .config.models import MCPConfig
+from .llm.models import ChatMessage
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
@@ -657,6 +658,8 @@ def main() -> None:
     # run subcommand (default behavior)
     run_parser = subparsers.add_parser("run", help="Run an agent task (default)")
     run_parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
+    run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
+
 
     # plugins subcommand
     plugins_parser = subparsers.add_parser("plugins", help="Manage plugins")
@@ -1334,11 +1337,68 @@ def main() -> None:
         registry.register(entry_name, agent)
         vprint(f"[cli] created agent: {entry_name}")
 
+    # Process image attachments if provided
+    task_input: Union[str, ChatMessage] = args.task
+    if getattr(args, "images", None):
+        vprint(f"[cli] processing {len(args.images)} image attachment(s)")
+        try:
+            from .utils.image_processor import create_multimodal_message, ImageProcessingError
+            
+            # Convert string paths to Path objects
+            image_paths = [Path(img_path) for img_path in args.images]
+            
+            # Create multimodal message with proper error handling
+            task_input = create_multimodal_message(
+                text=args.task,
+                image_paths=image_paths,
+                max_size_mb=None  # No hard limit, just warnings
+            )
+            
+            vprint(f"[cli] created multimodal message with {len(image_paths)} image(s)")
+            
+        except ImageProcessingError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return
+        except ImportError as e:
+            print(f"Error: Image processing requires Pillow: {e}", file=sys.stderr)
+            print("Install with: pip install Pillow", file=sys.stderr)
+            return
+        except Exception as e:
+            print(f"Error processing images: {e}", file=sys.stderr)
+            logger.exception("Unexpected error in image processing")
+            return
+
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
     
-    async def _stream_and_run_with_status(agent: Agent, task: str, show_mcp: bool = False, show_status: bool = True) -> dict:
-        final_result: Dict[str, Any] = {"task": task, "calls": []}
+    async def _stream_and_run_with_status(
+        agent: Agent, 
+        task: Union[str, ChatMessage], 
+        show_mcp: bool = False, 
+        show_status: bool = True
+    ) -> dict:
+        """Stream and run agent with status display.
+        
+        Args:
+            agent: The agent to run
+            task: Either a string task or ChatMessage with multimodal content
+            show_mcp: Whether to show MCP call details
+            show_status: Whether to show status events
+        """
+        # Extract task text for logging
+        if isinstance(task, ChatMessage):
+            if isinstance(task.content, str):
+                task_text = task.content
+            elif isinstance(task.content, list):
+                # Content items are Pydantic models, use attribute access
+                text_parts = [getattr(item, "text", "") for item in task.content if hasattr(item, "type") and getattr(item, "type") == "text"]
+                task_text = " ".join(text_parts) if text_parts else "[multimodal input]"
+            else:
+                task_text = "[multimodal input]"
+        else:
+            task_text = task
+        
+        final_result: Dict[str, Any] = {"task": task_text, "calls": []}
 
         # Subscribe to status events if enabled
         status_queue = None
@@ -1537,9 +1597,10 @@ def main() -> None:
         if getattr(args, "raw", False):
             # Raw mode: use run_events with result collection
             from .servers.agent.result_utils import collect_final_result
-            result = asyncio.run(collect_final_result(agent, args.task))
+            
+            result = asyncio.run(collect_final_result(agent, task_input))
         else:
-            result = asyncio.run(_stream_and_run_with_status(agent, args.task, show_mcp=show_mcp, show_status=show_status))
+            result = asyncio.run(_stream_and_run_with_status(agent, task_input, show_mcp=show_mcp, show_status=show_status))
         vprint("[cli] done")
         logger.info("Task completed")
     finally:

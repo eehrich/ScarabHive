@@ -160,12 +160,16 @@ class MessageValidator:
                 total_segments = len(content)
                 
                 for seg_idx, segment in enumerate(content):
-                    if isinstance(segment, dict):
-                        text_content = segment.get("text") or segment.get("content")
-                        if not text_content or (isinstance(text_content, str) and not text_content.strip()):
+                    try:
+                        if isinstance(segment, dict):
+                            text_content = segment.get("text") or segment.get("content")
+                            if not text_content or (isinstance(text_content, str) and not text_content.strip()):
+                                empty_segments += 1
+                        elif isinstance(segment, str) and not segment.strip():
                             empty_segments += 1
-                    elif isinstance(segment, str) and not segment.strip():
-                        empty_segments += 1
+                    except AttributeError as e:
+                        logger.error(f"AttributeError in content validation at message {i}, segment {seg_idx}: {e}, segment type={type(segment)}, segment={segment}")
+                        raise
                         
                 if empty_segments == total_segments and total_segments > 0:
                     issues.append(ValidationIssue(
@@ -320,20 +324,24 @@ def validate_messages_before_llm(
     Raises:
         ValueError: If critical errors are found that cannot be repaired
     """
-    result = _validator.validate_and_repair(messages, context)
-    
-    # Check for critical errors that block LLM calls
-    critical_errors = [i for i in result.issues if i.severity == "error"]
-    if critical_errors:
-        error_details = [f"{e.type}@{e.message_index}" for e in critical_errors]
-        logger.error(
-            "Critical message validation errors in %s: %s", 
-            context, 
-            ", ".join(error_details)
-        )
-        # Still return repaired messages but warn about potential issues
+    try:
+        result = _validator.validate_and_repair(messages, context)
         
-    return result.repaired_messages
+        # Check for critical errors that block LLM calls
+        critical_errors = [i for i in result.issues if i.severity == "error"]
+        if critical_errors:
+            error_details = [f"{e.type}@{e.message_index}" for e in critical_errors]
+            logger.error(
+                "Critical message validation errors in %s: %s", 
+                context, 
+                ", ".join(error_details)
+            )
+            # Still return repaired messages but warn about potential issues
+            
+        return result.repaired_messages
+    except Exception as e:
+        logger.exception(f"Exception during message validation in context={context}: {e}")
+        raise
 
 
 def get_validation_stats() -> Dict[str, Any]:

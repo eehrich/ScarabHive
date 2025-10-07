@@ -33,6 +33,30 @@
   border: 1px solid #334155;
 }
 
+/* User Image Previews */
+.user-image-previews {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.user-image-previews img {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: 4px;
+  border: 1px solid #334155;
+  object-fit: contain;
+  background: #111827;
+  transition: transform 0.2s ease;
+}
+
+.user-image-previews img:hover {
+  transform: scale(1.05);
+  border-color: #4b5563;
+  cursor: pointer;
+}
+
 /* Assistant Message Styling */
 .assistant {
   background: #0f172a;
@@ -45,58 +69,305 @@
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 12px 16px;
-  background: linear-gradient(180deg, transparent, #0b0f14 30%);
-  border-top: 1px solid #1f2937;
+  background: #0f172a;
+  border-top: 1px solid #1e293b;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Chat Form */
 form {
   display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  margin: 0;
+}
+
+/* Input Container (textarea + buttons) */
+.input-container {
+  display: flex;
+  align-items: flex-end;
   gap: 8px;
-  max-width: 980px;
-  margin: 0 auto;
-  align-items: center;
-  position: relative;
-}
-
-/* Button Container - REMOVED, using direct positioning instead */
-.button-container {
-  display: none; /* Hide the container, position buttons directly */
-}
-
-/* Text Input */
-input[type="text"] {
-  flex: 1;
+  padding: 12px 16px 8px;
   background: #0f172a;
+}
+
+/* Textarea Input */
+#task {
+  flex: 1;
+  background: #1e293b;
   color: #e6edf3;
   border: 1px solid #334155;
-  border-radius: 10px;
-  padding: 12px 14px;
+  border-radius: 8px;
+  padding: 10px 12px;
   outline: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  min-height: 40px;
+  max-height: 200px;
+  overflow-y: auto;
+  transition: border-color 0.2s;
 }
 
-input::placeholder {
+#task:focus {
+  border-color: #3b82f6;
+}
+
+#task::placeholder {
   color: #64748b;
 }
 
-/* Submit Button (scoped to input bar) */
-.inputBar form button {
-  position: relative;
-  background: #2563eb;
-  color: white;
-  border: none;
-  padding: 10px 14px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: opacity 0.2s ease;
-  width: 80px;
-  height: 44px;
+/* Auto-resize textarea with JavaScript */
+#task::-webkit-scrollbar {
+  width: 6px;
 }
 
-.inputBar form button:disabled {
-  opacity: .6;
+#task::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+
+/* Input Actions (file upload + run/stop buttons) */
+.input-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+/* Icon Buttons (shared style) */
+.icon-btn {
+  background: transparent;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px;
+  cursor: pointer;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  width: 36px;
+  height: 36px;
+}
+
+.icon-btn:hover {
+  background: #1e293b;
+  color: #e6edf3;
+  border-color: #475569;
+}
+
+.icon-btn:active {
+  transform: scale(0.95);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Run Button (Play icon) */
+.run-btn {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.run-btn:hover:not(:disabled) {
+  background: #3b82f6;
+  color: white;
+}
+
+/* Stop Button (Square icon) */
+.stop-btn {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.stop-btn:hover:not(:disabled) {
+  background: #ef4444;
+  color: white;
+}
+
+/* File Upload Button */
+.file-upload-btn {
+  background: transparent;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px;
+  cursor: pointer;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  width: 36px;
+  height: 36px;
+}
+
+.file-upload-btn:hover {
+  background: #1e293b;
+  color: #e6edf3;
+  border-color: #475569;
+}
+
+/* Attached Files List (VS Code style) */
+.attached-files {
+  display: none; /* Hidden by default, shown by JS when files are added */
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 16px 8px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.attached-files:not(:empty) {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.attached-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #e6edf3;
+}
+
+.attached-file-icon {
+  width: 16px;
+  height: 16px;
+  color: #3b82f6;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attached-file-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.attached-file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attached-file-size {
+  color: #64748b;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.attached-file-remove {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 18px;
+  line-height: 1;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.attached-file-remove:hover {
+  background: #334155;
+  color: #ef4444;
+}
+
+/* Bottom Bar */
+.bottom-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: #0b0f14;
+  border-top: 1px solid #1e293b;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.bottom-bar-left {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.bottom-bar-right {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.selector-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selector-group label {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.selector-group select {
+  background: #1e293b;
+  color: #e6edf3;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.selector-group select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.session-id-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+}
+
+.session-id-display .label {
+  font-weight: 500;
+}
+
+.session-id-display span:not(.label) {
+  font-family: 'Courier New', monospace;
+  color: #94a3b8;
+}
+
+/* Old styles - remove or hide */
+.button-container {
+  display: none;
+}
+
+input[type="text"] {
+  display: none; /* Hide old input, using textarea now */
+}
+
+.session-id-bottom {
+  display: none; /* Moved to bottom bar */
+}
+
+.inputBar form button[type="submit"]:not(.icon-btn),
+.inputBar form button[type="button"]:not(.icon-btn) {
+  display: none; /* Hide old text buttons */
 }
 
 /* Stop Button */
