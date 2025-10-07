@@ -152,9 +152,7 @@ class MCPAuthConfig(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     
-    # Security settings
-    ssl_verify: bool = True
-    timeout: float = 30.0
+    # Retry settings
     max_retries: int = 3
     retry_delay: float = 1.0
 
@@ -171,10 +169,7 @@ class RemoteMCPConfig(BaseModel):
     
     # Authentication and security
     auth: Optional[MCPAuthConfig] = None
-    ssl_verify: Optional[bool] = True
-    timeout: Optional[float] = 30.0
-    max_retries: Optional[int] = 3
-    retry_delay: Optional[float] = 1.0
+
 
 
 class ExternalServersConfig(BaseModel):

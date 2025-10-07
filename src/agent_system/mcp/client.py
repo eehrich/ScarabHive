@@ -6,6 +6,7 @@ Implements an MCP client that can connect to and consume external MCP servers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -451,31 +452,39 @@ class MCPClientFactory:
         ssl_verify: bool = True,
         initialization_options: Optional[Dict[str, Any]] = None
     ) -> StandardMCPClient:
-        """Create a streaming MCP client"""
+        """Create a streaming MCP client using SSE transport
+        
+        Args:
+            base_url: Base URL of the MCP server
+            client_name: Name for the client
+            timeout: Request timeout in seconds
+            ssl_verify: Whether to verify SSL certificates
+            initialization_options: MCP initialization options
+        """
         transport = HTTPStreamingTransport(
             base_url=base_url,
             timeout=timeout,
-            ssl_verify=ssl_verify
+            ssl_verify=ssl_verify,
+            use_sse=True  # Streaming transport always uses SSE
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)
-        try:
-            await client.connect()
-            await client.initialize()
-            return client
-        except Exception:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            raise
+        await client.connect()
+        await client.initialize()
+        return client
 
     @staticmethod
-    async def create_client_from_config(config: RemoteMCPConfig) -> StandardMCPClient:
+    async def create_client_from_config(
+        config: RemoteMCPConfig, 
+        ssl_verify: bool = True,
+        timeout: float = 30.0
+    ) -> StandardMCPClient:
         """Create an MCP client from configuration.
         
         Args:
             config: RemoteMCPConfig object with server connection details
+            ssl_verify: SSL certificate verification setting from network config
+            timeout: Connection timeout from external_servers.connection.timeout
         """
         transport_type = config.transport
 
@@ -488,16 +497,16 @@ class MCPClientFactory:
             return await MCPClientFactory.create_http_client(
                 base_url=config.url,
                 client_name="AgentSystem",
-                timeout=30.0,  # TODO: Add timeout to RemoteMCPConfig
-                ssl_verify=True,  # TODO: Add ssl_verify to RemoteMCPConfig
+                timeout=timeout,
+                ssl_verify=ssl_verify,
                 initialization_options=config.initialization_options
             )
         elif transport_type == "streaming":
             return await MCPClientFactory.create_streaming_client(
                 base_url=config.url,
                 client_name="AgentSystem",
-                timeout=30.0,  # TODO: Add timeout to RemoteMCPConfig
-                ssl_verify=True,  # TODO: Add ssl_verify to RemoteMCPConfig
+                timeout=timeout,
+                ssl_verify=ssl_verify,
                 initialization_options=config.initialization_options
             )
         else:
@@ -514,12 +523,14 @@ class MCPClientManager:
         self._tools_cache_time = 0.0
         self._tools_cache_ttl = 30.0  # Cache for 30 seconds
 
-    async def add_client(self, name: str, config: RemoteMCPConfig) -> None:
+    async def add_client(self, name: str, config: RemoteMCPConfig, ssl_verify: bool = True, timeout: float = 30.0) -> None:
         """Add an MCP client from configuration.
         
         Args:
             name: Client name
             config: RemoteMCPConfig object with server connection details
+            ssl_verify: SSL certificate verification setting from network config
+            timeout: Connection timeout from external_servers.connection.timeout
         """
         try:
             # Announce connection attempt
@@ -538,7 +549,7 @@ class MCPClientManager:
                 except Exception:
                     pass
 
-            client = await MCPClientFactory.create_client_from_config(config)
+            client = await MCPClientFactory.create_client_from_config(config, ssl_verify=ssl_verify, timeout=timeout)
             self.clients[name] = client
             logger.info(f"Added MCP client: {name}")
             try:
@@ -592,6 +603,18 @@ class MCPClientManager:
         all_tools = {}
         for name, client in self.clients.items():
             try:
+                # Check if event loop is running before attempting tool list
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_closed():
+                        logger.debug(f"Skipping tool list for {name}: event loop is closed")
+                        all_tools[name] = []
+                        continue
+                except RuntimeError:
+                    logger.debug(f"Skipping tool list for {name}: no event loop")
+                    all_tools[name] = []
+                    continue
+                
                 tools = await client.list_tools()
                 all_tools[name] = tools
             except Exception as e:

@@ -30,6 +30,8 @@ class MCPIntegration:
         if config is None:
             raise ValueError("AgentSystemConfig is required for MCPIntegration initialization")
 
+        # Store full config for network settings access
+        self.config = config
         # Store MCP system config
         self.mcp_system_config: MCPSystemConfig = config.mcp_system if config and config.mcp_system else MCPSystemConfig()
 
@@ -107,7 +109,12 @@ class MCPIntegration:
                     continue
                     
                 try:
-                    await self.client_manager.add_client(server_name, server_config)
+                    ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
+                    timeout = self.mcp_system_config.external_servers.connection.timeout if (
+                        self.mcp_system_config.external_servers and 
+                        self.mcp_system_config.external_servers.connection
+                    ) else 30.0
+                    await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
                     logger.info(f"Connected to external MCP server: {server_name}")
                 except Exception as e:
                     logger.debug(f"Failed to connect to external MCP server {server_name}: {e}")
@@ -266,7 +273,12 @@ class MCPIntegration:
 
     async def add_external_server(self, name: str, config: RemoteMCPConfig) -> None:
         """Add an external MCP server"""
-        await self.client_manager.add_client(name, config)
+        ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
+        timeout = self.mcp_system_config.external_servers.connection.timeout if (
+            self.mcp_system_config.external_servers and 
+            self.mcp_system_config.external_servers.connection
+        ) else 30.0
+        await self.client_manager.add_client(name, config, ssl_verify=ssl_verify, timeout=timeout)
         # Update local config storage
         self.configured_external_servers[name] = config
         # Invalidate tools cache

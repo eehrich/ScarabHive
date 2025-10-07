@@ -79,7 +79,7 @@ class MCPSecurityManager:
             
         # Process each remote server configuration
         for server_name, server_config in external_servers.remote_servers.items():
-            # Build auth config data dictionary
+            # Build auth config data dictionary (only auth-related fields for MCPAuthConfig)
             auth_data = {
                 "type": "none",
                 "api_key": None,
@@ -87,8 +87,6 @@ class MCPSecurityManager:
                 "bearer_token": None,
                 "username": None,
                 "password": None,
-                "ssl_verify": True,
-                "timeout": 30.0,
                 "max_retries": 3,
                 "retry_delay": 1.0
             }
@@ -114,25 +112,14 @@ class MCPSecurityManager:
                 if auth_section.api_key_header:
                     auth_data["api_key_header"] = auth_section.api_key_header
                     
-                # Override security settings from auth if present
-                if auth_section.ssl_verify is not None:
-                    auth_data["ssl_verify"] = auth_section.ssl_verify
-                if auth_section.timeout is not None:
-                    auth_data["timeout"] = auth_section.timeout
+                # Override with auth-specific settings if present
                 if auth_section.max_retries is not None:
                     auth_data["max_retries"] = auth_section.max_retries
                 if auth_section.retry_delay is not None:
                     auth_data["retry_delay"] = auth_section.retry_delay
 
-            # Override with RemoteMCPConfig-level security settings if present
-            if server_config.ssl_verify is not None:
-                auth_data["ssl_verify"] = server_config.ssl_verify
-            if server_config.timeout is not None:
-                auth_data["timeout"] = server_config.timeout
-            if server_config.max_retries is not None:
-                auth_data["max_retries"] = server_config.max_retries
-            if server_config.retry_delay is not None:
-                auth_data["retry_delay"] = server_config.retry_delay
+            # Note: ssl_verify and timeout now come from centralized config above
+            # RemoteMCPConfig no longer has these attributes
 
             # Create Pydantic model instance
             auth_config = MCPAuthConfig(**auth_data)

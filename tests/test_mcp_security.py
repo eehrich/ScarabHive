@@ -24,8 +24,9 @@ class TestMCPAuthConfig:
         assert config.type == "none"
         assert config.api_key is None
         assert config.api_key_header == "Authorization"
-        assert config.ssl_verify is True
-        assert config.timeout == 30.0
+        # Note: ssl_verify and timeout are now in centralized config, not MCPAuthConfig
+        assert config.max_retries == 3
+        assert config.retry_delay == 1.0
 
     def test_api_key_config(self):
         """Test API key authentication configuration"""
@@ -203,8 +204,9 @@ class TestMCPSecurityManager:
         assert auth1 is not None
         assert auth1.type == "api_key"
         assert auth1.api_key == "secret123"
-        assert auth1.ssl_verify is False
-        assert auth1.timeout == 60.0
+        # Note: ssl_verify and timeout are now in centralized config, not MCPAuthConfig
+        assert auth1.max_retries == 3
+        assert auth1.retry_delay == 1.0
 
         # Check server2
         auth2 = manager.get_auth_config("server2")

@@ -192,12 +192,15 @@ async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, ar
         # Check if already connected, if not connect
         client = await _maybe_await_get_client(mcp_integration, server_name)
         if not client:
+            # Get ssl_verify from centralized network config
+            ssl_verify = mcp_integration.config.network.ssl_verify if mcp_integration.config and mcp_integration.config.network else True
+            
             client_config = {
                 "transport": server_config.transport_type,
                 "url": server_config.url,
                 "client_name": f"AgentSystem-{server_name}",
                 "timeout": server_config.timeout,
-                "ssl_verify": server_config.ssl_verify
+                "ssl_verify": ssl_verify
             }
 
             # Add initialization options if present
@@ -285,13 +288,16 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
         client_created = False
 
         if not client and server_config.enabled:
+            # Get ssl_verify from centralized network config
+            ssl_verify = mcp_integration.config.network.ssl_verify if mcp_integration.config and mcp_integration.config.network else True
+            
             # Create temporary client to list tools
             client_config = {
                 "transport": server_config.transport_type,
                 "url": server_config.url,
                 "client_name": f"AgentSystem-{server_name}",
                 "timeout": server_config.timeout,
-                "ssl_verify": server_config.ssl_verify
+                "ssl_verify": ssl_verify
             }
 
             if server_config.initialization_options:

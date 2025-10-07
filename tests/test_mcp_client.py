@@ -275,7 +275,7 @@ class TestMCPClientManager:
     @pytest.mark.asyncio
     async def test_add_client(self, client_manager):
         # Mock the factory method
-        async def mock_create_client(config):
+        async def mock_create_client(config, ssl_verify=True, timeout=30.0):
             transport = MockHTTPTransport()
             client = StandardMCPClient(transport, "TestClient")
             await client.connect()

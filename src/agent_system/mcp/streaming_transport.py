@@ -1,19 +1,28 @@
 """
-HTTP Streaming (SSE) Transport for MCP
+MCP Streamable HTTP Transport Implementation
 
-Implements an HTTP transport that supports Server-Sent Events (SSE)
-and configuration encoded in the query string. This transport is a
-streaming-capable HTTP transport suitable for MCP servers that use
-SSE/text-event-stream responses and session headers.
+Implements the MCP Streamable HTTP transport protocol as specified in:
+https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
 
-Includes support for status event streaming via notifications.
+Key Protocol Features:
+- Every client message is sent as a separate HTTP POST request
+- Server can respond with either:
+  1. Content-Type: application/json (immediate single response)
+  2. Content-Type: text/event-stream (SSE stream with multiple messages)
+- Optional: Client can open standalone SSE stream via HTTP GET for server-initiated messages
+- Session management via Mcp-Session-Id header
+
+This transport does NOT use persistent SSE streams that remain open across multiple requests.
+Each POST is independent and may open its own short-lived SSE stream for the response.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
+
 import aiohttp
 
 from .core import MCPTransport, MCPMessage, MCPError
@@ -22,320 +31,346 @@ logger = logging.getLogger(__name__)
 
 
 class HTTPStreamingTransport(MCPTransport):
-    """HTTP streaming (SSE) transport implementation for MCP"""
+    """
+    MCP Streamable HTTP transport implementation.
+    
+    Protocol flow:
+    1. POST initialize request → server returns Mcp-Session-Id header
+    2. All subsequent POSTs include Mcp-Session-Id header
+    3. Each POST can return either:
+       - JSON response (simple case)
+       - SSE stream with response(s)
+    4. Optional: GET request opens standalone SSE stream for server messages
+    """
 
-    def __init__(self, base_url: str, timeout: float = 30.0, ssl_verify: bool = True):
-        """Initialize HTTP streaming transport.
+    def __init__(self, url: str = None, base_url: str = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True):
+        """
+        Initialize Streamable HTTP transport.
         
         Args:
-            base_url: Base URL of the MCP server
+            url: MCP endpoint URL (supports both POST and GET) - preferred parameter
+            base_url: Alias for url (for backward compatibility)
             timeout: Request timeout in seconds
             ssl_verify: Whether to verify SSL certificates
+            use_sse: Ignored (kept for backward compatibility) - SSE mode is auto-detected per response
         """
-        self.base_url = base_url.rstrip('/')
+        # Accept both url and base_url for backward compatibility
+        if url is None and base_url is None:
+            raise ValueError("Either url or base_url must be provided")
+        self.url = url or base_url
         self.timeout = timeout
         self.ssl_verify = ssl_verify
-        self.session: Optional[aiohttp.ClientSession] = None
         self.session_id: Optional[str] = None
+        self._request_counter = 0
+        self._standalone_sse_task: Optional[asyncio.Task] = None
+        self._connected = False
 
     async def connect(self) -> None:
-        """Establish HTTP session"""
-        if self.session is None:
-            # Newer aiohttp versions prefer `ssl=` instead of `verify_ssl`.
-            # `self.ssl_verify` may be a bool or an SSLContext; pass it through as `ssl`.
-            connector = aiohttp.TCPConnector(ssl=self.ssl_verify)
-            # For proxy environments, separate connection and total timeouts
-            # Connection timeout is for initial TCP connection (important for proxies)
-            # Total timeout is for the entire request including data transfer
-            timeout = aiohttp.ClientTimeout(
-                total=self.timeout,  # Total request timeout
-                connect=min(self.timeout * 0.5, 10.0)  # Connection timeout: 50% of total, max 10s
-            )
-            # Streaming HTTP servers often require headers that accept SSE
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream"
-            }
-            # Allow aiohttp to pick up HTTP(S)_PROXY and other env vars in corporate networks
-            # by enabling trust_env. This is a low-risk change that helps with Zscaler/proxy setups.
-            trust_env = True
-            self.session = aiohttp.ClientSession(
-                connector=connector,
-                timeout=timeout,
-                headers=headers,
-                trust_env=trust_env,
-            )
-
-            # Log detected proxy environment variables to help debugging in corporate networks
-            import os
-            http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
-            https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
-            if http_proxy or https_proxy:
-                logger.debug("HTTPStreamingTransport.connect(): detected proxy settings http=%s https=%s", http_proxy, https_proxy)
-
-            logger.debug(
-                "HTTPStreamingTransport.connect(): created session %s with timeout total=%s connect=%s",
-                id(self.session), self.timeout, timeout.connect
-            )
+        """
+        Mark transport as connected.
+        
+        Note: We don't create a persistent session here because send_request()
+        creates fresh sessions for each request to avoid connection pool issues
+        with SSE streams. This approach prevents resource leaks and ensures
+        clean HTTP connection management.
+        """
+        self._connected = True
+        logger.info(f"HTTP streaming transport connected to {self.url}")
 
     async def disconnect(self) -> None:
-        """Close HTTP session"""
-        if self.session:
+        """Close transport and any open SSE streams"""
+        self._connected = False
+        
+        # Cancel standalone SSE stream if running
+        if self._standalone_sse_task and not self._standalone_sse_task.done():
+            self._standalone_sse_task.cancel()
             try:
-                await self.session.close()
-                logger.debug("HTTPStreamingTransport.disconnect(): closed session")
-            except Exception:
+                await self._standalone_sse_task
+            except asyncio.CancelledError:
                 pass
-            self.session = None
-        self.session_id = None
+        
+        logger.info("HTTP streaming transport disconnected")
 
-    def _build_url(self) -> str:
-        """Build URL for MCP endpoint"""
-        return f"{self.base_url}/mcp"
-
-    async def _send_initialized_notification(self) -> None:
-        """Send the initialized notification to complete the MCP handshake"""
-        if not self.session or not self.session_id:
-            return
-
-        # Send initialized notification (no ID for notifications)
-        initialized_payload = {
-            'jsonrpc': '2.0',
-            'method': 'notifications/initialized',
-            'params': {}
-        }
-
-        headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/event-stream',
-            'Mcp-Session-Id': self.session_id
-        }
-
-        try:
-            url = self._build_url()
-            async with self.session.post(url, json=initialized_payload, headers=headers) as response:
-                if response.status == 202:  # Notifications typically return 202 Accepted
-                    logger.info("Successfully sent initialized notification")
-                else:
-                    logger.warning(f"Initialized notification returned status {response.status}")
-        except Exception as e:
-            logger.error(f"Failed to send initialized notification: {e}")
-
-    async def send_notification(self, notification: MCPMessage) -> None:
-        """Send a JSON-RPC notification (no response expected)."""
-        if not self.session:
-            await self.connect()
-
-        # Convert notification to JSON-RPC 2.0 format
-        payload: Dict[str, Any] = {
-            "jsonrpc": notification.jsonrpc,
-            "method": notification.method
-        }
-
-        if notification.params:
-            payload["params"] = notification.params
-
-        try:
-            if not self.session:
-                raise RuntimeError("Session not initialized")
-
-            url = self._build_url()
-            headers = {}
-
-            # Add session ID for authenticated sessions
-            if self.session_id and self.session_id != "connection-based":
-                headers['Mcp-Session-Id'] = self.session_id
-
-            async with self.session.post(url, json=payload, headers=headers or None) as response:
-                if response.status == 202:  # Notifications typically return 202 Accepted
-                    logger.debug(f"Successfully sent notification: {notification.method}")
-                else:
-                    logger.warning(f"Notification returned unexpected status {response.status}")
-
-        except Exception as e:
-            logger.error(f"Failed to send notification {notification.method}: {e}")
-            raise
+    async def close(self) -> None:
+        """Alias for disconnect() - close the transport"""
+        await self.disconnect()
 
     async def send_message(self, message: MCPMessage) -> None:
-        """Send JSON-RPC message over HTTP POST"""
-        if not self.session:
-            await self.connect()
-
-        # Convert message to JSON-RPC 2.0 format
-        payload: Dict[str, Any] = {
-            "jsonrpc": message.jsonrpc,
-            "id": message.id
-        }
-
-        if message.method:
-            payload["method"] = message.method
-        if message.params:
-            payload["params"] = message.params
-        if message.result is not None:
-            payload["result"] = message.result
-        if message.error:
-            error_dict: Dict[str, Any] = {
-                "code": message.error.code,
-                "message": message.error.message,
-                "data": message.error.data
-            }
-            payload["error"] = error_dict
-
-        try:
-            if not self.session:
-                raise RuntimeError("Session not initialized")
-
-            url = self._build_url()
-            async with self.session.post(url, json=payload) as response:
-                if response.status != 200:
-                    logger.error(f"HTTP {response.status}: {await response.text()}")
-                    raise Exception(f"HTTP error {response.status}")
-
-        except Exception as e:
-            logger.error(f"Failed to send message: {e}")
-            raise
+        """
+        Send a message without expecting a response (notifications).
+        
+        Per spec: If input is solely notifications, server returns 202 Accepted.
+        """
+        if not self._connected:
+            raise Exception("Not connected - call connect() first")
+        
+        # Create fresh session for this notification
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            headers = self._build_headers(include_session=True)
+            payload = self._message_to_dict(message)
+            
+            async with session.post(self.url, json=payload, headers=headers) as response:
+                if response.status == 202:
+                    # Accepted - notification received
+                    logger.debug(f"Notification accepted: {message.method}")
+                    return
+                elif response.status >= 400:
+                    error_text = await response.text()
+                    raise Exception(f"HTTP {response.status}: {error_text}")
 
     async def receive_message(self) -> MCPMessage:
-        """Receive JSON-RPC message (for HTTP, this is handled by send_message response)"""
-        # HTTP is request-response, so receiving is handled in the response of send_message
-        # This method would be used for WebSocket or similar bidirectional transports
-        raise NotImplementedError("HTTP transport uses request-response pattern")
+        """
+        Receive a message (not applicable for Streamable HTTP).
+        
+        Streamable HTTP uses request/response model, not bidirectional streaming.
+        Server-initiated messages come via standalone SSE stream.
+        """
+        raise NotImplementedError(
+            "Streamable HTTP uses send_request() for request/response. "
+            "Server-initiated messages require opening standalone SSE stream via start_standalone_sse()"
+        )
 
-    async def send_request(self, message: MCPMessage) -> MCPMessage:
-        """Send request and return response for streaming HTTP"""
-        if not self.session:
-            await self.connect()
-
-        # Convert message to JSON-RPC 2.0 format
-        payload: Dict[str, Any] = {
-            "jsonrpc": message.jsonrpc,
-            "method": message.method,
-            "params": message.params or {},
-            "id": message.id
-        }
-
-        try:
-            if not self.session:
-                raise RuntimeError("Session not initialized")
-
-            url = self._build_url()
-            headers = {}
-
-            # Add session ID to subsequent requests after initialization
-            if self.session_id and message.method != "initialize":
-                headers['Mcp-Session-Id'] = self.session_id
-
-            # Debug: log initialize payload and destination when debugging 422 errors
-            if message.method == "initialize":
-                logger.debug(f"Sending initialize to {url} with headers={headers} payload={json.dumps(payload)}")
-            async with self.session.post(url, json=payload, headers=headers or None) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"HTTP {response.status}: {error_text}")
-                    return MCPMessage(
-                        jsonrpc="2.0",
-                        id=message.id,
-                        error=MCPError(
-                            code=-32000,  # Server error
-                            message=f"HTTP {response.status}",
-                            data={"details": error_text}
-                        )
-                    )
-
-                # Streaming servers may return SSE format for some responses
-                content_type = response.headers.get('content-type', '')
-                if 'text/event-stream' in content_type:
-                    # Parse SSE response
-                    text = await response.text()
-                    lines = text.strip().split('\n')
-                    for line in lines:
-                        if line.startswith('data: '):
-                            response_data = json.loads(line[6:])  # Remove 'data: ' prefix
-                            break
-                    else:
-                        raise ValueError("No data found in SSE response")
-
-                    # For initialize, extract session from the response headers
-                    if message.method == "initialize":
-                        # Check for MCP session ID header
-                        session_id = response.headers.get('mcp-session-id') or response.headers.get('Mcp-Session-Id')
-                        if session_id:
-                            self.session_id = session_id
-                            logger.info(f"Found MCP session ID: {self.session_id}")
-                        else:
-                            # Check for other session headers
-                            for header_name, header_value in response.headers.items():
-                                if 'session' in header_name.lower():
-                                    self.session_id = header_value
-                                    logger.info(f"Found session ID in header {header_name}: {self.session_id}")
-                                    break
-
-                        # If no session in headers, we need to maintain session state differently
-                        if not self.session_id:
-                            logger.warning("No session ID found in headers")
-                else:
-                    response_data = await response.json()
-
-                # Extract session ID from initialize response
-                if message.method == "initialize" and "result" in response_data:
-                    # Check for MCP session ID header
-                    session_id = response.headers.get('mcp-session-id') or response.headers.get('Mcp-Session-Id')
-                    if session_id:
-                        self.session_id = session_id
-                        logger.info(f"Found MCP session ID: {self.session_id}")
-
-                        # Send the initialized notification to complete the handshake
-                        await self._send_initialized_notification()
-                    else:
-                        # Check for other session headers
-                        for header_name, header_value in response.headers.items():
-                            if 'session' in header_name.lower():
-                                self.session_id = header_value
-                                logger.info(f"Found session ID in header {header_name}: {self.session_id}")
-                                await self._send_initialized_notification()
-                                break
-
-                    # If no session in headers, mark as connection-based
+    async def send_request(self, request: MCPMessage) -> MCPMessage:
+        """
+        Send a request and wait for response.
+        
+        Per spec:
+        1. POST the request to MCP endpoint
+        2. Server responds with either:
+           a) Content-Type: application/json → immediate response
+           b) Content-Type: text/event-stream → SSE stream with response(s)
+        
+        Note: Create a fresh session for each request to avoid connection reuse issues
+        with aiohttp when consuming SSE streams. This prevents "unclosed client session"
+        warnings and ensures proper resource cleanup.
+        """
+        if not self._connected:
+            raise Exception("Not connected - call connect() first")
+        
+        # Create fresh session for this request to avoid connection pool issues
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            headers = self._build_headers(include_session=True)
+            payload = self._message_to_dict(request)
+            
+            logger.debug(f"POST {request.method} (id={request.id}) to {self.url}")
+            
+            async with session.post(self.url, json=payload, headers=headers) as response:
+                # Check for session ID in response (initialize response)
+                if 'mcp-session-id' in response.headers:
+                    new_session_id = response.headers['mcp-session-id']
                     if not self.session_id:
-                        self.session_id = "connection-based"
-                        logger.info("Using connection-based session for streaming")
+                        self.session_id = new_session_id
+                        logger.debug(f"Got session ID: {self.session_id}")
+                
+                content_type = response.headers.get('Content-Type', '')
+                
+                if response.status == 400:
+                    error_text = await response.text()
+                    raise Exception(f"Bad Request (400): {error_text}")
+                elif response.status == 404:
+                    raise Exception("Not Found (404): Session may have expired")
+                elif response.status == 405:
+                    raise Exception("Method Not Allowed (405): Server doesn't support POST")
+                elif response.status >= 400:
+                    error_text = await response.text()
+                    raise Exception(f"HTTP {response.status}: {error_text}")
+                
+                # Handle JSON response (immediate)
+                if 'application/json' in content_type:
+                    response_data = await response.json()
+                    logger.debug(f"Got JSON response for request {request.id}")
+                    return self._parse_json_response(response_data)
+                
+                # Handle SSE stream response
+                elif 'text/event-stream' in content_type:
+                    logger.debug(f"Got SSE stream for request {request.id}")
+                    return await self._read_sse_response(response, request.id)
+                
+                else:
+                    raise Exception(f"Unexpected Content-Type: {content_type}")
 
-                # Parse JSON-RPC response
-                error = None
-                if "error" in response_data:
-                    error_data = response_data["error"]
-                    error = MCPError(
-                        code=error_data["code"],
-                        message=error_data["message"],
-                        data=error_data.get("data")
-                    )
+    async def _read_sse_response(self, response: aiohttp.ClientResponse, request_id: Any) -> MCPMessage:
+        """
+        Read SSE stream and extract the response for our request.
+        
+        The stream may contain multiple events, but we're looking for the one
+        with matching ID (the JSON-RPC response to our request).
+        
+        Important: We must fully consume the stream to avoid leaving the HTTP
+        connection in a bad state. Even after finding our response, we continue
+        reading until the stream ends to prevent connection pool issues.
+        
+        SSE Format:
+        - event: <type> (optional event type)
+        - data: <json> (the actual JSON-RPC message)
+        """
+        response_message = None
+        
+        async for line in response.content:
+            decoded = line.decode('utf-8').strip()
+            if not decoded:
+                continue
+            
+            # Parse SSE format
+            if decoded.startswith('event:'):
+                # Event type - currently not used but part of SSE spec
+                pass
+            elif decoded.startswith('data:'):
+                data_str = decoded[5:].strip()
+                
+                try:
+                    event_data = json.loads(data_str)
+                    
+                    # Check if this is the response to our request
+                    if event_data.get('id') == request_id:
+                        response_message = self._parse_json_response(event_data)
+                        # Don't break - we need to consume the rest of the stream
+                        # to avoid leaving the connection in a bad state
+                    else:
+                        # Other message (notification, server request, etc.)
+                        logger.debug(f"Received other SSE message: {event_data.get('method', 'unknown')}")
+                
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse SSE data as JSON: {e}")
+                    continue
+        
+        if response_message:
+            return response_message
+        else:
+            raise Exception(f"No response received for request {request_id} in SSE stream")
 
-                return MCPMessage(
-                    jsonrpc=response_data.get("jsonrpc", "2.0"),
-                    id=response_data.get("id"),
-                    result=response_data.get("result"),
-                    error=error
-                )
+    async def start_standalone_sse(self, message_handler) -> None:
+        """
+        Open standalone SSE stream for server-initiated messages.
+        
+        Optional feature: Client can issue GET request to open an SSE stream
+        for receiving server notifications and requests unrelated to client requests.
+        """
+        if self._standalone_sse_task and not self._standalone_sse_task.done():
+            logger.warning("Standalone SSE stream already running")
+            return
+        
+        self._standalone_sse_task = asyncio.create_task(
+            self._run_standalone_sse(message_handler)
+        )
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON response: {e}")
-            return MCPMessage(
-                jsonrpc="2.0",
-                id=message.id,
-                error=MCPError(
-                    code=-32700,  # Parse error
-                    message="Invalid JSON",
-                    data={"details": str(e)}
-                )
-            )
+    async def _run_standalone_sse(self, message_handler) -> None:
+        """
+        Run standalone SSE stream reader.
+        
+        Creates a dedicated session for the long-lived SSE connection.
+        """
+        if not self._connected:
+            raise Exception("Not connected")
+        
+        # Create dedicated session for long-lived SSE stream
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        timeout = aiohttp.ClientTimeout(total=None)  # No timeout for SSE stream
+        
+        try:
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                headers = self._build_headers(include_session=True)
+                headers['Accept'] = 'text/event-stream'
+                
+                async with session.get(self.url, headers=headers) as response:
+                    if response.status == 405:
+                        logger.info("Server does not support standalone SSE (405)")
+                        return
+                    elif response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Failed to open standalone SSE: HTTP {response.status}: {error_text}")
+                        return
+                    
+                    logger.info("Standalone SSE stream opened")
+                    
+                    async for line in response.content:
+                        decoded = line.decode('utf-8').strip()
+                        if not decoded or not decoded.startswith('data:'):
+                            continue
+                        
+                        data_str = decoded[5:].strip()
+                        
+                        try:
+                            event_data = json.loads(data_str)
+                            message = self._parse_json_response(event_data)
+                            await message_handler(message)
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse SSE data: {e}")
+                        except Exception as e:
+                            logger.error(f"Error handling SSE message: {e}")
+        
+        except asyncio.CancelledError:
+            logger.debug("Standalone SSE stream cancelled")
+            raise
         except Exception as e:
-            logger.debug(f"Request failed: {e}")
-            return MCPMessage(
-                jsonrpc="2.0",
-                id=message.id,
-                error=MCPError(
-                    code=-32000,  # Server error
-                    message="Request failed",
-                    data={"details": str(e)}
-                )
+            logger.error(f"Standalone SSE stream error: {e}")
+
+    def _build_headers(self, include_session: bool = False) -> Dict[str, str]:
+        """Build HTTP headers for request"""
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream'
+        }
+        
+        if include_session and self.session_id:
+            headers['Mcp-Session-Id'] = self.session_id
+        
+        return headers
+
+    def _message_to_dict(self, message: MCPMessage) -> Dict[str, Any]:
+        """Convert MCPMessage to JSON-RPC dict"""
+        payload = {
+            'jsonrpc': message.jsonrpc or '2.0'
+        }
+        
+        if message.id is not None:
+            payload['id'] = message.id
+        if message.method:
+            payload['method'] = message.method
+        if message.params is not None:
+            payload['params'] = message.params
+        if message.result is not None:
+            payload['result'] = message.result
+        if message.error:
+            payload['error'] = {
+                'code': message.error.code,
+                'message': message.error.message
+            }
+            if message.error.data:
+                payload['error']['data'] = message.error.data
+        
+        return payload
+
+    def _parse_json_response(self, data: Dict[str, Any]) -> MCPMessage:
+        """Parse JSON-RPC response into MCPMessage"""
+        msg = MCPMessage(
+            jsonrpc=data.get('jsonrpc', '2.0'),
+            id=data.get('id')
+        )
+        
+        if 'method' in data:
+            msg.method = data['method']
+        if 'params' in data:
+            msg.params = data['params']
+        if 'result' in data:
+            msg.result = data['result']
+        if 'error' in data:
+            error_data = data['error']
+            msg.error = MCPError(
+                code=error_data.get('code', -32000),
+                message=error_data.get('message', 'Unknown error'),
+                data=error_data.get('data')
             )
+        
+        return msg
+
+    def _next_request_id(self) -> int:
+        """Generate next request ID"""
+        self._request_counter += 1
+        return self._request_counter
