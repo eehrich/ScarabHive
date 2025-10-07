@@ -633,11 +633,22 @@
       e.preventDefault();
       const task = taskInput.value.trim();
       if (!task) return;
-      addUser(chatContainer, task);
+      
+      // Check if we have files to upload
+      const hasFiles = window.fileUploadModule && window.fileUploadModule.hasValidFiles();
+      const files = hasFiles ? window.fileUploadModule.getFiles() : [];
+      
+      // Add user message to chat (with file indicator if files present)
+      let displayText = task;
+      if (files.length > 0) {
+        displayText += ` [${files.length} image${files.length > 1 ? 's' : ''}]`;
+      }
+      addUser(chatContainer, displayText);
       taskInput.value = '';
 
       // If there's an active request, append the user message to it
-      if (currentRequestId && currentEventSource) {
+      // Note: Multimodal append not yet supported, only text append
+      if (currentRequestId && currentEventSource && !hasFiles) {
         try {
           // immediate UX feedback: show thinking block if none
           const blk = addAssistantBlock(chatContainer);
@@ -667,12 +678,67 @@
         }
       }
 
-      // No active request: start a new SSE-based request
+      // No active request or has files: start a new request
       const blk = addAssistantBlock(chatContainer);
       runBtn.style.display = 'none'; // Hide run button
       stopBtn.style.display = 'block'; // Show stop button
       currentRequestId = null; // Will be set when SSE 'start' event arrives
 
+      // Use multimodal endpoint if files present
+      if (hasFiles) {
+        // Build FormData for multimodal request
+        const formData = new FormData();
+        formData.append('task', task);
+        files.forEach(file => {
+          formData.append('files', file);
+        });
+
+        try {
+          showSection(blk.t);
+          blk.t.innerHTML = '<div class="response-text">Processing images...</div>';
+
+          const response = await fetch('/run/multimodal', {
+            method: 'POST',
+            body: formData
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            let errorMsg = 'Request failed';
+            try {
+              const errorJson = JSON.parse(errorText);
+              errorMsg = errorJson.detail || errorMsg;
+            } catch (e) {
+              errorMsg = errorText || errorMsg;
+            }
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text error">${escapeHtml(errorMsg)}</div>`;
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            return;
+          }
+
+          const result = await response.json();
+          const content = result.summary || JSON.stringify(result, null, 2);
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
+
+          // Clear files after successful send
+          if (window.fileUploadModule) {
+            window.fileUploadModule.clearFiles();
+          }
+
+        } catch (err) {
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(err))}</div>`;
+        } finally {
+          runBtn.style.display = 'block';
+          stopBtn.style.display = 'none';
+        }
+        return;
+      }
+
+      // Text-only SSE-based request
       let sseOk = false;
       const eventUrl = currentSessionId 
         ? `/events?task=${encodeURIComponent(task)}&session_id=${encodeURIComponent(currentSessionId)}`
