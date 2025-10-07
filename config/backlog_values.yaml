@@ -42,6 +42,8 @@ word_map:
   open: open
   "in progress": "in progress"
   started: "in progress"
+  "in work": "in progress"
+  in_work: "in progress"
   reverted: reverted
   rejected: rejected
   cancelled: cancelled

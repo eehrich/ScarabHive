@@ -854,7 +854,7 @@ web_ui:
 **Web-Only Plugin Features:**
 - Provides web endpoints at `/plugins/<name>/`
 - Can serve static assets, templates, APIs
-- Registers UI panels in main interface
+- Registers UI panels in the main interface
 - No MCP server or tools required
 - Uses `web_ui` schema for interface configuration
 - Can still have CLI support
@@ -963,7 +963,7 @@ PLUGIN_FACTORY = MyHybridPlugin
    - ❌ Legacy: Access `self.config` dictionary
 
 5. **Method Naming**
-   - ✅ Modern: Method names MUST match tool names exactly (e.g., `async def fetch_url(self, params)`)
+   - ✅ Modern: Method names MUST match tool names in `schema.yaml` exactly
    - ❌ Legacy: Private methods with manual routing (e.g., `async def _fetch_url(self, params)`)
 
 **Benefits:**
@@ -1476,7 +1476,7 @@ class MyWebEndpoints(PluginWebInterface):
     def __init__(self, name: str, config: dict):
         self.name = name
         self.config = config
-    
+        
     def get_web_router(self) -> APIRouter:
         """Define custom API endpoints"""
         router = APIRouter(prefix=f"/plugins/{self.name}")
@@ -1497,15 +1497,13 @@ class MyWebEndpoints(PluginWebInterface):
         
         return router
     
-    def get_panels(self):
+    def get_panels(self) -> List[Dict[str, Any]]:
         """Register UI panels in the main interface"""
         return [{
             "id": f"{self.name}_panel",
             "title": "My Plugin Dashboard",
             "url": f"/plugins/{self.name}/dashboard",
-            "icon": "settings",
-            "position": "right",
-            "width": "400px"
+            "icon": "dashboard"
         }]
 ```
 
@@ -1730,7 +1728,7 @@ class WebScraperServer(SchemaBasedMCPServer):
         
         # Log effective configuration
         self.logger.info(
-            f"WebScraper configured: timeout={self.timeout}, "
+            f"WebScraping configured: timeout={self.timeout}, "
             f"user_agent={self.user_agent}, max_retries={self.max_retries}"
         )
 ```
