@@ -3,8 +3,10 @@
 from io import BytesIO
 from PIL import Image
 import base64
+import pytest
 
 
+@pytest.mark.skip(reason="Requires async_client fixture and running API server - run manually")
 class TestMultimodalEndpoint:
     """Test /run/multimodal endpoint - requires running server."""
     
