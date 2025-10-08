@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+import json
+import asyncio
 
 from agent_system.plugins.web_adapter import PluginWebInterface
 
@@ -261,6 +263,55 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=500,
                     content={"error": str(e)}
                 )
+        
+        @router.get("/api/execute/stream")
+        async def execute_command_stream(machine: str, command: str, timeout: Optional[int] = None):
+            """Execute command with SSE streaming output"""
+            if not self.connection_manager:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Connection manager not available"}
+                )
+            
+            async def event_generator():
+                """Generate SSE events from command output"""
+                try:
+                    async for event in self.connection_manager.execute_command_stream(
+                        machine,
+                        command,
+                        timeout=timeout
+                    ):
+                        # Format as SSE event
+                        event_type = event.get('type', 'message')
+                        data = event.get('data', '')
+                        
+                        # Serialize data as JSON
+                        import json
+                        data_json = json.dumps(data)
+                        
+                        # SSE format: event: type\ndata: json\n\n
+                        yield f"event: {event_type}\ndata: {data_json}\n\n"
+                        
+                        # Add small delay to prevent overwhelming client
+                        await asyncio.sleep(0.01)
+                    
+                    # Send done event
+                    yield "event: done\ndata: {}\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"SSE streaming error: {e}", exc_info=True)
+                    error_data = json.dumps({'error': str(e)})
+                    yield f"event: error\ndata: {error_data}\n\n"
+            
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"  # Disable nginx buffering
+                }
+            )
         
         return router
     

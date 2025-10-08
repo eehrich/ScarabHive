@@ -313,6 +313,157 @@ class SSHConnectionManager:
         finally:
             await pool.release(conn)
     
+    async def execute_command_stream(
+        self,
+        machine_name: str,
+        command: str,
+        timeout: int | None = None
+    ):
+        """Execute command with streaming output (async generator for SSE).
+        
+        Args:
+            machine_name: Name of the machine
+            command: Command to execute
+            timeout: Command timeout in seconds (uses machine default if None)
+            
+        Yields:
+            Dict with 'type' (stdout/stderr/exit/error) and 'data' (output line or exit code)
+            
+        Raises:
+            ValueError: If machine not configured
+            asyncssh.Error: On connection or execution failure
+        """
+        pool = await self._get_pool(machine_name)
+        conn = await pool.acquire()
+        
+        start_time = time.time()
+        try:
+            # Use machine's default timeout if not specified
+            if timeout is None:
+                timeout = pool.config.command_timeout
+            
+            logger.debug(f"Executing streaming command on {machine_name}: {command}")
+            
+            # Yield start event
+            yield {
+                'type': 'start',
+                'data': {
+                    'machine': machine_name,
+                    'command': command,
+                    'timestamp': start_time
+                }
+            }
+            
+            # Create SSH process for real-time output
+            async with conn.create_process(command) as process:
+                # Read stdout and stderr line by line
+                stdout_done = False
+                stderr_done = False
+                
+                while not (stdout_done and stderr_done):
+                    # Try reading from both streams with timeout
+                    try:
+                        # Read stdout
+                        if not stdout_done:
+                            try:
+                                line = await asyncio.wait_for(process.stdout.readline(), timeout=0.1)
+                                if line:
+                                    yield {
+                                        'type': 'stdout',
+                                        'data': line.rstrip('\n')
+                                    }
+                                else:
+                                    stdout_done = True
+                            except asyncio.TimeoutError:
+                                pass
+                        
+                        # Read stderr
+                        if not stderr_done:
+                            try:
+                                line = await asyncio.wait_for(process.stderr.readline(), timeout=0.1)
+                                if line:
+                                    yield {
+                                        'type': 'stderr',
+                                        'data': line.rstrip('\n')
+                                    }
+                                else:
+                                    stderr_done = True
+                            except asyncio.TimeoutError:
+                                pass
+                        
+                        # Check if process finished
+                        if process.returncode is not None:
+                            break
+                            
+                    except Exception as e:
+                        logger.error(f"Error reading stream: {e}")
+                        break
+                
+                # Wait for process to complete
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    duration = time.time() - start_time
+                    yield {
+                        'type': 'error',
+                        'data': f'Command timeout after {duration:.2f}s'
+                    }
+                    raise
+                
+                # Read any remaining output
+                remaining_stdout = await process.stdout.read()
+                if remaining_stdout:
+                    for line in remaining_stdout.splitlines():
+                        yield {
+                            'type': 'stdout',
+                            'data': line
+                        }
+                
+                remaining_stderr = await process.stderr.read()
+                if remaining_stderr:
+                    for line in remaining_stderr.splitlines():
+                        yield {
+                            'type': 'stderr',
+                            'data': line
+                        }
+                
+                # Yield exit code
+                exit_code = process.returncode or 0
+                duration = time.time() - start_time
+                
+                pool.total_commands += 1
+                
+                yield {
+                    'type': 'exit',
+                    'data': {
+                        'exit_code': exit_code,
+                        'duration': duration,
+                        'success': exit_code == 0
+                    }
+                }
+                
+                # Audit log
+                if self.audit_log_enabled:
+                    self._audit_log('execute_command_stream', machine_name, {
+                        'command': command,
+                        'exit_code': exit_code,
+                        'duration': duration
+                    })
+                
+                logger.debug(f"Streaming command completed on {machine_name}: exit_code={exit_code}, duration={duration:.2f}s")
+        
+        except asyncio.TimeoutError:
+            raise
+        except Exception as e:
+            logger.error(f"Streaming command failed on {machine_name}: {e}", exc_info=True)
+            yield {
+                'type': 'error',
+                'data': str(e)
+            }
+        finally:
+            await pool.release(conn)
+    
     async def upload_file(
         self,
         machine_name: str,
