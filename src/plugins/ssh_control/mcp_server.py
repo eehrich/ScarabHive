@@ -114,6 +114,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         command = params.get('command')
         timeout = params.get('timeout')
         check_exit_code = params.get('check_exit_code', True)
+        status = params.get('_status')  # Injected by call_with_status
         
         if not machine:
             raise ValueError("Missing required parameter: machine")
@@ -124,6 +125,20 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         machines = [machine] if isinstance(machine, str) else machine
         
         logger.info(f"Executing command on {len(machines)} machine(s): {command}")
+        
+        # Send status update with command details
+        if status:
+            machine_str = machines[0] if len(machines) == 1 else f"{len(machines)} machines"
+            # Truncate command if too long for status display
+            cmd_display = command if len(command) <= 60 else command[:57] + "..."
+            await status.step(
+                f"Executing on {machine_str}: {cmd_display}",
+                meta={
+                    'machines': machines,
+                    'command': command,
+                    'timeout': timeout
+                }
+            )
         
         # Execute commands in parallel
         tasks = []
@@ -168,6 +183,30 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             
             responses.append(response)
         
+        # Send completion status with summary
+        if status:
+            successful = sum(1 for r in responses if r.get('success', False))
+            failed = sum(1 for r in responses if not r.get('success', False))
+            
+            if failed == 0:
+                await status.end(
+                    f"Command completed on {successful}/{len(machines)} machine(s)",
+                    meta={
+                        'successful': successful,
+                        'failed': failed,
+                        'command': command
+                    }
+                )
+            else:
+                await status.error(
+                    f"Command completed: {successful} succeeded, {failed} failed",
+                    meta={
+                        'successful': successful,
+                        'failed': failed,
+                        'command': command
+                    }
+                )
+        
         return {
             'results': responses,
             'total_machines': len(machines),
@@ -188,6 +227,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         local_path = params.get('local_path')
         remote_path = params.get('remote_path')
         mode = params.get('mode')
+        status = params.get('_status')
         
         if not machine:
             raise ValueError("Missing required parameter: machine")
@@ -200,6 +240,19 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         machines = [machine] if isinstance(machine, str) else machine
         
         logger.info(f"Uploading file to {len(machines)} machine(s): {local_path} -> {remote_path}")
+        
+        # Send status update
+        if status:
+            machine_str = machines[0] if len(machines) == 1 else f"{len(machines)} machines"
+            await status.step(
+                f"Uploading {local_path} to {machine_str}",
+                meta={
+                    'machines': machines,
+                    'local_path': local_path,
+                    'remote_path': remote_path,
+                    'mode': mode
+                }
+            )
         
         # Upload to all machines in parallel
         tasks = []
@@ -234,6 +287,31 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                     'success': result.success
                 })
         
+        # Send completion status
+        if status:
+            successful = sum(1 for r in responses if r.get('success', False))
+            failed = sum(1 for r in responses if not r.get('success', False))
+            total_bytes = sum(r.get('bytes_transferred', 0) for r in responses if r.get('success'))
+            
+            if failed == 0:
+                # Format bytes nicely
+                if total_bytes < 1024:
+                    size_str = f"{total_bytes} B"
+                elif total_bytes < 1024 * 1024:
+                    size_str = f"{total_bytes / 1024:.1f} KB"
+                else:
+                    size_str = f"{total_bytes / (1024 * 1024):.1f} MB"
+                
+                await status.end(
+                    f"Uploaded {size_str} to {successful} machine(s)",
+                    meta={'successful': successful, 'bytes': total_bytes}
+                )
+            else:
+                await status.error(
+                    f"Upload: {successful} succeeded, {failed} failed",
+                    meta={'successful': successful, 'failed': failed}
+                )
+        
         return {
             'results': responses,
             'total_machines': len(machines),
@@ -253,6 +331,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         machine = params.get('machine')
         remote_path = params.get('remote_path')
         local_path = params.get('local_path')
+        status = params.get('_status')
         
         if not machine:
             raise ValueError("Missing required parameter: machine")
@@ -263,12 +342,37 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         
         logger.info(f"Downloading file from {machine}: {remote_path} -> {local_path}")
         
+        # Send status update
+        if status:
+            await status.step(
+                f"Downloading {remote_path} from {machine}",
+                meta={
+                    'machine': machine,
+                    'remote_path': remote_path,
+                    'local_path': local_path
+                }
+            )
+        
         try:
             result = await self.connection_manager.download_file(
                 machine,
                 remote_path,
                 local_path
             )
+            
+            # Send completion status
+            if status:
+                if result.bytes_transferred < 1024:
+                    size_str = f"{result.bytes_transferred} B"
+                elif result.bytes_transferred < 1024 * 1024:
+                    size_str = f"{result.bytes_transferred / 1024:.1f} KB"
+                else:
+                    size_str = f"{result.bytes_transferred / (1024 * 1024):.1f} MB"
+                
+                await status.end(
+                    f"Downloaded {size_str} from {machine}",
+                    meta={'bytes': result.bytes_transferred, 'duration': result.duration}
+                )
             
             return {
                 'machine': result.machine,
@@ -280,6 +384,14 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             }
         except Exception as e:
             logger.error(f"Download failed: {e}", exc_info=True)
+            
+            # Send error status
+            if status:
+                await status.error(
+                    f"Download failed: {str(e)}",
+                    meta={'error': str(e)}
+                )
+            
             return {
                 'machine': machine,
                 'error': str(e),
@@ -296,6 +408,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             Dict with connection status for each machine
         """
         machine = params.get('machine')
+        status = params.get('_status')
         
         # Determine which machines to check
         if machine is None:
@@ -307,6 +420,14 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             machines = machine
         
         logger.info(f"Checking connection health for {len(machines)} machine(s)")
+        
+        # Send status update
+        if status:
+            machine_str = machines[0] if len(machines) == 1 else f"{len(machines)} machines"
+            await status.step(
+                f"Checking connection to {machine_str}",
+                meta={'machines': machines}
+            )
         
         # Check connections in parallel
         tasks = []
@@ -327,6 +448,24 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                 })
             else:
                 statuses.append(result)
+        
+        # Send completion status
+        if status:
+            connected = sum(1 for s in statuses if s.get('connected', False))
+            disconnected = sum(1 for s in statuses if not s.get('connected', False))
+            
+            if disconnected == 0:
+                # Calculate average latency
+                avg_latency = sum(s.get('latency_ms', 0) for s in statuses if s.get('connected')) / max(connected, 1)
+                await status.end(
+                    f"All {connected} machine(s) connected (avg {avg_latency:.0f}ms)",
+                    meta={'connected': connected, 'avg_latency_ms': avg_latency}
+                )
+            else:
+                await status.error(
+                    f"Connection check: {connected} up, {disconnected} down",
+                    meta={'connected': connected, 'disconnected': disconnected}
+                )
         
         return {
             'statuses': statuses,
