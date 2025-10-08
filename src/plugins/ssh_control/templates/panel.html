@@ -55,6 +55,16 @@
         .tab-label {
             margin-right: 8px;
         }
+
+        /* Compact per-tab status */
+        .tab-status {
+            margin-left: 6px;
+            font-size: 11px;
+            color: #9ad4f5;
+            opacity: 0.9;
+            min-width: 28px;
+            text-align: right;
+        }
         
         .tab-close {
             color: #858585;
@@ -620,6 +630,12 @@
             label.className = 'tab-label';
             label.textContent = machineName;
             tab.appendChild(label);
+
+            // Compact status element (ms-only or short disconnected marker)
+            const status = document.createElement('span');
+            status.className = 'tab-status';
+            status.textContent = '\u2014'; // em-dash when unknown/disconnected
+            tab.appendChild(status);
             
             if (removable) {
                 const closeBtn = document.createElement('span');
@@ -638,6 +654,9 @@
             
             // Create terminal pane (only if tab was created)
             createTerminalPane(machineName);
+
+            // Immediately fetch status for this tab
+            updateTabStatus(machineName).catch(err => console.debug('status fetch failed', err));
         }
         
         // Create terminal pane
@@ -1168,6 +1187,50 @@
             if (activeTab) {
                 refreshMachineHistory(activeTab);
             }
+        }
+
+        // Update a tab's status: show latency in ms when connected, otherwise a short dash
+        async function updateTabStatus(machineName) {
+            try {
+                const resp = await fetch(`/plugins/ssh_control/api/machines/${encodeURIComponent(machineName)}/status`);
+                if (!resp.ok) throw new Error('status fetch failed');
+                const data = await resp.json();
+                const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
+                if (!tab) return;
+                const statusEl = tab.querySelector('.tab-status');
+                if (!statusEl) return;
+
+                if (data.connected) {
+                    const ms = Math.round(data.latency_ms || 0);
+                    statusEl.textContent = `${ms}ms`;
+                    statusEl.style.color = '#9ad4f5';
+                    statusEl.title = 'Connected';
+                } else {
+                    statusEl.textContent = '\u2014'; // em-dash short marker
+                    statusEl.style.color = '#858585';
+                    statusEl.title = 'Disconnected';
+                }
+            } catch (err) {
+                // On any error, mark as disconnected
+                const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
+                if (!tab) return;
+                const statusEl = tab.querySelector('.tab-status');
+                if (!statusEl) return;
+                statusEl.textContent = '\u2014';
+                statusEl.style.color = '#858585';
+                statusEl.title = 'Status unavailable';
+            }
+        }
+
+        // Periodically refresh status for all visible tabs
+        function startStatusRefresh() {
+            // Run once immediately
+            machines.forEach(m => updateTabStatus(m.name).catch(() => {}));
+
+            // Then every 5s
+            setInterval(() => {
+                machines.forEach(m => updateTabStatus(m.name).catch(() => {}));
+            }, 5000);
         }
         
         // Toggle auto-refresh
