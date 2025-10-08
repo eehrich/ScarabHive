@@ -29,7 +29,7 @@ from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
 
 # Import services
-from .services import ConfigService, MCPService, ToolService, AgentService
+from .services import MCPService, ToolService
 
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
