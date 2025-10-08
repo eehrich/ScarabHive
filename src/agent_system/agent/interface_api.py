@@ -233,10 +233,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent = candidate
                 # Apply server-level configuration overrides
                 try:
-                    if not config.servers:
-                        ValueError("No servers config to apply overrides from")
+                    if not config.mcp_system or not config.mcp_system.servers:
+                        raise ValueError("No servers config to apply overrides from")
 
-                    server_cfg = config.servers.get(entry_name, {})
+                    server_cfg = config.mcp_system.servers.get(entry_name, {})
                     overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
                     if isinstance(overrides, dict) and overrides:
                         needs_copy = any(k in overrides for k in ('allowed_tools', 'blocked_tools')) or 'max_steps' in server_cfg
@@ -270,13 +270,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     if selected_agent is None:
         from ..servers.agent.server import Agent as CoreAgent
         try:
-            if not config.servers:
+            if not config.mcp_system or not config.mcp_system.servers:
                 logging.getLogger(__name__).warning(
                     "No 'servers' configuration found, using empty server config for agent '%s'", entry_name
                 )
                 server_cfg = {}
             else:
-                server_cfg = config.servers.get(entry_name, {})
+                server_cfg = config.mcp_system.servers.get(entry_name, {})
                 
             # Apply agent-specific overrides from server config
             server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
