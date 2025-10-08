@@ -231,6 +231,180 @@
         .refresh-btn:hover {
             background: #4c4c4c;
         }
+        
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        
+        .modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .modal-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid #3c3c3c;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #ffffff;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            color: #858585;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-close:hover {
+            color: #ffffff;
+        }
+        
+        .modal-body {
+            padding: 20px;
+            flex: 1;
+            overflow-y: auto;
+        }
+        
+        .command-input {
+            width: 100%;
+            background: #2d2d30;
+            border: 1px solid #3c3c3c;
+            color: #d4d4d4;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            margin-bottom: 15px;
+        }
+        
+        .command-input:focus {
+            outline: none;
+            border-color: #007acc;
+        }
+        
+        .output-container {
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            min-height: 300px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .output-line {
+            margin-bottom: 2px;
+            line-height: 1.4;
+        }
+        
+        .output-line.stdout {
+            color: #d4d4d4;
+        }
+        
+        .output-line.stderr {
+            color: #f48771;
+        }
+        
+        .output-line.info {
+            color: #4fc3f7;
+        }
+        
+        .output-line.success {
+            color: #a9d18e;
+        }
+        
+        .output-line.error {
+            color: #f44336;
+        }
+        
+        .execute-btn {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        
+        /* Icon button styles */
+        .icon-btn {
+            background: none;
+            border: 1px solid #3c3c3c;
+            color: #d4d4d4;
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            padding: 4px;
+        }
+        
+        .icon-btn:hover {
+            background: #3c3c3c;
+            border-color: #007acc;
+        }
+        
+        .icon-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+        
+        .icon-btn.active {
+            background: #0e639c;
+            border-color: #007acc;
+        }
+        
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .section-header h2 {
+            margin: 0;
+        }
+        
+        .icon-button-group {
+            display: flex;
+            gap: 5px;
+        }
     </style>
 </head>
 <body>
@@ -238,22 +412,70 @@
         <h1>🖥️ SSH Control Panel</h1>
         
         <div class="section">
-            <h2>
-                Machines
-                <button class="btn refresh-btn" onclick="loadMachines()">↻ Refresh</button>
-            </h2>
+            <div class="section-header">
+                <h2>Machines</h2>
+                <div class="icon-button-group">
+                    <button id="refreshMachinesBtn" class="icon-btn" title="Refresh" onclick="loadMachines()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                            <path d="M21 3v5h-5"/>
+                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                            <path d="M3 21v-5h5"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
             <div id="machines-container">
                 <div class="loading">Loading machines...</div>
             </div>
         </div>
         
         <div class="section">
-            <h2>
-                Command History
-                <button class="btn refresh-btn" onclick="loadHistory()">↻ Refresh</button>
-            </h2>
+            <div class="section-header">
+                <h2>Command History</h2>
+                <div class="icon-button-group">
+                    <button id="refreshHistoryBtn" class="icon-btn" title="Refresh" onclick="loadHistory()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                            <path d="M21 3v5h-5"/>
+                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                            <path d="M3 21v-5h5"/>
+                        </svg>
+                    </button>
+                    <button id="autoRefreshHistoryBtn" class="icon-btn" title="Auto-refresh: OFF" onclick="toggleAutoRefresh()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                            <path d="M21 3v5h-5"/>
+                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                            <path d="M3 21v-5h5"/>
+                            <circle cx="12" cy="12" r="1"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
             <div id="history-container">
                 <div class="loading">Loading history...</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Execute Command Modal -->
+    <div id="executeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Execute Command on <span id="modalMachineName"></span></h3>
+                <button class="modal-close" onclick="closeExecuteDialog()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" 
+                       id="commandInput" 
+                       class="command-input" 
+                       placeholder="Enter command (e.g., ls -la /var/log)" 
+                       onkeypress="handleCommandKeyPress(event)">
+                <button class="btn execute-btn" onclick="executeCommand()" id="executeBtn">Execute</button>
+                <div class="output-container" id="outputContainer">
+                    <div class="output-line info">Ready to execute command...</div>
+                </div>
             </div>
         </div>
     </div>
@@ -265,6 +487,10 @@
         // Load machines on page load
         async function loadMachines() {
             const container = document.getElementById('machines-container');
+            if (!container) {
+                console.error('machines-container element not found');
+                return;
+            }
             container.innerHTML = '<div class="loading">Loading machines...</div>';
             
             try {
@@ -310,10 +536,10 @@
                     <span class="machine-status status-checking" id="status-${machine.name}">Checking...</span>
                 </div>
                 <div class="machine-details">
-                    <div>🔗 <strong>${machine.user}@${machine.host}:${machine.port}</strong></div>
+                    <div>🔗 <strong>${machine.username}@${machine.host}:${machine.port}</strong></div>
                     ${machine.tags.length > 0 ? `<div>🏷️ ${machine.tags.join(', ')}</div>` : ''}
                 </div>
-                ${hasPool ? `
+                    ${hasPool ? `
                     <div class="machine-stats">
                         <div class="stat">
                             <span class="stat-label">Connections:</span>
@@ -333,9 +559,10 @@
                         </div>
                     </div>
                 ` : ''}
-            `;
-            
-            return card;
+                <div style="margin-top: 10px;">
+                    <button class="btn" onclick="openExecuteDialog('${machine.name}')">Execute Command</button>
+                </div>
+            `;            return card;
         }
         
         async function checkAllConnections(machines) {
@@ -346,6 +573,7 @@
         
         async function checkMachineConnection(machineName) {
             const statusEl = document.getElementById(`status-${machineName}`);
+            if (!statusEl) return;
             
             try {
                 const response = await fetch(`${apiBase}/machines/${machineName}/status`);
@@ -367,6 +595,7 @@
         
         async function loadHistory() {
             const container = document.getElementById('history-container');
+            if (!container) return;
             container.innerHTML = '<div class="loading">Loading history...</div>';
             
             try {
@@ -421,13 +650,222 @@
         }
         
         // Auto-refresh every 5 seconds
-        setInterval(() => {
-            loadHistory();
-        }, 5000);
+        let autoRefreshInterval = null;
+        let autoRefreshEnabled = false;
+        
+        function toggleAutoRefresh() {
+            autoRefreshEnabled = !autoRefreshEnabled;
+            const btn = document.getElementById('autoRefreshHistoryBtn');
+            
+            if (autoRefreshEnabled) {
+                btn.classList.add('active');
+                btn.title = 'Auto-refresh: ON';
+                autoRefreshInterval = setInterval(() => {
+                    loadHistory();
+                }, 5000);
+                loadHistory(); // Immediate refresh
+            } else {
+                btn.classList.remove('active');
+                btn.title = 'Auto-refresh: OFF';
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
+        }
         
         // Initial load
         loadMachines();
         loadHistory();
+        
+        // ===== Execute Command Modal =====
+        let currentMachine = null;
+        let eventSource = null;
+        
+        function openExecuteDialog(machineName) {
+            currentMachine = machineName;
+            const modalName = document.getElementById('modalMachineName');
+            const commandInput = document.getElementById('commandInput');
+            const outputContainer = document.getElementById('outputContainer');
+            const executeModal = document.getElementById('executeModal');
+            
+            if (modalName) modalName.textContent = machineName;
+            if (commandInput) commandInput.value = '';
+            if (outputContainer) outputContainer.innerHTML = '<div class="output-line info">Ready to execute command...</div>';
+            if (executeModal) executeModal.classList.add('show');
+            if (commandInput) commandInput.focus();
+        }
+        
+        function closeExecuteDialog() {
+            const executeModal = document.getElementById('executeModal');
+            if (executeModal) executeModal.classList.remove('show');
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            currentMachine = null;
+        }
+        
+        function handleCommandKeyPress(event) {
+            if (event.key === 'Enter') {
+                executeCommand();
+            }
+        }
+        
+        function executeCommand() {
+            const commandInput = document.getElementById('commandInput');
+            const command = commandInput ? commandInput.value.trim() : '';
+            if (!command) {
+                addOutputLine('error', 'Please enter a command');
+                return;
+            }
+            
+            if (!currentMachine) {
+                addOutputLine('error', 'No machine selected');
+                return;
+            }
+            
+            // Disable execute button
+            const executeBtn = document.getElementById('executeBtn');
+            if (executeBtn) {
+                executeBtn.disabled = true;
+                executeBtn.textContent = 'Executing...';
+            }
+            
+            // Clear output
+            const outputContainer = document.getElementById('outputContainer');
+            if (outputContainer) outputContainer.innerHTML = '';
+            
+            // Start SSE connection
+            const url = `${apiBase}/execute/stream?machine=${encodeURIComponent(currentMachine)}&command=${encodeURIComponent(command)}&timeout=60`;
+            
+            addOutputLine('info', `Executing: ${command}`);
+            addOutputLine('info', '---');
+            
+            eventSource = new EventSource(url);
+            
+            eventSource.addEventListener('start', (e) => {
+                const data = JSON.parse(e.data);
+                addOutputLine('info', `Started on ${data.machine} at ${new Date(data.timestamp * 1000).toLocaleTimeString()}`);
+            });
+            
+            eventSource.addEventListener('stdout', (e) => {
+                const data = JSON.parse(e.data);
+                addOutputLine('stdout', data.line);
+            });
+            
+            eventSource.addEventListener('stderr', (e) => {
+                const data = JSON.parse(e.data);
+                addOutputLine('stderr', data.line);
+            });
+            
+            eventSource.addEventListener('exit', (e) => {
+                const data = JSON.parse(e.data);
+                addOutputLine('info', '---');
+                if (data.success) {
+                    addOutputLine('success', `✓ Command completed successfully (exit code: ${data.exit_code}, duration: ${data.duration.toFixed(2)}s)`);
+                } else {
+                    addOutputLine('error', `✗ Command failed (exit code: ${data.exit_code}, duration: ${data.duration.toFixed(2)}s)`);
+                }
+                
+                // Re-enable execute button
+                const executeBtn = document.getElementById('executeBtn');
+                if (executeBtn) {
+                    executeBtn.disabled = false;
+                    executeBtn.textContent = 'Execute';
+                }
+                
+                // Close event source
+                eventSource.close();
+                eventSource = null;
+                
+                // Refresh history
+                loadHistory();
+            });
+            
+            eventSource.addEventListener('error', (e) => {
+                let errorMsg = 'Unknown error';
+                if (e.data) {
+                    try {
+                        const data = JSON.parse(e.data);
+                        errorMsg = data.message || data.error || errorMsg;
+                    } catch (err) {
+                        // Ignore parse error
+                    }
+                }
+                
+                addOutputLine('error', `✗ Error: ${errorMsg}`);
+                
+                // Re-enable execute button
+                const executeBtn = document.getElementById('executeBtn');
+                if (executeBtn) {
+                    executeBtn.disabled = false;
+                    executeBtn.textContent = 'Execute';
+                }
+                
+                // Close event source
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+            });
+            
+            eventSource.addEventListener('done', () => {
+                // Final done event
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+            });
+            
+            eventSource.onerror = (err) => {
+                console.error('EventSource error:', err);
+                
+                // Only show error if we haven't already shown an 'error' event
+                const container = document.getElementById('outputContainer');
+                if (container) {
+                    const hasErrorLine = Array.from(container.children).some(el => 
+                        el.classList.contains('error') && el.textContent.includes('✗')
+                    );
+                    
+                    if (!hasErrorLine) {
+                        addOutputLine('error', '✗ Connection error - check console for details');
+                    }
+                }
+                
+                // Re-enable execute button
+                const executeBtn = document.getElementById('executeBtn');
+                if (executeBtn) {
+                    executeBtn.disabled = false;
+                    executeBtn.textContent = 'Execute';
+                }
+                
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+            };
+        }
+        
+        function addOutputLine(type, text) {
+            const container = document.getElementById('outputContainer');
+            if (!container) return;
+            
+            const line = document.createElement('div');
+            line.className = `output-line ${type}`;
+            line.textContent = text;
+            container.appendChild(line);
+            
+            // Auto-scroll to bottom
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        // Close modal on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeExecuteDialog();
+            }
+        });
     </script>
 </body>
 </html>

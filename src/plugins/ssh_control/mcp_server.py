@@ -42,7 +42,10 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         """
         super().__init__(name, system_config, mcp_config)
         
-        # Initialize connection manager
+        # Shared command history for web UI
+        self.command_history = command_history if command_history is not None else deque(maxlen=1000)
+        
+        # Initialize connection manager with shared command history
         if isinstance(mcp_config, dict):
             config_dict = mcp_config
         elif hasattr(mcp_config, 'model_dump'):
@@ -51,10 +54,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         else:
             # Fallback
             config_dict = dict(mcp_config)
-        self.connection_manager = SSHConnectionManager(config_dict)
-        
-        # Shared command history for web UI
-        self.command_history = command_history if command_history is not None else deque(maxlen=1000)
+        self.connection_manager = SSHConnectionManager(config_dict, command_history=self.command_history)
         
         logger.info(
             f"SSH Control MCP Server '{name}' initialized with "

@@ -176,14 +176,18 @@ class ConnectionPool:
 class SSHConnectionManager:
     """Manages SSH connection pools for multiple machines."""
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, command_history=None):
         """Initialize connection manager.
         
         Args:
             config: Plugin configuration containing machines list
+            command_history: Optional shared deque for command history
         """
         self.machines: dict[str, MachineConfig] = {}
         self.pools: dict[str, ConnectionPool] = {}
+        
+        # Command history for web UI (shared with web_endpoints)
+        self.command_history = command_history
         
         # Security settings
         security_config = config.get('security', {})
@@ -433,6 +437,17 @@ class SSHConnectionManager:
                 duration = time.time() - start_time
                 
                 pool.total_commands += 1
+                
+                # Add to command history if available
+                if self.command_history is not None:
+                    self.command_history.append({
+                        'machine': machine_name,
+                        'command': command,
+                        'exit_code': exit_code,
+                        'duration': duration,
+                        'timestamp': start_time,
+                        'success': exit_code == 0
+                    })
                 
                 yield {
                     'type': 'exit',

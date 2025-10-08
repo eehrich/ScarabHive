@@ -99,8 +99,8 @@ web_ui:
   button_text: "SSH Control"
   button_icon: "🖥️"
   panel_title: "SSH Machine Control"
-  panel_endpoint: "/plugins/ssh_control/panel.html"
-  panel_type: "fetch"
+  panel_endpoint: "/plugins/ssh_control/panel"
+  panel_type: "iframe"  # Use iframe instead of fetch/shadow DOM
   
   panels:
     - id: "ssh_control_panel"

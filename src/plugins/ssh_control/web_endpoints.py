@@ -121,7 +121,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         'name': machine_name,
                         'host': machine_config.host,
                         'port': machine_config.port,
-                        'user': machine_config.user,
+                        'username': machine_config.username,
                         'tags': machine_config.tags,
                         'max_connections': machine_config.max_connections,
                         'pool': pool_info
