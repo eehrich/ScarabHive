@@ -92,8 +92,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     
     # Create ConfigService
     global _config_service
-    _config_service = ConfigService(cfg_path)
-    config = _config_service.load_config()
+    _config_service = ConfigService()
+    config = _config_service.load_config(config_path=cfg_path)
     
     # Setup logging via ConfigService
     _config_service.setup_logging()
