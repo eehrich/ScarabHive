@@ -43,7 +43,14 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         super().__init__(name, system_config, mcp_config)
         
         # Initialize connection manager
-        config_dict = mcp_config if isinstance(mcp_config, dict) else vars(mcp_config)
+        if isinstance(mcp_config, dict):
+            config_dict = mcp_config
+        elif hasattr(mcp_config, 'model_dump'):
+            # Pydantic v2
+            config_dict = mcp_config.model_dump()
+        else:
+            # Fallback
+            config_dict = dict(mcp_config)
         self.connection_manager = SSHConnectionManager(config_dict)
         
         # Shared command history for web UI
