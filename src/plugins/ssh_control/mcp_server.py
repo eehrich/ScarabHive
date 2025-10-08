@@ -517,6 +517,314 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             'disconnected': sum(1 for s in statuses if not s.get('connected', False))
         }
     
+    async def ssh_control_add_machine(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Dynamically add a new SSH machine to the connection manager.
+        
+        Args:
+            params: Machine configuration parameters:
+                - name: Machine name (required)
+                - host: Hostname or IP address (required)
+                - port: SSH port (default: 22)
+                - username: SSH username (required)
+                - auth_method: Authentication method - 'key', 'password', or 'agent' (default: 'key')
+                - password: Password for password auth (optional)
+                - key_path: Path to SSH private key (optional, default: ~/.ssh/id_rsa)
+                - tags: List of tags for grouping (optional)
+                - persistent: Save to config file (default: False)
+                - max_connections: Max parallel connections (default: 3)
+                
+        Returns:
+            Dict with success status and machine info
+        """
+        from .models import MachineConfig
+        import yaml
+        from pathlib import Path
+        
+        status = params.get('_status')
+        
+        # Extract and validate required parameters
+        name = params.get('name')
+        host = params.get('host')
+        username = params.get('username')
+        
+        if not name or not host or not username:
+            error_msg = "Missing required parameters: name, host, and username are required"
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        # Check for duplicate name
+        if name in self.connection_manager.machines:
+            error_msg = f"Machine '{name}' already exists"
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        # Send status update
+        if status:
+            await status.progress(f"Adding machine: {name} ({username}@{host})")
+        
+        # Build machine config
+        port = params.get('port', 22)
+        auth_method = params.get('auth_method', 'key')
+        password = params.get('password')
+        key_path = params.get('key_path', '~/.ssh/id_rsa')
+        tags = params.get('tags', [])
+        persistent = params.get('persistent', False)
+        max_connections = params.get('max_connections', 3)
+        
+        try:
+            # Create MachineConfig
+            machine_config = MachineConfig(
+                name=name,
+                host=host,
+                port=port,
+                username=username,
+                auth_method=auth_method,
+                password=password,
+                key_path=key_path,
+                tags=tags if isinstance(tags, list) else [],
+                max_connections=max_connections
+            )
+            
+            # Test connection before adding
+            if status:
+                await status.progress(f"Testing connection: {name}")
+            
+            logger.info(f"Testing SSH connection to {name} ({username}@{host}:{port})")
+            
+            # Import connection test
+            import asyncssh
+            from .auth import SSHAuthenticator
+            
+            try:
+                # Attempt to create a connection
+                conn = await asyncio.wait_for(
+                    SSHAuthenticator.create_connection(
+                        machine_config,
+                        self.connection_manager.known_hosts_file,
+                        self.connection_manager.strict_host_key_checking
+                    ),
+                    timeout=10.0
+                )
+                
+                # Test with simple command
+                result = await asyncio.wait_for(
+                    conn.run('echo "Connection test"', check=False),
+                    timeout=5.0
+                )
+                
+                conn.close()
+                
+                if result.exit_status != 0:
+                    error_msg = f"Connection test failed: exit code {result.exit_status}"
+                    if status:
+                        await status.error(error_msg)
+                    return {'success': False, 'error': error_msg}
+                
+                logger.info(f"Connection test successful for {name}")
+                
+            except asyncio.TimeoutError:
+                error_msg = f"Connection timeout for {name} after 10 seconds"
+                if status:
+                    await status.error(error_msg)
+                return {'success': False, 'error': error_msg}
+            except asyncssh.Error as e:
+                error_msg = f"SSH connection failed: {e}"
+                if status:
+                    await status.error(error_msg)
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                error_msg = f"Connection test failed: {e}"
+                if status:
+                    await status.error(error_msg)
+                return {'success': False, 'error': error_msg}
+            
+            # Add to connection manager
+            self.connection_manager.machines[name] = machine_config
+            logger.info(f"Added machine '{name}' to connection manager")
+            
+            # Persist to config if requested
+            if persistent:
+                if status:
+                    await status.progress(f"Saving to config: {name}")
+                
+                try:
+                    config_path = Path('config/mcp.yaml')
+                    
+                    # Load existing config
+                    if config_path.exists():
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = yaml.safe_load(f) or {}
+                    else:
+                        config = {}
+                    
+                    # Ensure structure exists
+                    if 'servers' not in config:
+                        config['servers'] = {}
+                    if 'ssh_control' not in config['servers']:
+                        config['servers']['ssh_control'] = {}
+                    if 'machines' not in config['servers']['ssh_control']:
+                        config['servers']['ssh_control']['machines'] = []
+                    
+                    # Add machine config
+                    machine_dict = {
+                        'name': name,
+                        'host': host,
+                        'port': port,
+                        'username': username,
+                        'auth_method': auth_method,
+                        'max_connections': max_connections
+                    }
+                    
+                    if key_path != '~/.ssh/id_rsa':
+                        machine_dict['key_path'] = key_path
+                    
+                    if tags:
+                        machine_dict['tags'] = tags
+                    
+                    # Don't save password to config for security
+                    # Key path is saved, but password is not
+                    
+                    config['servers']['ssh_control']['machines'].append(machine_dict)
+                    
+                    # Write back to config
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+                    
+                    logger.info(f"Persisted machine '{name}' to {config_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to persist machine config: {e}", exc_info=True)
+                    # Don't fail the operation, just log the error
+            
+            # Send completion status
+            if status:
+                await status.end(
+                    f"Added machine: {name}" + (" (persistent)" if persistent else ""),
+                    meta={'machine': name, 'host': host, 'persistent': persistent}
+                )
+            
+            return {
+                'success': True,
+                'machine': name,
+                'host': host,
+                'port': port,
+                'username': username,
+                'auth_method': auth_method,
+                'tags': tags,
+                'persistent': persistent,
+                'message': f"Machine '{name}' added successfully" + (", saved to config" if persistent else "")
+            }
+            
+        except Exception as e:
+            error_msg = f"Failed to add machine: {e}"
+            logger.error(error_msg, exc_info=True)
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+    
+    async def ssh_control_remove_machine(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Remove a dynamically added SSH machine from the connection manager.
+        
+        Args:
+            params: Parameters containing:
+                - name: Machine name to remove (required)
+                - remove_from_config: Also remove from config file if persistent (default: False)
+                
+        Returns:
+            Dict with success status
+        """
+        import yaml
+        from pathlib import Path
+        
+        status = params.get('_status')
+        name = params.get('name')
+        remove_from_config = params.get('remove_from_config', False)
+        
+        if not name:
+            error_msg = "Missing required parameter: name"
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        # Check if machine exists
+        if name not in self.connection_manager.machines:
+            error_msg = f"Machine '{name}' not found"
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+        
+        # Send status update
+        if status:
+            await status.progress(f"Removing machine: {name}")
+        
+        try:
+            # Close all connections for this machine
+            if name in self.connection_manager.pools:
+                logger.info(f"Closing connection pool for '{name}'")
+                await self.connection_manager.pools[name].close_all()
+                del self.connection_manager.pools[name]
+            
+            # Remove from machines dict
+            del self.connection_manager.machines[name]
+            logger.info(f"Removed machine '{name}' from connection manager")
+            
+            # Remove from config if requested
+            if remove_from_config:
+                if status:
+                    await status.progress(f"Removing from config: {name}")
+                
+                try:
+                    config_path = Path('config/mcp.yaml')
+                    
+                    if config_path.exists():
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = yaml.safe_load(f) or {}
+                        
+                        # Navigate to machines list
+                        if ('servers' in config and 
+                            'ssh_control' in config['servers'] and 
+                            'machines' in config['servers']['ssh_control']):
+                            
+                            machines = config['servers']['ssh_control']['machines']
+                            
+                            # Filter out the machine
+                            config['servers']['ssh_control']['machines'] = [
+                                m for m in machines if m.get('name') != name
+                            ]
+                            
+                            # Write back to config
+                            with open(config_path, 'w', encoding='utf-8') as f:
+                                yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+                            
+                            logger.info(f"Removed machine '{name}' from {config_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to remove from config: {e}", exc_info=True)
+                    # Don't fail the operation, just log the error
+            
+            # Send completion status
+            if status:
+                await status.end(
+                    f"Removed machine: {name}" + (" (from config)" if remove_from_config else ""),
+                    meta={'machine': name, 'removed_from_config': remove_from_config}
+                )
+            
+            return {
+                'success': True,
+                'machine': name,
+                'removed_from_config': remove_from_config,
+                'message': f"Machine '{name}' removed successfully" + (", deleted from config" if remove_from_config else "")
+            }
+            
+        except Exception as e:
+            error_msg = f"Failed to remove machine: {e}"
+            logger.error(error_msg, exc_info=True)
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+    
     async def close(self) -> None:
         """Clean up resources."""
         logger.info(f"Closing SSH Control MCP Server '{self.name}'")

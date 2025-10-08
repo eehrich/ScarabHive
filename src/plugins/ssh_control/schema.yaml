@@ -92,6 +92,102 @@ tools:
             type: string
             description: "Machine name or comma-separated list of names (omit to check all)"
         required: []
+  
+  - type: function
+    function:
+      name: ssh_control_add_machine
+      description: "Dynamically add a new SSH machine to the connection manager at runtime. Optionally persist to config file. Connection is tested before adding."
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Unique machine name identifier"
+          host:
+            type: string
+            description: "Hostname or IP address"
+          port:
+            type: integer
+            description: "SSH port (default: 22)"
+          username:
+            type: string
+            description: "SSH username"
+          auth_method:
+            type: string
+            enum: ["key", "password", "agent"]
+            description: "Authentication method (default: key)"
+          password:
+            type: string
+            description: "Password for password auth (not saved to config for security)"
+          key_path:
+            type: string
+            description: "Path to SSH key file (default: ~/.ssh/id_rsa)"
+          tags:
+            type: array
+            items:
+              type: string
+            description: "Optional tags for filtering (default: [])"
+          persistent:
+            type: boolean
+            description: "Save to config/mcp.yaml for persistence (default: false). Note: passwords are never saved."
+          max_connections:
+            type: integer
+            description: "Max parallel connections (default: 3)"
+        required:
+          - name
+          - host
+          - username
+      security_notes:
+        - "Passwords are never saved to config files, only key paths"
+        - "Connection is tested with 10s timeout before adding"
+        - "Duplicate machine names are rejected"
+      examples:
+        - description: "Add production database server with key auth and persistence"
+          parameters:
+            name: "prod-db"
+            host: "192.168.1.50"
+            username: "deploy"
+            auth_method: "key"
+            key_path: "~/.ssh/deploy_key"
+            tags: ["production", "database"]
+            persistent: true
+        - description: "Add temporary test server with password auth"
+          parameters:
+            name: "test-server"
+            host: "10.0.0.100"
+            username: "testuser"
+            auth_method: "password"
+            password: "temp123"
+            persistent: false
+  
+  - type: function
+    function:
+      name: ssh_control_remove_machine
+      description: "Remove an SSH machine from runtime and optionally from config. Closes all active connections and cleans up connection pools."
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Machine name to remove"
+          remove_from_config:
+            type: boolean
+            description: "Also remove from config/mcp.yaml if present (default: false)"
+        required:
+          - name
+      cleanup_notes:
+        - "Closes all active connections in the pool"
+        - "Removes machine from runtime connection manager"
+        - "Optionally removes from YAML config file"
+      examples:
+        - description: "Remove temporary machine (runtime only)"
+          parameters:
+            name: "temp-server"
+            remove_from_config: false
+        - description: "Remove persistent machine and cleanup config"
+          parameters:
+            name: "old-prod-db"
+            remove_from_config: true
 
 # Web UI Configuration
 web_ui:
@@ -121,6 +217,50 @@ web_ui:
     - path: "/api/machines/{machine}/status"
       method: "GET"
       description: "Get detailed status for specific machine"
+    - path: "/api/machines/add"
+      method: "POST"
+      description: "Dynamically add a new SSH machine (calls ssh_control_add_machine tool)"
+      body_schema:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Unique machine name"
+          host:
+            type: string
+            description: "Hostname or IP"
+          port:
+            type: integer
+            description: "SSH port (default: 22)"
+          username:
+            type: string
+            description: "SSH username"
+          auth_method:
+            type: string
+            enum: ["key", "password", "agent"]
+          password:
+            type: string
+            description: "Password (not saved to config)"
+          key_path:
+            type: string
+            description: "Path to SSH key file"
+          tags:
+            type: array
+            items:
+              type: string
+          persistent:
+            type: boolean
+            description: "Save to config file (default: false)"
+          max_connections:
+            type: integer
+        required: ["name", "host", "username"]
+    - path: "/api/machines/{name}"
+      method: "DELETE"
+      description: "Remove an SSH machine (calls ssh_control_remove_machine tool)"
+      query_parameters:
+        remove_from_config:
+          type: boolean
+          description: "Also remove from config file (default: false)"
     - path: "/api/history"
       method: "GET"
       description: "Get recent command execution history"
