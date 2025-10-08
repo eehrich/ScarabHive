@@ -28,52 +28,13 @@ from .utils.logging import setup_logging
 from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
 
+# Import services
+from .services import ConfigService, MCPService, ToolService, AgentService
+
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
 
 logger = logging.getLogger(__name__)
-
-
-def _atomic_write_text(path: Path, data: str) -> None:
-    """Atomically write text to `path` by writing to a temp file in the
-    same directory and renaming it into place. Ensures durable write where
-    possible by flushing and syncing file content and directory."""
-    dirpath = path.parent
-    fd, tmp = tempfile.mkstemp(dir=dirpath)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
-            fh.flush()
-            try:
-                os.fsync(fh.fileno())
-            except Exception:
-                # Some platforms or filesystems may not support fsync; ignore
-                pass
-        try:
-            os.replace(tmp, str(path))
-        except Exception:
-            # On some systems os.replace requires str paths
-            os.replace(tmp, path)
-        # Attempt to sync directory metadata
-        try:
-            # os.O_DIRECTORY is not available on all platforms (notably
-            # Windows). Only attempt to open and fsync the directory when
-            # the flag exists; otherwise skip directory fsync.
-            if hasattr(os, "O_DIRECTORY"):
-                dirfd = os.open(dirpath, os.O_DIRECTORY)
-                try:
-                    os.fsync(dirfd)
-                finally:
-                    os.close(dirfd)
-        except Exception:
-            pass
-    finally:
-        # Clean up tmp if still exists
-        try:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-        except Exception:
-            pass
 
 
 async def _maybe_await_get_client(mcp_integration: MCPIntegration, name: str):
@@ -97,202 +58,107 @@ async def _maybe_await_get_client(mcp_integration: MCPIntegration, name: str):
     return res
 
 
-async def _mcp_list_servers(mcp_integration: MCPIntegration, args: Any) -> None:
-    """List configured external MCP servers."""
-    servers = []
+async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> None:
+    """List configured external MCP servers using MCPService."""
+    try:
+        servers = await mcp_service.list_servers()
 
-    for name, server_config in mcp_integration.configured_external_servers.items():
-        client = await _maybe_await_get_client(mcp_integration, name)
-        is_connected = client is not None
-
-        server_info = {
-            "name": name,
-            "address": server_config.url,
-            "connected": is_connected,
-            "enabled": server_config.enabled,
-            "description": server_config.description or ""
-        }
-        servers.append(server_info)
-
-    if args.out_format == "json":
-        print(json.dumps(servers, indent=2, ensure_ascii=False))
-    else:
-        # Table format
-        if not servers:
-            print("No external MCP servers configured.")
-            return
-
-        rows = []
-        for server in servers:
-            status = "Connected" if server["connected"] else "Disconnected"
-            if not server["enabled"]:
-                status = "Disabled"
-
-            if _supports_color():
-                if server["connected"]:
-                    status = _colorize(status, "32")  # green
-                elif server["enabled"]:
-                    status = _colorize(status, "31")  # red
-                else:
-                    status = _colorize(status, "90")  # gray
-
-            rows.append((server["name"], server["address"], status, server["description"]))
-
-        headers = ["NAME", "ADDRESS", "STATUS", "DESCRIPTION"]
-        if tabulate:
-            print(tabulate(rows, headers=headers, tablefmt="github"))
+        if args.out_format == "json":
+            print(json.dumps(servers, indent=2, ensure_ascii=False))
         else:
-            # Simple fallback
-            if rows:
-                name_w = max(len(str(r[0])) for r in rows)
-                addr_w = max(len(str(r[1])) for r in rows)
-                status_w = max(len(str(r[2])) for r in rows)
-                desc_w = max(len(str(r[3])) for r in rows)
+            # Table format
+            if not servers:
+                print("No external MCP servers configured.")
+                return
+
+            rows = []
+            for server in servers:
+                status = server.get("status", "unknown")
+                
+                if _supports_color():
+                    if status == "connected":
+                        status = _colorize("Connected", "32")  # green
+                    elif status == "disconnected":
+                        status = _colorize("Disconnected", "31")  # red
+                    else:
+                        status = _colorize("Disabled", "90")  # gray
+
+                rows.append((
+                    server["name"], 
+                    server.get("address", ""), 
+                    status, 
+                    server.get("description", "")
+                ))
+
+            headers = ["NAME", "ADDRESS", "STATUS", "DESCRIPTION"]
+            if tabulate:
+                print(tabulate(rows, headers=headers, tablefmt="github"))
             else:
-                name_w = addr_w = status_w = desc_w = 10
-            hdr = f"{'NAME'.ljust(name_w)}  {'ADDRESS'.ljust(addr_w)}  {'STATUS'.ljust(status_w)}  {'DESCRIPTION'.ljust(desc_w)}"
-            print(hdr)
-            print("-" * len(hdr))
-            for n, a, s, d in rows:
-                print(f"{str(n).ljust(name_w)}  {str(a).ljust(addr_w)}  {str(s).ljust(status_w)}  {str(d).ljust(desc_w)}")
-
-
-async def _mcp_connect_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
-    """Connect to an external MCP server."""
-    if server_name not in mcp_integration.configured_external_servers:
-        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
-        return
-
-    server_config = mcp_integration.configured_external_servers[server_name]
-    if not server_config.enabled:
-        print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
-        return
-
-    try:
-        client_config = {
-            "transport": server_config.transport,
-            "url": server_config.url
-        }
-
-        if server_config.initialization_options:
-            client_config["initialization_options"] = server_config.initialization_options
-
-        await mcp_integration.client_manager.add_client(server_name, client_config)
-        print(json.dumps({"result": "connected", "server": server_name}, ensure_ascii=False))
+                # Simple fallback
+                if rows:
+                    name_w = max(len(str(r[0])) for r in rows)
+                    addr_w = max(len(str(r[1])) for r in rows)
+                    status_w = max(len(str(r[2])) for r in rows)
+                    desc_w = max(len(str(r[3])) for r in rows)
+                else:
+                    name_w = addr_w = status_w = desc_w = 10
+                hdr = f"{'NAME'.ljust(name_w)}  {'ADDRESS'.ljust(addr_w)}  {'STATUS'.ljust(status_w)}  {'DESCRIPTION'.ljust(desc_w)}"
+                print(hdr)
+                print("-" * len(hdr))
+                for n, a, s, d in rows:
+                    print(f"{str(n).ljust(name_w)}  {str(a).ljust(addr_w)}  {str(s).ljust(status_w)}  {str(d).ljust(desc_w)}")
+                    
     except Exception as e:
-        print(json.dumps({"error": f"Failed to connect to {server_name}: {str(e)}"}, ensure_ascii=False))
+        logger.exception("Failed to list MCP servers: %s", e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
 
-async def _mcp_disconnect_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
-    """Disconnect from an external MCP server."""
+async def _mcp_connect_server(mcp_service: MCPService, server_name: str, args: Any) -> None:
+    """Connect to an external MCP server using MCPService."""
     try:
-        await mcp_integration.client_manager.remove_client(server_name)
-        print(json.dumps({"result": "disconnected", "server": server_name}, ensure_ascii=False))
+        result = await mcp_service.connect_server(server_name)
+        print(json.dumps(result, ensure_ascii=False))
     except Exception as e:
-        print(json.dumps({"error": f"Failed to disconnect from {server_name}: {str(e)}"}, ensure_ascii=False))
+        logger.exception("Failed to connect to server: server=%s, error=%s", server_name, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
 
-async def _mcp_status_servers(mcp_integration: MCPIntegration, server_name: str | None, args: Any) -> None:
-    """Show status of external MCP servers."""
-    if server_name:
-        if server_name not in mcp_integration.configured_external_servers:
-            print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
-            return
-
-        server_config = mcp_integration.configured_external_servers[server_name]
-        client = await _maybe_await_get_client(mcp_integration, server_name)
-        is_connected = client is not None
-
-        status_info = {
-            "name": server_name,
-            "connected": is_connected,
-            "enabled": server_config.enabled,
-            "address": server_config.url,
-            "description": server_config.description or ""
-        }
-
-        if client and is_connected:
-            # Get additional status info if available
-            try:
-                tools = await client.list_tools()
-                status_info["tools_count"] = len(tools) if tools else 0
-                status_info["tools"] = [tool.name for tool in tools] if tools else []
-            except Exception as e:
-                status_info["tools_error"] = str(e)
-
-        print(json.dumps(status_info, indent=2, ensure_ascii=False))
-    else:
-        # Status for all servers
-        await _mcp_list_servers(mcp_integration, args)
-
-
-async def _mcp_test_server(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
-    """Test connectivity and basic functionality of an external MCP server."""
-    if server_name not in mcp_integration.configured_external_servers:
-        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
-        return
-
-    server_config = mcp_integration.configured_external_servers[server_name]
-    if not server_config.enabled:
-        print(json.dumps({"error": f"Server {server_name} is disabled in configuration"}, ensure_ascii=False))
-        return
-
-    client_created_for_test = False
-
+async def _mcp_disconnect_server(mcp_service: MCPService, server_name: str, args: Any) -> None:
+    """Disconnect from an external MCP server using MCPService."""
     try:
-        client = await _maybe_await_get_client(mcp_integration, server_name)
-        if not client:
-            client_config = {
-                "transport": server_config.transport,
-                "url": server_config.url
-            }
-
-            if server_config.initialization_options:
-                client_config["initialization_options"] = server_config.initialization_options
-
-            await mcp_integration.client_manager.add_client(server_name, client_config)
-            client = await _maybe_await_get_client(mcp_integration, server_name)
-            client_created_for_test = True
-
-        if not client:
-            print(json.dumps({"error": f"Failed to create client for {server_name}"}, ensure_ascii=False))
-            return
-
-        # Test basic functionality - list tools
-        try:
-            tools = await client.list_tools()
-            test_result = {
-                "server": server_name,
-                "connection": "success",
-                "tools_count": len(tools) if tools else 0,
-                "tools": [tool.name for tool in tools] if tools else []
-            }
-        except Exception as e:
-            test_result = {
-                "server": server_name,
-                "connection": "success",
-                "tools_test": f"failed: {str(e)}"
-            }
-
-        print(json.dumps(test_result, indent=2, ensure_ascii=False))
-
+        result = await mcp_service.disconnect_server(server_name)
+        print(json.dumps(result, ensure_ascii=False))
     except Exception as e:
-        print(json.dumps({"error": f"Test failed for {server_name}: {str(e)}"}, ensure_ascii=False))
-    finally:
-        # Clean up temporary client created for testing
-        if client_created_for_test:
-            try:
-                await mcp_integration.client_manager.remove_client(server_name)
-            except Exception as cleanup_error:
-                logger.debug(f"Error cleaning up test client {server_name}: {cleanup_error}")
+        logger.exception("Failed to disconnect from server: server=%s, error=%s", server_name, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
 
-async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
-    """Manage tools for a specific MCP server (list, allow, block)."""
-    if server_name not in mcp_integration.configured_external_servers:
-        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
-        return
+async def _mcp_status_servers(mcp_service: MCPService, server_name: str | None, args: Any) -> None:
+    """Show status of external MCP servers using MCPService."""
+    try:
+        if server_name:
+            status_info = await mcp_service.get_server_status(server_name)
+            print(json.dumps(status_info, indent=2, ensure_ascii=False))
+        else:
+            # Status for all servers - just list them
+            await _mcp_list_servers(mcp_service, args)
+    except Exception as e:
+        logger.exception("Failed to get server status: server=%s, error=%s", server_name, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
+
+async def _mcp_test_server(mcp_service: MCPService, server_name: str, args: Any) -> None:
+    """Test connectivity and basic functionality of an external MCP server using MCPService."""
+    try:
+        result = await mcp_service.test_server(server_name)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    except Exception as e:
+        logger.exception("Failed to test server: server=%s, error=%s", server_name, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
+
+
+async def _mcp_tool_management(tool_service: ToolService, server_name: str, args: Any) -> None:
+    """Manage tools for a specific MCP server (list, allow, block) using ToolService."""
     # Tool action is in the 'key' argument
     tool_action = getattr(args, 'key', None)
     if not tool_action:
@@ -300,260 +166,92 @@ async def _mcp_tool_management(mcp_integration: MCPIntegration, server_name: str
         return
 
     if tool_action == "list":
-        await _list_server_tools(mcp_integration, server_name, args)
+        await _list_server_tools_via_service(tool_service, server_name, args)
     elif tool_action == "allow":
         tool_name = getattr(args, 'value', None)
         if not tool_name:
             print(json.dumps({"error": "Tool name required for allow action"}, ensure_ascii=False))
             return
-        await _allow_server_tool(mcp_integration, server_name, tool_name)
+        await _allow_server_tool(tool_service, server_name, tool_name)
     elif tool_action == "block":
         tool_name = getattr(args, 'value', None)
         if not tool_name:
             print(json.dumps({"error": "Tool name required for block action"}, ensure_ascii=False))
             return
-        await _block_server_tool(mcp_integration, server_name, tool_name)
+        await _block_server_tool(tool_service, server_name, tool_name)
     else:
         print(json.dumps({"error": f"Unknown tool action: {tool_action}. Use list, allow, or block"}, ensure_ascii=False))
 
 
-async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, args: Any) -> None:
-    """List all available tools for a server and show filtering configuration."""
-    server_config = mcp_integration.configured_external_servers[server_name]
-
-    allowed_tools = server_config.tools.allowed if server_config.tools else None
-    blocked_tools = server_config.tools.blocked if server_config.tools else None
-
+async def _list_server_tools_via_service(tool_service: ToolService, server_name: str, args: Any) -> None:
+    """List all available tools for a server using ToolService."""
     try:
-        client = await _maybe_await_get_client(mcp_integration, server_name)
-        client_created = False
-
-        if not client and server_config.enabled:
-            client_config = {
-                "transport": server_config.transport,
-                "url": server_config.url
-            }
-
-            if server_config.initialization_options:
-                client_config["initialization_options"] = server_config.initialization_options
-
-            await mcp_integration.client_manager.add_client(server_name, client_config)
-            client = await _maybe_await_get_client(mcp_integration, server_name)
-            client_created = True
-
-        available_tools = []
-        if client:
-            try:
-                tools = await client.list_tools()
-                available_tools = [tool.name for tool in tools] if tools else []
-            except Exception as e:
-                print(json.dumps({"error": f"Failed to list tools: {str(e)}"}, ensure_ascii=False))
-                return
-
-        result = {
-            "server": server_name,
-            "available_tools": available_tools,
-            "filtering": {
-                "allowed_tools": allowed_tools,
-                "blocked_tools": blocked_tools
-            }
-        }
-
-        if allowed_tools:
-            result["effective_tools"] = [t for t in available_tools if t in allowed_tools]
-        elif blocked_tools:
-            result["effective_tools"] = [t for t in available_tools if t not in blocked_tools]
-        else:
-            result["effective_tools"] = available_tools
-
-        # Output in requested format
+        result = await tool_service.list_tools(server_name, include_filtering=True)
+        
+        # Handle output format
         if getattr(args, 'out_format', 'json') == "table":
             # Table format output
             print(f"\nServer: {server_name}")
             print("=" * (len(server_name) + 8))
 
+            available_tools = result.get("tools", [])
             if not available_tools:
                 print("No tools available")
             else:
+                filtering = result.get("filtering", {})
+                blocked = set(filtering.get("blocked_tools") or [])
+                allowed = set(filtering.get("allowed_tools") or [])
+                
                 print(f"\nAvailable Tools ({len(available_tools)}):")
                 print("-" * 30)
                 for tool in available_tools:
                     status = ""
-                    if blocked_tools and tool in blocked_tools:
+                    if tool in blocked:
                         status = " [BLOCKED]"
-                    elif allowed_tools and tool not in allowed_tools:
+                    elif allowed and tool not in allowed:
                         status = " [NOT ALLOWED]"
                     print(f"  {tool}{status}")
 
-                print(f"\nEffective Tools ({len(result['effective_tools'])}):")
+                effective = result.get("effective_tools", available_tools)
+                print(f"\nEffective Tools ({len(effective)}):")
                 print("-" * 30)
-                for tool in result["effective_tools"]:
+                for tool in effective:
                     print(f"  {tool}")
 
-                if blocked_tools or allowed_tools:
+                if blocked or allowed:
                     print("\nFiltering Configuration:")
                     print("-" * 30)
-                    if allowed_tools:
-                        print(f"  Allowed: {', '.join(allowed_tools)}")
-                    if blocked_tools:
-                        print(f"  Blocked: {', '.join(blocked_tools)}")
+                    if allowed:
+                        print(f"  Allowed: {', '.join(sorted(allowed))}")
+                    if blocked:
+                        print(f"  Blocked: {', '.join(sorted(blocked))}")
         else:
             # JSON format output
             print(json.dumps(result, indent=2, ensure_ascii=False))
 
-        # Clean up temporary client
-        if client_created:
-            try:
-                await mcp_integration.client_manager.remove_client(server_name)
-            except Exception as cleanup_error:
-                logger.debug(f"Error cleaning up tool list client {server_name}: {cleanup_error}")
-
     except Exception as e:
-        print(json.dumps({"error": f"Failed to list tools for {server_name}: {str(e)}"}, ensure_ascii=False))
+        logger.exception("Failed to list tools: server=%s, error=%s", server_name, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
 
-async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
-    """Add a tool to the allowed list for a server.
-    
-    Note: This function manipulates raw YAML dicts to preserve file formatting,
-    comments, and key ordering. Using Pydantic models would lose these.
-    """
-    if server_name not in mcp_integration.configured_external_servers:
-        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
-        return
-
-    cfg_path = Path("config/mcp.yaml")
-    if not cfg_path.exists():
-        print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
-        return
-
+async def _allow_server_tool(tool_service: ToolService, server_name: str, tool_name: str) -> None:
+    """Allow a tool for a server using ToolService."""
     try:
-        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        result = await tool_service.allow_tool(server_name, tool_name)
+        print(json.dumps(result, ensure_ascii=False))
     except Exception as e:
-        print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
-        return
+        logger.exception("Failed to allow tool: server=%s, tool=%s, error=%s", server_name, tool_name, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
-    # Navigate YAML structure (dict manipulation required for file updates)
-    mcp_block = raw.get("mcp", raw)
-    external_servers_block = mcp_block.get("external_servers", {})
-    remote_servers = external_servers_block.get("remote_servers", {})
-    
-    if server_name not in remote_servers:
-        print(json.dumps({"error": f"Server {server_name} not found in config file"}, ensure_ascii=False))
-        return
 
-    server_cfg = remote_servers[server_name] or {}
-    tools_dict = server_cfg.get("tools", {})
-    if not tools_dict:
-        tools_dict = {}
-        server_cfg["tools"] = tools_dict
-    
-    allowed = list(tools_dict.get("allowed") or [])
-    blocked = list(tools_dict.get("blocked") or [])
-
-    if tool_name in allowed:
-        print(json.dumps({"message": "Tool already allowed", "server": server_name, "tool": tool_name}, ensure_ascii=False))
-        return
-
-    if tool_name in blocked:
-        blocked.remove(tool_name)
-        tools_dict["blocked"] = blocked
-
-    allowed.append(tool_name)
-    tools_dict["allowed"] = allowed
-    
-    remote_servers[server_name] = server_cfg
-    external_servers_block["remote_servers"] = remote_servers
-    mcp_block["external_servers"] = external_servers_block
-    
-    if "mcp" in raw:
-        raw["mcp"] = mcp_block
-    else:
-        raw = mcp_block
-
+async def _block_server_tool(tool_service: ToolService, server_name: str, tool_name: str) -> None:
+    """Block a tool for a server using ToolService."""
     try:
-        data = yaml.safe_dump(raw, sort_keys=False)
-        _atomic_write_text(cfg_path, data)
-        print(json.dumps({"message": "allowed_tools updated", "server": server_name, "tool": tool_name}, ensure_ascii=False))
+        result = await tool_service.block_tool(server_name, tool_name)
+        print(json.dumps(result, ensure_ascii=False))
     except Exception as e:
-        print(json.dumps({"error": f"Failed to write config: {str(e)}"}, ensure_ascii=False))
-
-
-async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
-    """Add a tool to the blocked list for a server.
-    
-    Note: This function manipulates raw YAML dicts to preserve file formatting,
-    comments, and key ordering. Using Pydantic models would lose these.
-    """
-    if server_name not in mcp_integration.configured_external_servers:
-        print(json.dumps({"error": f"Server {server_name} not found in configuration"}, ensure_ascii=False))
-        return
-
-    cfg_path = Path("config/mcp.yaml")
-    if not cfg_path.exists():
-        print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
-        return
-
-    try:
-        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    except Exception as e:
-        print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
-        return
-
-    # Navigate YAML structure (dict manipulation required for file updates)
-    mcp_block = raw.get("mcp", raw)
-    external_servers_block = mcp_block.get("external_servers", {})
-    remote_servers = external_servers_block.get("remote_servers", {})
-    
-    if server_name not in remote_servers:
-        print(json.dumps({"error": f"Server {server_name} not found in config file"}, ensure_ascii=False))
-        return
-
-    server_cfg = remote_servers[server_name] or {}
-    tools_dict = server_cfg.get("tools", {})
-    if not tools_dict:
-        tools_dict = {}
-        server_cfg["tools"] = tools_dict
-    
-    allowed = list(tools_dict.get("allowed") or [])
-    blocked = list(tools_dict.get("blocked") or [])
-
-    if tool_name in blocked:
-        print(json.dumps({"message": "Tool already blocked", "server": server_name, "tool": tool_name}, ensure_ascii=False))
-        return
-
-    if tool_name in allowed:
-        allowed.remove(tool_name)
-        tools_dict["allowed"] = allowed
-
-    blocked.append(tool_name)
-    tools_dict["blocked"] = blocked
-    
-    remote_servers[server_name] = server_cfg
-    external_servers_block["remote_servers"] = remote_servers
-    mcp_block["external_servers"] = external_servers_block
-    
-    if "mcp" in raw:
-        raw["mcp"] = mcp_block
-    else:
-        raw = mcp_block
-
-    try:
-        data = yaml.safe_dump(raw, sort_keys=False)
-        _atomic_write_text(cfg_path, data)
-        print(json.dumps({"message": "blocked_tools updated", "server": server_name, "tool": tool_name}, ensure_ascii=False))
-    except Exception as e:
-        print(json.dumps({"error": f"Failed to write config: {str(e)}"}, ensure_ascii=False))
-        raw["mcp"] = mcp_block
-    else:
-        raw = mcp_block
-
-    try:
-        data = yaml.safe_dump(raw, sort_keys=False)
-        _atomic_write_text(cfg_path, data)
-        print(json.dumps({"message": "blocked_tools updated", "server": server_name, "tool": tool_name}, ensure_ascii=False))
-    except Exception as e:
-        print(json.dumps({"error": f"Failed to write config: {str(e)}"}, ensure_ascii=False))
+        logger.exception("Failed to block tool: server=%s, tool=%s, error=%s", server_name, tool_name, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
 
 def _supports_color() -> bool:
@@ -1062,10 +760,14 @@ def main() -> None:
                     # Non-fatal: continue without live clients if initialization fails
                     pass
 
+                # Initialize services for clean separation of concerns
+                mcp_service = MCPService(mcp_integration, config)
+                tool_service = ToolService(mcp_integration, config)
+
                 action = getattr(args, "action", "list")
                 server_name = getattr(args, "server", None)
                 if action == "list":
-                    result = await _mcp_list_servers(mcp_integration, args)
+                    result = await _mcp_list_servers(mcp_service, args)
                     return
                 elif action in ("enable", "disable"):
                     if not server_name:
@@ -1212,31 +914,31 @@ def main() -> None:
                         print(json.dumps({"error": "server name required for connect action"}, ensure_ascii=False))
                         result = None
                         return
-                    result = await _mcp_connect_server(mcp_integration, server_name, args)
+                    result = await _mcp_connect_server(mcp_service, server_name, args)
                     return
                 elif action == "disconnect":
                     if not server_name:
                         print(json.dumps({"error": "server name required for disconnect action"}, ensure_ascii=False))
                         result = None
                         return
-                    result = await _mcp_disconnect_server(mcp_integration, server_name, args)
+                    result = await _mcp_disconnect_server(mcp_service, server_name, args)
                     return
                 elif action == "status":
-                    result = await _mcp_status_servers(mcp_integration, server_name, args)
+                    result = await _mcp_status_servers(mcp_service, server_name, args)
                     return
                 elif action == "test":
                     if not server_name:
                         print(json.dumps({"error": "server name required for test action"}, ensure_ascii=False))
                         result = None
                         return
-                    result = await _mcp_test_server(mcp_integration, server_name, args)
+                    result = await _mcp_test_server(mcp_service, server_name, args)
                     return
                 elif action == "tool":
                     if not server_name:
                         print(json.dumps({"error": "server name required for tool action"}, ensure_ascii=False))
                         result = None
                         return
-                    result = await _mcp_tool_management(mcp_integration, server_name, args)
+                    result = await _mcp_tool_management(tool_service, server_name, args)
                     return
             finally:
                 # Ensure we always attempt to shutdown the integration so any
