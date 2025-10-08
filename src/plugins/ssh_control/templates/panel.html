@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SSH Control Panel</title>
+    <title>SSH Terminal Control</title>
     <style>
         * {
             margin: 0;
@@ -12,860 +12,810 @@
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 20px;
-            font-size: 14px;
-        }
-        
-        .container {
-            max-width: 100%;
-        }
-        
-        h1 {
-            font-size: 20px;
-            margin-bottom: 20px;
-            color: #ffffff;
-        }
-        
-        h2 {
-            font-size: 16px;
-            margin: 20px 0 10px 0;
-            color: #ffffff;
-        }
-        
-        .section {
-            background: #252526;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 20px;
-            border: 1px solid #3c3c3c;
-        }
-        
-        .machine-card {
-            background: #2d2d30;
-            border-radius: 6px;
-            padding: 12px;
-            margin-bottom: 10px;
-            border: 1px solid #3c3c3c;
-            transition: all 0.2s;
-        }
-        
-        .machine-card:hover {
-            border-color: #007acc;
-            box-shadow: 0 2px 8px rgba(0, 122, 204, 0.2);
-        }
-        
-        .machine-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        
-        .machine-name {
-            font-weight: 600;
-            font-size: 15px;
-            color: #4fc3f7;
-        }
-        
-        .machine-status {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-        
-        .status-connected {
-            background: #2d5016;
-            color: #a9d18e;
-        }
-        
-        .status-disconnected {
-            background: #5c2d2d;
-            color: #f48771;
-        }
-        
-        .status-checking {
-            background: #3c3c1e;
-            color: #ffd966;
-        }
-        
-        .machine-details {
-            font-size: 12px;
-            color: #858585;
-            margin-top: 5px;
-        }
-        
-        .machine-details div {
-            margin-bottom: 3px;
-        }
-        
-        .machine-stats {
-            display: flex;
-            gap: 15px;
-            margin-top: 8px;
-            font-size: 11px;
-        }
-        
-        .stat {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        
-        .stat-label {
-            color: #858585;
-        }
-        
-        .stat-value {
-            color: #ffffff;
-            font-weight: 600;
-        }
-        
-        .history-entry {
-            background: #2d2d30;
-            border-left: 3px solid #3c3c3c;
-            border-radius: 4px;
-            padding: 10px;
-            margin-bottom: 8px;
-            font-size: 12px;
-        }
-        
-        .history-entry.success {
-            border-left-color: #4caf50;
-        }
-        
-        .history-entry.failure {
-            border-left-color: #f44336;
-        }
-        
-        .history-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 6px;
-            font-weight: 600;
-        }
-        
-        .history-machine {
-            color: #4fc3f7;
-        }
-        
-        .history-time {
-            color: #858585;
-            font-size: 11px;
-        }
-        
-        .history-command {
-            color: #ce9178;
-            font-family: 'Consolas', 'Monaco', monospace;
-            margin-bottom: 5px;
-            word-break: break-all;
-        }
-        
-        .history-result {
-            display: flex;
-            gap: 10px;
-            font-size: 11px;
-        }
-        
-        .history-exit-code {
-            color: #858585;
-        }
-        
-        .history-duration {
-            color: #858585;
-        }
-        
-        .btn {
-            background: #0e639c;
-            color: #ffffff;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            background: #0c0c0c;
+            color: #cccccc;
+            height: 100vh;
+            overflow: hidden;
             font-size: 13px;
+        }
+        
+        /* Tab Bar */
+        .tab-bar {
+            display: flex;
+            background: #1e1e1e;
+            border-bottom: 1px solid #007acc;
+            padding: 0;
+            overflow-x: auto;
+            flex-shrink: 0;
+        }
+        
+        .tab {
+            display: flex;
+            align-items: center;
+            padding: 8px 16px;
+            background: #2d2d2d;
+            border-right: 1px solid #3c3c3c;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
             transition: background 0.2s;
         }
         
-        .btn:hover {
-            background: #1177bb;
+        .tab:hover {
+            background: #3e3e3e;
         }
         
-        .btn:disabled {
+        .tab.active {
+            background: #0c0c0c;
+            color: #4fc3f7;
+            border-bottom: 2px solid #007acc;
+        }
+        
+        .tab-label {
+            margin-right: 8px;
+        }
+        
+        .tab-close {
+            color: #858585;
+            margin-left: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            padding: 0 4px;
+        }
+        
+        .tab-close:hover {
+            color: #f48771;
+        }
+        
+        .tab-add {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 16px;
+            background: #2d2d2d;
+            cursor: pointer;
+            color: #4fc3f7;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        
+        .tab-add:hover {
+            background: #3e3e3e;
+        }
+        
+        /* Terminal Container */
+        .terminal-container {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 40px);
+            background: #0c0c0c;
+        }
+        
+        .terminal-pane {
+            display: none;
+            flex-direction: column;
+            height: 100%;
+        }
+        
+        .terminal-pane.active {
+            display: flex;
+        }
+        
+        /* Terminal Output */
+        .terminal-output {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            background: #0c0c0c;
+            color: #cccccc;
+        }
+        
+        .terminal-output::-webkit-scrollbar {
+            width: 12px;
+        }
+        
+        .terminal-output::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+        
+        .terminal-output::-webkit-scrollbar-thumb {
+            background: #3c3c3c;
+            border-radius: 6px;
+        }
+        
+        .terminal-output::-webkit-scrollbar-thumb:hover {
+            background: #4e4e4e;
+        }
+        
+        /* Command Entry */
+        .command-entry {
+            display: flex;
+            padding: 12px 16px;
+            border-top: 1px solid #3c3c3c;
+            background: #1e1e1e;
+            align-items: center;
+        }
+        
+        .command-prompt {
+            color: #4fc3f7;
+            margin-right: 8px;
+            font-weight: bold;
+        }
+        
+        .command-input {
+            flex: 1;
+            background: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            color: #cccccc;
+            padding: 8px 12px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            outline: none;
+            border-radius: 4px;
+        }
+        
+        .command-input:focus {
+            border-color: #007acc;
+            box-shadow: 0 0 4px rgba(0, 122, 204, 0.3);
+        }
+        
+        .command-button {
+            margin-left: 12px;
+            padding: 8px 20px;
+            background: #007acc;
+            color: #ffffff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        
+        .command-button:hover {
+            background: #005a9e;
+        }
+        
+        .command-button:active {
+            background: #004578;
+        }
+        
+        .command-button:disabled {
             background: #3c3c3c;
             color: #858585;
             cursor: not-allowed;
         }
         
-        .loading {
-            text-align: center;
-            color: #858585;
-            padding: 20px;
+        /* Terminal Line Styles */
+        .terminal-line {
+            margin-bottom: 4px;
         }
         
-        .error {
-            background: #5c2d2d;
-            color: #f48771;
-            padding: 12px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-        }
-        
-        .empty {
-            text-align: center;
-            color: #858585;
-            padding: 30px;
-            font-style: italic;
-        }
-        
-        .refresh-btn {
-            float: right;
-            background: #3c3c3c;
-            padding: 6px 12px;
-            font-size: 12px;
-        }
-        
-        .refresh-btn:hover {
-            background: #4c4c4c;
-        }
-        
-        /* Modal Styles */
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.7);
-        }
-        
-        .modal.show {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .modal-content {
-            background: #1e1e1e;
-            border: 1px solid #3c3c3c;
-            border-radius: 8px;
-            width: 90%;
-            max-width: 800px;
-            max-height: 80vh;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .modal-header {
-            padding: 15px 20px;
-            border-bottom: 1px solid #3c3c3c;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .modal-title {
-            font-size: 16px;
-            font-weight: 600;
-            color: #ffffff;
-        }
-        
-        .modal-close {
-            background: none;
-            border: none;
-            color: #858585;
-            font-size: 24px;
-            cursor: pointer;
-            padding: 0;
-            width: 30px;
-            height: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .modal-close:hover {
-            color: #ffffff;
-        }
-        
-        .modal-body {
-            padding: 20px;
-            flex: 1;
-            overflow-y: auto;
-        }
-        
-        .command-input {
-            width: 100%;
-            background: #2d2d30;
-            border: 1px solid #3c3c3c;
-            color: #d4d4d4;
-            padding: 10px;
-            border-radius: 4px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-            margin-bottom: 15px;
-        }
-        
-        .command-input:focus {
-            outline: none;
-            border-color: #007acc;
-        }
-        
-        .output-container {
-            background: #1e1e1e;
-            border: 1px solid #3c3c3c;
-            border-radius: 4px;
-            padding: 15px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 12px;
-            min-height: 300px;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .output-line {
-            margin-bottom: 2px;
-            line-height: 1.4;
-        }
-        
-        .output-line.stdout {
-            color: #d4d4d4;
-        }
-        
-        .output-line.stderr {
-            color: #f48771;
-        }
-        
-        .output-line.info {
+        .terminal-prompt {
             color: #4fc3f7;
+            font-weight: bold;
         }
         
-        .output-line.success {
+        .terminal-command {
+            color: #ffffff;
+        }
+        
+        .terminal-stdout {
+            color: #cccccc;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .terminal-stderr {
+            color: #f48771;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .terminal-success {
             color: #a9d18e;
         }
         
-        .output-line.error {
-            color: #f44336;
+        .terminal-error {
+            color: #f48771;
+            font-weight: bold;
         }
         
-        .execute-btn {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 10px;
+        .terminal-info {
+            color: #ffd966;
         }
         
-        /* Icon button styles */
-        .icon-btn {
-            background: none;
-            border: 1px solid #3c3c3c;
-            color: #d4d4d4;
-            width: 32px;
-            height: 32px;
-            border-radius: 4px;
-            cursor: pointer;
-            display: inline-flex;
+        /* Modal Dialog */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s;
-            padding: 4px;
         }
         
-        .icon-btn:hover {
+        .modal-overlay.active {
+            display: flex;
+        }
+        
+        .modal {
+            background: #252526;
+            border-radius: 8px;
+            padding: 24px;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid #3c3c3c;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+        
+        .modal-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #ffffff;
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 6px;
+            color: #cccccc;
+            font-size: 13px;
+        }
+        
+        .form-input,
+        .form-select {
+            width: 100%;
+            padding: 8px 12px;
+            background: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            color: #cccccc;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            border-radius: 4px;
+            outline: none;
+        }
+        
+        .form-input:focus,
+        .form-select:focus {
+            border-color: #007acc;
+            box-shadow: 0 0 4px rgba(0, 122, 204, 0.3);
+        }
+        
+        .form-checkbox {
+            margin-right: 8px;
+        }
+        
+        .form-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 24px;
+        }
+        
+        .btn {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        
+        .btn-primary {
+            background: #007acc;
+            color: #ffffff;
+        }
+        
+        .btn-primary:hover {
+            background: #005a9e;
+        }
+        
+        .btn-secondary {
             background: #3c3c3c;
-            border-color: #007acc;
+            color: #cccccc;
         }
         
-        .icon-btn svg {
-            width: 20px;
-            height: 20px;
+        .btn-secondary:hover {
+            background: #4e4e4e;
         }
         
-        .icon-btn.active {
-            background: #0e639c;
-            border-color: #007acc;
+        /* Loading Indicator */
+        .loading {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #3c3c3c;
+            border-top-color: #007acc;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-left: 8px;
         }
         
-        .section-header {
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Empty State */
+        .empty-state {
             display: flex;
-            justify-content: space-between;
+            flex-direction: column;
             align-items: center;
-            margin-bottom: 10px;
+            justify-content: center;
+            height: 100%;
+            color: #858585;
+            text-align: center;
         }
         
-        .section-header h2 {
-            margin: 0;
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
         }
         
-        .icon-button-group {
-            display: flex;
-            gap: 5px;
+        .empty-state-text {
+            font-size: 14px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🖥️ SSH Control Panel</h1>
-        
-        <div class="section">
-            <div class="section-header">
-                <h2>Machines</h2>
-                <div class="icon-button-group">
-                    <button id="refreshMachinesBtn" class="icon-btn" title="Refresh" onclick="loadMachines()">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                            <path d="M21 3v5h-5"/>
-                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                            <path d="M3 21v-5h5"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <div id="machines-container">
-                <div class="loading">Loading machines...</div>
-            </div>
-        </div>
-        
-        <div class="section">
-            <div class="section-header">
-                <h2>Command History</h2>
-                <div class="icon-button-group">
-                    <button id="refreshHistoryBtn" class="icon-btn" title="Refresh" onclick="loadHistory()">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                            <path d="M21 3v5h-5"/>
-                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                            <path d="M3 21v-5h5"/>
-                        </svg>
-                    </button>
-                    <button id="autoRefreshHistoryBtn" class="icon-btn" title="Auto-refresh: OFF" onclick="toggleAutoRefresh()">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                            <path d="M21 3v5h-5"/>
-                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                            <path d="M3 21v-5h5"/>
-                            <circle cx="12" cy="12" r="1"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <div id="history-container">
-                <div class="loading">Loading history...</div>
-            </div>
-        </div>
+    <!-- Tab Bar -->
+    <div class="tab-bar" id="tabBar">
+        <!-- Tabs will be dynamically inserted here -->
+        <div class="tab-add" id="addTabBtn" title="Add Machine">+</div>
     </div>
     
-    <!-- Execute Command Modal -->
-    <div id="executeModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 class="modal-title">Execute Command on <span id="modalMachineName"></span></h3>
-                <button class="modal-close" onclick="closeExecuteDialog()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <input type="text" 
-                       id="commandInput" 
-                       class="command-input" 
-                       placeholder="Enter command (e.g., ls -la /var/log)" 
-                       onkeypress="handleCommandKeyPress(event)">
-                <button class="btn execute-btn" onclick="executeCommand()" id="executeBtn">Execute</button>
-                <div class="output-container" id="outputContainer">
-                    <div class="output-line info">Ready to execute command...</div>
+    <!-- Terminal Container -->
+    <div class="terminal-container" id="terminalContainer">
+        <!-- Terminal panes will be dynamically inserted here -->
+    </div>
+    
+    <!-- Add Machine Modal -->
+    <div class="modal-overlay" id="addMachineModal">
+        <div class="modal">
+            <div class="modal-header">Add SSH Machine</div>
+            <form id="addMachineForm">
+                <div class="form-group">
+                    <label class="form-label" for="machineName">Name *</label>
+                    <input type="text" id="machineName" class="form-input" required>
                 </div>
-            </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="machineHost">Host *</label>
+                    <input type="text" id="machineHost" class="form-input" required>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="machinePort">Port</label>
+                    <input type="number" id="machinePort" class="form-input" value="22">
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="machineUsername">Username *</label>
+                    <input type="text" id="machineUsername" class="form-input" required>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="authMethod">Authentication</label>
+                    <select id="authMethod" class="form-select">
+                        <option value="key">SSH Key</option>
+                        <option value="password">Password</option>
+                        <option value="agent">SSH Agent</option>
+                    </select>
+                </div>
+                
+                <div class="form-group" id="keyPathGroup">
+                    <label class="form-label" for="keyPath">Key Path</label>
+                    <input type="text" id="keyPath" class="form-input" value="~/.ssh/id_rsa">
+                </div>
+                
+                <div class="form-group" id="passwordGroup" style="display: none;">
+                    <label class="form-label" for="password">Password</label>
+                    <input type="password" id="password" class="form-input">
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="persistent" class="form-checkbox">
+                        <span class="form-label" style="display: inline;">Save to config file</span>
+                    </label>
+                </div>
+                
+                <div class="form-buttons">
+                    <button type="button" class="btn btn-secondary" id="cancelAddBtn">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Machine</button>
+                </div>
+            </form>
         </div>
     </div>
     
     <script>
-        const pluginName = '{{ plugin_name }}';
-        const apiBase = `/plugins/${pluginName}/api`;
+        // State management
+        let machines = [];
+        let activeTab = null;
+        let terminalHistory = {}; // Per-machine command history
         
-        // Load machines on page load
-        async function loadMachines() {
-            const container = document.getElementById('machines-container');
-            if (!container) {
-                console.error('machines-container element not found');
-                return;
-            }
-            container.innerHTML = '<div class="loading">Loading machines...</div>';
+        // Initialize
+        async function init() {
+            await loadMachines();
+            setupEventListeners();
             
+            // Create tabs for all machines
+            machines.forEach(machine => {
+                createTab(machine.name, false);
+            });
+            
+            // Activate first tab
+            if (machines.length > 0) {
+                switchTab(machines[0].name);
+            }
+        }
+        
+        // Setup event listeners
+        function setupEventListeners() {
+            document.getElementById('addTabBtn').addEventListener('click', openAddMachineModal);
+            document.getElementById('cancelAddBtn').addEventListener('click', closeAddMachineModal);
+            document.getElementById('addMachineForm').addEventListener('submit', handleAddMachine);
+            document.getElementById('authMethod').addEventListener('change', toggleAuthFields);
+            
+            // Click outside modal to close
+            document.getElementById('addMachineModal').addEventListener('click', (e) => {
+                if (e.target.id === 'addMachineModal') {
+                    closeAddMachineModal();
+                }
+            });
+        }
+        
+        // Load machines from API
+        async function loadMachines() {
             try {
-                const response = await fetch(`${apiBase}/machines`);
+                const response = await fetch('/plugins/ssh_control/api/machines');
                 const data = await response.json();
-                
-                if (data.error) {
-                    container.innerHTML = `<div class="error">Error: ${data.error}</div>`;
-                    return;
-                }
-                
-                if (!data.machines || data.machines.length === 0) {
-                    container.innerHTML = '<div class="empty">No machines configured</div>';
-                    return;
-                }
-                
-                // Render machines
-                container.innerHTML = '';
-                for (const machine of data.machines) {
-                    const card = createMachineCard(machine);
-                    container.appendChild(card);
-                }
-                
-                // Check connection status for all machines
-                checkAllConnections(data.machines);
+                machines = data.machines || [];
             } catch (error) {
                 console.error('Failed to load machines:', error);
-                container.innerHTML = `<div class="error">Failed to load machines: ${error.message}</div>`;
+                machines = [];
             }
         }
         
-        function createMachineCard(machine) {
-            const card = document.createElement('div');
-            card.className = 'machine-card';
-            card.id = `machine-${machine.name}`;
+        // Create tab for machine
+        function createTab(machineName, removable = false) {
+            const tabBar = document.getElementById('tabBar');
+            const addBtn = document.getElementById('addTabBtn');
             
-            const poolInfo = machine.pool || {};
-            const hasPool = poolInfo.total_created > 0;
+            const tab = document.createElement('div');
+            tab.className = 'tab';
+            tab.dataset.machine = machineName;
             
-            card.innerHTML = `
-                <div class="machine-header">
-                    <span class="machine-name">${machine.name}</span>
-                    <span class="machine-status status-checking" id="status-${machine.name}">Checking...</span>
-                </div>
-                <div class="machine-details">
-                    <div>🔗 <strong>${machine.username}@${machine.host}:${machine.port}</strong></div>
-                    ${machine.tags.length > 0 ? `<div>🏷️ ${machine.tags.join(', ')}</div>` : ''}
-                </div>
-                    ${hasPool ? `
-                    <div class="machine-stats">
-                        <div class="stat">
-                            <span class="stat-label">Connections:</span>
-                            <span class="stat-value">${poolInfo.total_created}/${machine.max_connections}</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Available:</span>
-                            <span class="stat-value">${poolInfo.available}</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">In Use:</span>
-                            <span class="stat-value">${poolInfo.in_use}</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Commands:</span>
-                            <span class="stat-value">${poolInfo.total_commands}</span>
-                        </div>
-                    </div>
-                ` : ''}
-                <div style="margin-top: 10px;">
-                    <button class="btn" onclick="openExecuteDialog('${machine.name}')">Execute Command</button>
-                </div>
-            `;            return card;
-        }
-        
-        async function checkAllConnections(machines) {
-            for (const machine of machines) {
-                checkMachineConnection(machine.name);
+            const label = document.createElement('span');
+            label.className = 'tab-label';
+            label.textContent = machineName;
+            tab.appendChild(label);
+            
+            if (removable) {
+                const closeBtn = document.createElement('span');
+                closeBtn.className = 'tab-close';
+                closeBtn.textContent = '×';
+                closeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    removeTab(machineName);
+                });
+                tab.appendChild(closeBtn);
             }
+            
+            tab.addEventListener('click', () => switchTab(machineName));
+            
+            tabBar.insertBefore(tab, addBtn);
+            
+            // Create terminal pane
+            createTerminalPane(machineName);
         }
         
-        async function checkMachineConnection(machineName) {
-            const statusEl = document.getElementById(`status-${machineName}`);
-            if (!statusEl) return;
+        // Create terminal pane
+        function createTerminalPane(machineName) {
+            const container = document.getElementById('terminalContainer');
+            
+            const pane = document.createElement('div');
+            pane.className = 'terminal-pane';
+            pane.dataset.machine = machineName;
+            
+            const output = document.createElement('div');
+            output.className = 'terminal-output';
+            output.id = `terminal-${machineName}`;
+            
+            // Add welcome message
+            const welcome = document.createElement('div');
+            welcome.className = 'terminal-line terminal-info';
+            welcome.textContent = `Connected to ${machineName}. Type commands below.`;
+            output.appendChild(welcome);
+            
+            pane.appendChild(output);
+            
+            // Command input
+            const commandEntry = document.createElement('div');
+            commandEntry.className = 'command-entry';
+            
+            const prompt = document.createElement('span');
+            prompt.className = 'command-prompt';
+            prompt.textContent = `${machineName}$`;
+            commandEntry.appendChild(prompt);
+            
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'command-input';
+            input.placeholder = 'Enter command...';
+            input.id = `input-${machineName}`;
+            commandEntry.appendChild(input);
+            
+            const button = document.createElement('button');
+            button.className = 'command-button';
+            button.textContent = 'Run';
+            button.id = `run-${machineName}`;
+            button.addEventListener('click', () => executeCommand(machineName));
+            commandEntry.appendChild(button);
+            
+            // Enter key to execute
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    executeCommand(machineName);
+                }
+            });
+            
+            pane.appendChild(commandEntry);
+            container.appendChild(pane);
+            
+            // Initialize history
+            terminalHistory[machineName] = [];
+        }
+        
+        // Switch active tab
+        function switchTab(machineName) {
+            // Update tabs
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+                if (tab.dataset.machine === machineName) {
+                    tab.classList.add('active');
+                }
+            });
+            
+            // Update panes
+            document.querySelectorAll('.terminal-pane').forEach(pane => {
+                pane.classList.remove('active');
+                if (pane.dataset.machine === machineName) {
+                    pane.classList.add('active');
+                }
+            });
+            
+            activeTab = machineName;
+            
+            // Focus input
+            const input = document.getElementById(`input-${machineName}`);
+            if (input) input.focus();
+        }
+        
+        // Execute command
+        async function executeCommand(machineName) {
+            const input = document.getElementById(`input-${machineName}`);
+            const button = document.getElementById(`run-${machineName}`);
+            const output = document.getElementById(`terminal-${machineName}`);
+            
+            const command = input.value.trim();
+            if (!command) return;
+            
+            // Add command to history
+            terminalHistory[machineName].push({
+                command,
+                timestamp: new Date()
+            });
+            
+            // Display command
+            const commandLine = document.createElement('div');
+            commandLine.className = 'terminal-line';
+            commandLine.innerHTML = `<span class="terminal-prompt">${machineName}$</span> <span class="terminal-command">${escapeHtml(command)}</span>`;
+            output.appendChild(commandLine);
+            
+            // Clear input and disable button
+            input.value = '';
+            input.disabled = true;
+            button.disabled = true;
+            button.innerHTML = 'Running <span class="loading"></span>';
             
             try {
-                const response = await fetch(`${apiBase}/machines/${machineName}/status`);
-                const data = await response.json();
+                // Execute via API
+                const response = await fetch('/plugins/ssh_control/api/execute', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        machine: machineName,
+                        command: command
+                    })
+                });
                 
-                if (data.connected) {
-                    statusEl.className = 'machine-status status-connected';
-                    statusEl.textContent = `✓ Connected (${Math.round(data.latency_ms)}ms)`;
+                const result = await response.json();
+                
+                // Display output
+                if (result.stdout) {
+                    const stdoutLine = document.createElement('div');
+                    stdoutLine.className = 'terminal-line terminal-stdout';
+                    stdoutLine.textContent = result.stdout;
+                    output.appendChild(stdoutLine);
+                }
+                
+                if (result.stderr) {
+                    const stderrLine = document.createElement('div');
+                    stderrLine.className = 'terminal-line terminal-stderr';
+                    stderrLine.textContent = result.stderr;
+                    output.appendChild(stderrLine);
+                }
+                
+                // Display exit code
+                const exitLine = document.createElement('div');
+                exitLine.className = `terminal-line ${result.exit_code === 0 ? 'terminal-success' : 'terminal-error'}`;
+                exitLine.textContent = `[Exit code: ${result.exit_code}]`;
+                output.appendChild(exitLine);
+                
+            } catch (error) {
+                const errorLine = document.createElement('div');
+                errorLine.className = 'terminal-line terminal-error';
+                errorLine.textContent = `Error: ${error.message}`;
+                output.appendChild(errorLine);
+            } finally {
+                // Re-enable input
+                input.disabled = false;
+                button.disabled = false;
+                button.textContent = 'Run';
+                
+                // Auto-scroll to bottom
+                output.scrollTop = output.scrollHeight;
+                
+                // Focus input
+                input.focus();
+            }
+        }
+        
+        // Add machine modal
+        function openAddMachineModal() {
+            document.getElementById('addMachineModal').classList.add('active');
+            document.getElementById('machineName').focus();
+        }
+        
+        function closeAddMachineModal() {
+            document.getElementById('addMachineModal').classList.remove('active');
+            document.getElementById('addMachineForm').reset();
+        }
+        
+        function toggleAuthFields() {
+            const authMethod = document.getElementById('authMethod').value;
+            const keyPathGroup = document.getElementById('keyPathGroup');
+            const passwordGroup = document.getElementById('passwordGroup');
+            
+            if (authMethod === 'password') {
+                keyPathGroup.style.display = 'none';
+                passwordGroup.style.display = 'block';
+            } else if (authMethod === 'key') {
+                keyPathGroup.style.display = 'block';
+                passwordGroup.style.display = 'none';
+            } else { // agent
+                keyPathGroup.style.display = 'none';
+                passwordGroup.style.display = 'none';
+            }
+        }
+        
+        async function handleAddMachine(e) {
+            e.preventDefault();
+            
+            const formData = {
+                name: document.getElementById('machineName').value,
+                host: document.getElementById('machineHost').value,
+                port: parseInt(document.getElementById('machinePort').value) || 22,
+                username: document.getElementById('machineUsername').value,
+                auth_method: document.getElementById('authMethod').value,
+                persistent: document.getElementById('persistent').checked
+            };
+            
+            if (formData.auth_method === 'key') {
+                formData.key_path = document.getElementById('keyPath').value;
+            } else if (formData.auth_method === 'password') {
+                formData.password = document.getElementById('password').value;
+            }
+            
+            try {
+                const response = await fetch('/plugins/ssh_control/api/machines/add', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Add to machines list
+                    machines.push({
+                        name: formData.name,
+                        host: formData.host,
+                        port: formData.port,
+                        username: formData.username
+                    });
+                    
+                    // Create tab (removable if dynamic)
+                    createTab(formData.name, true);
+                    switchTab(formData.name);
+                    
+                    closeAddMachineModal();
                 } else {
-                    statusEl.className = 'machine-status status-disconnected';
-                    statusEl.textContent = `✗ Disconnected`;
+                    alert(`Failed to add machine: ${result.error}`);
                 }
             } catch (error) {
-                console.error(`Failed to check ${machineName}:`, error);
-                statusEl.className = 'machine-status status-disconnected';
-                statusEl.textContent = `✗ Error`;
+                alert(`Error adding machine: ${error.message}`);
             }
         }
         
-        async function loadHistory() {
-            const container = document.getElementById('history-container');
-            if (!container) return;
-            container.innerHTML = '<div class="loading">Loading history...</div>';
+        // Remove tab and machine
+        async function removeTab(machineName) {
+            if (!confirm(`Remove machine '${machineName}'?`)) return;
             
             try {
-                const response = await fetch(`${apiBase}/history?limit=20`);
-                const data = await response.json();
+                const response = await fetch(`/plugins/ssh_control/api/machines/${machineName}`, {
+                    method: 'DELETE'
+                });
                 
-                if (data.error) {
-                    container.innerHTML = `<div class="error">Error: ${data.error}</div>`;
-                    return;
-                }
+                const result = await response.json();
                 
-                if (!data.history || data.history.length === 0) {
-                    container.innerHTML = '<div class="empty">No command history</div>';
-                    return;
-                }
-                
-                // Render history
-                container.innerHTML = '';
-                for (const entry of data.history) {
-                    const historyEntry = createHistoryEntry(entry);
-                    container.appendChild(historyEntry);
+                if (result.success) {
+                    // Remove tab
+                    const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
+                    if (tab) tab.remove();
+                    
+                    // Remove pane
+                    const pane = document.querySelector(`.terminal-pane[data-machine="${machineName}"]`);
+                    if (pane) pane.remove();
+                    
+                    // Remove from machines list
+                    machines = machines.filter(m => m.name !== machineName);
+                    
+                    // Clear history
+                    delete terminalHistory[machineName];
+                    
+                    // Switch to another tab
+                    if (activeTab === machineName && machines.length > 0) {
+                        switchTab(machines[0].name);
+                    }
+                } else {
+                    alert(`Failed to remove machine: ${result.error}`);
                 }
             } catch (error) {
-                console.error('Failed to load history:', error);
-                container.innerHTML = `<div class="error">Failed to load history: ${error.message}</div>`;
+                alert(`Error removing machine: ${error.message}`);
             }
         }
         
-        function createHistoryEntry(entry) {
-            const div = document.createElement('div');
-            div.className = `history-entry ${entry.success ? 'success' : 'failure'}`;
-            
-            div.innerHTML = `
-                <div class="history-header">
-                    <span class="history-machine">${entry.machine}</span>
-                    <span class="history-time">${entry.timestamp_formatted || new Date(entry.timestamp * 1000).toLocaleString()}</span>
-                </div>
-                <div class="history-command">${escapeHtml(entry.command)}</div>
-                <div class="history-result">
-                    <span class="history-exit-code">Exit: ${entry.exit_code}</span>
-                    <span class="history-duration">Duration: ${entry.duration_formatted || entry.duration.toFixed(2) + 's'}</span>
-                </div>
-            `;
-            
-            return div;
-        }
-        
+        // Utility functions
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
         
-        // Auto-refresh every 5 seconds
-        let autoRefreshInterval = null;
-        let autoRefreshEnabled = false;
-        
-        function toggleAutoRefresh() {
-            autoRefreshEnabled = !autoRefreshEnabled;
-            const btn = document.getElementById('autoRefreshHistoryBtn');
-            
-            if (autoRefreshEnabled) {
-                btn.classList.add('active');
-                btn.title = 'Auto-refresh: ON';
-                autoRefreshInterval = setInterval(() => {
-                    loadHistory();
-                }, 5000);
-                loadHistory(); // Immediate refresh
-            } else {
-                btn.classList.remove('active');
-                btn.title = 'Auto-refresh: OFF';
-                if (autoRefreshInterval) {
-                    clearInterval(autoRefreshInterval);
-                    autoRefreshInterval = null;
-                }
-            }
-        }
-        
-        // Initial load
-        loadMachines();
-        loadHistory();
-        
-        // ===== Execute Command Modal =====
-        let currentMachine = null;
-        let eventSource = null;
-        
-        function openExecuteDialog(machineName) {
-            currentMachine = machineName;
-            const modalName = document.getElementById('modalMachineName');
-            const commandInput = document.getElementById('commandInput');
-            const outputContainer = document.getElementById('outputContainer');
-            const executeModal = document.getElementById('executeModal');
-            
-            if (modalName) modalName.textContent = machineName;
-            if (commandInput) commandInput.value = '';
-            if (outputContainer) outputContainer.innerHTML = '<div class="output-line info">Ready to execute command...</div>';
-            if (executeModal) executeModal.classList.add('show');
-            if (commandInput) commandInput.focus();
-        }
-        
-        function closeExecuteDialog() {
-            const executeModal = document.getElementById('executeModal');
-            if (executeModal) executeModal.classList.remove('show');
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
-            }
-            currentMachine = null;
-        }
-        
-        function handleCommandKeyPress(event) {
-            if (event.key === 'Enter') {
-                executeCommand();
-            }
-        }
-        
-        function executeCommand() {
-            const commandInput = document.getElementById('commandInput');
-            const command = commandInput ? commandInput.value.trim() : '';
-            if (!command) {
-                addOutputLine('error', 'Please enter a command');
-                return;
-            }
-            
-            if (!currentMachine) {
-                addOutputLine('error', 'No machine selected');
-                return;
-            }
-            
-            // Disable execute button
-            const executeBtn = document.getElementById('executeBtn');
-            if (executeBtn) {
-                executeBtn.disabled = true;
-                executeBtn.textContent = 'Executing...';
-            }
-            
-            // Clear output
-            const outputContainer = document.getElementById('outputContainer');
-            if (outputContainer) outputContainer.innerHTML = '';
-            
-            // Start SSE connection
-            const url = `${apiBase}/execute/stream?machine=${encodeURIComponent(currentMachine)}&command=${encodeURIComponent(command)}&timeout=60`;
-            
-            addOutputLine('info', `Executing: ${command}`);
-            addOutputLine('info', '---');
-            
-            eventSource = new EventSource(url);
-            
-            eventSource.addEventListener('start', (e) => {
-                const data = JSON.parse(e.data);
-                addOutputLine('info', `Started on ${data.machine} at ${new Date(data.timestamp * 1000).toLocaleTimeString()}`);
-            });
-            
-            eventSource.addEventListener('stdout', (e) => {
-                const data = JSON.parse(e.data);
-                addOutputLine('stdout', data.line);
-            });
-            
-            eventSource.addEventListener('stderr', (e) => {
-                const data = JSON.parse(e.data);
-                addOutputLine('stderr', data.line);
-            });
-            
-            eventSource.addEventListener('exit', (e) => {
-                const data = JSON.parse(e.data);
-                addOutputLine('info', '---');
-                if (data.success) {
-                    addOutputLine('success', `✓ Command completed successfully (exit code: ${data.exit_code}, duration: ${data.duration.toFixed(2)}s)`);
-                } else {
-                    addOutputLine('error', `✗ Command failed (exit code: ${data.exit_code}, duration: ${data.duration.toFixed(2)}s)`);
-                }
-                
-                // Re-enable execute button
-                const executeBtn = document.getElementById('executeBtn');
-                if (executeBtn) {
-                    executeBtn.disabled = false;
-                    executeBtn.textContent = 'Execute';
-                }
-                
-                // Close event source
-                eventSource.close();
-                eventSource = null;
-                
-                // Refresh history
-                loadHistory();
-            });
-            
-            eventSource.addEventListener('error', (e) => {
-                let errorMsg = 'Unknown error';
-                if (e.data) {
-                    try {
-                        const data = JSON.parse(e.data);
-                        errorMsg = data.message || data.error || errorMsg;
-                    } catch (err) {
-                        // Ignore parse error
-                    }
-                }
-                
-                addOutputLine('error', `✗ Error: ${errorMsg}`);
-                
-                // Re-enable execute button
-                const executeBtn = document.getElementById('executeBtn');
-                if (executeBtn) {
-                    executeBtn.disabled = false;
-                    executeBtn.textContent = 'Execute';
-                }
-                
-                // Close event source
-                if (eventSource) {
-                    eventSource.close();
-                    eventSource = null;
-                }
-            });
-            
-            eventSource.addEventListener('done', () => {
-                // Final done event
-                if (eventSource) {
-                    eventSource.close();
-                    eventSource = null;
-                }
-            });
-            
-            eventSource.onerror = (err) => {
-                console.error('EventSource error:', err);
-                
-                // Only show error if we haven't already shown an 'error' event
-                const container = document.getElementById('outputContainer');
-                if (container) {
-                    const hasErrorLine = Array.from(container.children).some(el => 
-                        el.classList.contains('error') && el.textContent.includes('✗')
-                    );
-                    
-                    if (!hasErrorLine) {
-                        addOutputLine('error', '✗ Connection error - check console for details');
-                    }
-                }
-                
-                // Re-enable execute button
-                const executeBtn = document.getElementById('executeBtn');
-                if (executeBtn) {
-                    executeBtn.disabled = false;
-                    executeBtn.textContent = 'Execute';
-                }
-                
-                if (eventSource) {
-                    eventSource.close();
-                    eventSource = null;
-                }
-            };
-        }
-        
-        function addOutputLine(type, text) {
-            const container = document.getElementById('outputContainer');
-            if (!container) return;
-            
-            const line = document.createElement('div');
-            line.className = `output-line ${type}`;
-            line.textContent = text;
-            container.appendChild(line);
-            
-            // Auto-scroll to bottom
-            container.scrollTop = container.scrollHeight;
-        }
-        
-        // Close modal on Escape key
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeExecuteDialog();
-            }
-        });
+        // Initialize on load
+        init();
     </script>
 </body>
 </html>
