@@ -370,12 +370,81 @@
         .empty-state-text {
             font-size: 14px;
         }
+        
+        /* Icon Buttons */
+        .icon-button-group {
+            display: flex;
+            gap: 5px;
+            padding: 0 8px;
+        }
+        
+        .icon-btn {
+            background: none;
+            border: 1px solid #3c3c3c;
+            color: #d4d4d4;
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            padding: 4px;
+        }
+        
+        .icon-btn:hover {
+            background: #3c3c3c;
+            border-color: #007acc;
+        }
+        
+        .icon-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+        
+        .icon-btn.active {
+            background: #0e639c;
+            border-color: #007acc;
+        }
+        
+        /* Error Message Box */
+        .error-message {
+            display: none;
+            background: #5a1d1d;
+            border: 1px solid #f48771;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 16px;
+            color: #f48771;
+            font-size: 13px;
+        }
+        
+        .error-message.show {
+            display: block;
+        }
     </style>
 </head>
 <body>
     <!-- Tab Bar -->
     <div class="tab-bar" id="tabBar">
         <!-- Tabs will be dynamically inserted here -->
+        <div class="icon-button-group">
+            <button id="refreshHistoryBtn" class="icon-btn" title="Refresh History" onclick="refreshCurrentMachine()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                    <path d="M21 3v5h-5"/>
+                    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                    <path d="M3 21v-5h5"/>
+                </svg>
+            </button>
+            <button id="autoRefreshHistoryBtn" class="icon-btn" title="Auto-refresh: OFF" onclick="toggleAutoRefresh()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3"/>
+                </svg>
+            </button>
+        </div>
         <div class="tab-add" id="addTabBtn" title="Add Machine">+</div>
     </div>
     
@@ -389,6 +458,8 @@
         <div class="modal">
             <div class="modal-header">Add SSH Machine</div>
             <form id="addMachineForm">
+                <div id="addMachineError" class="error-message"></div>
+                
                 <div class="form-group">
                     <label class="form-label" for="machineName">Name *</label>
                     <input type="text" id="machineName" class="form-input" required>
@@ -443,26 +514,63 @@
         </div>
     </div>
     
+    <!-- Confirm Remove Modal -->
+    <div class="modal-overlay" id="confirmRemoveModal">
+        <div class="modal" style="max-width: 400px;">
+            <div class="modal-header">Remove Machine?</div>
+            <div style="margin-bottom: 20px; color: #cccccc; font-size: 14px; line-height: 1.5;">
+                <p id="confirmRemoveText" style="margin: 0 0 12px 0;"></p>
+                <p style="margin: 0; color: #858585; font-size: 12px;">Note: This will only remove it from the current session. To permanently remove it from the config file, edit config/mcp.yaml manually.</p>
+            </div>
+            <div class="form-buttons">
+                <button type="button" class="btn btn-secondary" id="cancelRemoveBtn">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmRemoveBtn">Remove</button>
+            </div>
+        </div>
+    </div>
+    
     <script>
         // State management
         let machines = [];
         let activeTab = null;
         let terminalHistory = {}; // Per-machine command history
+        let historyLoaded = {}; // Track which machines have loaded history
+        let lastHistoryTimestamp = {}; // Track last loaded history timestamp per machine
+        let autoRefreshInterval = null;
+        let autoRefreshEnabled = false;
         
         // Initialize
         async function init() {
             await loadMachines();
             setupEventListeners();
             
-            // Create tabs for all machines
+            // Create tabs for all machines (all are removable with custom confirm dialog)
             machines.forEach(machine => {
-                createTab(machine.name, false);
+                createTab(machine.name, true);
             });
             
             // Activate first tab
             if (machines.length > 0) {
                 switchTab(machines[0].name);
             }
+            
+            // Start auto-refresh for active tab (DISABLED for debugging)
+            // startAutoRefresh();
+        }
+        
+        // Auto-refresh history every 5 seconds (DISABLED for debugging)
+        function startAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+            
+            /* DISABLED - causing duplicates
+            autoRefreshInterval = setInterval(() => {
+                if (activeTab) {
+                    refreshMachineHistory(activeTab);
+                }
+            }, 5000); // Refresh every 5 seconds
+            */
         }
         
         // Setup event listeners
@@ -497,6 +605,13 @@
             const tabBar = document.getElementById('tabBar');
             const addBtn = document.getElementById('addTabBtn');
             
+            // Check if tab already exists
+            const existingTab = document.querySelector(`.tab[data-machine="${machineName}"]`);
+            if (existingTab) {
+                // Tab already exists, don't create duplicate
+                return;
+            }
+            
             const tab = document.createElement('div');
             tab.className = 'tab';
             tab.dataset.machine = machineName;
@@ -521,15 +636,22 @@
             
             tabBar.insertBefore(tab, addBtn);
             
-            // Create terminal pane
+            // Create terminal pane (only if tab was created)
             createTerminalPane(machineName);
         }
         
         // Create terminal pane
-        function createTerminalPane(machineName) {
+        async function createTerminalPane(machineName) {
             const container = document.getElementById('terminalContainer');
             
-            const pane = document.createElement('div');
+            // Check if pane already exists
+            let pane = document.querySelector(`.terminal-pane[data-machine="${machineName}"]`);
+            if (pane) {
+                // Pane already exists, do nothing (history is already loaded)
+                return;
+            }
+            
+            pane = document.createElement('div');
             pane.className = 'terminal-pane';
             pane.dataset.machine = machineName;
             
@@ -581,6 +703,154 @@
             
             // Initialize history
             terminalHistory[machineName] = [];
+            historyLoaded[machineName] = false;
+            lastHistoryTimestamp[machineName] = 0;
+            
+            // Load initial history from server
+            await loadMachineHistory(machineName);
+        }
+        
+        // Load command history for a machine (initial load)
+        async function loadMachineHistory(machineName) {
+            if (historyLoaded[machineName]) {
+                // Already loaded, skip
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/plugins/ssh_control/api/machines/${machineName}/history?limit=50`);
+                const data = await response.json();
+                
+                if (data.history && data.history.length > 0) {
+                    const output = document.getElementById(`terminal-${machineName}`);
+                    
+                    // Add history separator
+                    const separator = document.createElement('div');
+                    separator.className = 'terminal-line terminal-info';
+                    separator.textContent = `--- Previous commands (${data.count} shown) ---`;
+                    output.appendChild(separator);
+                    
+                    // Display history in reverse order (oldest first)
+                    const historyReversed = [...data.history].reverse();
+                    historyReversed.forEach(entry => {
+                        appendHistoryEntry(machineName, entry);
+                        
+                        // Track latest timestamp
+                        if (entry.timestamp > lastHistoryTimestamp[machineName]) {
+                            lastHistoryTimestamp[machineName] = entry.timestamp;
+                        }
+                    });
+                    
+                    // Add separator after history
+                    const endSeparator = document.createElement('div');
+                    endSeparator.className = 'terminal-line terminal-info';
+                    endSeparator.textContent = '--- Live session ---';
+                    output.appendChild(endSeparator);
+                    
+                    // Auto-scroll to bottom
+                    output.scrollTop = output.scrollHeight;
+                }
+                
+                historyLoaded[machineName] = true;
+            } catch (error) {
+                console.error(`Failed to load history for ${machineName}:`, error);
+                historyLoaded[machineName] = true; // Mark as loaded to avoid retry loops
+            }
+        }
+        
+        // Refresh history (check for new commands)
+        async function refreshMachineHistory(machineName) {
+            if (!historyLoaded[machineName]) {
+                // Initial load not done yet
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/plugins/ssh_control/api/machines/${machineName}/history?limit=10`);
+                const data = await response.json();
+                
+                if (data.history && data.history.length > 0) {
+                    // Check for new entries (timestamp > lastHistoryTimestamp)
+                    const newEntries = data.history.filter(entry => 
+                        entry.timestamp > lastHistoryTimestamp[machineName]
+                    );
+                    
+                    if (newEntries.length > 0) {
+                        const output = document.getElementById(`terminal-${machineName}`);
+                        
+                        // Append new entries (oldest first)
+                        const newEntriesReversed = [...newEntries].reverse();
+                        newEntriesReversed.forEach(entry => {
+                            appendHistoryEntry(machineName, entry);
+                            
+                            // Update timestamp
+                            if (entry.timestamp > lastHistoryTimestamp[machineName]) {
+                                lastHistoryTimestamp[machineName] = entry.timestamp;
+                            }
+                        });
+                        
+                        // Auto-scroll to bottom
+                        output.scrollTop = output.scrollHeight;
+                    }
+                }
+            } catch (error) {
+                console.error(`Failed to refresh history for ${machineName}:`, error);
+            }
+        }
+        
+        // Append a single history entry to the terminal
+        function appendHistoryEntry(machineName, entry) {
+            const output = document.getElementById(`terminal-${machineName}`);
+            
+            // Command line
+            const commandLine = document.createElement('div');
+            commandLine.className = 'terminal-line';
+            commandLine.innerHTML = `<span class="terminal-prompt">${machineName}$</span> <span class="terminal-command">${escapeHtml(entry.command)}</span>`;
+            output.appendChild(commandLine);
+            
+            // Stdout
+            if (entry.stdout_preview) {
+                const stdoutLine = document.createElement('div');
+                stdoutLine.className = 'terminal-line terminal-stdout';
+                stdoutLine.textContent = entry.stdout_preview;
+                if (entry.stdout_preview.length >= 10000) {
+                    const truncNote = document.createElement('div');
+                    truncNote.className = 'terminal-line terminal-info';
+                    truncNote.textContent = '[Output truncated at 10KB limit]';
+                    output.appendChild(stdoutLine);
+                    output.appendChild(truncNote);
+                } else {
+                    output.appendChild(stdoutLine);
+                }
+            }
+            
+            // Stderr
+            if (entry.stderr_preview) {
+                const stderrLine = document.createElement('div');
+                stderrLine.className = 'terminal-line terminal-stderr';
+                stderrLine.textContent = entry.stderr_preview;
+                if (entry.stderr_preview.length >= 10000) {
+                    const truncNote = document.createElement('div');
+                    truncNote.className = 'terminal-line terminal-info';
+                    truncNote.textContent = '[Error output truncated at 10KB limit]';
+                    output.appendChild(stderrLine);
+                    output.appendChild(truncNote);
+                } else {
+                    output.appendChild(stderrLine);
+                }
+            }
+            
+            // Exit code
+            const exitLine = document.createElement('div');
+            exitLine.className = `terminal-line ${entry.success ? 'terminal-success' : 'terminal-error'}`;
+            exitLine.textContent = `[Exit code: ${entry.exit_code}]`;
+            if (entry.duration_formatted) {
+                exitLine.textContent += ` (${entry.duration_formatted})`;
+            }
+            if (entry.timestamp_formatted) {
+                exitLine.textContent += ` at ${entry.timestamp_formatted}`;
+            }
+            output.appendChild(exitLine);
         }
         
         // Switch active tab
@@ -616,6 +886,9 @@
             
             const command = input.value.trim();
             if (!command) return;
+            
+            // Track execution timestamp (to avoid double-loading from history)
+            const executionTime = Date.now() / 1000; // Unix timestamp in seconds
             
             // Add command to history
             terminalHistory[machineName].push({
@@ -671,6 +944,11 @@
                 exitLine.textContent = `[Exit code: ${result.exit_code}]`;
                 output.appendChild(exitLine);
                 
+                // Update lastHistoryTimestamp to prevent auto-refresh from re-adding this command
+                if (executionTime > lastHistoryTimestamp[machineName]) {
+                    lastHistoryTimestamp[machineName] = executionTime + 1; // +1 to ensure we skip this one
+                }
+                
             } catch (error) {
                 const errorLine = document.createElement('div');
                 errorLine.className = 'terminal-line terminal-error';
@@ -692,6 +970,11 @@
         
         // Add machine modal
         function openAddMachineModal() {
+            // Clear any previous error
+            const errorBox = document.getElementById('addMachineError');
+            errorBox.classList.remove('show');
+            errorBox.textContent = '';
+            
             document.getElementById('addMachineModal').classList.add('active');
             document.getElementById('machineName').focus();
         }
@@ -699,6 +982,11 @@
         function closeAddMachineModal() {
             document.getElementById('addMachineModal').classList.remove('active');
             document.getElementById('addMachineForm').reset();
+            
+            // Clear error message
+            const errorBox = document.getElementById('addMachineError');
+            errorBox.classList.remove('show');
+            errorBox.textContent = '';
         }
         
         function toggleAuthFields() {
@@ -737,6 +1025,11 @@
             }
             
             try {
+                // Clear previous error
+                const errorBox = document.getElementById('addMachineError');
+                errorBox.classList.remove('show');
+                errorBox.textContent = '';
+                
                 const response = await fetch('/plugins/ssh_control/api/machines/add', {
                     method: 'POST',
                     headers: {
@@ -762,49 +1055,105 @@
                     
                     closeAddMachineModal();
                 } else {
-                    alert(`Failed to add machine: ${result.error}`);
+                    // Show error in modal
+                    errorBox.textContent = result.error || 'Failed to add machine';
+                    errorBox.classList.add('show');
                 }
             } catch (error) {
-                alert(`Error adding machine: ${error.message}`);
+                // Show error in modal
+                const errorBox = document.getElementById('addMachineError');
+                errorBox.textContent = `Error: ${error.message}`;
+                errorBox.classList.add('show');
             }
         }
         
         // Remove tab and machine
         async function removeTab(machineName) {
-            if (!confirm(`Remove machine '${machineName}'?`)) return;
+            console.log('removeTab called for:', machineName);
             
-            try {
-                const response = await fetch(`/plugins/ssh_control/api/machines/${machineName}`, {
-                    method: 'DELETE'
-                });
+            // Show custom confirm modal instead of browser confirm()
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirmRemoveModal');
+                const confirmBtn = document.getElementById('confirmRemoveBtn');
+                const cancelBtn = document.getElementById('cancelRemoveBtn');
+                const textElement = document.getElementById('confirmRemoveText');
                 
-                const result = await response.json();
+                textElement.textContent = `Remove machine '${machineName}' from runtime?`;
+                modal.classList.add('active');
                 
-                if (result.success) {
-                    // Remove tab
-                    const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
-                    if (tab) tab.remove();
+                const handleConfirm = async () => {
+                    cleanup();
+                    console.log('User confirmed removal');
                     
-                    // Remove pane
-                    const pane = document.querySelector(`.terminal-pane[data-machine="${machineName}"]`);
-                    if (pane) pane.remove();
-                    
-                    // Remove from machines list
-                    machines = machines.filter(m => m.name !== machineName);
-                    
-                    // Clear history
-                    delete terminalHistory[machineName];
-                    
-                    // Switch to another tab
-                    if (activeTab === machineName && machines.length > 0) {
-                        switchTab(machines[0].name);
+                    try {
+                        console.log('Sending DELETE request...');
+                        const response = await fetch(`/plugins/ssh_control/api/machines/${machineName}?remove_from_config=false`, {
+                            method: 'DELETE'
+                        });
+                        
+                        console.log('Response status:', response.status);
+                        const result = await response.json();
+                        console.log('Response result:', result);
+                        
+                        if (result.success) {
+                            // Remove tab
+                            const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
+                            if (tab) tab.remove();
+                            
+                            // Remove pane
+                            const pane = document.querySelector(`.terminal-pane[data-machine="${machineName}"]`);
+                            if (pane) pane.remove();
+                            
+                            // Remove from machines list
+                            machines = machines.filter(m => m.name !== machineName);
+                            
+                            // Clear history
+                            delete terminalHistory[machineName];
+                            delete historyLoaded[machineName];
+                            delete lastHistoryTimestamp[machineName];
+                            
+                            // Switch to another tab
+                            if (activeTab === machineName && machines.length > 0) {
+                                switchTab(machines[0].name);
+                            } else if (machines.length === 0) {
+                                activeTab = null;
+                            }
+                            
+                            console.log('Machine removed successfully');
+                        } else {
+                            alert(`Failed to remove machine: ${result.error}`);
+                        }
+                    } catch (error) {
+                        console.error('Error removing machine:', error);
+                        alert(`Error removing machine: ${error.message}`);
                     }
-                } else {
-                    alert(`Failed to remove machine: ${result.error}`);
-                }
-            } catch (error) {
-                alert(`Error removing machine: ${error.message}`);
-            }
+                    
+                    resolve();
+                };
+                
+                const handleCancel = () => {
+                    cleanup();
+                    console.log('User cancelled removal');
+                    resolve();
+                };
+                
+                const cleanup = () => {
+                    modal.classList.remove('active');
+                    confirmBtn.removeEventListener('click', handleConfirm);
+                    cancelBtn.removeEventListener('click', handleCancel);
+                    modal.removeEventListener('click', handleModalClick);
+                };
+                
+                const handleModalClick = (e) => {
+                    if (e.target === modal) {
+                        handleCancel();
+                    }
+                };
+                
+                confirmBtn.addEventListener('click', handleConfirm);
+                cancelBtn.addEventListener('click', handleCancel);
+                modal.addEventListener('click', handleModalClick);
+            });
         }
         
         // Utility functions
@@ -812,6 +1161,40 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+        
+        // Refresh current machine's history
+        function refreshCurrentMachine() {
+            if (activeTab) {
+                refreshMachineHistory(activeTab);
+            }
+        }
+        
+        // Toggle auto-refresh
+        function toggleAutoRefresh() {
+            autoRefreshEnabled = !autoRefreshEnabled;
+            const btn = document.getElementById('autoRefreshHistoryBtn');
+            
+            if (autoRefreshEnabled) {
+                btn.classList.add('active');
+                btn.title = 'Auto-refresh: ON';
+                autoRefreshInterval = setInterval(() => {
+                    if (activeTab) {
+                        refreshMachineHistory(activeTab);
+                    }
+                }, 5000);
+                // Immediate refresh
+                if (activeTab) {
+                    refreshMachineHistory(activeTab);
+                }
+            } else {
+                btn.classList.remove('active');
+                btn.title = 'Auto-refresh: OFF';
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
         }
         
         // Initialize on load

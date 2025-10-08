@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections import deque
 from typing import Any, TYPE_CHECKING
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 
 from .connection_manager import SSHConnectionManager
-from .models import CommandResult
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
@@ -60,25 +58,6 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             f"SSH Control MCP Server '{name}' initialized with "
             f"{len(self.connection_manager.machines)} machines"
         )
-    
-    def _log_command(self, machine: str, command: str, result: CommandResult) -> None:
-        """Log command execution to history.
-        
-        Args:
-            machine: Machine name
-            command: Command executed
-            result: Command result
-        """
-        self.command_history.append({
-            'timestamp': time.time(),
-            'machine': machine,
-            'command': command,
-            'exit_code': result.exit_code,
-            'duration': result.duration,
-            'stdout_preview': result.stdout[:200] if result.stdout else '',
-            'stderr_preview': result.stderr[:200] if result.stderr else '',
-            'success': result.exit_code == 0
-        })
     
     # MCP Tool Handlers - auto-dispatched by SchemaBasedMCPServer
     
@@ -186,9 +165,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                     'success': False
                 }
             else:
-                # Log to history
-                self._log_command(machine_name, command, result)
-                
+                # History is logged by connection_manager.execute_command()
                 response = {
                     'machine': result.machine,
                     'command': result.command,

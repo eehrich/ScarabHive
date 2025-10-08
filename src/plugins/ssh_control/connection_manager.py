@@ -298,6 +298,22 @@ class SSHConnectionManager:
                 duration=duration
             )
             
+            # Add to command history if available (include stdout/stderr)
+            if self.command_history is not None:
+                # Store full output (up to 10KB to avoid memory issues)
+                stdout_full = result.stdout[:10000] if result.stdout else ''
+                stderr_full = result.stderr[:10000] if result.stderr else ''
+                self.command_history.append({
+                    'machine': machine_name,
+                    'command': command,
+                    'stdout_preview': stdout_full,
+                    'stderr_preview': stderr_full,
+                    'exit_code': command_result.exit_code,
+                    'duration': duration,
+                    'timestamp': start_time,
+                    'success': command_result.exit_code == 0
+                })
+            
             # Audit log
             if self.audit_log_enabled:
                 self._audit_log('execute_command', machine_name, {
@@ -359,6 +375,9 @@ class SSHConnectionManager:
             }
             
             # Create SSH process for real-time output
+            stdout_lines = []
+            stderr_lines = []
+            
             async with conn.create_process(command) as process:
                 # Read stdout and stderr line by line
                 stdout_done = False
@@ -372,9 +391,11 @@ class SSHConnectionManager:
                             try:
                                 line = await asyncio.wait_for(process.stdout.readline(), timeout=0.1)
                                 if line:
+                                    line_stripped = line.rstrip('\n')
+                                    stdout_lines.append(line_stripped)
                                     yield {
                                         'type': 'stdout',
-                                        'data': line.rstrip('\n')
+                                        'data': line_stripped
                                     }
                                 else:
                                     stdout_done = True
@@ -386,9 +407,11 @@ class SSHConnectionManager:
                             try:
                                 line = await asyncio.wait_for(process.stderr.readline(), timeout=0.1)
                                 if line:
+                                    line_stripped = line.rstrip('\n')
+                                    stderr_lines.append(line_stripped)
                                     yield {
                                         'type': 'stderr',
-                                        'data': line.rstrip('\n')
+                                        'data': line_stripped
                                     }
                                 else:
                                     stderr_done = True
@@ -419,6 +442,7 @@ class SSHConnectionManager:
                 remaining_stdout = await process.stdout.read()
                 if remaining_stdout:
                     for line in remaining_stdout.splitlines():
+                        stdout_lines.append(line)
                         yield {
                             'type': 'stdout',
                             'data': line
@@ -427,6 +451,7 @@ class SSHConnectionManager:
                 remaining_stderr = await process.stderr.read()
                 if remaining_stderr:
                     for line in remaining_stderr.splitlines():
+                        stderr_lines.append(line)
                         yield {
                             'type': 'stderr',
                             'data': line
@@ -438,11 +463,16 @@ class SSHConnectionManager:
                 
                 pool.total_commands += 1
                 
-                # Add to command history if available
+                # Add to command history if available (with collected output)
                 if self.command_history is not None:
+                    stdout_full = '\n'.join(stdout_lines)
+                    stderr_full = '\n'.join(stderr_lines)
+                    # Store full output (up to 10KB to avoid memory issues)
                     self.command_history.append({
                         'machine': machine_name,
                         'command': command,
+                        'stdout_preview': stdout_full[:10000] if stdout_full else '',
+                        'stderr_preview': stderr_full[:10000] if stderr_full else '',
                         'exit_code': exit_code,
                         'duration': duration,
                         'timestamp': start_time,

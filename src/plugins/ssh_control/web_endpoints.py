@@ -248,7 +248,11 @@ class SSHControlWebEndpoints(PluginWebInterface):
                 logger.info(f"Testing connection to {request.name} ({request.host}:{request.port})...")
                 try:
                     conn = await asyncio.wait_for(
-                        SSHAuthenticator.create_connection(machine_config, self.system_config.base_path),
+                        SSHAuthenticator.create_connection(
+                            machine_config,
+                            self.connection_manager.known_hosts_file,
+                            self.connection_manager.strict_host_key_checking
+                        ),
                         timeout=10.0
                     )
                     
@@ -497,6 +501,47 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     content={"error": str(e)}
                 )
         
+        @router.get("/api/machines/{machine_name}/history")
+        async def get_machine_history(machine_name: str, limit: int = 100):
+            """Get command execution history for a specific machine"""
+            if not self.command_history:
+                return {"history": [], "count": 0}
+            
+            try:
+                # Filter history for this machine
+                machine_history = [
+                    entry for entry in self.command_history
+                    if entry.get('machine') == machine_name
+                ]
+                
+                # Most recent first
+                machine_history.reverse()
+                
+                # Apply limit
+                if limit > 0:
+                    machine_history = machine_history[:limit]
+                
+                # Format timestamps and add output previews
+                for entry in machine_history:
+                    entry['timestamp_formatted'] = time.strftime(
+                        '%Y-%m-%d %H:%M:%S',
+                        time.localtime(entry.get('timestamp', time.time()))
+                    )
+                    entry['duration_formatted'] = f"{entry.get('duration', 0):.2f}s"
+                
+                return {
+                    'machine': machine_name,
+                    'history': machine_history,
+                    'count': len(machine_history),
+                    'total_count': sum(1 for e in self.command_history if e.get('machine') == machine_name)
+                }
+            except Exception as e:
+                logger.error(f"Failed to get machine history: {e}", exc_info=True)
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": str(e)}
+                )
+        
         @router.post("/api/execute")
         async def execute_command(request: ExecuteCommandRequest):
             """Execute command on remote machine"""
@@ -514,17 +559,8 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     timeout=request.timeout
                 )
                 
-                # Log to history
-                self.command_history.append({
-                    'timestamp': time.time(),
-                    'machine': request.machine,
-                    'command': request.command,
-                    'exit_code': result.exit_code,
-                    'duration': result.duration,
-                    'stdout_preview': result.stdout[:200] if result.stdout else '',
-                    'stderr_preview': result.stderr[:200] if result.stderr else '',
-                    'success': result.exit_code == 0
-                })
+                # History is already logged by connection_manager with full output
+                # No need to log again here to avoid duplicates
                 
                 return {
                     'machine': result.machine,

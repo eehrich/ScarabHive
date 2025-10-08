@@ -540,6 +540,10 @@
     }
   }
 
+  // Event source tracking (shared across init calls and cleanup)
+  let currentEventSource = null;
+  let currentStatusEventSource = null;
+
   // Public init function that wires the chat form behavior
   chatModule.init = function (opts) {
     const chatForm = document.getElementById('f');
@@ -609,8 +613,8 @@
     });
     // Also export to global window for older modules
     try { global.currentSessionId = currentSessionId; } catch (e) { /* ignore */ }
-    let currentEventSource = null;
-    let currentStatusEventSource = null;
+    
+    // Event sources are now declared at module level (above init function)
 
     if (!chatForm || !taskInput || !runBtn || !stopBtn || !chatContainer) {
       console.warn('Chat form elements not found');
