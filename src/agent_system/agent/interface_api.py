@@ -36,11 +36,20 @@ from ..mcp.status import (
 from ..mcp.integration import initialize_mcp, shutdown_mcp
 from ..context.agent_tracker import record_agent_summarization
 
+# Import services
+from ..services import ConfigService, MCPService, ToolService, AgentService
+
 
 # Global registry for MCP endpoints access
 _app_registry: Optional[MCPRegistry] = None
 _app_config: Optional[AgentConfig] = None
 _mcp_integration = None
+
+# Global services (initialized in build_app)
+_config_service: Optional[ConfigService] = None
+_mcp_service: Optional[MCPService] = None
+_tool_service: Optional[ToolService] = None
+_agent_service: Optional[AgentService] = None
 
 
 @asynccontextmanager
@@ -75,13 +84,19 @@ _app_start_time = None
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
 
-    # Load configuration from config.yaml (includes llm.yaml and mcp.yaml)
+    # Initialize ConfigService and load configuration
     if not config_path:
         cfg_path = str(Path(__file__).parents[3] / "config" / "config.yaml")
     else:
         cfg_path = config_path
-        
-    config = load_settings(cfg_path)
+    
+    # Create ConfigService
+    global _config_service
+    _config_service = ConfigService(cfg_path)
+    config = _config_service.load_config()
+    
+    # Setup logging via ConfigService
+    _config_service.setup_logging()
     
     # Log configuration status
     logger = logging.getLogger(__name__)
@@ -97,18 +112,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Initialize MCP integration
     async def _init_mcp_for_app(app: FastAPI):
-        global _mcp_integration
+        global _mcp_integration, _mcp_service, _tool_service, _agent_service
         logger = logging.getLogger(__name__)
         logger.info("Starting MCP integration initialization...")
         try:
             mcp_integration = await initialize_mcp(config, app)
             _mcp_integration = mcp_integration
             
+            # Initialize services
+            _mcp_service = MCPService(mcp_integration, config)
+            _tool_service = ToolService(mcp_integration, config)
+            
+            # Agent will be initialized later when needed
+            # (requires agent instance from bootstrap_servers)
+            
             # Make integration accessible to mcp module
             from ..mcp import integration as _mcp_mod
             _mcp_mod.mcp_integration = mcp_integration
             
-            logger.info("MCP integration initialized for API")
+            logger.info("MCP integration and services initialized for API")
 
             # Apply plugin web capabilities
             from ..plugins.web_adapter import plugin_web_registry
@@ -1179,335 +1201,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.exception("Context usage clear endpoint failed: %s", e)
             return {"error": f"Failed to clear context usage history: {str(e)}"}
 
-    def _check_server_connection(server_info):
-        """Check if a server is actually responding with real-time connectivity test"""
-        import socket
-        import logging
-        from urllib.parse import urlparse
-
-        logger = logging.getLogger(__name__)
-
-        try:
-            if server_info.get("type") == "plugin":
-                # For plugins, if they're in the registry, they're connected
-                server_name = server_info.get("id", "")
-                if _app_registry and hasattr(_app_registry, "_servers"):
-                    server_obj = _app_registry._servers.get(server_name)
-                    # If server exists in registry, it's connected (loaded and available)
-                    return server_obj is not None
-                return False
-
-            elif server_info.get("type") == "external":
-                # For external servers, do actual connectivity check
-                url = server_info.get("url", "")
-                if not url:
-                    return False
-
-                # Parse URL to get host and port
-                parsed = urlparse(url)
-                host = parsed.hostname or "127.0.0.1"
-                port = parsed.port
-
-                if not port:
-                    # Default ports based on scheme
-                    if parsed.scheme == "https":
-                        port = 443
-                    else:
-                        port = 80
-
-                # Try socket connection with short timeout
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)  # 2 second timeout
-                try:
-                    result = sock.connect_ex((host, port))
-                    return result == 0
-                finally:
-                    sock.close()
-
-        except Exception as e:
-            # Use logging if available, otherwise ignore
-            try:
-                logger = logging.getLogger(__name__)
-                logger.debug(f"Connection check failed for {server_info.get('name', 'unknown')}: {e}")
-            except Exception:
-                # If even logging fails, truly ignore (e.g., during shutdown)
-                pass
-            return False
-
-        return False
-
     @app.get("/mcp/status")
     async def mcp_status():
         """Get MCP server status including plugins and external servers."""
         try:
-            import logging
             logger = logging.getLogger(__name__)
-            # Use the global MCP integration instance that was initialized during startup
-            global _mcp_integration
-
-            # Use both the registry approach and MCP integration for plugins
+            
+            # Use MCPService for comprehensive status
+            global _mcp_service, _app_registry
+            
+            if not _mcp_service:
+                return {"error": "MCP service not initialized"}
+            
             if not _app_registry:
                 return {"error": "Registry not initialized"}
-
-            servers = []
-
-            # First, add plugin servers from the MCP HTTP server registry (where MCP plugins are registered)
-            if _mcp_integration and hasattr(_mcp_integration, 'http_server'):
-                try:
-                    mcp_servers = _mcp_integration.http_server.servers
-                    for server_id, server_obj in mcp_servers.items():
-                        try:
-                            # Skip servers that explicitly mark themselves as internal/private
-                            if getattr(server_obj, '_mcp_public', True) is False:
-                                continue
-
-                            tools = []
-                            detailed_tools = []
-
-                            # Use unified list_tools() method for all servers
-                            if hasattr(server_obj, 'list_tools'):
-                                try:
-                                    # Call async method to get tools
-                                    mcp_tools = await server_obj.list_tools()
-                                    if mcp_tools:
-                                        for mcp_tool in mcp_tools:
-                                            tool_name = mcp_tool.name
-                                            description = mcp_tool.description
-                                            parameters = mcp_tool.input_schema
-
-                                            tools.append(tool_name)
-                                            detailed_tools.append({
-                                                'name': tool_name,
-                                                'description': description,
-                                                'parameters': parameters
-                                            })
-                                except Exception as e:
-                                    logger.debug(f"list_tools() failed for server {server_id}: {e}")
-                                    # Mark server as having no tools if list_tools() fails
-                                    pass
-
-                            # Check connection using real-time verification
-                            server_info = {"id": server_id, "type": "plugin"}
-                            connected = _check_server_connection(server_info)
-
-                            servers.append({
-                                "id": server_id,
-                                "name": server_id.replace('_', ' ').title(),
-                                "type": "plugin",
-                                "connected": connected,
-                                "tools": tools,
-                                "detailed_tools": detailed_tools,
-                                "tool_count": len(tools)
-                            })
-                        except Exception as e:
-                            # If we can't get info about a server, mark it as disconnected
-                            servers.append({
-                                "id": server_id,
-                                "name": server_id.replace('_', ' ').title(),
-                                "type": "plugin",
-                                "connected": False,
-                                "tools": [],
-                                "tool_count": 0,
-                                "error": str(e)
-                            })
-                except Exception as e:
-                    logger.debug(f"Failed to get MCP servers: {e}")
-
-            # Track processed servers to avoid duplicates
-            processed_server_ids = {server["id"] for server in servers}
-
-            # Add plugin servers from bootstrap registry
-            for server_id, server_obj in _app_registry._servers.items():
-                try:
-                    # Skip if already processed
-                    if server_id in processed_server_ids:
-                        continue
-                    # Skip internal/private servers
-                    if getattr(server_obj, '_mcp_public', True) is False:
-                        continue
-
-                    tools = []
-                    detailed_tools = []
-
-                    # Use unified list_tools() method for all servers
-                    if hasattr(server_obj, 'list_tools'):
-                        try:
-                            # Call async method to get tools
-                            mcp_tools = await server_obj.list_tools()
-                            if mcp_tools:
-                                for mcp_tool in mcp_tools:
-                                    tool_name = mcp_tool.name
-                                    description = mcp_tool.description
-                                    parameters = mcp_tool.input_schema
-
-                                    tools.append(tool_name)
-                                    detailed_tools.append({
-                                        'name': tool_name,
-                                        'description': description,
-                                        'parameters': parameters
-                                    })
-                        except Exception as e:
-                            logger.debug(f"list_tools() failed for server {server_id}: {e}")
-
-                    # Check connection using real-time verification
-                    server_info = {
-                        "id": server_id,
-                        "type": "plugin"
-                    }
-                    connected = _check_server_connection(server_info)
-
-                    servers.append({
-                        "id": server_id,
-                        "name": server_id.replace('_', ' ').title(),
-                        "type": "plugin",
-                        "connected": connected,
-                        "tools": tools,
-                        "detailed_tools": detailed_tools,
-                        "tool_count": len(tools)
-                    })
-                except Exception as e:
-                    # If we can't get info about a server, mark it as disconnected
-                    servers.append({
-                        "id": server_id,
-                        "name": server_id.replace('_', ' ').title(),
-                        "type": "plugin",
-                        "connected": False,
-                        "tools": [],
-                        "tool_count": 0,
-                        "error": str(e)
-                    })
-
-            # Try to get external servers from the global MCP integration instance
-            try:
-                if _mcp_integration and _mcp_integration.initialized:
-                    # Get external servers from client manager (these are connected ones)
-                    connected_servers = _mcp_integration.client_manager.list_clients()
-
-                    # Get configured external servers (including failed connections)
-                    configured_servers = getattr(_mcp_integration, 'configured_external_servers', {})
-
-                    # Filter out disabled servers to prevent them from appearing
-                    # as "Disconnected" in the web UI
-                    try:
-                        configured_servers = {
-                            name: cfg
-                            for name, cfg in (configured_servers or {}).items()
-                            if getattr(cfg, 'enabled', True)
-                        }
-                    except Exception:
-                        # If anything goes wrong while filtering, fall back to the
-                        # original mapping so we don't hide potentially important
-                        # entries in unexpected failure modes.
-                        pass
-
-                    logger = logging.getLogger(__name__)
-                    logger.info(f"Connected external servers: {connected_servers}")
-                    logger.info(f"Configured external servers: {list(configured_servers.keys())}")
-
-                    # Also get any that have tools (for servers that might be configured elsewhere)
-                    all_tools = await _mcp_integration.list_all_tools()
-                    servers_with_tools = all_tools.get("external_servers", {})
-
-                    # Combine connected servers with configured servers
-                    all_external_servers = set(connected_servers) | set(configured_servers.keys())
-
-                    logger.info(f"All external servers to process: {all_external_servers}")
-
-                    for server_name in all_external_servers:
-                        # Get server config for info from stored configuration
-                        description = server_name.replace('_', ' ').title()
-                        url = ""
-
-                        # Try to get server config from stored configuration
-                        try:
-                            server_config = configured_servers.get(server_name)
-                            if server_config:
-                                # server_config is a RemoteMCPConfig Pydantic model
-                                if hasattr(server_config, 'description') and server_config.description:
-                                    description = server_config.description
-                                if hasattr(server_config, 'url') and server_config.url:
-                                    url = server_config.url
-                        except Exception as e:
-                            logger.debug(f"Failed to get server config for {server_name}: {e}")
-
-                        # Get tools (may be empty if server is down)
-                        tools = servers_with_tools.get(server_name, [])
-                        # Include all tools in tool_names - blocked status is in detailed_tools
-                        tool_names = [tool["name"] for tool in tools]
-                        detailed_tools = [{
-                            'name': tool.get("name", "unknown"),
-                            'description': tool.get("description", f"Tool from {description}"),
-                            'parameters': tool.get("parameters", {}),
-                            'blocked': tool.get("blocked", False)
-                        } for tool in tools]
-
-                        # Do real-time connection check
-                        server_info = {
-                            "id": server_name,
-                            "name": description,
-                            "type": "external",
-                            "url": url
-                        }
-                        # Do real-time connection check first, then fall back to client manager list
-                        reachable = _check_server_connection(server_info)
-                        logger.debug(f"MCP status: external server '{server_name}' reachable={reachable} listed_in_clients={server_name in connected_servers} tool_count={len(tool_names)} url={url}")
-                        if reachable:
-                            connected = True
-                        elif server_name in connected_servers and len(tool_names) > 0:
-                            # Server has active client connection with available tools
-                            connected = True
-                        else:
-                            # Not reachable or no tools available
-                            connected = False
-
-                        servers.append({
-                            "id": server_name,
-                            "name": description,
-                            "type": "external",
-                            "connected": connected,
-                            "tools": tool_names,
-                            "detailed_tools": detailed_tools,
-                            "tool_count": len(tool_names),
-                            "url": url
-                        })
-            except Exception as e:
-                # If MCP integration fails, just continue with plugins only
-                logger = logging.getLogger(__name__)
-                logger.error(f"MCP status: Exception getting external servers: {e}")
-                import traceback
-                logger.error(f"MCP status traceback: {traceback.format_exc()}")
-
-            # Separate plugins and external servers
-            plugins = {}
-            external_servers = {}
-
-            for server in servers:
-                server_data = {
-                    "id": server["id"],
-                    "name": server["name"],
-                    "connected": server["connected"],
-                    "tools": server["tools"],
-                    "detailed_tools": server["detailed_tools"],
-                    "tool_count": server["tool_count"]
-                }
-                if "url" in server:
-                    server_data["url"] = server["url"]
-                if "error" in server:
-                    server_data["error"] = server["error"]
-
-                if server["type"] == "plugin":
-                    plugins[server["id"]] = server_data
-                else:
-                    external_servers[server["id"]] = server_data
-
-            return {
-                "plugins": plugins,
-                "external_servers": external_servers,
-                "servers": servers,  # Keep original for backward compatibility
-                "total_servers": len(servers),
-                "total_tools": sum(s["tool_count"] for s in servers)
-            }
-
+            
+            # Delegate to MCPService
+            status = await _mcp_service.get_comprehensive_status(
+                registry=_app_registry,
+                check_connectivity=True
+            )
+            
+            return status
+            
         except Exception as e:
             import traceback
             logger = logging.getLogger(__name__)

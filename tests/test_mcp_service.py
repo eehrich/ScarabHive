@@ -332,6 +332,77 @@ class TestListAllTools:
         assert len(tools) == 1
 
     @pytest.mark.asyncio
+    async def test_list_tools_filter_blocked(self, mcp_service):
+        """Test filtering blocked tools with include_blocked=False."""
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": [
+                    {"name": "tool1", "blocked": False},
+                    {"name": "tool2", "blocked": True},
+                    {"name": "tool3", "blocked": False}
+                ]
+            },
+            "plugin_servers": {
+                "plugin1": [
+                    {"name": "tool4", "blocked": True},
+                    {"name": "tool5", "blocked": False}
+                ]
+            }
+        })
+        
+        # With include_blocked=False, should filter out blocked tools
+        tools = await mcp_service.list_all_tools(include_blocked=False)
+        
+        assert "test_server" in tools
+        assert "plugin1" in tools
+        assert len(tools["test_server"]) == 2  # tool1, tool3 (tool2 blocked)
+        assert len(tools["plugin1"]) == 1  # tool5 (tool4 blocked)
+        
+        # Verify blocked tools are actually filtered
+        test_tool_names = [t["name"] for t in tools["test_server"]]
+        assert "tool1" in test_tool_names
+        assert "tool2" not in test_tool_names  # Blocked, should be filtered
+        assert "tool3" in test_tool_names
+
+    @pytest.mark.asyncio
+    async def test_list_tools_include_blocked(self, mcp_service):
+        """Test including blocked tools with include_blocked=True."""
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": [
+                    {"name": "tool1", "blocked": False},
+                    {"name": "tool2", "blocked": True}
+                ]
+            },
+            "plugin_servers": {}
+        })
+        
+        # With include_blocked=True (default), should include all tools
+        tools = await mcp_service.list_all_tools(include_blocked=True)
+        
+        assert "test_server" in tools
+        assert len(tools["test_server"]) == 2  # Both tools included
+
+    @pytest.mark.asyncio
+    async def test_list_tools_specific_server_filter_blocked(self, mcp_service):
+        """Test filtering blocked tools for specific server."""
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": [
+                    {"name": "tool1", "blocked": False},
+                    {"name": "tool2", "blocked": True}
+                ]
+            },
+            "plugin_servers": {}
+        })
+        
+        # Filter blocked for specific server
+        tools = await mcp_service.list_all_tools(server_name="test_server", include_blocked=False)
+        
+        assert "test_server" in tools
+        assert len(tools["test_server"]) == 1  # Only tool1
+
+    @pytest.mark.asyncio
     async def test_list_tools_error(self, mcp_service):
         """Test tool listing with error."""
         mcp_service._mcp.list_all_tools = AsyncMock(side_effect=RuntimeError("List failed"))
@@ -371,3 +442,239 @@ class TestGetClientSafe:
         client = await mcp_service._get_client_safe("test_server")
         
         assert client is None
+
+
+class TestGetComprehensiveStatus:
+    """Test comprehensive MCP status retrieval."""
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_with_external_servers(self, mcp_service):
+        """Test comprehensive status with external servers."""
+        # Mock external servers
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": [
+                    {
+                        "name": "test_tool",
+                        "description": "Test Tool",
+                        "parameters": {},
+                        "blocked": False
+                    }
+                ]
+            },
+            "plugin_servers": {}
+        })
+        
+        status = await mcp_service.get_comprehensive_status(registry=None)
+        
+        assert "plugins" in status
+        assert "external_servers" in status
+        assert "test_server" in status["external_servers"]
+        assert status["external_servers"]["test_server"]["tool_count"] == 1
+        assert status["total_servers"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_with_plugin_servers(self, mcp_service):
+        """Test comprehensive status with plugin servers from registry."""
+        # Mock registry with plugin servers
+        mock_registry = MagicMock()
+        mock_server = MagicMock()
+        mock_server._mcp_public = True
+        
+        # Mock list_tools
+        mock_tool = MagicMock()
+        mock_tool.name = "plugin_tool"
+        mock_tool.description = "Plugin Tool"
+        mock_tool.input_schema = {}
+        mock_server.list_tools = AsyncMock(return_value=[mock_tool])
+        
+        mock_registry._servers = {"plugin_server": mock_server}
+        
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {},
+            "plugin_servers": {}
+        })
+        
+        status = await mcp_service.get_comprehensive_status(registry=mock_registry)
+        
+        assert "plugins" in status
+        assert "plugin_server" in status["plugins"]
+        assert status["plugins"]["plugin_server"]["tool_count"] == 1
+        assert status["plugins"]["plugin_server"]["connected"] is True
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_empty(self, mcp_service):
+        """Test comprehensive status with no servers."""
+        mcp_service._mcp.configured_external_servers = {}
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {},
+            "plugin_servers": {}
+        })
+        
+        status = await mcp_service.get_comprehensive_status(registry=None)
+        
+        assert status["total_servers"] == 0
+        assert status["total_tools"] == 0
+        assert len(status["plugins"]) == 0
+        assert len(status["external_servers"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_filters_disabled_servers(self, mcp_service):
+        """Test that disabled servers are filtered out."""
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {},
+            "plugin_servers": {}
+        })
+        
+        status = await mcp_service.get_comprehensive_status(registry=None)
+        
+        # disabled_server should not appear in status
+        assert "disabled_server" not in status["external_servers"]
+        # But test_server (enabled=True) might appear if connected
+        # (depends on configured_external_servers in mock)
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_with_connectivity_check_true(self, mcp_service):
+        """Test comprehensive status with check_connectivity=True (real-time checks)."""
+        from unittest.mock import patch
+        from agent_system.config.models import RemoteMCPConfig
+        
+        # Mock external servers with proper config object
+        config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
+        mcp_service._mcp.configured_external_servers = {"test_server": config}
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": [{"name": "tool1"}]
+            },
+            "plugin_servers": {}
+        })
+        
+        # Patch the connectivity helper method to return True
+        with patch.object(mcp_service, '_check_external_connectivity', new=AsyncMock(return_value=True)) as mock_check:
+            status = await mcp_service.get_comprehensive_status(registry=None, check_connectivity=True)
+            
+            # Verify connectivity check was called
+            mock_check.assert_called_once_with("test_server", "http://localhost:8080")
+            
+            # Verify status reflects connectivity
+            assert "test_server" in status["external_servers"]
+            assert status["external_servers"]["test_server"]["connected"] is True
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_with_connectivity_check_false(self, mcp_service):
+        """Test comprehensive status with check_connectivity=False (fast path)."""
+        from unittest.mock import patch
+        from agent_system.config.models import RemoteMCPConfig
+        
+        # Mock external servers with proper config object
+        config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
+        mcp_service._mcp.configured_external_servers = {"test_server": config}
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": [{"name": "tool1"}]
+            },
+            "plugin_servers": {}
+        })
+        
+        # Patch the connectivity helper method
+        with patch.object(mcp_service, '_check_external_connectivity', new=AsyncMock(return_value=True)) as mock_check:
+            status = await mcp_service.get_comprehensive_status(registry=None, check_connectivity=False)
+            
+            # Verify connectivity check was NOT called (fast path)
+            mock_check.assert_not_called()
+            
+            # Verify status uses fast path (checks if in connected_servers list)
+            assert "test_server" in status["external_servers"]
+            # Connected=True because test_server is in list_clients result and has tools
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_plugin_connectivity_check_true(self, mcp_service):
+        """Test plugin connectivity with check_connectivity=True."""
+        from unittest.mock import patch
+        
+        # Mock plugin registry
+        mock_registry = MagicMock()
+        mock_server = MagicMock()
+        mock_server._mcp_public = True
+        mock_tool = MagicMock()
+        mock_tool.name = "plugin_tool"
+        mock_tool.description = "Plugin Tool"
+        mock_tool.input_schema = {}
+        mock_server.list_tools = AsyncMock(return_value=[mock_tool])
+        mock_registry._servers = {"plugin_server": mock_server}
+        
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {},
+            "plugin_servers": {}
+        })
+        
+        # Patch plugin connectivity helper (synchronous method)
+        with patch.object(mcp_service, '_check_plugin_connectivity', return_value=True) as mock_check:
+            status = await mcp_service.get_comprehensive_status(registry=mock_registry, check_connectivity=True)
+            
+            # Verify plugin connectivity check was called
+            mock_check.assert_called_once_with("plugin_server", mock_registry)
+            
+            # Verify plugin is marked as connected
+            assert "plugin_server" in status["plugins"]
+            assert status["plugins"]["plugin_server"]["connected"] is True
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_connectivity_check_disconnected(self, mcp_service):
+        """Test comprehensive status when connectivity check returns False."""
+        from unittest.mock import patch
+        from agent_system.config.models import RemoteMCPConfig
+        
+        # Mock external server that appears disconnected
+        config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
+        mcp_service._mcp.configured_external_servers = {"test_server": config}
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=["test_server"])
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": [{"name": "tool1"}]
+            },
+            "plugin_servers": {}
+        })
+        
+        # Patch connectivity check to return False (disconnected)
+        with patch.object(mcp_service, '_check_external_connectivity', new=AsyncMock(return_value=False)):
+            status = await mcp_service.get_comprehensive_status(registry=None, check_connectivity=True)
+            
+            # When connectivity check returns False, but server has active client with tools,
+            # it should still be marked as connected
+            # This is according to the logic in lines 644-650 of mcp_service.py
+            assert "test_server" in status["external_servers"]
+            assert status["external_servers"]["test_server"]["connected"] is True  # Has active client + tools
+
+    @pytest.mark.asyncio
+    async def test_comprehensive_status_truly_disconnected(self, mcp_service):
+        """Test comprehensive status when server is truly disconnected (no tools, no connectivity)."""
+        from unittest.mock import patch
+        from agent_system.config.models import RemoteMCPConfig
+        
+        # Mock external server that is truly disconnected
+        config = RemoteMCPConfig(url="http://localhost:8080", enabled=True, description="Test Server")
+        mcp_service._mcp.configured_external_servers = {"test_server": config}
+        mcp_service._mcp.client_manager.list_clients = MagicMock(return_value=[])  # No active client
+        mcp_service._mcp.list_all_tools = AsyncMock(return_value={
+            "external_servers": {
+                "test_server": []  # No tools
+            },
+            "plugin_servers": {}
+        })
+        
+        # Patch connectivity check to return False (disconnected)
+        with patch.object(mcp_service, '_check_external_connectivity', new=AsyncMock(return_value=False)):
+            status = await mcp_service.get_comprehensive_status(registry=None, check_connectivity=True)
+            
+            # Server should be marked as disconnected (no connectivity, no active client, no tools)
+            assert "test_server" in status["external_servers"]
+            assert status["external_servers"]["test_server"]["connected"] is False
+
