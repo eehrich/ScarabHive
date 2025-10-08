@@ -1392,7 +1392,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         configured_servers = {
                             name: cfg
                             for name, cfg in (configured_servers or {}).items()
-                            if cfg.get('enabled', True)
+                            if getattr(cfg, 'enabled', True)
                         }
                     except Exception:
                         # If anything goes wrong while filtering, fall back to the
@@ -1420,12 +1420,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                         # Try to get server config from stored configuration
                         try:
-                            server_config = configured_servers.get(server_name, {})
+                            server_config = configured_servers.get(server_name)
                             if server_config:
-                                if server_config.get('description'):
-                                    description = server_config['description']
-                                if server_config.get('url'):
-                                    url = server_config['url']
+                                # server_config is a RemoteMCPConfig Pydantic model
+                                if hasattr(server_config, 'description') and server_config.description:
+                                    description = server_config.description
+                                if hasattr(server_config, 'url') and server_config.url:
+                                    url = server_config.url
                         except Exception as e:
                             logger.debug(f"Failed to get server config for {server_name}: {e}")
 
