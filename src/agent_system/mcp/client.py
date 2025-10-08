@@ -437,11 +437,12 @@ class MCPClientFactory:
             await client.connect()
             await client.initialize()
             return client
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to create HTTP MCP client: {e}", exc_info=True)
             try:
                 await client.disconnect()
-            except Exception:
-                pass
+            except Exception as cleanup_e:
+                logger.debug(f"Client disconnect during cleanup failed: {cleanup_e}")
             raise
 
     @staticmethod
@@ -469,9 +470,17 @@ class MCPClientFactory:
         )
 
         client = StandardMCPClient(transport, client_name, initialization_options)
-        await client.connect()
-        await client.initialize()
-        return client
+        try:
+            await client.connect()
+            await client.initialize()
+            return client
+        except Exception as e:
+            logger.warning(f"Failed to create streaming MCP client: {e}", exc_info=True)
+            try:
+                await client.disconnect()
+            except Exception as cleanup_e:
+                logger.debug(f"Client disconnect during cleanup failed: {cleanup_e}")
+            raise
 
     @staticmethod
     async def create_client_from_config(
@@ -542,12 +551,12 @@ class MCPClientManager:
             if name in self.clients:
                 try:
                     await self.clients[name].disconnect()
-                except Exception:
-                    logger.debug(f"Failed to disconnect existing client {name} before replacing")
+                except Exception as e:
+                    logger.debug(f"Failed to disconnect existing client {name} before replacing: {e}")
                 try:
                     del self.clients[name]
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to delete existing client {name} from registry: {e}")
 
             client = await MCPClientFactory.create_client_from_config(config, ssl_verify=ssl_verify, timeout=timeout)
             self.clients[name] = client

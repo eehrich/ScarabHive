@@ -122,7 +122,8 @@ class Agent(MCPServer):
                     # environments; avoid noisy warnings for that case.
                     try:
                         msg = str(e)
-                    except Exception:
+                    except Exception as e2:
+                        logger.debug(f"Failed to stringify exception: {e2}")
                         msg = "<exception>"
                     # Match the exact ValueError message emitted by make_llm
                     if isinstance(e, ValueError) and msg == "OPENAI_API_KEY is required when provider=openai":
@@ -336,7 +337,8 @@ class Agent(MCPServer):
             logger.debug("Agent %s using in-memory system_prompt (length=%s)", self.name, len(system_prompt_raw or ''))
             try:
                 rendered_system = Template(system_prompt_raw).render(**context_vals)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to render system prompt template: {e}", exc_info=True)
                 rendered_system = "You are an assistant agent."
             return rendered_system, None
 
@@ -364,7 +366,8 @@ class Agent(MCPServer):
         """Async: render current system prompt (diagnostics endpoint)."""
         try:
             available_tools = await self.list_allowed_tool_servers()
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to list available tools for system prompt: {e}", exc_info=True)
             available_tools = []
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
         system_msg, _ = self._render_prompts(available_tools, max_steps)
@@ -421,8 +424,9 @@ class Agent(MCPServer):
                 try:
                     self._active_requests[request_id]["cancel"].set()
                     agent_cancelled = True
-                except Exception:
+                except Exception as e:
                     # Defensive: if structure unexpected, try old-style event
+                    logger.debug(f"Failed to cancel via cancel event, trying old-style: {e}")
                     if isinstance(self._active_requests[request_id], asyncio.Event):
                         self._active_requests[request_id].set()
                         agent_cancelled = True
@@ -480,8 +484,8 @@ class Agent(MCPServer):
                         # notify run_events if it's waiting
                         try:
                             entry['message_event'].set()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Failed to set message event: {e}")
                         logger.debug("Message appended to active request %s", request_id)
                         return True
                     except Exception as e:
@@ -525,8 +529,8 @@ class Agent(MCPServer):
                     # clear message_event
                     try:
                         entry['message_event'].clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to clear message event: {e}")
         return messages
 
     # ------------------------------------------------------------------
@@ -604,7 +608,8 @@ class Agent(MCPServer):
         # Determine patterns first (deny-all baseline if not configured)
         try:
             allowed_patterns = self.agent_config.tools.allowed if self.agent_config.tools else None
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get allowed_patterns from agent config: {e}", exc_info=True)
             allowed_patterns = None
         # If no allow list -> deny all (explicit policy change)
         if not allowed_patterns:
@@ -628,7 +633,8 @@ class Agent(MCPServer):
         # Apply allow-list (guaranteed non-empty here)
         try:
             blocked_patterns = getattr(self.agent_config, 'blocked_tools', None)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get blocked_patterns from agent config: {e}", exc_info=True)
             blocked_patterns = None
 
         available_tools = self._filter_available_tools(available_tools, allowed_patterns)
@@ -645,13 +651,14 @@ class Agent(MCPServer):
                         plugin_names = []
                         try:
                             plugin_names = list(plugin_registry.list_servers())
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to list plugin servers: {e}")
                             plugin_names = []
                         if plugin_names:
                             logger.debug("Wildcard fallback adding plugin servers for agent %s: %s", self.name, plugin_names)
                             available_tools = plugin_names
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Wildcard plugin fallback failed: {e}")
 
         if blocked_patterns:
             before_block = list(available_tools)
@@ -816,7 +823,8 @@ class Agent(MCPServer):
         try:
             try:
                 token = current_request_id.set(request_id)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to set current_request_id context var: {e}")
                 token = None
             async with self._request_lock:
                 # ensure session exists
@@ -973,9 +981,9 @@ class Agent(MCPServer):
                         "max_steps": max_steps,
                         "request_id": request_id,
                     }
-                except Exception:
+                except Exception as e:
                     # If the consumer isn't expecting heartbeat, ignore
-                    pass
+                    logger.debug(f"Failed to yield heartbeat: {e}")
 
                 # Yield any pending status events
                 for status_event in yield_pending_status_events():
@@ -1163,7 +1171,8 @@ class Agent(MCPServer):
                                 elif isinstance(seg, str) and seg.strip():
                                     has_text = True
                                     break
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(f"Failed to check content segment: {e}")
                                 continue
                         if has_text:
                             return False, "list-has-text"
@@ -1372,7 +1381,7 @@ class Agent(MCPServer):
                         # Keep the request->session mapping (don't pop it immediately)
                         # This allows append requests that arrive shortly after completion to find the session
                     except Exception as e:
-                        logger.debug("Failed to persist session %s: %s", sid, e)
+                        logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
 
             # Clean up MCP integration if we initialized it locally
             await self._mcp_integration_manager.shutdown()

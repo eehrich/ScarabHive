@@ -44,8 +44,8 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
                 sub_mod = types.ModuleType(plugin_pkg)
                 sub_mod.__path__ = [str(d.resolve())]
                 sys.modules[plugin_pkg] = sub_mod
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to create module structure for plugin '{d.name}': {e}")
 
         spec = importlib.util.spec_from_file_location(f"{plugin_pkg}.plugin", str(plugin_file))
         if spec is None or spec.loader is None:
@@ -55,7 +55,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         try:
             spec.loader.exec_module(mod)
         except Exception as e:
-            logger.warning("Failed to load plugin module %s: %s", plugin_file, e)
+            logger.warning(f"Failed to load plugin module {plugin_file}: {e}", exc_info=True)
             continue
 
         try:
@@ -64,7 +64,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
                 out[name] = factory
                 continue
         except Exception as e:
-            logger.warning("Plugin %s register() failed: %s", plugin_file, e)
+            logger.warning(f"Plugin {plugin_file} register() failed: {e}", exc_info=True)
             continue
 
         # Determine plugin name: prefer PLUGIN_NAME constant if present for backwards compatibility
@@ -77,12 +77,12 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
                 with meta_file.open('r', encoding='utf-8') as fh:
                     metadata = yaml.safe_load(fh) or {}
             except Exception as e:
-                logger.warning("Failed to read metadata %s: %s", meta_file, e)
+                logger.warning(f"Failed to read plugin metadata {meta_file}: {e}", exc_info=True)
         if factory:
             try:
                 setattr(factory, '_plugin_metadata', metadata)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to attach metadata to plugin factory: {e}")
             out[name] = factory
 
     for p in path.glob("*.py"):
@@ -94,8 +94,8 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
                 pkg_mod = types.ModuleType(pkg_name)
                 pkg_mod.__path__ = [str(path.resolve())]
                 sys.modules[pkg_name] = pkg_mod
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to create plugins module structure: {e}")
         spec = importlib.util.spec_from_file_location(f"plugins.{p.stem}", str(p))
         if spec is None or spec.loader is None:
             continue
@@ -103,7 +103,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         try:
             spec.loader.exec_module(mod)
         except Exception as e:
-            logger.warning("Failed to load plugin module %s: %s", p, e)
+            logger.warning(f"Failed to load single-file plugin module {p}: {e}", exc_info=True)
             continue
         try:
             if hasattr(mod, "register") and inspect.isfunction(mod.register):
@@ -111,7 +111,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
                 out[name] = factory
                 continue
         except Exception as e:
-            logger.warning("Plugin %s register() failed: %s", p, e)
+            logger.warning(f"Single-file plugin {p} register() failed: {e}", exc_info=True)
             continue
         factory = getattr(mod, "PLUGIN_FACTORY", None)
         if factory:
@@ -135,8 +135,9 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
         # try to select by group if available
         try:
             selected = list(eps.select(group=group))
-        except Exception:
+        except Exception as e:
             # older API returns a list-like; filter manually
+            logger.debug(f"Failed to use entry_points.select(), falling back to manual filtering: {e}")
             selected = [ep for ep in eps if getattr(ep, "group", None) == group]
 
         for ep in selected:
@@ -170,24 +171,27 @@ def discover_entrypoint_plugins(group: str = "agent_system.mcp_plugins") -> Dict
                                         meta_path = mod_path / "plugin.yaml"
                                         if meta_path.exists():
                                             metadata_obj = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
-                        except Exception:
+                        except Exception as e:
                             # best-effort; don't fail discovery on metadata lookup
+                            logger.debug(f"Failed to load metadata for packaged plugin '{name}': {e}")
                             metadata_obj = None
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to locate module for metadata lookup: {e}")
                     metadata_obj = None
 
                 if name and callable(factory):
                     if metadata_obj:
                         try:
                             setattr(factory, "_plugin_metadata", metadata_obj)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Failed to attach metadata to entrypoint plugin factory: {e}")
                     out[name] = factory
             except Exception as e:
-                logger.warning("Failed to load entrypoint plugin %s: %s", ep, e)
+                logger.warning(f"Failed to load entrypoint plugin {ep}: {e}", exc_info=True)
                 continue
-    except Exception:
+    except Exception as e:
         # importlib.metadata not available; silently return empty
+        logger.debug(f"importlib.metadata not available for entrypoint discovery: {e}")
         return out
 
     return out
@@ -232,8 +236,8 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
                 if mod is not None and getattr(mod, "__path__", None):
                     for p in mod.__path__:
                         source_dirs.append(Path(p))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to reuse existing 'plugins' module paths: {e}")
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
         try:
@@ -244,7 +248,8 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
             if not p.is_absolute():
                 try:
                     p = p.resolve()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to resolve relative plugin path '{raw}': {e}")
                     p = Path.cwd().joinpath(p)
 
             if not p.exists():
@@ -253,14 +258,14 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
             discovered = discover_plugins(p)
             plugins.update(discovered)
         except Exception as e:
-            logger.warning("Error discovering plugins in %s: %s", raw, e)
+            logger.warning(f"Error discovering plugins in {raw}: {e}", exc_info=True)
 
     # entry point plugins
     try:
         eps = discover_entrypoint_plugins(group=group)
         plugins.update(eps)
     except Exception as e:
-        logger.warning("Error discovering entrypoint plugins: %s", e)
+        logger.warning(f"Error discovering entrypoint plugins from group '{group}': {e}", exc_info=True)
 
     # Ensure metadata: for factories missing `_plugin_metadata`, try to load
     # a `plugin.yaml` from the configured filesystem plugin directories (if
@@ -278,10 +283,11 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
                                 loaded = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
                                 try:
                                     setattr(factory, "_plugin_metadata", loaded)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Failed to attach metadata to plugin '{name}': {e}")
                                 break
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to load metadata for plugin '{name}' from '{d}': {e}")
                             continue
         except Exception:
             pass

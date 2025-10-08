@@ -245,24 +245,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             if overrides.get('allowed_tools') is not None and getattr(selected_agent.agent_config, 'allowed_tools', None) is None:
                                 try:
                                     updates['allowed_tools'] = list(overrides.get('allowed_tools') or [])
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Failed to apply allowed_tools override: {e}")
                             if overrides.get('blocked_tools') is not None and getattr(selected_agent.agent_config, 'blocked_tools', None) is None:
                                 try:
                                     updates['blocked_tools'] = list(overrides.get('blocked_tools') or [])
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Failed to apply blocked_tools override: {e}")
                             if 'max_steps' in server_cfg and isinstance(server_cfg.get('max_steps'), int):
                                 try:
                                     updates['max_steps'] = int(server_cfg.get('max_steps'))
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"Failed to apply max_steps override: {e}")
                             if updates:
                                 selected_agent.agent_config = selected_agent.agent_config.model_copy(update=updates)
                             logging.getLogger(__name__).debug("Applied entry agent server overrides for %s", entry_name)
-                except Exception:
-                    logging.getLogger(__name__).debug("Failed to apply entry agent overrides for %s", entry_name)
-    except Exception:
+                except Exception as e:
+                    logging.getLogger(__name__).debug("Failed to apply entry agent overrides for %s: %s", entry_name, e)
+    except Exception as e:
+        logger.debug(f"Failed to get entry agent from registry: {e}")
         selected_agent = None
 
     # Create new agent if not found in registry
@@ -284,17 +285,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 if server_agent_cfg.get('allowed_tools') and not config.allowed_tools:
                     try:
                         updates['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to apply allowed_tools from server config: {e}")
                 if server_agent_cfg.get('blocked_tools') and not config.blocked_tools:
                     try:
                         updates['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to apply blocked_tools from server config: {e}")
                 if updates:
                     config = config.model_copy(update=updates)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to apply server config overrides: {e}")
         
         # Build MCPConfig for agent
         from agent_system.config.models import MCPConfig, AgentConfig, ToolConfig
@@ -315,15 +316,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Bind reused agent to current registry
         try:
             selected_agent.registry = registry
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to bind registry to agent: {e}", exc_info=True)
 
     # Register 'agent' alias for backward compatibility
     if entry_name != 'agent':
         try:
             registry.register('agent', selected_agent)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to register 'agent' alias: {e}", exc_info=True)
     agent = selected_agent
 
     # Store registry and config globally
@@ -346,8 +347,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             agent_config_path = Path(__file__).parents[3] / "config" / "config.yaml"
             with open(agent_config_path, 'r', encoding='utf-8') as f:
                 agent_config = yaml.safe_load(f) or {}
-        except Exception:
-            pass  # Continue with empty config if loading fails
+        except Exception as e:
+            logger.debug(f"Failed to load config for health check: {e}")
 
         return {
             "status": "ok",
@@ -372,10 +373,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     from ..servers.agent.server import Agent as _Agent
                     if isinstance(srv, _Agent):
                         agents.append(name)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to check agent {name}: {e}")
                     continue
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to list agents: {e}")
         return {"agents": agents}
 
     @app.get("/agents/{agent_name}/allowed-tools")
@@ -383,7 +385,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Return the effective allowed tools list for an agent after pattern filtering."""
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get agent {agent_name}: {e}")
             return {"error": "agent not found", "agent": agent_name}
         from ..servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
@@ -405,7 +408,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get agent {agent_name}: {e}")
             return {"error": "agent not found", "agent": agent_name}
         from ..servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
@@ -438,7 +442,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get agent {agent_name}: {e}", exc_info=True)
             return {"error": "agent not found", "agent": agent_name}
         from ..servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
@@ -478,8 +483,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             form = await request.form()
             try:
                 logger.debug("/run parsed form keys: %s", list(form.keys()))
-            except Exception:
-                logger.debug("/run parsed form (unable to list keys)")
+            except Exception as e:
+                logger.debug("/run parsed form (unable to list keys): %s", e)
             # Extract task field
             if 'task' in form:
                 task = form['task']
@@ -885,8 +890,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                     sent_events,
                                 )
                                 break
-                        except Exception:
-                            logger.exception("Failed to serialize status event")
+                        except Exception as e:
+                            logger.error(f"Failed to serialize status event: {e}", exc_info=True)
 
                     if await request.is_disconnected():
                         logger.info("Client disconnected from /status/stream")
@@ -901,16 +906,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     while not queue.empty():
                         try:
                             ev: StatusEvent = queue.get_nowait()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to get event from queue during drain: {e}")
                             break
                         try:
                             payload = ev.to_dict()
                             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                        except Exception:
-                            logger.exception("Failed to serialize status event during drain")
-                except Exception:
+                        except Exception as e:
+                            logger.error(f"Failed to serialize status event during drain: {e}", exc_info=True)
+                except Exception as e:
                     # Ignore issues while draining to ensure cleanup continues
-                    pass
+                    logger.debug(f"Exception during status queue drain: {e}")
                 try:
                     status_bus.unsubscribe(queue)
                 except Exception:  # pragma: no cover - defensive
@@ -987,8 +993,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             try:
                 root_logger = logging.getLogger()
                 root_logger.setLevel(logging.DEBUG if app.state.debug_enabled else logging.INFO)
-            except Exception:
-                logging.getLogger(__name__).debug("Failed to set root logger level during debug toggle")
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Failed to set root logger level during debug toggle: {e}", exc_info=True)
 
             return {"debug": bool(app.state.debug_enabled)}
         except Exception as e:
@@ -1067,6 +1073,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/debug/context/usage")
     async def debug_context_usage():
         """Get context usage tracking data for monitoring and debugging."""
+        logger = logging.getLogger(__name__)
         try:
             from ..context.tracker import get_tracker
             from agent_system.context.agent_tracker import get_all_agent_stats
@@ -1099,7 +1106,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             total_tokens += int(a.get('current_tokens', 0) or 0)
                             total_messages += int(a.get('message_count', 0) or 0)
                             context_window = max(context_window, int(a.get('context_window', 0) or 0))
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to parse agent stats for {aid}: {e}")
                             continue
 
                     usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
@@ -1117,7 +1125,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         'warning_level': warning_level,
                         'session_id': None
                     }
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Failed to compute context statistics: {e}", exc_info=True)
                     latest = None
 
             return {

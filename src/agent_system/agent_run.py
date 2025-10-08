@@ -45,7 +45,8 @@ def _supports_color() -> bool:
     # auto
     try:
         return sys.stdout.isatty()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to check if stdout is a TTY: {e}")
         return False
 
 
@@ -83,7 +84,7 @@ async def initialize_system(config):
         bootstrap_servers(config, registry)
         logger.info(f"Bootstrap completed. Registry has {len(registry.list())} servers: {registry.list()}")
     except Exception as e:
-        logger.warning(f"Bootstrap failed: {e}")
+        logger.warning(f"Bootstrap failed: {e}", exc_info=True)
         # Continue with empty registry - agent can still work without plugins
     
     return registry
@@ -126,7 +127,7 @@ async def run_agent_request(agent: Agent, request: str) -> dict:
         return result
     
     except Exception as e:
-        logger.error(f"Failed to execute request: {e}")
+        logger.error(f"Failed to execute agent request: {e}", exc_info=True)
         raise
 
 
@@ -193,7 +194,8 @@ async def main_async(request: str, agent_name: str | None = None, show_status: b
                         print(status_line, file=sys.stderr)  # Status to stderr
                 except asyncio.CancelledError:
                     return
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Status subscriber loop error: {e}")
                     return
             
             status_task = asyncio.create_task(_status_subscriber())
@@ -233,7 +235,7 @@ async def main_async(request: str, agent_name: str | None = None, show_status: b
         print("="*50)
         
     except Exception as e:
-        logger.error(f"Agent execution failed: {e}")
+        logger.error(f"Agent execution failed: {e}", exc_info=True)
         import traceback
         traceback.print_exc()
         sys.exit(1)
@@ -303,8 +305,8 @@ Examples:
         if color_mode != "never" and sys.stdout.isatty():
             import colorama
             colorama.init()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to initialize colorama: {e}")
     
     # Setup logging
     setup_basic_logging(verbose=args.verbose)
@@ -319,7 +321,7 @@ Examples:
         logger.info("Interrupted by user")
         sys.exit(130)
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error in main: {e}", exc_info=True)
         sys.exit(1)
 
 

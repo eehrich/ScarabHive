@@ -207,8 +207,8 @@ class MCPService:
                     "success": True,
                     "message": f"Server '{server_name}' is already connected"
                 }
-        except Exception:
-            pass  # Not connected, proceed
+        except Exception as e:
+            logger.debug(f"Connection check for {server_name} failed (expected if not connected): {e}")
         
         # Attempt connection
         try:
@@ -611,8 +611,8 @@ class MCPService:
                         for name, cfg in (configured_servers or {}).items()
                         if getattr(cfg, 'enabled', True)
                     }
-                except Exception:
-                    pass  # Fallback to original if filtering fails
+                except Exception as e:
+                    logger.warning(f"Failed to filter enabled servers: {e}", exc_info=True)
                 
                 # Get all tools from external servers
                 all_tools = await self._mcp.list_all_tools()

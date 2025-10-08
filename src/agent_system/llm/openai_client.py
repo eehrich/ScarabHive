@@ -38,7 +38,7 @@ class OpenAIAsyncClient(LLMClient):
                 httpx_client = _httpx.AsyncClient(verify=verify, timeout=timeout)
             except Exception as e:
                 logger = logging.getLogger(__name__)
-                logger.warning("Failed to create custom httpx client, will use SDK default: %s", e)
+                logger.warning(f"Failed to create custom httpx client for OpenAI, will use SDK default: {e}", exc_info=True)
                 httpx_client = None
 
         if httpx_client is not None:
@@ -55,8 +55,12 @@ class OpenAIAsyncClient(LLMClient):
                     _kwargs[supported] = httpx_client
                     self._client = AsyncOpenAI(**_kwargs)
                 else:
+                    logger = logging.getLogger(__name__)
+                    logger.debug("OpenAI AsyncClient does not support custom httpx_client parameter, falling back to default")
                     self._client = AsyncOpenAI(**kwargs)
-            except Exception:
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to initialize OpenAI client with custom httpx_client: {e}", exc_info=True)
                 self._client = AsyncOpenAI(**kwargs)
         else:
             self._client = AsyncOpenAI(**kwargs)
@@ -64,8 +68,9 @@ class OpenAIAsyncClient(LLMClient):
         try:
             _logger = logging.getLogger(__name__)
             _logger.debug("OpenAIAsyncClient initialized model=%s base_url=%s timeout=%s verify=%s custom_httpx=%s", model, kwargs.get('base_url'), timeout, verify, httpx_client is not None)
-        except Exception:
-            pass
+        except Exception as e:
+            _logger = logging.getLogger(__name__)
+            _logger.debug(f"Failed to log OpenAIAsyncClient initialization: {e}")
 
         self._retry_max_attempts = int(max_attempts)
         self._retry_base_backoff = float(base_backoff)
@@ -172,8 +177,8 @@ class OpenAIAsyncClient(LLMClient):
                     raise
             try:
                 logger.debug("OpenAI resp id=%s choices=%d", getattr(resp, "id", None), len(getattr(resp, "choices", []) or []))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to log OpenAI response info: {e}")
             choice = resp.choices[0] if resp.choices else None
             if not choice:
                 return ""
@@ -192,17 +197,19 @@ class OpenAIAsyncClient(LLMClient):
                     if isinstance(arguments, str):
                         try:
                             params = json.loads(arguments)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to parse tool call arguments as JSON, trying quote replacement: {e}")
                             params = json.loads(arguments.replace("'", '"')) if arguments else {}
                     elif isinstance(arguments, dict):
                         params = arguments
                     if name:
                         return json.dumps({"type": "tool", "tool": name, "params": params}, ensure_ascii=False)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to extract tool call from OpenAI response: {e}")
             try:
                 return getattr(message, "content", None) or ""
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Failed to extract content from message: {e}")
                 return ""
         except Exception as e:
             try:
@@ -211,7 +218,8 @@ class OpenAIAsyncClient(LLMClient):
                 if resp_obj is not None:
                     try:
                         status = int(getattr(resp_obj, "status_code", None) or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Failed to extract status code from error response: {e}")
                         status = None
                 err_payload: dict[str, Any] = {"error": True, "message": str(e), "status": status}
                 if resp_obj is not None:
@@ -219,8 +227,8 @@ class OpenAIAsyncClient(LLMClient):
                         data = getattr(resp_obj, "json", lambda: None)()
                         if data:
                             err_payload["response_json"] = data
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to extract JSON from OpenAI error response: {e}")
                 logger.exception("OpenAI chat failed: %s", e)
                 return json.dumps({"_llm_error": err_payload}, ensure_ascii=False)
             except Exception:

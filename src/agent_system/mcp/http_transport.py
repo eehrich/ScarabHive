@@ -76,7 +76,7 @@ class HTTPTransport(MCPTransport):
                     raise Exception(f"HTTP error {response.status}")
 
         except Exception as e:
-            logger.error(f"Failed to send message: {e}")
+            logger.error(f"Failed to send MCP message via HTTP: {e}", exc_info=True)
             raise
 
     async def receive_message(self) -> MCPMessage:
@@ -135,7 +135,7 @@ class HTTPTransport(MCPTransport):
                 )
 
         except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON response: {e}")
+            logger.error(f"Failed to decode MCP response JSON: {e}", exc_info=True)
             return MCPMessage(
                 jsonrpc="2.0",
                 id=message.id,
@@ -146,7 +146,7 @@ class HTTPTransport(MCPTransport):
                 )
             )
         except Exception as e:
-            logger.debug(f"Request failed: {e}")
+            logger.error(f"HTTP request failed: {e}", exc_info=True)
             return MCPMessage(
                 jsonrpc="2.0",
                 id=message.id,

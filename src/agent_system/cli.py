@@ -46,14 +46,15 @@ async def _maybe_await_get_client(mcp_integration: MCPIntegration, name: str):
     """
     try:
         res = mcp_integration.client_manager.get_client(name)
-    except Exception:
-        # If attribute access raises, propagate None
+    except Exception as e:
+        logger.debug(f"Failed to get client {name}: {e}")
         return None
     import inspect
     if inspect.isawaitable(res):
         try:
             return await res
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to await client {name}: {e}")
             return None
     return res
 
@@ -280,6 +281,7 @@ def _colorize(text: str, color_code: str) -> str:
 
 
 def main() -> None:
+    global logger
     # Backward-compatible: allow calling `agent-cli <task>` without an explicit subcommand.
     # If the first non-option arg isn't a known subcommand, inject an implicit 'run' subcommand.
     # Use a two-stage parse: first extract global options from anywhere using parse_known_args,
@@ -388,16 +390,16 @@ def main() -> None:
     def _add_mcp_common_opts(p):
         try:
             p.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format for server listing")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to add --format argument to parser: {e}", exc_info=True)
         try:
             p.add_argument("--timeout", dest="timeout", type=int, default=30, help="Timeout in seconds for connection operations")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to add --timeout argument to parser: {e}", exc_info=True)
         try:
             p.add_argument("--no-probe", dest="no_probe", action="store_true", help="When listing features, don't probe the live server for reported capabilities; only show configured values")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to add --no-probe argument to parser: {e}", exc_info=True)
 
     # list
     list_p = mcp_subparsers.add_parser("list", help="List configured external MCP servers")
@@ -561,7 +563,8 @@ def main() -> None:
             managed_path = cfg_path
             try:
                 master_raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to load master config from {cfg_path}: {e}", exc_info=True)
                 master_raw = {}
 
             includes = master_raw.get("includes") or master_raw.get("files") or []
@@ -580,7 +583,8 @@ def main() -> None:
                         if isinstance(inc_data, dict) and "mcp" in inc_data:
                             found = inc_path
                             break
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Could not read include file {inc_path}: {e}")
                         continue
 
             # If a specific mcp-managed file was found in includes, use it.
@@ -605,7 +609,8 @@ def main() -> None:
             if managed_path.exists():
                 try:
                     managed_data = yaml.safe_load(managed_path.read_text(encoding="utf-8")) or {}
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Failed to load managed config from {managed_path}: {e}", exc_info=True)
                     managed_data = {}
             mcp = managed_data.get("mcp", {}) or {}
             enabled = set(mcp.get("enabled_servers", []) or [])
@@ -649,8 +654,8 @@ def main() -> None:
                 try:
                     if 'tmp_name' in locals() and os.path.exists(tmp_name):
                         os.remove(tmp_name)
-                except Exception:
-                    pass
+                except Exception as e2:
+                    logger.debug(f"Failed to cleanup temp file {tmp_name}: {e2}")
                 return
             print(json.dumps({"result": "ok", "enabled": mcp["enabled_servers"]}, ensure_ascii=False))
             return
@@ -743,11 +748,13 @@ def main() -> None:
                     try:
                         raw = yaml.safe_load(mcp_file.read_text(encoding="utf-8")) or {}
                         mcp_block = raw.get("mcp", raw)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"Failed to load MCP config from {mcp_file}: {e}", exc_info=True)
                         mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
                 else:
                     mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to determine MCP config source: {e}", exc_info=True)
                 mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
 
             # Use direct AgentConfig approach for consistency with main CLI bootstrapping
@@ -756,9 +763,9 @@ def main() -> None:
             try:
                 try:
                     await mcp_integration.initialize(config)
-                except Exception:
+                except Exception as e:
                     # Non-fatal: continue without live clients if initialization fails
-                    pass
+                    logger.warning(f"MCP integration initialization failed, continuing without live clients: {e}", exc_info=True)
 
                 # Initialize services for clean separation of concerns
                 mcp_service = MCPService(mcp_integration, config)
@@ -810,8 +817,8 @@ def main() -> None:
                         try:
                             if 'tmp_name' in locals() and os.path.exists(tmp_name):
                                 os.remove(tmp_name)
-                        except Exception:
-                            pass
+                        except Exception as e2:
+                            logger.debug(f"Failed to cleanup temp file during config write: {e2}")
                         return
 
                     print(json.dumps({"result": "ok", "server": server_name, "enabled": external[server_name]["enabled"]}, ensure_ascii=False))
@@ -861,9 +868,11 @@ def main() -> None:
                                     try:
                                         await client.initialize()
                                         capabilities = getattr(client, 'server_capabilities', None)
-                                    except Exception:
+                                    except Exception as e:
+                                        logger.debug(f"Failed to reinitialize client for {server_name}: {e}")
                                         capabilities = None
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(f"Failed to get capabilities for {server_name}: {e}")
                                 capabilities = None
 
                         conf_features = external[server_name].get('features', {})
@@ -902,8 +911,8 @@ def main() -> None:
                         try:
                             if 'tmp_name' in locals() and os.path.exists(tmp_name):
                                 os.remove(tmp_name)
-                        except Exception:
-                            pass
+                        except Exception as e2:
+                            logger.debug(f"Failed to cleanup temp file during feature config write: {e2}")
                         return
 
                     print(json.dumps({"result": "ok", "server": server_name, "feature": feature_name, "enabled": enabled_val}, ensure_ascii=False))
@@ -973,8 +982,9 @@ def main() -> None:
             # preserve all suffixes (e.g. .log)
             suffix = "".join(p.suffixes) or ".log"
             return str(p.with_name(f"{stem}-{role}{suffix}"))
-        except Exception:
+        except Exception as e:
             # fallback to a simple role-specific name in logs/
+            logger.debug(f"Failed to construct role-specific logfile from {base}: {e}")
             return str(Path("logs") / f"agent-{role}.log")
 
     # Determine logfile: prefer explicit per-role setting if provided in config.
@@ -1141,7 +1151,8 @@ def main() -> None:
                     print(status_line)
             except asyncio.CancelledError:
                 return
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Status subscriber error: {e}")
                 return
 
         async def _sse_subscriber(url: str):
@@ -1166,7 +1177,8 @@ def main() -> None:
                                 payload = text[len("data:"):].strip()
                                 try:
                                     obj = json.loads(payload)
-                                except Exception:
+                                except Exception as e:
+                                    logger.debug(f"Failed to parse SSE payload: {e}")
                                     obj = {"raw": payload}
                                 # Print SSE messages in short form
                                 if _supports_color():
@@ -1175,7 +1187,8 @@ def main() -> None:
                                     print(f"[SSE] {obj.get('server','?')}: {obj.get('message','')}")
             except asyncio.CancelledError:
                 return
-            except Exception:
+            except Exception as e:
+                logger.debug(f"SSE subscriber error: {e}")
                 return
 
         # Start status subscriber task if enabled
@@ -1186,7 +1199,8 @@ def main() -> None:
         if sse_url:
             try:
                 sse_task = asyncio.create_task(_sse_subscriber(sse_url))
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to create SSE subscriber task: {e}", exc_info=True)
                 sse_task = None
         try:
             async for ev in agent.run_events(task):
@@ -1214,7 +1228,8 @@ def main() -> None:
                         print(header)
                         try:
                             print(json.dumps(res, indent=2, ensure_ascii=False))
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to JSON dump MCP result: {e}")
                             print(str(res))
                 elif t == "thinking":
                     # Optionally show LLM progress when verbose
@@ -1253,7 +1268,8 @@ def main() -> None:
                     while not status_queue.empty():
                         try:
                             event = status_queue.get_nowait()
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to get status event from queue: {e}")
                             break
                         # Reuse the same display logic as _status_subscriber
                         phase = getattr(event, "phase", "progress")
@@ -1277,13 +1293,14 @@ def main() -> None:
                         elif event.level == "warning" and _supports_color():
                             status_line = _colorize(status_line, "33")
                         print(status_line)
-                except Exception:
+                except Exception as e:
                     # If anything goes wrong while draining, continue to cancel tasks
-                    pass
+                    logger.debug(f"Exception while draining status queue: {e}")
             if status_task and not status_task.done():
                 try:
                     status_task.cancel()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to cancel status task: {e}")
                     pass
             if sse_task and not sse_task.done():
                 try:
@@ -1334,12 +1351,14 @@ def main() -> None:
                     yaml_text = yaml.safe_dump(result_obj, allow_unicode=True, sort_keys=False)
                     for line in yaml_text.rstrip().splitlines():
                         print(f"    {line}")
-                except Exception:
+                except Exception as e:
                     # Fallback to JSON-ish string
+                    logger.debug(f"Failed to YAML dump result: {e}")
                     try:
                         j = json.dumps(result_obj, ensure_ascii=False)
                         print(f"    {j}")
-                    except Exception:
+                    except Exception as e2:
+                        logger.debug(f"Failed to JSON dump result: {e2}")
                         print(f"    {str(result_obj)}")
 
         # Summary (print after calls so it is the final user-visible result)
