@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSH Control Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            font-size: 14px;
+        }
+        
+        .container {
+            max-width: 100%;
+        }
+        
+        h1 {
+            font-size: 20px;
+            margin-bottom: 20px;
+            color: #ffffff;
+        }
+        
+        h2 {
+            font-size: 16px;
+            margin: 20px 0 10px 0;
+            color: #ffffff;
+        }
+        
+        .section {
+            background: #252526;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid #3c3c3c;
+        }
+        
+        .machine-card {
+            background: #2d2d30;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 10px;
+            border: 1px solid #3c3c3c;
+            transition: all 0.2s;
+        }
+        
+        .machine-card:hover {
+            border-color: #007acc;
+            box-shadow: 0 2px 8px rgba(0, 122, 204, 0.2);
+        }
+        
+        .machine-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .machine-name {
+            font-weight: 600;
+            font-size: 15px;
+            color: #4fc3f7;
+        }
+        
+        .machine-status {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        
+        .status-connected {
+            background: #2d5016;
+            color: #a9d18e;
+        }
+        
+        .status-disconnected {
+            background: #5c2d2d;
+            color: #f48771;
+        }
+        
+        .status-checking {
+            background: #3c3c1e;
+            color: #ffd966;
+        }
+        
+        .machine-details {
+            font-size: 12px;
+            color: #858585;
+            margin-top: 5px;
+        }
+        
+        .machine-details div {
+            margin-bottom: 3px;
+        }
+        
+        .machine-stats {
+            display: flex;
+            gap: 15px;
+            margin-top: 8px;
+            font-size: 11px;
+        }
+        
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .stat-label {
+            color: #858585;
+        }
+        
+        .stat-value {
+            color: #ffffff;
+            font-weight: 600;
+        }
+        
+        .history-entry {
+            background: #2d2d30;
+            border-left: 3px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        
+        .history-entry.success {
+            border-left-color: #4caf50;
+        }
+        
+        .history-entry.failure {
+            border-left-color: #f44336;
+        }
+        
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        
+        .history-machine {
+            color: #4fc3f7;
+        }
+        
+        .history-time {
+            color: #858585;
+            font-size: 11px;
+        }
+        
+        .history-command {
+            color: #ce9178;
+            font-family: 'Consolas', 'Monaco', monospace;
+            margin-bottom: 5px;
+            word-break: break-all;
+        }
+        
+        .history-result {
+            display: flex;
+            gap: 10px;
+            font-size: 11px;
+        }
+        
+        .history-exit-code {
+            color: #858585;
+        }
+        
+        .history-duration {
+            color: #858585;
+        }
+        
+        .btn {
+            background: #0e639c;
+            color: #ffffff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+        
+        .btn:hover {
+            background: #1177bb;
+        }
+        
+        .btn:disabled {
+            background: #3c3c3c;
+            color: #858585;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            text-align: center;
+            color: #858585;
+            padding: 20px;
+        }
+        
+        .error {
+            background: #5c2d2d;
+            color: #f48771;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        
+        .empty {
+            text-align: center;
+            color: #858585;
+            padding: 30px;
+            font-style: italic;
+        }
+        
+        .refresh-btn {
+            float: right;
+            background: #3c3c3c;
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+        
+        .refresh-btn:hover {
+            background: #4c4c4c;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ SSH Control Panel</h1>
+        
+        <div class="section">
+            <h2>
+                Machines
+                <button class="btn refresh-btn" onclick="loadMachines()">↻ Refresh</button>
+            </h2>
+            <div id="machines-container">
+                <div class="loading">Loading machines...</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>
+                Command History
+                <button class="btn refresh-btn" onclick="loadHistory()">↻ Refresh</button>
+            </h2>
+            <div id="history-container">
+                <div class="loading">Loading history...</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const pluginName = '{{ plugin_name }}';
+        const apiBase = `/plugins/${pluginName}/api`;
+        
+        // Load machines on page load
+        async function loadMachines() {
+            const container = document.getElementById('machines-container');
+            container.innerHTML = '<div class="loading">Loading machines...</div>';
+            
+            try {
+                const response = await fetch(`${apiBase}/machines`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    container.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                if (!data.machines || data.machines.length === 0) {
+                    container.innerHTML = '<div class="empty">No machines configured</div>';
+                    return;
+                }
+                
+                // Render machines
+                container.innerHTML = '';
+                for (const machine of data.machines) {
+                    const card = createMachineCard(machine);
+                    container.appendChild(card);
+                }
+                
+                // Check connection status for all machines
+                checkAllConnections(data.machines);
+            } catch (error) {
+                console.error('Failed to load machines:', error);
+                container.innerHTML = `<div class="error">Failed to load machines: ${error.message}</div>`;
+            }
+        }
+        
+        function createMachineCard(machine) {
+            const card = document.createElement('div');
+            card.className = 'machine-card';
+            card.id = `machine-${machine.name}`;
+            
+            const poolInfo = machine.pool || {};
+            const hasPool = poolInfo.total_created > 0;
+            
+            card.innerHTML = `
+                <div class="machine-header">
+                    <span class="machine-name">${machine.name}</span>
+                    <span class="machine-status status-checking" id="status-${machine.name}">Checking...</span>
+                </div>
+                <div class="machine-details">
+                    <div>🔗 <strong>${machine.user}@${machine.host}:${machine.port}</strong></div>
+                    ${machine.tags.length > 0 ? `<div>🏷️ ${machine.tags.join(', ')}</div>` : ''}
+                </div>
+                ${hasPool ? `
+                    <div class="machine-stats">
+                        <div class="stat">
+                            <span class="stat-label">Connections:</span>
+                            <span class="stat-value">${poolInfo.total_created}/${machine.max_connections}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Available:</span>
+                            <span class="stat-value">${poolInfo.available}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">In Use:</span>
+                            <span class="stat-value">${poolInfo.in_use}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Commands:</span>
+                            <span class="stat-value">${poolInfo.total_commands}</span>
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+            
+            return card;
+        }
+        
+        async function checkAllConnections(machines) {
+            for (const machine of machines) {
+                checkMachineConnection(machine.name);
+            }
+        }
+        
+        async function checkMachineConnection(machineName) {
+            const statusEl = document.getElementById(`status-${machineName}`);
+            
+            try {
+                const response = await fetch(`${apiBase}/machines/${machineName}/status`);
+                const data = await response.json();
+                
+                if (data.connected) {
+                    statusEl.className = 'machine-status status-connected';
+                    statusEl.textContent = `✓ Connected (${Math.round(data.latency_ms)}ms)`;
+                } else {
+                    statusEl.className = 'machine-status status-disconnected';
+                    statusEl.textContent = `✗ Disconnected`;
+                }
+            } catch (error) {
+                console.error(`Failed to check ${machineName}:`, error);
+                statusEl.className = 'machine-status status-disconnected';
+                statusEl.textContent = `✗ Error`;
+            }
+        }
+        
+        async function loadHistory() {
+            const container = document.getElementById('history-container');
+            container.innerHTML = '<div class="loading">Loading history...</div>';
+            
+            try {
+                const response = await fetch(`${apiBase}/history?limit=20`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    container.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                if (!data.history || data.history.length === 0) {
+                    container.innerHTML = '<div class="empty">No command history</div>';
+                    return;
+                }
+                
+                // Render history
+                container.innerHTML = '';
+                for (const entry of data.history) {
+                    const historyEntry = createHistoryEntry(entry);
+                    container.appendChild(historyEntry);
+                }
+            } catch (error) {
+                console.error('Failed to load history:', error);
+                container.innerHTML = `<div class="error">Failed to load history: ${error.message}</div>`;
+            }
+        }
+        
+        function createHistoryEntry(entry) {
+            const div = document.createElement('div');
+            div.className = `history-entry ${entry.success ? 'success' : 'failure'}`;
+            
+            div.innerHTML = `
+                <div class="history-header">
+                    <span class="history-machine">${entry.machine}</span>
+                    <span class="history-time">${entry.timestamp_formatted || new Date(entry.timestamp * 1000).toLocaleString()}</span>
+                </div>
+                <div class="history-command">${escapeHtml(entry.command)}</div>
+                <div class="history-result">
+                    <span class="history-exit-code">Exit: ${entry.exit_code}</span>
+                    <span class="history-duration">Duration: ${entry.duration_formatted || entry.duration.toFixed(2) + 's'}</span>
+                </div>
+            `;
+            
+            return div;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Auto-refresh every 5 seconds
+        setInterval(() => {
+            loadHistory();
+        }, 5000);
+        
+        // Initial load
+        loadMachines();
+        loadHistory();
+    </script>
+</body>
+</html>

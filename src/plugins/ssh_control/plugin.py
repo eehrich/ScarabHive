@@ -6,6 +6,7 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 from .mcp_server import SSHControlMCPServer
+from .web_endpoints import SSHControlWebEndpoints
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
@@ -31,8 +32,14 @@ class SSHControlHybridPlugin:
             command_history=self.command_history
         )
         
-        # Web endpoints will be added in later task
-        # self.web_endpoints = SSHControlWebEndpoints(...)
+        # Initialize web endpoints component
+        self.web_endpoints = SSHControlWebEndpoints(
+            name,
+            system_config,
+            mcp_config,
+            connection_manager=self.mcp_server.connection_manager,
+            command_history=self.command_history
+        )
     
     # MCP Server interface methods
     async def call(self, tool: str | None = None, params: dict | None = None, *args, **kwargs):
@@ -59,18 +66,22 @@ class SSHControlHybridPlugin:
         """Delegate to MCP server - compatibility method."""
         return await self.mcp_server.call_with_status(tool_name, arguments)
     
-    # Web Interface methods (to be implemented)
-    # def get_web_router(self):
-    #     """Delegate to web endpoints."""
-    #     return self.web_endpoints.get_web_router()
+    # Web Interface methods
+    def get_web_router(self):
+        """Delegate to web endpoints."""
+        return self.web_endpoints.get_web_router()
     
-    # def get_static_assets(self):
-    #     """Delegate to web endpoints."""
-    #     return self.web_endpoints.get_static_assets()
+    def get_static_assets(self):
+        """Delegate to web endpoints."""
+        return self.web_endpoints.get_static_assets()
     
-    # def get_panels(self):
-    #     """Delegate to web endpoints."""
-    #     return self.web_endpoints.get_panels()
+    def get_panels(self):
+        """Delegate to web endpoints."""
+        return self.web_endpoints.get_panels()
+    
+    def get_security_config(self):
+        """Delegate to web endpoints."""
+        return self.web_endpoints.get_security_config()
     
     async def close(self):
         """Clean up resources."""

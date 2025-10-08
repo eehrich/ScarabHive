@@ -92,3 +92,38 @@ tools:
             type: string
             description: "Machine name or comma-separated list of names (omit to check all)"
         required: []
+
+# Web UI Configuration
+web_ui:
+  enabled: true
+  button_text: "SSH Control"
+  button_icon: "🖥️"
+  panel_title: "SSH Machine Control"
+  panel_endpoint: "/plugins/ssh_control/panel.html"
+  panel_type: "fetch"
+  
+  panels:
+    - id: "ssh_control_panel"
+      title: "SSH Control"
+      icon: "🖥️"
+      position: "right"
+      width: "600px"
+      height: "500px"
+      url: "/plugins/{name}/panel.html"
+  
+  endpoints:
+    - path: "/panel.html"
+      method: "GET"
+      description: "SSH control dashboard panel"
+    - path: "/api/machines"
+      method: "GET"
+      description: "List all configured machines with connection status"
+    - path: "/api/machines/{machine}/status"
+      method: "GET"
+      description: "Get detailed status for specific machine"
+    - path: "/api/history"
+      method: "GET"
+      description: "Get recent command execution history"
+    - path: "/api/execute"
+      method: "POST"
+      description: "Execute command on remote machine"
