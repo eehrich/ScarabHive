@@ -1,0 +1,97 @@
+tools:
+  - name: ssh_control_list_machines
+    description: "List all configured SSH machines with optional tag filtering"
+    inputSchema:
+      type: object
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+          description: "Optional list of tags to filter machines"
+      required: []
+    
+  - name: ssh_control_execute
+    description: "Execute a command on one or more remote machines via SSH. Use this for any shell command including file operations (cat, ls, echo, etc.)"
+    inputSchema:
+      type: object
+      properties:
+        machine:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: "Machine name or list of machine names"
+        command:
+          type: string
+          description: "Command to execute on the remote machine(s)"
+        timeout:
+          type: integer
+          description: "Command timeout in seconds (optional, uses machine default)"
+        check_exit_code:
+          type: boolean
+          description: "Fail if exit code is not 0 (default: true)"
+          default: true
+      required:
+        - machine
+        - command
+    
+  - name: ssh_control_upload_file
+    description: "Upload a local file to one or more remote machines via SFTP"
+    inputSchema:
+      type: object
+      properties:
+        machine:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: "Machine name or list of machine names"
+        local_path:
+          type: string
+          description: "Local file path to upload"
+        remote_path:
+          type: string
+          description: "Remote destination path"
+        mode:
+          type: string
+          description: "File permissions in octal format (e.g., '0644')"
+      required:
+        - machine
+        - local_path
+        - remote_path
+    
+  - name: ssh_control_download_file
+    description: "Download a file from a remote machine via SFTP to local filesystem"
+    inputSchema:
+      type: object
+      properties:
+        machine:
+          type: string
+          description: "Machine name"
+        remote_path:
+          type: string
+          description: "Remote file path to download"
+        local_path:
+          type: string
+          description: "Local destination path"
+      required:
+        - machine
+        - remote_path
+        - local_path
+    
+  - name: ssh_control_check_connection
+    description: "Check SSH connection health for one or more machines"
+    inputSchema:
+      type: object
+      properties:
+        machine:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: "Machine name or list of names (omit to check all)"
+      required: []

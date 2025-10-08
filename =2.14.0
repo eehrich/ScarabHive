@@ -1,0 +1,13 @@
+Collecting asyncssh
+  Downloading asyncssh-2.21.1-py3-none-any.whl.metadata (9.9 kB)
+Collecting cryptography>=39.0 (from asyncssh)
+  Downloading cryptography-46.0.2-cp311-abi3-win_amd64.whl.metadata (5.7 kB)
+Requirement already satisfied: typing_extensions>=4.0.0 in e:\projects\agentsystem\.venv\lib\site-packages (from asyncssh) (4.15.0)
+Requirement already satisfied: cffi>=2.0.0 in e:\projects\agentsystem\.venv\lib\site-packages (from cryptography>=39.0->asyncssh) (2.0.0)
+Requirement already satisfied: pycparser in e:\projects\agentsystem\.venv\lib\site-packages (from cffi>=2.0.0->cryptography>=39.0->asyncssh) (2.23)
+Downloading asyncssh-2.21.1-py3-none-any.whl (375 kB)
+Downloading cryptography-46.0.2-cp311-abi3-win_amd64.whl (3.5 MB)
+   ---------------------------------------- 3.5/3.5 MB 51.6 MB/s  0:00:00
+Installing collected packages: cryptography, asyncssh
+
+Successfully installed asyncssh-2.21.1 cryptography-46.0.2
