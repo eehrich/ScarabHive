@@ -692,6 +692,14 @@
       }
       addUser(chatContainer, displayText, files);
       taskInput.value = '';
+      // Trigger input event so auto-resize logic recalculates height immediately
+      try {
+        const ev = new Event('input', { bubbles: true, cancelable: false });
+        taskInput.dispatchEvent(ev);
+      } catch (e) {
+        // Older browsers fallback
+        taskInput.dispatchEvent(document.createEvent('Event'));
+      }
 
       // If there's an active request, append the user message to it
       // Note: Multimodal append not yet supported, only text append
