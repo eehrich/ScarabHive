@@ -1301,13 +1301,28 @@ class Agent(MCPServer):
 
                 # Check for final content
                 elif content:
-                    # Append assistant final message to conversation history
-                    messages.append(ChatMessage(role="assistant", content=content or ""))
-                    results["summary"] = content
-                    # Update tracked messages with final response
-                    self._current_messages = messages.copy()
-                    yield {"type": "final", "summary": content}
-                    break
+                    # Filter out OpenAI's meta-messages that should be ignored
+                    content_str = content.strip() if isinstance(content, str) else str(content)
+                    if content_str.startswith("(Note: last assistant message duplicated"):
+                        # OpenAI detected a duplicate message - this typically means the LLM
+                        # has nothing new to add. We should prompt it to summarize the tool results.
+                        logger.debug("OpenAI duplicate message warning at step %d - prompting for summary", step + 1)
+                        consecutive_no_tool_calls += 1
+                        
+                        # Add a user message to explicitly ask for a summary
+                        messages.append(ChatMessage(
+                            role="user",
+                            content="Please provide a brief summary of the results from the tool execution above."
+                        ))
+                        # Continue to next iteration to let LLM respond
+                    else:
+                        # Append assistant final message to conversation history
+                        messages.append(ChatMessage(role="assistant", content=content or ""))
+                        results["summary"] = content
+                        # Update tracked messages with final response
+                        self._current_messages = messages.copy()
+                        yield {"type": "final", "summary": content}
+                        break
                 # If we had tool calls, continue to next iteration to let LLM respond to tool results
                 # Don't add extra assistant messages here as it creates invalid conversation flow
 
