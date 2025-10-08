@@ -65,6 +65,14 @@
             min-width: 28px;
             text-align: right;
         }
+        .tab-status.connected {
+            /* green when connected */
+            color: #6ee56e;
+        }
+        .tab-status.disconnected {
+            /* red when disconnected/unavailable */
+            color: #f07171;
+        }
         
         .tab-close {
             color: #858585;
@@ -1203,11 +1211,13 @@
                 if (data.connected) {
                     const ms = Math.round(data.latency_ms || 0);
                     statusEl.textContent = `${ms}ms`;
-                    statusEl.style.color = '#9ad4f5';
+                    statusEl.classList.remove('disconnected');
+                    statusEl.classList.add('connected');
                     statusEl.title = 'Connected';
                 } else {
                     statusEl.textContent = '\u2014'; // em-dash short marker
-                    statusEl.style.color = '#858585';
+                    statusEl.classList.remove('connected');
+                    statusEl.classList.add('disconnected');
                     statusEl.title = 'Disconnected';
                 }
             } catch (err) {
@@ -1217,7 +1227,8 @@
                 const statusEl = tab.querySelector('.tab-status');
                 if (!statusEl) return;
                 statusEl.textContent = '\u2014';
-                statusEl.style.color = '#858585';
+                statusEl.classList.remove('connected');
+                statusEl.classList.add('disconnected');
                 statusEl.title = 'Status unavailable';
             }
         }
