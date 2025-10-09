@@ -316,29 +316,6 @@ class TestGetTools:
             assert tools1 is tools2
             assert mock_load.call_count == 1
 
-    def test_get_tools_legacy_single_tool_format(self, system_config, mcp_config):
-        """Test loading tools in legacy single-tool format."""
-        class TestServer(SchemaBasedMCPServer):
-            pass
-        
-        server = TestServer("test", system_config, mcp_config)
-        
-        mock_schema = {
-            "function": {
-                "name": "legacy_tool",
-                "description": "Legacy single tool"
-            }
-        }
-        
-        with patch.object(server, '_load_schema') as mock_load:
-            mock_load.return_value = mock_schema
-            
-            tools = server.get_tools()
-            
-            assert len(tools) == 1
-            assert tools[0]["type"] == "function"
-            assert tools[0]["function"]["name"] == "legacy_tool"
-
     def test_get_tools_invalid_format(self, system_config, mcp_config):
         """Test error when schema has invalid format."""
         class TestServer(SchemaBasedMCPServer):
@@ -347,13 +324,13 @@ class TestGetTools:
         server = TestServer("test", system_config, mcp_config)
         
         mock_schema = {
-            "invalid_key": "no tools or function"
+            "invalid_key": "no tools"
         }
         
         with patch.object(server, '_load_schema') as mock_load:
             mock_load.return_value = mock_schema
             
-            with pytest.raises(RuntimeError, match="must contain either 'tools' array"):
+            with pytest.raises(RuntimeError, match="must contain 'tools' array"):
                 server.get_tools()
 
     def test_get_tools_not_a_list(self, system_config, mcp_config):

@@ -31,7 +31,7 @@ class PluginMCPAdapter(MCPServer):
         self._tools_cache: Optional[List[MCPTool]] = None
 
     async def list_tools(self) -> List[MCPTool]:
-        """List tools available from the plugin - converts legacy interfaces to MCPTool objects"""
+        """List tools available from the plugin - converts plugin interfaces to MCPTool objects"""
         if self._tools_cache is not None:
             return self._tools_cache
 
@@ -49,7 +49,7 @@ class PluginMCPAdapter(MCPServer):
                 except (NotImplementedError, AttributeError):
                     pass
 
-        # Handle legacy plugins with get_tools() method (OpenAI function format)
+        # Handle plugins with get_tools() method (OpenAI function format)
         if hasattr(self.plugin_server, 'get_tools'):
             try:
                 tool_schemas = self.plugin_server.get_tools()
@@ -62,31 +62,6 @@ class PluginMCPAdapter(MCPServer):
                             input_schema=func_def.get('parameters', {})
                         )
                         tools.append(tool)
-            except (NotImplementedError, AttributeError):
-                pass
-
-        # Handle legacy plugins with get_schema() method
-        if not tools and hasattr(self.plugin_server, 'get_schema'):
-            try:
-                schema = self.plugin_server.get_schema()
-                if isinstance(schema, dict) and 'functions' in schema:
-                    # Multi-function format
-                    for func_def in schema['functions']:
-                        tool = MCPTool(
-                            name=func_def['name'],
-                            description=func_def.get('description', f'Tool {func_def["name"]}'),
-                            input_schema=func_def.get('parameters', {})
-                        )
-                        tools.append(tool)
-                elif isinstance(schema, dict) and 'function' in schema:
-                    # Single function format
-                    func_def = schema['function']
-                    tool = MCPTool(
-                        name=func_def['name'],
-                        description=func_def.get('description', f'Tool {func_def["name"]}'),
-                        input_schema=func_def.get('parameters', {})
-                    )
-                    tools.append(tool)
             except (NotImplementedError, AttributeError):
                 pass
 

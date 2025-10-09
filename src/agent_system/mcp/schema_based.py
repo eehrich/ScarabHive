@@ -136,8 +136,7 @@ class SchemaBasedMCPServer(MCPServer):
         """Load tools from the plugin's schema.yaml file.
         
         This method automatically loads and parses the schema.yaml file
-        from the plugin's directory, eliminating the need for each plugin
-        to implement this logic.
+        from the plugin's directory.
         
         Returns:
             List of tool definitions in OpenAI function format.
@@ -150,32 +149,21 @@ class SchemaBasedMCPServer(MCPServer):
         
         schema_data = self._load_schema()
         
-        # Support multi-tool format (recommended)
-        if 'tools' in schema_data:
-            tools = schema_data['tools']
-            if not isinstance(tools, list):
-                raise RuntimeError(
-                    f"{self.name} plugin schema 'tools' must be a list"
-                )
-            self._tools_cache = tools
-            return tools
-        
-        # Support legacy single-tool format for backward compatibility
-        elif 'function' in schema_data:
-            # Convert single function to multi-tool format
-            tool = {
-                "type": "function",
-                "function": schema_data['function']
-            }
-            self._tools_cache = [tool]
-            logger.debug(f"Converted single-tool format to multi-tool for {self.name}")
-            return self._tools_cache
-        
-        else:
+        # Only support multi-tool format
+        if 'tools' not in schema_data:
             raise RuntimeError(
-                f"{self.name} plugin schema must contain either 'tools' array (recommended) "
-                f"or 'function' object (legacy). Found keys: {list(schema_data.keys())}"
+                f"{self.name} plugin schema must contain 'tools' array. "
+                f"Found keys: {list(schema_data.keys())}"
             )
+        
+        tools = schema_data['tools']
+        if not isinstance(tools, list):
+            raise RuntimeError(
+                f"{self.name} plugin schema 'tools' must be a list"
+            )
+        
+        self._tools_cache = tools
+        return tools
     
     def get_schema_data(self) -> dict[str, Any]:
         """Get the full loaded schema data.
