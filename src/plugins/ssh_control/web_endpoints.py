@@ -319,13 +319,39 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         with open(config_path, 'r', encoding='utf-8') as f:
                             config = yaml.safe_load(f) or {}
 
-                        # Ensure structure exists
-                        if 'servers' not in config:
-                            config['servers'] = {}
-                        if 'ssh_control' not in config['servers']:
-                            config['servers']['ssh_control'] = {}
-                        if 'machines' not in config['servers']['ssh_control']:
-                            config['servers']['ssh_control']['machines'] = []
+                        # Determine where to persist machines.
+                        # The config structure is: mcp_system -> servers -> ssh_control -> machines
+                        # We need to append to the correct location
+                        target = None
+                        
+                        # Check for mcp_system -> servers -> ssh_control (standard structure)
+                        if 'mcp_system' in config and isinstance(config['mcp_system'], dict):
+                            mcp_sys = config['mcp_system']
+                            if 'servers' not in mcp_sys or not isinstance(mcp_sys['servers'], dict):
+                                mcp_sys['servers'] = {}
+                            
+                            if 'ssh_control' not in mcp_sys['servers'] or not isinstance(mcp_sys['servers']['ssh_control'], dict):
+                                mcp_sys['servers']['ssh_control'] = {}
+                            
+                            target = mcp_sys['servers']['ssh_control']
+                        
+                        # Fallback: check root-level servers -> ssh_control
+                        elif 'servers' in config and isinstance(config['servers'], dict):
+                            if 'ssh_control' not in config['servers'] or not isinstance(config['servers']['ssh_control'], dict):
+                                config['servers']['ssh_control'] = {}
+                            target = config['servers']['ssh_control']
+                        
+                        # Fallback: check legacy top-level ssh_control
+                        elif 'ssh_control' in config and isinstance(config['ssh_control'], dict):
+                            target = config['ssh_control']
+                        
+                        # Last resort: create mcp_system structure
+                        else:
+                            config['mcp_system'] = {'servers': {'ssh_control': {}}}
+                            target = config['mcp_system']['servers']['ssh_control']
+
+                        if 'machines' not in target or not isinstance(target['machines'], list):
+                            target['machines'] = []
 
                         # Create machine dict for config (without password for security)
                         machine_dict = {
@@ -346,7 +372,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         # NOTE: Password is intentionally NOT saved to config for security
 
                         # Append to machines list
-                        config['servers']['ssh_control']['machines'].append(machine_dict)
+                        target['machines'].append(machine_dict)
 
                         # Write back to file
                         with open(config_path, 'w', encoding='utf-8') as f:
