@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-system-mcp"
-version = "0.1.1"
+version = "0.2.0"
 description = "Flexible AI Agent System using MCP with pluggable servers and FastAPI UI"
 authors = [{ name = "Enrico Ehrich" }]
 readme = "README.md"
@@ -38,7 +38,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://example.com"
+Homepage = "http://127.0.0.1:8000"
 
 [project.scripts]
 backlog = "scripts.backlog:main"
