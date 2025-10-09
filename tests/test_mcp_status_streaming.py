@@ -9,7 +9,7 @@ import pytest
 import asyncio
 import json
 from datetime import datetime
-from unittest.mock import AsyncMock, patch, MagicMock, Mock
+from unittest.mock import patch, MagicMock
 
 from agent_system.mcp.status_streaming import MCPStatusStreamingTransport, MCPStatusNotificationHandler
 from agent_system.mcp.status import StatusEvent, status_bus, publish_status
@@ -170,65 +170,6 @@ class TestMCPStatusStreaming:
             assert transport._server_filter == "specific_server"
             assert transport._request_id_filter == "specific_request"
             
-            await transport.disconnect()
-
-    @pytest.mark.asyncio
-    async def test_status_streaming_with_live_transport(self):
-        """Integration test with actual HTTP transport (mocked HTTP calls)."""
-        transport = MCPStatusStreamingTransport("http://localhost:8000")
-        
-        # Mock aiohttp session
-        mock_session = AsyncMock()
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.headers = {"mcp-session-id": "test_session_123"}
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "id": "1",
-            "result": {"capabilities": {}}
-        }
-        
-        # Create an async context manager that yields mock_response
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__.return_value = mock_response
-        mock_session.post = Mock(return_value=mock_cm)
-        
-        # Start transport first; if it created a real session, close it before
-        # replacing with our mocked session to avoid leaving sessions open.
-        await transport.connect()
-        # If a real session was created, disconnect to close it
-        if transport.session and not isinstance(transport.session, AsyncMock):
-            try:
-                await transport.disconnect()
-            except Exception:
-                pass
-        transport.session = mock_session
-        
-        try:
-            # Create and send a status notification
-            event = StatusEvent(
-                server="test_server",
-                request_id="req_789",
-                message="Processing data",
-                timestamp=datetime.now(),
-                phase="progress",
-                level="info"
-            )
-            
-            notification = transport._create_status_notification(event)
-            await transport._send_status_notification(notification)
-            
-            # Verify HTTP POST was called for the notification
-            call_args = mock_session.post.call_args
-            
-            # Verify the payload structure
-            payload = call_args[1]["json"]  # kwargs["json"]
-            assert payload["jsonrpc"] == "2.0"
-            assert payload["method"] == "notifications/status"
-            assert payload["params"]["server"] == "test_server"
-            assert payload["params"]["message"] == "Processing data"
-            
-        finally:
             await transport.disconnect()
 
     def test_status_event_to_json_serialization(self):

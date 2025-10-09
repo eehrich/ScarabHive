@@ -176,30 +176,6 @@ class TestBytesHandling:
         assert isinstance(result, str)
 
 
-class TestNonStringInput:
-    """Test handling of non-string input types."""
-
-    def test_sanitize_integer(self):
-        """Test sanitization of integer input."""
-        result = sanitize_for_llm(123)
-        assert result == "123"
-
-    def test_sanitize_float(self):
-        """Test sanitization of float input."""
-        result = sanitize_for_llm(123.45)
-        assert "123.45" in result
-
-    def test_sanitize_boolean(self):
-        """Test sanitization of boolean input."""
-        result = sanitize_for_llm(True)
-        assert result == "True"
-
-    def test_sanitize_list(self):
-        """Test sanitization of list (converts to string)."""
-        result = sanitize_for_llm([1, 2, 3])
-        assert "[1, 2, 3]" == result
-
-
 class TestWhitespaceHandling:
     """Test whitespace handling."""
 

@@ -68,6 +68,7 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     # configured_external_servers and run the async helper to update the file.
     import asyncio
     from agent_system.cli import _allow_server_tool, _block_server_tool
+    from agent_system.services import ToolService
 
     class DummyIntegration:
         def __init__(self, configured):
@@ -84,8 +85,13 @@ def test_allow_block_updates(tmp_path, monkeypatch):
 
     integration = DummyIntegration(configured)
 
+    # Construct a ToolService using the dummy integration and pass it to the
+    # CLI helpers. The CLI helpers expect a service exposing allow_tool/block_tool
+    # (the production code uses ToolService), so tests should mirror that.
+    tool_service = ToolService(integration, None)
+
     # Run allow and block helpers directly
-    asyncio.run(_allow_server_tool(integration, 'localhost', 'hello'))
+    asyncio.run(_allow_server_tool(tool_service, 'localhost', 'hello'))
 
     target = tmp_config_dir / 'mcp.yaml'
     data = yaml.safe_load(target.read_text(encoding='utf-8'))
@@ -97,7 +103,7 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     allowed = tools_dict.get('allowed') or server_cfg.get('allowed_tools') or []
     assert 'hello' in allowed
 
-    asyncio.run(_block_server_tool(integration, 'localhost', 'hello'))
+    asyncio.run(_block_server_tool(tool_service, 'localhost', 'hello'))
 
     data = yaml.safe_load(target.read_text(encoding='utf-8'))
     mcp_block = data.get('mcp', data)

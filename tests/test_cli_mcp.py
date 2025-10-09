@@ -43,6 +43,17 @@ def mock_mcp_integration():
     integration.all_configured_external_servers = {'test_server': test_server}
     integration.mcp_config.servers = {'test_server': test_server}
 
+    # Add missing list_servers method for CLI commands
+    integration.list_servers = AsyncMock(return_value=[
+        {
+            'name': 'test_server',
+            'connected': False,
+            'url': 'http://localhost:8001/mcp',
+            'description': 'Test MCP server',
+            'enabled': True
+        }
+    ])
+    
     # (Do not include extra disabled servers here; tests that need them will add them)
     
     integration.client_manager = AsyncMock()
@@ -186,7 +197,7 @@ class TestCLIMCP:
         assert status_output is not None
         assert status_output['name'] == 'test_server'
         assert not status_output['connected']
-        assert 'address' in status_output
+        assert 'url' in status_output
 
     @patch('agent_system.cli.load_settings')
     @patch('agent_system.cli.MCPIntegration')

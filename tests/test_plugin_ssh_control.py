@@ -74,15 +74,23 @@ def test_ssh_control_get_tools(mock_system_config, empty_mcp_config):
     tools = plugin_instance.get_tools()
     
     # Verify expected tools are present
-    tool_names = [tool['name'] for tool in tools]
+    tool_names = []
+    for tool in tools:
+        if 'name' in tool:
+            tool_names.append(tool['name'])
+        elif 'function' in tool and 'name' in tool['function']:
+            tool_names.append(tool['function']['name'])
+    
     assert 'ssh_control_list_machines' in tool_names
     assert 'ssh_control_execute' in tool_names
     assert 'ssh_control_upload_file' in tool_names
     assert 'ssh_control_download_file' in tool_names
     assert 'ssh_control_check_connection' in tool_names
+    assert 'ssh_control_add_machine' in tool_names
+    assert 'ssh_control_remove_machine' in tool_names
     
-    # Verify we have exactly 5 tools (simplified schema)
-    assert len(tools) == 5
+    # Verify we have exactly 7 tools (simplified schema)
+    assert len(tools) == 7
 
 
 @pytest.mark.asyncio

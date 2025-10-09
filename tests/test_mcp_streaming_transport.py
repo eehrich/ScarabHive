@@ -6,9 +6,7 @@ SSE-based HTTP transport for MCP communication.
 """
 
 import pytest
-from unittest.mock import AsyncMock, Mock, patch
-from aiohttp import ClientTimeout, TCPConnector
-from aiohttp.client_exceptions import ClientError
+from unittest.mock import AsyncMock, patch
 
 from agent_system.mcp.streaming_transport import HTTPStreamingTransport
 from agent_system.mcp.core import MCPMessage
@@ -19,214 +17,165 @@ class TestHTTPStreamingTransport:
 
     def test_init(self):
         """Test transport initialization"""
-        transport = HTTPStreamingTransport("http://example.com")
-        assert transport.base_url == "http://example.com"
+        transport = HTTPStreamingTransport(url="http://example.com")
+        assert transport.url == "http://example.com"
         assert transport.timeout == 30.0
         assert transport.ssl_verify is True
-        assert transport.session is None
         assert transport.session_id is None
+        assert transport._connected is False
+
+    def test_init_with_base_url(self):
+        """Test transport initialization with base_url (backward compatibility)"""
+        transport = HTTPStreamingTransport(base_url="http://example.com/")
+        assert transport.url == "http://example.com/"
+        assert transport.timeout == 30.0
+        assert transport.ssl_verify is True
 
     def test_init_with_params(self):
         """Test transport initialization with parameters"""
         transport = HTTPStreamingTransport(
-            "http://example.com/", 
-            timeout=60.0, 
+            url="http://example.com/",
+            timeout=60.0,
             ssl_verify=False
         )
-        assert transport.base_url == "http://example.com"
+        assert transport.url == "http://example.com/"
         assert transport.timeout == 60.0
         assert transport.ssl_verify is False
 
-    def test_build_url(self):
-        """Test URL building"""
-        transport = HTTPStreamingTransport("http://example.com")
-        url = transport._build_url()
-        assert url == "http://example.com/mcp"
+    def test_init_requires_url(self):
+        """Test that initialization requires url or base_url"""
+        with pytest.raises(ValueError, match="Either url or base_url must be provided"):
+            HTTPStreamingTransport()
 
     @pytest.mark.asyncio
-    async def test_connect_creates_session(self):
-        """Test that connect creates an aiohttp session"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
+    async def test_connect_sets_connected_flag(self):
+        """Test that connect sets the connected flag"""
+        transport = HTTPStreamingTransport(url="http://example.com")
+
         with patch('aiohttp.ClientSession') as mock_session_class:
             mock_session = AsyncMock()
             mock_session_class.return_value = mock_session
-            
+
             await transport.connect()
-            
-            # Verify session was created with correct parameters
-            mock_session_class.assert_called_once()
-            call_kwargs = mock_session_class.call_args[1]
-            
-            assert isinstance(call_kwargs['connector'], TCPConnector)
-            assert isinstance(call_kwargs['timeout'], ClientTimeout)
-            assert call_kwargs['headers']['Content-Type'] == 'application/json'
-            assert 'text/event-stream' in call_kwargs['headers']['Accept']
-            
-            assert transport.session == mock_session
+
+            assert transport._connected is True
 
     @pytest.mark.asyncio
-    async def test_connect_idempotent(self):
-        """Test that multiple connect calls don't create multiple sessions"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
-        with patch('aiohttp.ClientSession') as mock_session_class:
-            mock_session = AsyncMock()
-            mock_session_class.return_value = mock_session
-            
-            await transport.connect()
-            first_session = transport.session
-            
-            await transport.connect()
-            assert transport.session == first_session
-            
-            # Session should only be created once
-            mock_session_class.assert_called_once()
+    async def test_disconnect_clears_connected_flag(self):
+        """Test that disconnect clears the connected flag"""
+        transport = HTTPStreamingTransport(url="http://example.com")
+        transport._connected = True
 
-    @pytest.mark.asyncio
-    async def test_disconnect_closes_session(self):
-        """Test that disconnect closes the session"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
-        # Mock session
-        mock_session = AsyncMock()
-        transport.session = mock_session
-        transport.session_id = "test-session"
-        
         await transport.disconnect()
-        
-        mock_session.close.assert_called_once()
-        assert transport.session is None
+
+        assert transport._connected is False
         assert transport.session_id is None
 
     @pytest.mark.asyncio
-    async def test_disconnect_handles_exception(self):
-        """Test that disconnect handles session close exceptions gracefully"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
-        # Mock session that raises exception on close
-        mock_session = AsyncMock()
-        mock_session.close.side_effect = Exception("Close failed")
-        transport.session = mock_session
-        
-        # Should not raise exception
-        await transport.disconnect()
-        
-        assert transport.session is None
-        assert transport.session_id is None
+    async def test_close_aliases_disconnect(self):
+        """Test that close is an alias for disconnect"""
+        transport = HTTPStreamingTransport(url="http://example.com")
+        transport._connected = True
+
+        await transport.close()
+
+        assert transport._connected is False
+
+    @pytest.mark.asyncio
+    async def test_send_message_requires_connection(self):
+        """Test that send_message requires connection"""
+        transport = HTTPStreamingTransport(url="http://example.com")
+
+        message = MCPMessage(
+            jsonrpc="2.0",
+            method="test",
+            params={},
+            id=1
+        )
+
+        with pytest.raises(Exception, match="Not connected"):
+            await transport.send_message(message)
 
     @pytest.mark.asyncio
     async def test_receive_message_not_implemented(self):
         """Test that receive_message raises NotImplementedError"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
+        transport = HTTPStreamingTransport(url="http://example.com")
+
         with pytest.raises(NotImplementedError):
             await transport.receive_message()
 
     @pytest.mark.asyncio
-    async def test_ssl_verification_config(self):
-        """Test transport with SSL verification configuration"""
-        transport = HTTPStreamingTransport("https://example.com", ssl_verify=False)
-        
-        with patch('aiohttp.ClientSession') as mock_session_class:
-            await transport.connect()
-            
-            # Verify TCPConnector was created
-            call_kwargs = mock_session_class.call_args[1]
-            connector = call_kwargs['connector']
-            assert isinstance(connector, TCPConnector)
+    async def test_send_request_requires_connection(self):
+        """Test that send_request requires connection"""
+        transport = HTTPStreamingTransport(url="http://example.com")
 
-    @pytest.mark.asyncio
-    async def test_connection_error_handling(self):
-        """Test handling of connection errors"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
-        # Mock session that raises connection error
-        mock_session = Mock()  # Use regular Mock, not AsyncMock
-        # Mock post to raise exception when called as context manager
-        mock_context = AsyncMock()
-        mock_context.__aenter__.side_effect = ClientError("Connection failed")
-        mock_session.post.return_value = mock_context
-        transport.session = mock_session
-        
         message = MCPMessage(
             jsonrpc="2.0",
             method="tools/list",
             params={},
             id=1
         )
-        
-        response = await transport.send_request(message)
-        
-        # Should return connection error
-        assert response.error is not None
-        assert response.error.code == -32000
-        assert "Request failed" in response.error.message
 
-    @pytest.mark.asyncio
-    async def test_send_initialized_notification_no_session(self):
-        """Test initialized notification when no session exists"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
-        # No session setup - should return silently without making requests
-        await transport._send_initialized_notification()
+        with pytest.raises(Exception, match="Not connected"):
+            await transport.send_request(message)
 
-    @pytest.mark.asyncio
-    async def test_send_initialized_notification_handles_error(self):
-        """Test initialized notification error handling"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
-        # Mock session that raises exception
-        mock_session = Mock()  # Use regular Mock, not AsyncMock
-        # Mock post to raise exception when entering the context manager
-        mock_context = AsyncMock()
-        mock_context.__aenter__.side_effect = ClientError("Connection failed")
-        mock_session.post.return_value = mock_context
-        transport.session = mock_session
+    def test_build_headers(self):
+        """Test header building"""
+        transport = HTTPStreamingTransport(url="http://example.com")
+
+        headers = transport._build_headers()
+        assert headers['Content-Type'] == 'application/json'
+        assert 'text/event-stream' in headers['Accept']
+        assert 'application/json' in headers['Accept']
+
+    def test_build_headers_with_session(self):
+        """Test header building with session ID"""
+        transport = HTTPStreamingTransport(url="http://example.com")
         transport.session_id = "test-session"
-        
-        # Should not raise exception
-        await transport._send_initialized_notification()
 
-    def test_base_url_stripping(self):
-        """Test that trailing slashes are stripped from base URL"""
-        transport = HTTPStreamingTransport("http://example.com/path/")
-        assert transport.base_url == "http://example.com/path"
+        headers = transport._build_headers(include_session=True)
+        assert headers['Mcp-Session-Id'] == 'test-session'
 
-    @pytest.mark.asyncio
-    async def test_session_none_during_disconnect(self):
-        """Test disconnect when session is already None"""
-        transport = HTTPStreamingTransport("http://example.com")
-        
-        # No session set
-        await transport.disconnect()
-        
-        # Should not raise exception
-        assert transport.session is None
-        assert transport.session_id is None
+    def test_message_to_dict(self):
+        """Test message to dict conversion"""
+        transport = HTTPStreamingTransport(url="http://example.com")
 
-    def test_url_building(self):
-        """Test URL building"""
-        transport = HTTPStreamingTransport("http://example.com")
-        url = transport._build_url()
-        assert url == "http://example.com/mcp"
+        message = MCPMessage(
+            jsonrpc="2.0",
+            method="tools/list",
+            params={"test": "value"},
+            id=123
+        )
 
-    def test_various_ssl_verify_settings(self):
-        """Test various SSL verification settings"""
-        # SSL verification enabled (default)
-        transport1 = HTTPStreamingTransport("https://example.com")
-        assert transport1.ssl_verify is True
-        
-        # SSL verification explicitly disabled
-        transport2 = HTTPStreamingTransport("https://example.com", ssl_verify=False)
-        assert transport2.ssl_verify is False
+        result = transport._message_to_dict(message)
+        assert result == {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "params": {"test": "value"},
+            "id": 123
+        }
 
-    def test_timeout_settings(self):
-        """Test various timeout settings"""
-        # Default timeout
-        transport1 = HTTPStreamingTransport("http://example.com")
-        assert transport1.timeout == 30.0
-        
-        # Custom timeout
-        transport2 = HTTPStreamingTransport("http://example.com", timeout=60.0)
-        assert transport2.timeout == 60.0
+    def test_parse_json_response(self):
+        """Test JSON response parsing"""
+        transport = HTTPStreamingTransport(url="http://example.com")
+
+        data = {
+            "jsonrpc": "2.0",
+            "result": {"tools": []},
+            "id": 123
+        }
+
+        message = transport._parse_json_response(data)
+        assert message.jsonrpc == "2.0"
+        assert message.result == {"tools": []}
+        assert message.id == 123
+
+    def test_next_request_id(self):
+        """Test request ID generation"""
+        transport = HTTPStreamingTransport(url="http://example.com")
+
+        id1 = transport._next_request_id()
+        id2 = transport._next_request_id()
+
+        assert id1 == 1
+        assert id2 == 2

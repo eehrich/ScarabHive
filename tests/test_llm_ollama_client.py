@@ -126,7 +126,7 @@ class TestOllamaClientMessageMapping:
             assert len(mapped) == 1
             assert mapped[0]["role"] == "tool"
             assert mapped[0]["content"] == "Weather data"
-            assert mapped[0]["tool_name"] == "get_weather"
+            assert mapped[0]["name"] == "get_weather"
             assert mapped[0]["tool_call_id"] == "call_123"
 
     def test_map_assistant_message_with_tool_calls(self):

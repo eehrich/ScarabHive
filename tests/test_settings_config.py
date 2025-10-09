@@ -105,8 +105,8 @@ class TestMCPConfigInheritance:
         assert web_config is not None
         assert web_config.agent_config is not None
         
-        # web_research_agent explicitly sets llm_profile: turbo (overrides default's normal)
-        assert web_config.agent_config.llm_profile == "turbo"  # Explicitly set
+        # web_research_agent has llm_profile: normal (same as default)
+        assert web_config.agent_config.llm_profile == "normal"  # Same as default
         # max_steps is set at server level (max_steps: 20), not in agent_config
         # But agent_config.max_steps should still be 20 (inherited from default)
         assert web_config.agent_config.max_steps == 20

@@ -208,12 +208,11 @@ class TestMultimodalMessages:
         msg = ChatMessage(
             role="user",
             content=[
-                {"type": "text", "text": "Describe this image"},
-                {
-                    "type": "image_url",
-                    "image_url": "https://example.com/image.jpg",
-                    "detail": "high"
-                }
+                TextContent(type="text", text="Describe this image"),
+                ImageContent(
+                    type="image_url",
+                    image_url={"url": "https://example.com/image.jpg", "detail": "high"}
+                )
             ]
         )
         assert msg.is_multimodal()
