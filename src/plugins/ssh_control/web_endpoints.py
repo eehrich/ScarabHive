@@ -152,8 +152,13 @@ class SSHControlWebEndpoints(PluginWebInterface):
                 )
 
         @router.get("/api/machines/{machine_name}/status")
-        async def get_machine_status(machine_name: str):
-            """Get detailed status for a specific machine"""
+        async def get_machine_status(machine_name: str, active: bool = False):
+            """Get detailed status for a specific machine
+            
+            Args:
+                machine_name: Name of the machine
+                active: If True, actively test connection and measure latency (default: False for lazy check)
+            """
             if not self.connection_manager:
                 return JSONResponse(
                     status_code=503,
@@ -165,8 +170,8 @@ class SSHControlWebEndpoints(PluginWebInterface):
                 if machine_name not in self.connection_manager.machines:
                     raise HTTPException(status_code=404, detail=f"Machine '{machine_name}' not found")
 
-                # Check connection
-                result = await self.connection_manager.check_connection(machine_name)
+                # Check connection (lazy mode by default, active if requested)
+                result = await self.connection_manager.check_connection(machine_name, lazy=not active)
 
                 # Get pool info
                 pool_info = {}
@@ -186,6 +191,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     'connected': result.get('connected', False),
                     'latency_ms': result.get('latency_ms'),
                     'error': result.get('error'),
+                    'not_yet_connected': result.get('not_yet_connected', False),
                     'pool': pool_info
                 }
             except HTTPException:

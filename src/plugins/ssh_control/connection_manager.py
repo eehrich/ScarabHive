@@ -42,6 +42,7 @@ class ConnectionPool:
         # Statistics
         self.last_used = time.time()
         self.total_commands = 0
+        self.last_latency_ms: float | None = None  # Cache last measured latency
         
         self._lock = asyncio.Lock()
     
@@ -271,6 +272,20 @@ class SSHConnectionManager:
         """
         pool = await self._get_pool(machine_name)
         conn = await pool.acquire()
+        
+        # Measure and cache latency on first use of this pool
+        if pool.last_latency_ms is None:
+            try:
+                ping_start = time.time()
+                await asyncio.wait_for(
+                    conn.run('echo 1', check=False),
+                    timeout=2.0
+                )
+                pool.last_latency_ms = (time.time() - ping_start) * 1000
+                logger.debug(f"Measured initial latency for {machine_name}: {pool.last_latency_ms:.1f}ms")
+            except Exception as e:
+                logger.debug(f"Failed to measure latency for {machine_name}: {e}")
+                pool.last_latency_ms = 0.0  # Set to 0 to avoid retrying
         
         start_time = time.time()
         try:
@@ -667,16 +682,85 @@ class SSHConnectionManager:
         finally:
             await pool.release(conn)
     
-    async def check_connection(self, machine_name: str) -> dict[str, any]:
+    async def check_connection(self, machine_name: str, lazy: bool = True) -> dict[str, any]:
         """Check SSH connection health for machine.
         
         Args:
             machine_name: Name of the machine
+            lazy: If True (default), only check existing connections without creating new ones.
+                  If False, actively test connection (will create connection if needed).
             
         Returns:
-            Connection status information
+            Connection status information with 'not_yet_connected' flag for lazy checks
         """
+        # Check if machine exists
+        if machine_name not in self.machines:
+            return {
+                'machine': machine_name,
+                'connected': False,
+                'latency_ms': None,
+                'error': 'Machine not configured',
+                'last_used': None,
+                'not_yet_connected': False
+            }
+        
+        # Lazy check: only check if pool has been created and has active connections
+        if lazy:
+            if machine_name not in self.pools:
+                # Pool never created = never used
+                return {
+                    'machine': machine_name,
+                    'connected': False,
+                    'latency_ms': None,
+                    'error': None,
+                    'last_used': None,
+                    'not_yet_connected': True
+                }
+            
+            pool = self.pools[machine_name]
+            
+            # Check if pool has any connections (in use or available)
+            if pool.total_created == 0:
+                # Pool exists but no connections ever created
+                return {
+                    'machine': machine_name,
+                    'connected': False,
+                    'latency_ms': None,
+                    'error': None,
+                    'last_used': None,
+                    'not_yet_connected': True
+                }
+            
+            # Pool has connections - return status based on last_used time
+            # Consider connection potentially active if used within last 5 minutes
+            age_seconds = time.time() - pool.last_used
+            is_recent = age_seconds < 300  # 5 minutes
+            
+            return {
+                'machine': machine_name,
+                'connected': is_recent,
+                'latency_ms': pool.last_latency_ms,  # Return cached latency from last test
+                'error': None,
+                'last_used': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(pool.last_used)),
+                'not_yet_connected': False,
+                'age_seconds': age_seconds
+            }
+        
+        # Active check: actually test the connection (creates connection if needed)
+        # BUT: Don't create new connections for machines that were never used
         try:
+            # If pool doesn't exist or has no connections, skip active check
+            if machine_name not in self.pools or self.pools[machine_name].total_created == 0:
+                # Machine never used - return not_yet_connected without creating connection
+                return {
+                    'machine': machine_name,
+                    'connected': False,
+                    'latency_ms': None,
+                    'error': None,
+                    'last_used': None,
+                    'not_yet_connected': True
+                }
+            
             pool = await self._get_pool(machine_name)
             conn = await pool.acquire()
             
@@ -688,12 +772,16 @@ class SSHConnectionManager:
                 )
                 latency = (time.time() - start_time) * 1000  # Convert to ms
                 
+                # Cache the latency for lazy checks
+                pool.last_latency_ms = latency
+                
                 return {
                     'machine': machine_name,
                     'connected': result.exit_status == 0,
                     'latency_ms': latency,
                     'error': None,
-                    'last_used': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(pool.last_used))
+                    'last_used': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(pool.last_used)),
+                    'not_yet_connected': False
                 }
             finally:
                 await pool.release(conn)
@@ -704,7 +792,8 @@ class SSHConnectionManager:
                 'connected': False,
                 'latency_ms': None,
                 'error': str(e),
-                'last_used': None
+                'last_used': None,
+                'not_yet_connected': False
             }
     
     def list_machines(self, tags: list[str] | None = None) -> list[dict[str, any]]:

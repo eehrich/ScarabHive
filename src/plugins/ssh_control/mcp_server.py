@@ -450,7 +450,9 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         # Check connections in parallel
         tasks = []
         for machine_name in machines:
-            task = self.connection_manager.check_connection(machine_name)
+            # Use lazy=False for explicit connection checks via MCP tool
+            # (LLM explicitly requested status check, so actually test connection)
+            task = self.connection_manager.check_connection(machine_name, lazy=False)
             tasks.append(task)
         
         results = await asyncio.gather(*tasks, return_exceptions=True)

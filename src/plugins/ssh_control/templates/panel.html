@@ -73,6 +73,11 @@
             /* red when disconnected/unavailable */
             color: #f07171;
         }
+        .tab-status.not-yet-connected {
+            /* gray when not yet connected (lazy connection) */
+            color: #858585;
+            opacity: 0.7;
+        }
 
         .tab-close {
             color: #858585;
@@ -572,6 +577,9 @@
                 switchTab(machines[0].name);
             }
 
+            // Start status refresh (lazy checks every 5s, active check every 30s)
+            startStatusRefresh();
+            
             // Start auto-refresh for active tab (DISABLED for debugging)
             // startAutoRefresh();
         }
@@ -984,6 +992,9 @@
                 if (executionTime > lastHistoryTimestamp[machineName]) {
                     lastHistoryTimestamp[machineName] = executionTime + 1; // +1 to ensure we skip this one
                 }
+                
+                // Update tab status after command execution (machine is now connected)
+                updateTabStatus(machineName).catch(err => console.debug('status update after command failed', err));
 
             } catch (error) {
                 const errorLine = document.createElement('div');
@@ -1212,45 +1223,108 @@
                 const resp = await fetch(`/plugins/ssh_control/api/machines/${encodeURIComponent(machineName)}/status`);
                 if (!resp.ok) throw new Error('status fetch failed');
                 const data = await resp.json();
+                
+                console.log('Status update for', machineName, ':', data); // DEBUG
+                
                 const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
                 if (!tab) return;
                 const statusEl = tab.querySelector('.tab-status');
                 if (!statusEl) return;
 
-                if (data.connected) {
+                if (data.not_yet_connected) {
+                    // Machine never connected yet (lazy connection)
+                    console.log('  -> not_yet_connected'); // DEBUG
+                    statusEl.textContent = '\u25cb'; // white circle '○'
+                    statusEl.classList.remove('connected', 'disconnected');
+                    statusEl.classList.add('not-yet-connected');
+                    statusEl.title = 'Not yet connected (will connect on first use)';
+                } else if (data.connected) {
                     const ms = Math.round(data.latency_ms || 0);
+                    console.log('  -> connected, latency:', ms, 'ms'); // DEBUG
                     statusEl.textContent = `${ms}ms`;
-                    statusEl.classList.remove('disconnected');
+                    statusEl.classList.remove('disconnected', 'not-yet-connected');
                     statusEl.classList.add('connected');
                     statusEl.title = 'Connected';
                 } else {
+                    console.log('  -> disconnected'); // DEBUG
                     statusEl.textContent = '\u2014'; // em-dash short marker
-                    statusEl.classList.remove('connected');
+                    statusEl.classList.remove('connected', 'not-yet-connected');
                     statusEl.classList.add('disconnected');
                     statusEl.title = 'Disconnected';
                 }
             } catch (err) {
+                console.error('Status update error for', machineName, ':', err); // DEBUG
                 // On any error, mark as disconnected
                 const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
                 if (!tab) return;
                 const statusEl = tab.querySelector('.tab-status');
                 if (!statusEl) return;
                 statusEl.textContent = '\u2014';
-                statusEl.classList.remove('connected');
+                statusEl.classList.remove('connected', 'not-yet-connected');
                 statusEl.classList.add('disconnected');
                 statusEl.title = 'Status unavailable';
             }
         }
 
         // Periodically refresh status for all visible tabs
+        let statusRefreshCounter = 0; // Track how many refresh cycles
+        
         function startStatusRefresh() {
             // Run once immediately
             machines.forEach(m => updateTabStatus(m.name).catch(() => {}));
 
             // Then every 5s
             setInterval(() => {
-                machines.forEach(m => updateTabStatus(m.name).catch(() => {}));
+                statusRefreshCounter++;
+                const doActiveCheck = (statusRefreshCounter % 6) === 0; // Every 30s (6 * 5s)
+                
+                machines.forEach(m => {
+                    if (doActiveCheck) {
+                        // Every 30s: do active check to update latency
+                        updateTabStatusActive(m.name).catch(() => {});
+                    } else {
+                        // Normal lazy check
+                        updateTabStatus(m.name).catch(() => {});
+                    }
+                });
             }, 5000);
+        }
+        
+        // Active status check (actually pings the machine to measure latency)
+        async function updateTabStatusActive(machineName) {
+            try {
+                const resp = await fetch(`/plugins/ssh_control/api/machines/${encodeURIComponent(machineName)}/status?active=true`);
+                if (!resp.ok) throw new Error('active status fetch failed');
+                const data = await resp.json();
+                
+                console.log('Active status update for', machineName, ':', data); // DEBUG
+                
+                const tab = document.querySelector(`.tab[data-machine="${machineName}"]`);
+                if (!tab) return;
+                const statusEl = tab.querySelector('.tab-status');
+                if (!statusEl) return;
+
+                if (data.connected && data.latency_ms != null) {
+                    const ms = Math.round(data.latency_ms);
+                    console.log('  -> active check: connected, latency:', ms, 'ms'); // DEBUG
+                    statusEl.textContent = `${ms}ms`;
+                    statusEl.classList.remove('disconnected', 'not-yet-connected');
+                    statusEl.classList.add('connected');
+                    statusEl.title = 'Connected';
+                } else if (data.not_yet_connected) {
+                    statusEl.textContent = '\u25cb';
+                    statusEl.classList.remove('connected', 'disconnected');
+                    statusEl.classList.add('not-yet-connected');
+                    statusEl.title = 'Not yet connected (will connect on first use)';
+                } else {
+                    statusEl.textContent = '\u2014';
+                    statusEl.classList.remove('connected', 'not-yet-connected');
+                    statusEl.classList.add('disconnected');
+                    statusEl.title = 'Disconnected';
+                }
+            } catch (err) {
+                console.error('Active status update error for', machineName, ':', err);
+            }
         }
 
         // Toggle auto-refresh
