@@ -9,7 +9,22 @@ This README is a concise developer and user guide matching this repository layou
 - Config: all yaml files in `config/`
 - Docs: `docs/`
 - Logfiles: `logs/` - AgentSystem logfiles. cli and api
-- Plugins: `plugins/`
+- Plugins: `src/plugins/` (each plugin has its own README.md)
+  - [Basic Operations](src/plugins/basic_operations/README.md) — Utility tools for testing and orchestration
+  - [DateTime](src/plugins/datetime/README.md) — Date and time operations with timezone support
+  - [DuckDuckGo Search](src/plugins/duckduckgo_search/README.md) — Privacy-focused web search
+  - [Example Plugin](src/plugins/example/README.md) — Reference implementation for plugin development
+  - [HTTP Server](src/plugins/http_server/README.md) — HTTP adapter for MCP servers
+  - [IBKR](src/plugins/ibkr/README.md) — Interactive Brokers trading platform integration
+  - [LLM Router](src/plugins/llm_router/README.md) — Multi-provider LLM routing with profiles
+  - [Log Viewer](src/plugins/log_viewer/README.md) — Log file management with web interface
+  - [Script Interpreter](src/plugins/script_interpreter/README.md) — Sandboxed Python code execution
+  - [SSH Control](src/plugins/ssh_control/README.md) — Multi-machine SSH management with web UI
+  - [Twitter Search](src/plugins/twitter_search/README.md) — Twitter/X public content search
+  - [Weather](src/plugins/weather/README.md) — Weather information with multiple data sources
+  - [Web Research Agent](src/plugins/web_research_agent/README.md) — Advanced web research and fact-checking
+  - [Web Scraper](src/plugins/web_scraper/README.md) — Web content extraction and scraping
+  - [Yahoo Finance](src/plugins/yahoo_finance/README.md) — Stock market data with fallback scraping
 - Tests: `tests/` (pytest)
 - Prompts for assistant sessions: `.prompts/` and `.github/`
 - Helper Scripts: `scripts/`
