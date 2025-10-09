@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class MCPService:
     """Centralized MCP server management service.
-    
+
     This service eliminates duplicated MCP management code between
     CLI and API interfaces, providing a clean abstraction for:
     - Server listing and status
@@ -29,7 +29,7 @@ class MCPService:
 
     def __init__(self, mcp_integration: MCPIntegration, config: AgentSystemConfig):
         """Initialize the MCPService.
-        
+
         Args:
             mcp_integration: MCPIntegration instance for server management.
             config: AgentSystemConfig with MCP server configurations.
@@ -43,11 +43,11 @@ class MCPService:
         include_tools: bool = False
     ) -> list[dict[str, Any]]:
         """List all configured MCP servers.
-        
+
         Args:
             enabled_only: If True, return only enabled servers.
             include_tools: If True, include tool counts and names.
-        
+
         Returns:
             List of server info dictionaries with keys:
             - name: Server name
@@ -60,15 +60,15 @@ class MCPService:
             - tool_count: Number of tools (if include_tools=True)
         """
         servers = []
-        
+
         # Get configured external servers
         configured = self._mcp.configured_external_servers or {}
-        
+
         for name, server_config in configured.items():
             # Skip disabled servers if filtering
             if enabled_only and not server_config.enabled:
                 continue
-            
+
             # Check connection status
             client = None
             try:
@@ -76,18 +76,28 @@ class MCPService:
                 client = await self._get_client_safe(name)
             except Exception as e:
                 logger.debug(f"Could not get client for {name}: {e}")
-            
+
             is_connected = client is not None
-            
+
+            # Compute status string for CLI display
+            if not server_config.enabled:
+                status = "disabled"
+            elif is_connected:
+                status = "connected"
+            else:
+                status = "disconnected"
+
             server_info = {
                 "name": name,
                 "enabled": server_config.enabled,
                 "connected": is_connected,
+                "status": status,
                 "type": "external",
                 "description": server_config.description or name.replace('_', ' ').title(),
-                "url": server_config.url if hasattr(server_config, 'url') else ""
+                "url": server_config.url if hasattr(server_config, 'url') else "",
+                "address": server_config.url if hasattr(server_config, 'url') else ""
             }
-            
+
             # Add tool information if requested
             if include_tools and is_connected:
                 try:
@@ -99,9 +109,9 @@ class MCPService:
                     logger.debug(f"Could not list tools for {name}: {e}")
                     server_info["tools"] = []
                     server_info["tool_count"] = 0
-            
+
             servers.append(server_info)
-        
+
         return servers
 
     async def get_server_status(
@@ -110,11 +120,11 @@ class MCPService:
         include_tools: bool = True
     ) -> Optional[dict[str, Any]]:
         """Get detailed status for a specific MCP server.
-        
+
         Args:
             server_name: Name of the server.
             include_tools: If True, include full tool list.
-        
+
         Returns:
             Server status dictionary with keys:
             - name: Server name
@@ -126,16 +136,16 @@ class MCPService:
             - tools: List of tool names (if include_tools=True)
             - tool_count: Number of tools
             - error: Error message if connection failed
-            
+
             None if server not found.
         """
         # Check if server exists in configuration
         if server_name not in self._mcp.configured_external_servers:
             logger.warning(f"Server '{server_name}' not found in configuration")
             return None
-        
+
         server_config = self._mcp.configured_external_servers[server_name]
-        
+
         # Try to get client
         client = None
         error = None
@@ -144,9 +154,9 @@ class MCPService:
         except Exception as e:
             error = str(e)
             logger.debug(f"Failed to get client for {server_name}: {e}")
-        
+
         is_connected = client is not None
-        
+
         status = {
             "name": server_name,
             "connected": is_connected,
@@ -155,10 +165,10 @@ class MCPService:
             "description": server_config.description or server_name.replace('_', ' ').title(),
             "url": server_config.url if hasattr(server_config, 'url') else ""
         }
-        
+
         if error:
             status["error"] = error
-        
+
         # Get tools if connected and requested
         if include_tools:
             if is_connected and client:
@@ -175,15 +185,15 @@ class MCPService:
             else:
                 status["tools"] = []
                 status["tool_count"] = 0
-        
+
         return status
 
     async def connect_server(self, server_name: str) -> dict[str, Any]:
         """Connect to an MCP server.
-        
+
         Args:
             server_name: Name of the server to connect.
-        
+
         Returns:
             Result dictionary with keys:
             - success: Boolean indicating success
@@ -196,9 +206,9 @@ class MCPService:
                 "success": False,
                 "error": f"Server '{server_name}' not found in configuration"
             }
-        
+
         server_config = self._mcp.configured_external_servers[server_name]
-        
+
         # Check if already connected
         try:
             client = await self._get_client_safe(server_name)
@@ -209,7 +219,7 @@ class MCPService:
                 }
         except Exception as e:
             logger.debug(f"Connection check for {server_name} failed (expected if not connected): {e}")
-        
+
         # Attempt connection
         try:
             # Use MCPIntegration's connect method if available
@@ -220,7 +230,7 @@ class MCPService:
                 client = await self._get_client_safe(server_name)
                 if not client:
                     raise RuntimeError("Failed to establish connection")
-            
+
             return {
                 "success": True,
                 "message": f"Successfully connected to '{server_name}'"
@@ -234,10 +244,10 @@ class MCPService:
 
     async def disconnect_server(self, server_name: str) -> dict[str, Any]:
         """Disconnect from an MCP server.
-        
+
         Args:
             server_name: Name of the server to disconnect.
-        
+
         Returns:
             Result dictionary with keys:
             - success: Boolean indicating success
@@ -252,7 +262,7 @@ class MCPService:
                     "success": True,
                     "message": f"Server '{server_name}' is not connected"
                 }
-            
+
             # Disconnect
             if hasattr(self._mcp, 'disconnect_external_server'):
                 await self._mcp.disconnect_external_server(server_name)
@@ -260,7 +270,7 @@ class MCPService:
                 await self._mcp.client_manager.remove_client(server_name)
             else:
                 raise RuntimeError("Disconnect method not available")
-            
+
             return {
                 "success": True,
                 "message": f"Successfully disconnected from '{server_name}'"
@@ -274,10 +284,10 @@ class MCPService:
 
     async def test_server(self, server_name: str) -> dict[str, Any]:
         """Test connectivity and basic functionality of an MCP server.
-        
+
         Args:
             server_name: Name of the server to test.
-        
+
         Returns:
             Test result dictionary with keys:
             - success: Whether test passed
@@ -287,22 +297,22 @@ class MCPService:
             - error: Error message (if failed)
         """
         import time
-        
+
         # Check if server exists
         if server_name not in self._mcp.configured_external_servers:
             return {
                 "success": False,
                 "error": f"Server '{server_name}' not found in configuration"
             }
-        
+
         server_config = self._mcp.configured_external_servers[server_name]
-        
+
         if not server_config.enabled:
             return {
                 "success": False,
                 "error": f"Server '{server_name}' is disabled in configuration"
             }
-        
+
         # Test connection
         start_time = time.time()
         try:
@@ -313,11 +323,11 @@ class MCPService:
                     "connected": False,
                     "error": "Failed to establish connection"
                 }
-            
+
             # Try to list tools
             tools = await client.list_tools()
             response_time = (time.time() - start_time) * 1000  # ms
-            
+
             return {
                 "success": True,
                 "connected": True,
@@ -340,24 +350,24 @@ class MCPService:
         include_blocked: bool = True
     ) -> dict[str, list[dict[str, Any]]]:
         """List all available tools across MCP servers.
-        
+
         Args:
             server_name: If specified, list tools only from this server.
             include_blocked: If True, include blocked tools (marked as such).
                             If False, filter out tools where blocked=True.
-        
+
         Returns:
             Dictionary mapping server names to tool lists.
             Each tool dict contains: name, description, parameters, blocked.
         """
         try:
             all_tools = await self._mcp.list_all_tools()
-            
+
             # Filter by server if specified
             if server_name:
                 external_tools = all_tools.get("external_servers", {})
                 plugin_tools = all_tools.get("plugin_servers", {})
-                
+
                 result = {}
                 if server_name in external_tools:
                     tools = external_tools[server_name]
@@ -371,26 +381,26 @@ class MCPService:
                     if not include_blocked:
                         tools = [t for t in tools if not t.get("blocked", False)]
                     result[server_name] = tools
-                
+
                 return result
-            
+
             # Return all tools
             result = {}
             external = all_tools.get("external_servers", {})
             plugins = all_tools.get("plugin_servers", {})
-            
+
             # Combine and filter blocked tools if requested
             all_servers = {}
             all_servers.update(external)
             all_servers.update(plugins)
-            
+
             if not include_blocked:
                 # Filter out blocked tools from each server
                 for server, tools in all_servers.items():
                     result[server] = [t for t in tools if not t.get("blocked", False)]
             else:
                 result = all_servers
-            
+
             return result
         except Exception as e:
             logger.error(f"Failed to list tools: {e}")
@@ -413,11 +423,11 @@ class MCPService:
 
     def _check_plugin_connectivity(self, server_id: str, registry) -> bool:
         """Check if a plugin server is connected (present in registry).
-        
+
         Args:
             server_id: Plugin server ID
             registry: MCPRegistry instance
-            
+
         Returns:
             True if server exists in registry, False otherwise
         """
@@ -427,32 +437,32 @@ class MCPService:
 
     async def _check_external_connectivity(self, server_name: str, url: str) -> bool:
         """Check if an external server is reachable via socket connection.
-        
+
         Args:
             server_name: Server name for logging
             url: Server URL to check
-            
+
         Returns:
             True if server is reachable, False otherwise
         """
         if not url:
             return False
-        
+
         try:
             import socket
             from urllib.parse import urlparse
-            
+
             parsed = urlparse(url)
             host = parsed.hostname or "127.0.0.1"
             port = parsed.port
-            
+
             if not port:
                 # Default ports based on scheme
                 if parsed.scheme == "https":
                     port = 443
                 else:
                     port = 80
-            
+
             # Try socket connection with short timeout
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)  # 2 second timeout
@@ -471,17 +481,17 @@ class MCPService:
         check_connectivity: bool = True
     ) -> dict[str, Any]:
         """Get comprehensive MCP server status including plugins and external servers.
-        
+
         This method aggregates status from multiple sources:
         - Plugin servers from registry
         - External servers from MCP integration
         - Tool lists with filtering information
         - Connection status with optional real-time checks
-        
+
         Args:
             registry: Optional MCPRegistry for plugin server discovery
             check_connectivity: If True, perform real-time connectivity checks
-        
+
         Returns:
             Dictionary with keys:
             - plugins: Dict of plugin servers {id: {name, connected, tools, ...}}
@@ -491,10 +501,10 @@ class MCPService:
             - total_tools: Total tool count across all servers
         """
         servers = []
-        
+
         # Track processed servers to avoid duplicates
         processed_server_ids = set()
-        
+
         # Add plugin servers from MCP integration's HTTP server
         if hasattr(self._mcp, 'http_server') and self._mcp.http_server:
             try:
@@ -504,7 +514,7 @@ class MCPService:
                         # Skip private servers
                         if getattr(server_obj, '_mcp_public', True) is False:
                             continue
-                        
+
                         # Get tools
                         tools = []
                         detailed_tools = []
@@ -521,7 +531,7 @@ class MCPService:
                                         })
                             except Exception as e:
                                 logger.debug(f"list_tools() failed for {server_id}: {e}")
-                        
+
                         # Check connection status
                         if check_connectivity:
                             # For plugins: check if in registry
@@ -529,7 +539,7 @@ class MCPService:
                         else:
                             # Fast path: assume connected if in registry
                             connected = registry and hasattr(registry, "_servers") and server_id in registry._servers
-                        
+
                         servers.append({
                             "id": server_id,
                             "name": server_id.replace('_', ' ').title(),
@@ -539,14 +549,14 @@ class MCPService:
                             "detailed_tools": detailed_tools,
                             "tool_count": len(tools)
                         })
-                        
+
                         processed_server_ids.add(server_id)
-                        
+
                     except Exception as e:
                         logger.debug(f"Failed to get info for plugin server {server_id}: {e}")
             except Exception as e:
                 logger.debug(f"Failed to get MCP plugin servers: {e}")
-        
+
         # Add plugin servers from registry
         if registry and hasattr(registry, "_servers"):
             for server_id, server_obj in registry._servers.items():
@@ -556,7 +566,7 @@ class MCPService:
                         continue
                     if getattr(server_obj, '_mcp_public', True) is False:
                         continue
-                    
+
                     # Get tools
                     tools = []
                     detailed_tools = []
@@ -573,7 +583,7 @@ class MCPService:
                                     })
                         except Exception as e:
                             logger.debug(f"list_tools() failed for {server_id}: {e}")
-                    
+
                     # Check connection status
                     if check_connectivity:
                         # For plugins: check if in registry
@@ -581,7 +591,7 @@ class MCPService:
                     else:
                         # Fast path: assume connected if in registry
                         connected = True  # In registry = connected
-                    
+
                     servers.append({
                         "id": server_id,
                         "name": server_id.replace('_', ' ').title(),
@@ -591,18 +601,18 @@ class MCPService:
                         "detailed_tools": detailed_tools,
                         "tool_count": len(tools)
                     })
-                    
+
                     processed_server_ids.add(server_id)
-                    
+
                 except Exception as e:
                     logger.debug(f"Failed to get info for registry server {server_id}: {e}")
-        
+
         # Add external servers from MCP integration
         if self._mcp and self._mcp.initialized:
             try:
                 # Get connected servers from client manager
                 connected_servers = self._mcp.client_manager.list_clients()
-                
+
                 # Get configured external servers (filter out disabled ones)
                 configured_servers = getattr(self._mcp, 'configured_external_servers', {})
                 try:
@@ -613,19 +623,19 @@ class MCPService:
                     }
                 except Exception as e:
                     logger.warning(f"Failed to filter enabled servers: {e}", exc_info=True)
-                
+
                 # Get all tools from external servers
                 all_tools = await self._mcp.list_all_tools()
                 servers_with_tools = all_tools.get("external_servers", {})
-                
+
                 # Combine all external server names
                 all_external_servers = set(connected_servers) | set(configured_servers.keys())
-                
+
                 for server_name in all_external_servers:
                     # Get server config info
                     description = server_name.replace('_', ' ').title()
                     url = ""
-                    
+
                     try:
                         server_config = configured_servers.get(server_name)
                         if server_config:
@@ -635,7 +645,7 @@ class MCPService:
                                 url = server_config.url
                     except Exception as e:
                         logger.debug(f"Failed to get config for {server_name}: {e}")
-                    
+
                     # Get tools
                     tools = servers_with_tools.get(server_name, [])
                     tool_names = [tool["name"] for tool in tools]
@@ -645,7 +655,7 @@ class MCPService:
                         'parameters': tool.get("parameters", {}),
                         'blocked': tool.get("blocked", False)
                     } for tool in tools]
-                    
+
                     # Check connection status
                     if check_connectivity and url:
                         # Perform real-time connectivity check
@@ -660,7 +670,7 @@ class MCPService:
                     else:
                         # Fast path: check if has active client with tools
                         connected = server_name in connected_servers and len(tool_names) > 0
-                    
+
                     servers.append({
                         "id": server_name,
                         "name": description,
@@ -671,14 +681,14 @@ class MCPService:
                         "tool_count": len(tool_names),
                         "url": url
                     })
-                    
+
             except Exception as e:
                 logger.error(f"Failed to get external servers: {e}")
-        
+
         # Separate plugins and external servers
         plugins = {}
         external_servers = {}
-        
+
         for server in servers:
             server_data = {
                 "id": server["id"],
@@ -692,12 +702,12 @@ class MCPService:
                 server_data["url"] = server["url"]
             if "error" in server:
                 server_data["error"] = server["error"]
-            
+
             if server["type"] == "plugin":
                 plugins[server["id"]] = server_data
             else:
                 external_servers[server["id"]] = server_data
-        
+
         return {
             "plugins": plugins,
             "external_servers": external_servers,

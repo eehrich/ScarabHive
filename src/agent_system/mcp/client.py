@@ -454,7 +454,7 @@ class MCPClientFactory:
         initialization_options: Optional[Dict[str, Any]] = None
     ) -> StandardMCPClient:
         """Create a streaming MCP client using SSE transport
-        
+
         Args:
             base_url: Base URL of the MCP server
             client_name: Name for the client
@@ -475,7 +475,8 @@ class MCPClientFactory:
             await client.initialize()
             return client
         except Exception as e:
-            logger.warning(f"Failed to create streaming MCP client: {e}", exc_info=True)
+            # Log at debug level with traceback; user-facing code should handle gracefully
+            logger.debug(f"Failed to create streaming MCP client: {e}", exc_info=True)
             try:
                 await client.disconnect()
             except Exception as cleanup_e:
@@ -484,12 +485,12 @@ class MCPClientFactory:
 
     @staticmethod
     async def create_client_from_config(
-        config: RemoteMCPConfig, 
+        config: RemoteMCPConfig,
         ssl_verify: bool = True,
         timeout: float = 30.0
     ) -> StandardMCPClient:
         """Create an MCP client from configuration.
-        
+
         Args:
             config: RemoteMCPConfig object with server connection details
             ssl_verify: SSL certificate verification setting from network config
@@ -534,7 +535,7 @@ class MCPClientManager:
 
     async def add_client(self, name: str, config: RemoteMCPConfig, ssl_verify: bool = True, timeout: float = 30.0) -> None:
         """Add an MCP client from configuration.
-        
+
         Args:
             name: Client name
             config: RemoteMCPConfig object with server connection details
@@ -623,7 +624,7 @@ class MCPClientManager:
                     logger.debug(f"Skipping tool list for {name}: no event loop")
                     all_tools[name] = []
                     continue
-                
+
                 tools = await client.list_tools()
                 all_tools[name] = tools
             except Exception as e:
