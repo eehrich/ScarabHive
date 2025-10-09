@@ -48,17 +48,17 @@ class AddMachineRequest(BaseModel):
 
 class SSHControlWebEndpoints(PluginWebInterface):
     """Web endpoints component for SSH control plugin"""
-    
+
     def __init__(
-        self, 
-        name: str, 
-        system_config: "AgentSystemConfig", 
+        self,
+        name: str,
+        system_config: "AgentSystemConfig",
         mcp_config: "MCPConfig",
         connection_manager=None,
         command_history: Optional["deque"] = None
     ):
         """Initialize SSH control web endpoints.
-        
+
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
@@ -71,17 +71,17 @@ class SSHControlWebEndpoints(PluginWebInterface):
         self.mcp_config = mcp_config
         self.connection_manager = connection_manager
         self.command_history = command_history
-        
+
         # Initialize templates
         template_dir = Path(__file__).parent / "templates"
         self.templates = Jinja2Templates(directory=str(template_dir))
-        
+
         logger.info(f"SSHControlWebEndpoints initialized: {name}")
-    
+
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router with SSH control endpoints"""
         router = APIRouter(prefix=f"/plugins/{self.name}")
-        
+
         @router.get("/panel.html", response_class=HTMLResponse)
         async def panel_html(request: Request):
             """Serve the SSH control panel HTML"""
@@ -93,7 +93,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     "timestamp": int(time.time())
                 }
             )
-        
+
         @router.get("/panel", response_class=HTMLResponse)
         async def panel(request: Request):
             """Serve the SSH control panel HTML (alternate endpoint)"""
@@ -105,7 +105,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     "timestamp": int(time.time())
                 }
             )
-        
+
         @router.get("/api/machines")
         async def list_machines():
             """List all configured SSH machines with connection status"""
@@ -114,7 +114,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=503,
                     content={"error": "Connection manager not available"}
                 )
-            
+
             try:
                 machines = []
                 for machine_name, machine_config in self.connection_manager.machines.items():
@@ -129,7 +129,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                             'total_commands': pool.total_commands,
                             'last_used': pool.last_used
                         }
-                    
+
                     machines.append({
                         'name': machine_name,
                         'host': machine_config.host,
@@ -139,7 +139,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         'max_connections': machine_config.max_connections,
                         'pool': pool_info
                     })
-                
+
                 return {
                     'machines': machines,
                     'count': len(machines)
@@ -150,7 +150,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=500,
                     content={"error": str(e)}
                 )
-        
+
         @router.get("/api/machines/{machine_name}/status")
         async def get_machine_status(machine_name: str):
             """Get detailed status for a specific machine"""
@@ -159,15 +159,15 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=503,
                     content={"error": "Connection manager not available"}
                 )
-            
+
             try:
                 # Check if machine exists
                 if machine_name not in self.connection_manager.machines:
                     raise HTTPException(status_code=404, detail=f"Machine '{machine_name}' not found")
-                
+
                 # Check connection
                 result = await self.connection_manager.check_connection(machine_name)
-                
+
                 # Get pool info
                 pool_info = {}
                 if machine_name in self.connection_manager.pools:
@@ -180,7 +180,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         'last_used': pool.last_used,
                         'last_used_ago': time.time() - pool.last_used
                     }
-                
+
                 return {
                     'machine': machine_name,
                     'connected': result.get('connected', False),
@@ -196,7 +196,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=500,
                     content={"error": str(e)}
                 )
-        
+
         @router.post("/api/machines/add")
         async def add_machine(request: AddMachineRequest):
             """Dynamically add a new SSH machine (calls ssh_control_add_machine tool)"""
@@ -205,31 +205,31 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=503,
                     content={"error": "Connection manager not available"}
                 )
-            
+
             try:
                 # Import MCP server's add_machine tool
                 # Note: We need to get the MCP server instance to call its tool
                 # For now, we'll directly replicate the logic here
                 # TODO: Refactor to share code between MCP tool and Web API
-                
+
                 from .models import MachineConfig
                 from .auth import SSHAuthenticator
                 import asyncssh
-                
+
                 # Validate required parameters
                 if not request.name or not request.host or not request.username:
                     return JSONResponse(
                         status_code=400,
                         content={"success": False, "error": "Missing required parameters: name, host, username"}
                     )
-                
+
                 # Check for duplicate name
                 if request.name in self.connection_manager.machines:
                     return JSONResponse(
                         status_code=409,
                         content={"success": False, "error": f"Machine '{request.name}' already exists"}
                     )
-                
+
                 # Create machine config
                 machine_config = MachineConfig(
                     name=request.name,
@@ -243,7 +243,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     max_connections=request.max_connections,
                     timeout=30
                 )
-                
+
                 # Test connection before adding
                 logger.info(f"Testing connection to {request.name} ({request.host}:{request.port})...")
                 try:
@@ -255,13 +255,13 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         ),
                         timeout=10.0
                     )
-                    
+
                     # Run a simple test command
                     result = await asyncio.wait_for(
                         conn.run('echo "Connection test"', check=False),
                         timeout=5.0
                     )
-                    
+
                     if result.exit_status != 0:
                         conn.close()
                         await conn.wait_closed()
@@ -272,11 +272,11 @@ class SSHControlWebEndpoints(PluginWebInterface):
                                 "error": f"Connection test failed with exit code {result.exit_status}"
                             }
                         )
-                    
+
                     # Close test connection
                     conn.close()
                     await conn.wait_closed()
-                    
+
                 except asyncio.TimeoutError:
                     logger.error(f"Connection test timeout for {request.name}")
                     return JSONResponse(
@@ -289,17 +289,17 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         status_code=400,
                         content={"success": False, "error": f"SSH connection failed: {str(e)}"}
                     )
-                
+
                 # Add to runtime connection manager
                 self.connection_manager.machines[request.name] = machine_config
                 logger.info(f"Added machine '{request.name}' to runtime connection manager")
-                
+
                 # Optionally persist to config file
                 if request.persistent:
                     try:
                         import yaml
                         config_path = Path('config/mcp.yaml')
-                        
+
                         if not config_path.exists():
                             logger.warning(f"Config file {config_path} does not exist, cannot persist")
                             return {
@@ -308,11 +308,11 @@ class SSHControlWebEndpoints(PluginWebInterface):
                                 "machine": request.name,
                                 "persisted": False
                             }
-                        
+
                         # Load existing config
                         with open(config_path, 'r', encoding='utf-8') as f:
                             config = yaml.safe_load(f) or {}
-                        
+
                         # Ensure structure exists
                         if 'servers' not in config:
                             config['servers'] = {}
@@ -320,7 +320,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                             config['servers']['ssh_control'] = {}
                         if 'machines' not in config['servers']['ssh_control']:
                             config['servers']['ssh_control']['machines'] = []
-                        
+
                         # Create machine dict for config (without password for security)
                         machine_dict = {
                             'name': request.name,
@@ -332,29 +332,29 @@ class SSHControlWebEndpoints(PluginWebInterface):
                             'max_connections': request.max_connections,
                             'timeout': 30
                         }
-                        
+
                         # Add key_path only if using key auth
                         if request.auth_method == 'key':
                             machine_dict['key_path'] = request.key_path
-                        
+
                         # NOTE: Password is intentionally NOT saved to config for security
-                        
+
                         # Append to machines list
                         config['servers']['ssh_control']['machines'].append(machine_dict)
-                        
+
                         # Write back to file
                         with open(config_path, 'w', encoding='utf-8') as f:
                             yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
-                        
+
                         logger.info(f"Persisted machine '{request.name}' to {config_path}")
-                        
+
                         return {
                             "success": True,
                             "message": f"Machine '{request.name}' added successfully and persisted to config",
                             "machine": request.name,
                             "persisted": True
                         }
-                        
+
                     except Exception as e:
                         logger.error(f"Failed to persist machine to config: {e}", exc_info=True)
                         return {
@@ -364,21 +364,21 @@ class SSHControlWebEndpoints(PluginWebInterface):
                             "persisted": False,
                             "persistence_error": str(e)
                         }
-                
+
                 return {
                     "success": True,
                     "message": f"Machine '{request.name}' added successfully to runtime",
                     "machine": request.name,
                     "persisted": False
                 }
-                
+
             except Exception as e:
                 logger.error(f"Failed to add machine: {e}", exc_info=True)
                 return JSONResponse(
                     status_code=500,
                     content={"success": False, "error": str(e)}
                 )
-        
+
         @router.delete("/api/machines/{name}")
         async def remove_machine(name: str, remove_from_config: bool = False):
             """Remove an SSH machine (calls ssh_control_remove_machine tool)"""
@@ -387,59 +387,59 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=503,
                     content={"error": "Connection manager not available"}
                 )
-            
+
             try:
                 # Check if machine exists
                 if name not in self.connection_manager.machines:
                     raise HTTPException(status_code=404, detail=f"Machine '{name}' not found")
-                
+
                 # Close connection pool if exists
                 if name in self.connection_manager.pools:
                     logger.info(f"Closing connection pool for machine '{name}'...")
                     await self.connection_manager.pools[name].close_all()
                     del self.connection_manager.pools[name]
                     logger.info(f"Connection pool for '{name}' closed")
-                
+
                 # Remove from runtime connection manager
                 del self.connection_manager.machines[name]
                 logger.info(f"Removed machine '{name}' from runtime connection manager")
-                
+
                 # Optionally remove from config file
                 config_removed = False
                 if remove_from_config:
                     try:
                         import yaml
                         config_path = Path('config/mcp.yaml')
-                        
+
                         if not config_path.exists():
                             logger.warning(f"Config file {config_path} does not exist")
                         else:
                             # Load existing config
                             with open(config_path, 'r', encoding='utf-8') as f:
                                 config = yaml.safe_load(f) or {}
-                            
+
                             # Remove machine from config
-                            if ('servers' in config and 
-                                'ssh_control' in config['servers'] and 
+                            if ('servers' in config and
+                                'ssh_control' in config['servers'] and
                                 'machines' in config['servers']['ssh_control']):
-                                
+
                                 original_count = len(config['servers']['ssh_control']['machines'])
                                 config['servers']['ssh_control']['machines'] = [
                                     m for m in config['servers']['ssh_control']['machines']
                                     if m.get('name') != name
                                 ]
                                 new_count = len(config['servers']['ssh_control']['machines'])
-                                
+
                                 if original_count > new_count:
                                     # Write back to file
                                     with open(config_path, 'w', encoding='utf-8') as f:
                                         yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
-                                    
+
                                     logger.info(f"Removed machine '{name}' from {config_path}")
                                     config_removed = True
                                 else:
                                     logger.warning(f"Machine '{name}' not found in config file")
-                    
+
                     except Exception as e:
                         logger.error(f"Failed to remove machine from config: {e}", exc_info=True)
                         return {
@@ -449,14 +449,14 @@ class SSHControlWebEndpoints(PluginWebInterface):
                             "config_removed": False,
                             "config_error": str(e)
                         }
-                
+
                 return {
                     "success": True,
                     "message": f"Machine '{name}' removed successfully",
                     "machine": name,
                     "config_removed": config_removed
                 }
-                
+
             except HTTPException:
                 raise
             except Exception as e:
@@ -465,22 +465,22 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=500,
                     content={"success": False, "error": str(e)}
                 )
-        
+
         @router.get("/api/history")
         async def get_command_history(limit: int = 50):
             """Get recent command execution history"""
             if not self.command_history:
                 return {"history": [], "count": 0}
-            
+
             try:
                 # Get last N items from deque
                 history_list = list(self.command_history)
                 history_list.reverse()  # Most recent first
-                
+
                 # Apply limit
                 if limit > 0:
                     history_list = history_list[:limit]
-                
+
                 # Format timestamps
                 for entry in history_list:
                     entry['timestamp_formatted'] = time.strftime(
@@ -488,7 +488,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         time.localtime(entry['timestamp'])
                     )
                     entry['duration_formatted'] = f"{entry['duration']:.2f}s"
-                
+
                 return {
                     'history': history_list,
                     'count': len(history_list),
@@ -500,27 +500,27 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=500,
                     content={"error": str(e)}
                 )
-        
+
         @router.get("/api/machines/{machine_name}/history")
         async def get_machine_history(machine_name: str, limit: int = 100):
             """Get command execution history for a specific machine"""
             if not self.command_history:
                 return {"history": [], "count": 0}
-            
+
             try:
                 # Filter history for this machine
                 machine_history = [
                     entry for entry in self.command_history
                     if entry.get('machine') == machine_name
                 ]
-                
+
                 # Most recent first
                 machine_history.reverse()
-                
+
                 # Apply limit
                 if limit > 0:
                     machine_history = machine_history[:limit]
-                
+
                 # Format timestamps and add output previews
                 for entry in machine_history:
                     entry['timestamp_formatted'] = time.strftime(
@@ -528,7 +528,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         time.localtime(entry.get('timestamp', time.time()))
                     )
                     entry['duration_formatted'] = f"{entry.get('duration', 0):.2f}s"
-                
+
                 return {
                     'machine': machine_name,
                     'history': machine_history,
@@ -541,7 +541,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=500,
                     content={"error": str(e)}
                 )
-        
+
         @router.post("/api/execute")
         async def execute_command(request: ExecuteCommandRequest):
             """Execute command on remote machine"""
@@ -550,7 +550,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=503,
                     content={"error": "Connection manager not available"}
                 )
-            
+
             try:
                 # Execute command
                 result = await self.connection_manager.execute_command(
@@ -558,10 +558,10 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     request.command,
                     timeout=request.timeout
                 )
-                
+
                 # History is already logged by connection_manager with full output
                 # No need to log again here to avoid duplicates
-                
+
                 return {
                     'machine': result.machine,
                     'command': result.command,
@@ -571,13 +571,33 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     'duration': result.duration,
                     'success': result.exit_code == 0
                 }
+            except FileNotFoundError as e:
+                # SSH key or config file not found
+                error_msg = str(e)
+                logger.warning(f"SSH authentication failed for {request.machine}: {error_msg}")
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": f"Authentication failed: {error_msg}"}
+                )
+            except ConnectionRefusedError as e:
+                logger.warning(f"Connection refused for {request.machine}: {e}")
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": f"Connection refused: {e}"}
+                )
+            except TimeoutError as e:
+                logger.warning(f"Connection timeout for {request.machine}: {e}")
+                return JSONResponse(
+                    status_code=504,
+                    content={"error": f"Connection timeout: {e}"}
+                )
             except Exception as e:
-                logger.error(f"Failed to execute command: {e}", exc_info=True)
+                logger.error(f"Failed to execute command on {request.machine}: {e}", exc_info=True)
                 return JSONResponse(
                     status_code=500,
                     content={"error": str(e)}
                 )
-        
+
         @router.get("/api/execute/stream")
         async def execute_command_stream(machine: str, command: str, timeout: Optional[int] = None):
             """Execute command with SSE streaming output"""
@@ -586,7 +606,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     status_code=503,
                     content={"error": "Connection manager not available"}
                 )
-            
+
             async def event_generator():
                 """Generate SSE events from command output"""
                 try:
@@ -598,25 +618,25 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         # Format as SSE event
                         event_type = event.get('type', 'message')
                         data = event.get('data', '')
-                        
+
                         # Serialize data as JSON
                         import json
                         data_json = json.dumps(data)
-                        
+
                         # SSE format: event: type\ndata: json\n\n
                         yield f"event: {event_type}\ndata: {data_json}\n\n"
-                        
+
                         # Add small delay to prevent overwhelming client
                         await asyncio.sleep(0.01)
-                    
+
                     # Send done event
                     yield "event: done\ndata: {}\n\n"
-                    
+
                 except Exception as e:
                     logger.error(f"SSE streaming error: {e}", exc_info=True)
                     error_data = json.dumps({'error': str(e)})
                     yield f"event: error\ndata: {error_data}\n\n"
-            
+
             return StreamingResponse(
                 event_generator(),
                 media_type="text/event-stream",
@@ -626,16 +646,16 @@ class SSHControlWebEndpoints(PluginWebInterface):
                     "X-Accel-Buffering": "no"  # Disable nginx buffering
                 }
             )
-        
+
         return router
-    
+
     def get_static_assets(self) -> Optional[Path]:
         """Return path to plugin static assets"""
         static_path = Path(__file__).parent / "static"
         if static_path.exists():
             return static_path
         return None
-    
+
     def get_panels(self) -> List[Dict[str, Any]]:
         """Return UI panel configuration"""
         return [
@@ -649,7 +669,7 @@ class SSHControlWebEndpoints(PluginWebInterface):
                 "height": "500px"
             }
         ]
-    
+
     def get_security_config(self) -> Dict[str, Any]:
         """Return security configuration"""
         return {
