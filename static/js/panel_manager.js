@@ -252,6 +252,24 @@ window.AgentSystem.PanelManager = {
       // Close specific panel
       const panel = this.activePanels.get(id);
       if (panel) {
+        // Call plugin cleanup before closing
+        try {
+          // Extract plugin ID from panel ID (e.g., "floatinglog_viewerPanel" -> "log_viewer")
+          const match = id.match(/^floating(.+)Panel$/);
+          if (match) {
+            const pluginId = match[1];
+            if (window.AgentSystem && window.AgentSystem[pluginId]) {
+              const pluginModule = window.AgentSystem[pluginId];
+              if (typeof pluginModule.destroy === 'function') {
+                console.log(`Calling destroy() for plugin: ${pluginId}`);
+                pluginModule.destroy();
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to call plugin destroy for', id, err);
+        }
+
         // Persist current size/position on close so reopening restores layout
         try {
           const rect = panel.getBoundingClientRect();
@@ -276,8 +294,10 @@ window.AgentSystem.PanelManager = {
       }
     } else {
       // Close all panels (legacy support)
-      this.activePanels.forEach(panel => panel.remove());
-      this.activePanels.clear();
+      this.activePanels.forEach(panel => {
+        // Call cleanup for each panel
+        this.closePanel(panel.id);
+      });
     }
   },
 

@@ -618,6 +618,12 @@ window.AgentSystem.log_viewer = {
   startPolling() {
     if (!this.autoRefresh || !this.currentFile) return;
 
+    // Stop any existing polling interval before creating a new one
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+    }
+
     this.pollingInterval = setInterval(() => {
       this.pollForUpdates();
     }, 3000);
@@ -849,6 +855,7 @@ window.AgentSystem.log_viewer = {
 
   destroy() {
     // Cleanup when panel is closed
+    this.stopPolling();
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
