@@ -58,10 +58,6 @@ class SSHControlHybridPlugin:
         """Delegate to MCP server."""
         return self.mcp_server.get_tools()
     
-    def get_default_action(self):
-        """Delegate to MCP server."""
-        return "ssh_control_list_machines"
-    
     async def call_tool(self, tool_name: str, arguments: dict):
         """Delegate to MCP server - compatibility method."""
         return await self.mcp_server.call_with_status(tool_name, arguments)
