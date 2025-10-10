@@ -27,10 +27,6 @@ class LogViewerMCPServer(SchemaBasedMCPServer):
         
         logger.info(f"LogViewerMCPServer initialized: {name}")
     
-    def get_default_action(self) -> str:
-        """Return the default action for log viewer"""
-        return "list_log_files"
-    
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """MCP call interface - handle tool calls"""
         status = params.get("_status")
