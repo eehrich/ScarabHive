@@ -44,10 +44,6 @@ class UserManagementPlugin:
         """No MCP tools - web UI only"""
         return []
     
-    def get_default_action(self):
-        """No default action"""
-        return None
-    
     # Web Interface methods
     def get_web_router(self):
         """Delegate to web endpoints"""
