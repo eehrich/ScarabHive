@@ -450,7 +450,7 @@ def main() -> None:
     users_parser = subparsers.add_parser("users", help="Manage users (admin)")
     users_parser.add_argument("action", choices=["list", "create", "delete", "update", "info", "generate-api-key", "revoke-api-key"], nargs="?", default="list", help="Action to perform on users")
     users_parser.add_argument("username", nargs="?", help="Username for user actions")
-    users_parser.add_argument("--email", "-e", dest="email", help="Email address")
+    users_parser.add_argument("email", nargs="?", help="Email address (required for create command)")
     users_parser.add_argument("--password", "-p", dest="password", help="Password")
     users_parser.add_argument("--name", "-n", dest="full_name", help="Full name")
     users_parser.add_argument("--role", "-r", dest="role", choices=["user", "admin", "guest"], help="User role")
@@ -1008,12 +1008,13 @@ def main() -> None:
         # Build arguments for typer command
         typer_args = [args.action] if args.action else []
         
+        # Add positional arguments (username, email for create command)
         if args.username:
             typer_args.append(args.username)
+        if hasattr(args, 'email') and args.email and args.action == 'create':
+            typer_args.append(args.email)
         
         # Add optional arguments
-        if hasattr(args, 'email') and args.email:
-            typer_args.extend(['--email', args.email])
         if hasattr(args, 'password') and args.password:
             typer_args.extend(['--password', args.password])
         if hasattr(args, 'full_name') and args.full_name:
@@ -1030,10 +1031,12 @@ def main() -> None:
             typer_args.append('--deactivate')
         if hasattr(args, 'force') and args.force:
             typer_args.append('--force')
-        if hasattr(args, 'limit') and args.limit:
-            typer_args.extend(['--limit', str(args.limit)])
-        if hasattr(args, 'skip') and args.skip:
-            typer_args.extend(['--skip', str(args.skip)])
+        # limit and skip are only for 'list' action
+        if args.action == 'list':
+            if hasattr(args, 'limit') and args.limit:
+                typer_args.extend(['--limit', str(args.limit)])
+            if hasattr(args, 'skip') and args.skip:
+                typer_args.extend(['--skip', str(args.skip)])
         
         # Execute typer command
         try:

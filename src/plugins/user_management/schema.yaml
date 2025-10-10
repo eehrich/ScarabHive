@@ -1,0 +1,45 @@
+# User Management Plugin Schema
+# This plugin provides no MCP tools - it's a web-only admin interface
+
+tools: []
+
+# Web UI configuration
+web_ui:
+  # Button registration configuration
+  enabled: true
+  button_text: "User Management"
+  button_icon: "👥"  # Users icon
+  panel_title: "User Management Dashboard" 
+  panel_endpoint: "/user-management"
+  panel_type: "iframe"  # Load as iframe for full-page experience
+  description: "Admin dashboard for managing user accounts, roles, and permissions"
+  
+  # Admin-only access
+  requires_auth: true
+  requires_role: "admin"
+  
+  endpoints:
+    - path: "/user-management"
+      method: "GET"
+      description: "Main user management dashboard UI"
+    - path: "/user-management/users"
+      method: "GET"
+      description: "List all users (admin only)"
+    - path: "/user-management/users"
+      method: "POST"
+      description: "Create new user (admin only)"
+    - path: "/user-management/users/{user_id}"
+      method: "PUT"
+      description: "Update user details (admin only)"
+    - path: "/user-management/users/{user_id}"
+      method: "DELETE"
+      description: "Delete user (admin only)"
+    - path: "/user-management/users/{user_id}/activate"
+      method: "POST"
+      description: "Activate user account (admin only)"
+    - path: "/user-management/users/{user_id}/deactivate"
+      method: "POST"
+      description: "Deactivate user account (admin only)"
+    - path: "/static/{file_path}"
+      method: "GET"
+      description: "Static assets (CSS, JS, images)"
