@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import Optional
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from pydantic import BaseModel
 
 from agent_system.auth.models import (
@@ -85,13 +85,17 @@ async def register(
 @router.post("/login", response_model=Token)
 async def login(
     login_data: LoginRequest,
+    response: Response,
     db: UserDatabase = Depends(get_db),
 ) -> Token:
     """
     Login and get access token.
     
+    Sets both JSON response and HttpOnly cookie for compatibility.
+    
     Args:
         login_data: Login credentials
+        response: FastAPI response object to set cookie
         db: Database instance
     
     Returns:
@@ -132,6 +136,16 @@ async def login(
     # Update last login
     db.update_last_login(user.id)
     
+    # Set HttpOnly cookie for browser clients
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,  # Prevents JavaScript access (XSS protection)
+        secure=False,   # Set to True in production with HTTPS
+        samesite="lax", # CSRF protection
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Same as token expiry
+    )
+    
     logger.info(f"User logged in: {user.username}")
     
     return Token(
@@ -143,20 +157,31 @@ async def login(
 
 @router.post("/logout", response_model=MessageResponse)
 async def logout(
+    response: Response,
     current_user: User = Depends(get_current_active_user),
 ) -> MessageResponse:
     """
-    Logout (client-side token removal).
+    Logout (removes HttpOnly cookie and returns success message).
     
-    Note: JWT tokens are stateless, so logout is handled client-side by
-    removing the token. This endpoint is provided for consistency.
+    Note: JWT tokens are stateless, so logout is handled by:
+    1. Removing the HttpOnly cookie (server-side)
+    2. Client should also clear localStorage/sessionStorage tokens
     
     Args:
+        response: FastAPI response object to delete cookie
         current_user: Current authenticated user
     
     Returns:
         Success message
     """
+    # Delete the HttpOnly cookie
+    response.delete_cookie(
+        key="access_token",
+        httponly=True,
+        secure=False,
+        samesite="lax"
+    )
+    
     logger.info(f"User logged out: {current_user.username}")
     return MessageResponse(
         message="Logged out successfully",

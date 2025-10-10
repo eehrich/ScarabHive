@@ -38,7 +38,7 @@ auth: # type AuthConfig
   database_path: "data/users.db"
   
   # Security settings
-  rate_limit_enabled: true
+  rate_limit_enabled: false  # Disabled for development
   requests_per_minute: 60
   security_headers_enabled: true
   

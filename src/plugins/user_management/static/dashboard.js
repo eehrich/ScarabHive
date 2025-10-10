@@ -58,7 +58,7 @@ async function createUser(event) {
             return;
         }
         
-        const response = await fetch('/admin/users', {
+        const response = await fetch('/plugins/user_management/users', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -123,10 +123,18 @@ async function toggleUserStatus(userId, isCurrentlyActive) {
     }
     
     try {
+        const token = getAuthToken();
+        if (!token) {
+            alert('Authentication required. Please log in again.');
+            window.top.location.href = '/';
+            return;
+        }
+        
         const response = await fetch(`/plugins/user_management/users/${userId}/toggle-active`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
             }
         });
         
@@ -144,9 +152,74 @@ async function toggleUserStatus(userId, isCurrentlyActive) {
 }
 
 // Edit user
-function editUser(userId) {
-    alert('Edit user functionality - integrate with /admin/users/' + userId + ' endpoint');
-    // TODO: Implement edit modal or redirect to edit page
+async function editUser(userId) {
+    try {
+        const token = getAuthToken();
+        if (!token) {
+            alert('Authentication required. Please log in again.');
+            window.top.location.href = '/';
+            return;
+        }
+        
+        // Fetch current user data
+        const response = await fetch(`/plugins/user_management/users/${userId}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to fetch user data');
+        }
+        
+        const user = await response.json();
+        
+        // Prompt for new values (you could create a modal instead)
+        const newUsername = prompt('Username:', user.username);
+        if (newUsername === null) return; // Cancelled
+        
+        const newEmail = prompt('Email:', user.email);
+        if (newEmail === null) return;
+        
+        const newFullName = prompt('Full Name:', user.full_name || '');
+        if (newFullName === null) return;
+        
+        const newRole = prompt('Role (admin/user/guest):', user.role);
+        if (newRole === null) return;
+        
+        const newIsActive = confirm('User is active?');
+        
+        // Build update object
+        const updateData = {
+            username: newUsername || user.username,
+            email: newEmail || user.email,
+            full_name: newFullName || null,
+            role: newRole || user.role,
+            is_active: newIsActive
+        };
+        
+        // Send update request
+        const updateResponse = await fetch(`/plugins/user_management/users/${userId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(updateData)
+        });
+        
+        if (updateResponse.ok) {
+            const result = await updateResponse.json();
+            alert(result.message || 'User updated successfully!');
+            location.reload();
+        } else {
+            const error = await updateResponse.json();
+            alert('Error updating user: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
 }
 
 // Delete user
@@ -156,8 +229,18 @@ async function deleteUser(userId, username) {
     }
     
     try {
+        const token = getAuthToken();
+        if (!token) {
+            alert('Authentication required. Please log in again.');
+            window.top.location.href = '/';
+            return;
+        }
+        
         const response = await fetch(`/plugins/user_management/users/${userId}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
         });
         
         if (response.ok) {

@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING, Optional
 
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from agent_system.plugins.web_adapter import PluginWebInterface
 
@@ -19,6 +20,26 @@ if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
+
+
+# Pydantic models for request bodies
+class CreateUserRequest(BaseModel):
+    """Request model for creating a new user"""
+    username: str
+    email: str
+    password: str
+    full_name: Optional[str] = None
+    role: str = "user"
+    is_active: bool = True
+
+
+class UpdateUserRequest(BaseModel):
+    """Request model for updating an existing user"""
+    username: Optional[str] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 class UserManagementWebEndpoints(PluginWebInterface):
@@ -73,15 +94,19 @@ class UserManagementWebEndpoints(PluginWebInterface):
             try:
                 from agent_system.auth.dependencies import require_admin, get_current_active_user
                 from agent_system.auth.models import User
+                # Create dependencies list for endpoints that require admin
+                admin_deps = [Depends(require_admin)] if require_admin else []
             except ImportError:
                 logger.warning("Auth dependencies not available, endpoints will not have auth protection")
                 require_admin = None
                 get_current_active_user = None
                 User = None
+                admin_deps = []
         else:
             require_admin = None
             get_current_active_user = None
             User = None
+            admin_deps = []
         
         @router.get("/", response_class=HTMLResponse)
         async def user_management_home(request: Request):
@@ -162,6 +187,62 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 logger.error(f"Error listing users: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
+        @router.post("/users", dependencies=admin_deps)
+        async def create_user(user_data: CreateUserRequest):
+            """Create a new user (admin only)"""
+            try:
+                from agent_system.auth.database import UserDatabase
+                from agent_system.auth.models import UserRole
+                from agent_system.auth.security import hash_password
+                
+                db = UserDatabase()
+                
+                # Validate role
+                try:
+                    user_role = UserRole(user_data.role.lower())
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid role: {user_data.role}")
+                
+                # Check if username or email already exists
+                existing_user = db.get_user_by_username(user_data.username)
+                if existing_user:
+                    raise HTTPException(status_code=400, detail="Username already exists")
+                
+                existing_email = db.get_user_by_email(user_data.email)
+                if existing_email:
+                    raise HTTPException(status_code=400, detail="Email already exists")
+                
+                # Hash password
+                hashed_password = hash_password(user_data.password)
+                
+                # Create user
+                user = db.create_user(
+                    username=user_data.username,
+                    email=user_data.email,
+                    hashed_password=hashed_password,
+                    full_name=user_data.full_name,
+                    role=user_role,
+                    is_active=user_data.is_active
+                )
+                
+                return {
+                    "message": f"User '{user_data.username}' created successfully",
+                    "username": user.username,
+                    "user": {
+                        "id": user.id,
+                        "username": user.username,
+                        "email": user.email,
+                        "full_name": user.full_name,
+                        "role": user.role,
+                        "is_active": user.is_active
+                    }
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error creating user: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
         @router.get("/users/{user_id}")
         async def get_user(user_id: int):
             """API endpoint to get user details"""
@@ -192,6 +273,73 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 raise
             except Exception as e:
                 logger.error(f"Error getting user {user_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @router.put("/users/{user_id}", dependencies=admin_deps)
+        async def update_user(user_id: int, user_data: UpdateUserRequest):
+            """Update user details (admin only)"""
+            try:
+                from agent_system.auth.database import UserDatabase
+                from agent_system.auth.models import UserRole
+                
+                db = UserDatabase()
+                
+                # Get existing user
+                user = db.get_user_by_id(user_id)
+                if not user:
+                    raise HTTPException(status_code=404, detail="User not found")
+                
+                # Build update dict with only provided fields
+                updates = {}
+                
+                if user_data.username is not None:
+                    # Check if username is already taken by another user
+                    existing = db.get_user_by_username(user_data.username)
+                    if existing and existing.id != user_id:
+                        raise HTTPException(status_code=400, detail="Username already exists")
+                    updates['username'] = user_data.username
+                
+                if user_data.email is not None:
+                    # Check if email is already taken by another user
+                    existing = db.get_user_by_email(user_data.email)
+                    if existing and existing.id != user_id:
+                        raise HTTPException(status_code=400, detail="Email already exists")
+                    updates['email'] = user_data.email
+                
+                if user_data.full_name is not None:
+                    updates['full_name'] = user_data.full_name
+                
+                if user_data.role is not None:
+                    try:
+                        user_role = UserRole(user_data.role.lower())
+                        updates['role'] = user_role
+                    except ValueError:
+                        raise HTTPException(status_code=400, detail=f"Invalid role: {user_data.role}")
+                
+                if user_data.is_active is not None:
+                    updates['is_active'] = user_data.is_active
+                
+                if not updates:
+                    raise HTTPException(status_code=400, detail="No fields to update")
+                
+                # Update user
+                updated_user = db.update_user(user_id, **updates)
+                
+                return {
+                    "message": f"User '{updated_user.username}' updated successfully",
+                    "user": {
+                        "id": updated_user.id,
+                        "username": updated_user.username,
+                        "email": updated_user.email,
+                        "full_name": updated_user.full_name,
+                        "role": updated_user.role,
+                        "is_active": updated_user.is_active
+                    }
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating user {user_id}: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
         @router.post("/users/{user_id}/toggle-active")

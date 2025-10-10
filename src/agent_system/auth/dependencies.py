@@ -7,7 +7,7 @@ Provides dependency injection functions for authentication and authorization.
 from __future__ import annotations
 
 from typing import Optional
-from fastapi import Depends, HTTPException, status, Header
+from fastapi import Depends, HTTPException, status, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from agent_system.auth.models import User, UserRole
@@ -20,16 +20,24 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     x_api_key: Optional[str] = Header(None),
     db: UserDatabase = Depends(get_db),
 ) -> User:
     """
-    Get the current authenticated user from JWT token or API key.
+    Get the current authenticated user from JWT token (Bearer or Cookie) or API key.
     
-    This dependency checks:
-    1. Bearer token (JWT) in Authorization header
-    2. API key in X-API-Key header
+    This dependency checks (in order):
+    1. Bearer token in Authorization header
+    2. JWT token in access_token cookie
+    3. API key in X-API-Key header
+    
+    Args:
+        request: FastAPI request object
+        credentials: Optional Bearer token from Authorization header
+        x_api_key: Optional API key from header
+        db: Database instance
     
     Raises:
         HTTPException: If authentication fails
@@ -43,9 +51,19 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    # Try JWT token first
+    token = None
+    
+    # 1. Try Bearer token from Authorization header
     if credentials:
-        token_data = decode_access_token(credentials.credentials)
+        token = credentials.credentials
+    
+    # 2. Try JWT token from cookie
+    if not token:
+        token = request.cookies.get("access_token")
+    
+    # Process JWT token if found
+    if token:
+        token_data = decode_access_token(token)
         if token_data and token_data.username:
             user_in_db = db.get_user_by_username(token_data.username)
             if user_in_db:
@@ -64,7 +82,7 @@ async def get_current_user(
                     last_login=user_in_db.last_login,
                 )
     
-    # Try API key
+    # 3. Try API key
     if x_api_key:
         api_key_hash = hash_api_key(x_api_key)
         user_in_db = db.get_user_by_api_key(api_key_hash)
