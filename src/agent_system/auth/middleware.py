@@ -100,9 +100,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         elif request.url.path.startswith("/plugins/"):
             # Allow iframe embedding for plugin panels
             response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            # Also set CSP frame-ancestors for better browser compatibility
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
         else:
             # Default: deny iframe embedding for security
             response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
         
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
