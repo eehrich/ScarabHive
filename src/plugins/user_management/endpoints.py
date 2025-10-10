@@ -92,20 +92,15 @@ class UserManagementWebEndpoints(PluginWebInterface):
         # Import auth dependencies if auth is enabled
         if self.auth_enabled:
             try:
-                from agent_system.auth.dependencies import require_admin, get_current_active_user
-                from agent_system.auth.models import User
+                from agent_system.auth.dependencies import require_admin
                 # Create dependencies list for endpoints that require admin
                 admin_deps = [Depends(require_admin)] if require_admin else []
             except ImportError:
                 logger.warning("Auth dependencies not available, endpoints will not have auth protection")
                 require_admin = None
-                get_current_active_user = None
-                User = None
                 admin_deps = []
         else:
             require_admin = None
-            get_current_active_user = None
-            User = None
             admin_deps = []
         
         @router.get("/", response_class=HTMLResponse)
