@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Management - AgentSystem</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+        }
+        
+        .header .stats {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .stat-box {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .stat-box .number {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        
+        .stat-box .label {
+            font-size: 12px;
+            opacity: 0.9;
+        }
+        
+        .toolbar {
+            padding: 20px 30px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .search-box {
+            flex: 1;
+            max-width: 400px;
+            position: relative;
+        }
+        
+        .search-box input {
+            width: 100%;
+            padding: 10px 15px 10px 40px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .search-box input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .search-box::before {
+            content: "🔍";
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #e53e3e;
+        }
+        
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #38a169;
+        }
+        
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+        
+        .table-container {
+            padding: 30px;
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        thead {
+            background: #f7fafc;
+        }
+        
+        th {
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #4a5568;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        td {
+            padding: 15px;
+            border-top: 1px solid #e0e0e0;
+        }
+        
+        tbody tr:hover {
+            background: #f7fafc;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .badge-admin {
+            background: #fed7d7;
+            color: #c53030;
+        }
+        
+        .badge-user {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+        
+        .badge-guest {
+            background: #e6fffa;
+            color: #234e52;
+        }
+        
+        .status-active {
+            color: #48bb78;
+            font-weight: 600;
+        }
+        
+        .status-inactive {
+            color: #f56565;
+            font-weight: 600;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .icon-btn {
+            padding: 6px 10px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+            background: #e0e0e0;
+        }
+        
+        .icon-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        .icon-btn.edit {
+            background: #90cdf4;
+        }
+        
+        .icon-btn.delete {
+            background: #feb2b2;
+        }
+        
+        .icon-btn.toggle {
+            background: #fbd38d;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #718096;
+        }
+        
+        .empty-state h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        
+        .api-key-indicator {
+            font-size: 12px;
+            color: #48bb78;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>👥 User Management</h1>
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="number">{{ total_users }}</div>
+                    <div class="label">Total Users</div>
+                </div>
+                <div class="stat-box">
+                    <div class="number" id="active-count">-</div>
+                    <div class="label">Active</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="toolbar">
+            <div class="search-box">
+                <input type="text" id="search-input" placeholder="Search users by name, email, or username...">
+            </div>
+            <button class="btn btn-primary" onclick="window.location.href='/admin/users'">
+                ➕ Create New User (via API)
+            </button>
+        </div>
+        
+        <div class="table-container">
+            {% if users %}
+            <table id="users-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Full Name</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Last Login</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr data-user-id="{{ user.id }}">
+                        <td>{{ user.id }}</td>
+                        <td>
+                            {{ user.username }}
+                            {% if show_api_keys and user.api_key %}
+                            <span class="api-key-indicator" title="Has API key">🔑</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ user.email }}</td>
+                        <td>{{ user.full_name or '-' }}</td>
+                        <td>
+                            <span class="badge badge-{{ user.role.lower() }}">
+                                {{ user.role }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="status-{{ 'active' if user.is_active else 'inactive' }}">
+                                {{ '✓ Active' if user.is_active else '✗ Inactive' }}
+                            </span>
+                        </td>
+                        <td>{{ user.created_at[:10] if user.created_at else '-' }}</td>
+                        <td>{{ user.last_login[:10] if user.last_login else 'Never' }}</td>
+                        <td>
+                            <div class="actions">
+                                <button class="icon-btn toggle" onclick="toggleUserStatus({{ user.id }}, {{ 'true' if user.is_active else 'false' }})" title="Toggle Active/Inactive">
+                                    {% if user.is_active %}⏸{% else %}▶{% endif %}
+                                </button>
+                                <button class="icon-btn edit" onclick="editUser({{ user.id }})" title="Edit User">
+                                    ✏️
+                                </button>
+                                <button class="icon-btn delete" onclick="deleteUser({{ user.id }}, '{{ user.username }}')" title="Delete User">
+                                    🗑️
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">
+                <h2>No Users Found</h2>
+                <p>Get started by creating your first user via the API.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    <script>
+        // Search functionality
+        const searchInput = document.getElementById('search-input');
+        const table = document.getElementById('users-table');
+        
+        if (searchInput && table) {
+            searchInput.addEventListener('input', function() {
+                const searchTerm = this.value.toLowerCase();
+                const rows = table.querySelectorAll('tbody tr');
+                
+                rows.forEach(row => {
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(searchTerm) ? '' : 'none';
+                });
+            });
+        }
+        
+        // Update active count
+        function updateActiveCount() {
+            const rows = document.querySelectorAll('tbody tr');
+            let activeCount = 0;
+            rows.forEach(row => {
+                const statusCell = row.querySelector('.status-active');
+                if (statusCell) activeCount++;
+            });
+            document.getElementById('active-count').textContent = activeCount;
+        }
+        
+        // Toggle user active status
+        async function toggleUserStatus(userId, isCurrentlyActive) {
+            if (!confirm(`${isCurrentlyActive ? 'Deactivate' : 'Activate'} this user?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/plugins/{{ plugin_name }}/users/${userId}/toggle-active`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert(result.message);
+                    location.reload();
+                } else {
+                    const error = await response.json();
+                    alert('Error: ' + (error.detail || 'Failed to toggle user status'));
+                }
+            } catch (error) {
+                alert('Network error: ' + error.message);
+            }
+        }
+        
+        // Edit user
+        function editUser(userId) {
+            alert('Edit user functionality - integrate with /admin/users/' + userId + ' endpoint');
+            // TODO: Implement edit modal or redirect to edit page
+        }
+        
+        // Delete user
+        async function deleteUser(userId, username) {
+            if (!confirm(`Delete user "${username}"? This action cannot be undone.`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/plugins/{{ plugin_name }}/users/${userId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert(result.message);
+                    location.reload();
+                } else {
+                    const error = await response.json();
+                    alert('Error: ' + (error.detail || 'Failed to delete user'));
+                }
+            } catch (error) {
+                alert('Network error: ' + error.message);
+            }
+        }
+        
+        // Initialize
+        updateActiveCount();
+    </script>
+</body>
+</html>

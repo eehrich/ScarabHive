@@ -1,0 +1,32 @@
+name: user_management
+summary: "Web UI for user administration with multi-user authentication"
+homepage: "https://github.com/yourorg/agent-system"
+authors:
+  - "AgentSystem Team"
+capabilities:
+  - web_ui
+  - admin_tools
+
+mcp:
+  enabled: false  # This plugin only provides web UI, no MCP tools
+
+description: |
+  Provides a comprehensive web interface for user management when multi-user
+  authentication is enabled. Features include:
+  
+  - User list with search and filtering
+  - Create new users with role assignment
+  - Edit user details (name, email, role, status)
+  - Delete users with confirmation
+  - Activate/deactivate user accounts
+  - Generate and revoke API keys
+  - View user activity and last login
+  
+  This plugin integrates with the auth system and requires auth.enabled: true
+  in the configuration to function properly.
+
+configuration:
+  items_per_page: 20
+  allow_self_delete: false
+  show_api_keys: true
+  require_email_validation: false
