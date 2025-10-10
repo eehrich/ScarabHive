@@ -10,8 +10,8 @@ web_ui:
   button_text: "User Management"
   button_icon: "👥"  # Users icon
   panel_title: "User Management Dashboard" 
-  panel_endpoint: "/user-management"
-  panel_type: "iframe"  # Load as iframe for full-page experience
+  panel_endpoint: "/plugins/user_management/"
+  panel_type: "iframe"  # Load as iframe - X-Frame-Options set to SAMEORIGIN in endpoints.py
   description: "Admin dashboard for managing user accounts, roles, and permissions"
   
   # Admin-only access

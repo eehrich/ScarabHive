@@ -82,6 +82,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     Security headers middleware.
     
     Adds security headers to all responses.
+    Allows SAMEORIGIN for plugin panels that need iframe embedding.
     """
     
     async def dispatch(self, request: Request, call_next):
@@ -90,7 +91,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
+        
+        # Allow SAMEORIGIN for plugin panels (they need iframe embedding in the main UI)
+        # Don't override if the response already set X-Frame-Options (e.g., plugin endpoints)
+        if "X-Frame-Options" not in response.headers:
+            response.headers["X-Frame-Options"] = "DENY"
+        
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"

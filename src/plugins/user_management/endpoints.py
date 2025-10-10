@@ -72,17 +72,20 @@ class UserManagementWebEndpoints(PluginWebInterface):
         async def user_management_home(request: Request):
             """User management dashboard"""
             if not self.auth_enabled:
-                return self.templates.TemplateResponse(
+                response = self.templates.TemplateResponse(
                     "auth_disabled.html",
                     {"request": request, "plugin_name": self.name}
                 )
+                # Allow iframe embedding from same origin
+                response.headers["X-Frame-Options"] = "SAMEORIGIN"
+                return response
             
             try:
                 db = self._get_user_database()
                 users = db.list_users(skip=0, limit=self.items_per_page)
                 total_users = len(db.list_users(skip=0, limit=10000))  # Get all for count
                 
-                return self.templates.TemplateResponse(
+                response = self.templates.TemplateResponse(
                     "dashboard.html",
                     {
                         "request": request,
@@ -93,6 +96,9 @@ class UserManagementWebEndpoints(PluginWebInterface):
                         "show_api_keys": self.show_api_keys
                     }
                 )
+                # Allow iframe embedding from same origin
+                response.headers["X-Frame-Options"] = "SAMEORIGIN"
+                return response
             except Exception as e:
                 logger.error(f"Error loading user dashboard: {e}")
                 return HTMLResponse(
