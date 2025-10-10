@@ -27,6 +27,42 @@ network: # type NetworkConfig
 # define the agent which will be startet by default if no other agent is specified
 default_agent: basic_agent
 
+# Multi-user authentication and authorization (optional)
+auth: # type AuthConfig
+  enabled: false  # Set to true to enable multi-user authentication
+  secret_key: "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION_USE_RANDOM_STRING"
+  algorithm: "HS256"
+  access_token_expire_minutes: 30
+  
+  # Database settings
+  database_path: "data/users.db"
+  
+  # Security settings
+  rate_limit_enabled: true
+  requests_per_minute: 60
+  security_headers_enabled: true
+  
+  # CORS settings
+  cors_enabled: true
+  cors_origins:
+    - "*"  # Change to specific origins in production
+  cors_credentials: true
+  cors_methods:
+    - "*"
+  cors_headers:
+    - "*"
+  
+  # Trusted hosts (optional, uncomment and configure for production)
+  # trusted_hosts:
+  #   - "localhost"
+  #   - "127.0.0.1"
+  #   - "*.yourdomain.com"
+  
+  # Default admin user (created on first startup if no users exist)
+  default_admin_username: "admin"
+  default_admin_password: "admin"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
+  default_admin_email: "admin@localhost"
+
 
 
 

@@ -1,0 +1,435 @@
+"""
+Admin API Endpoints
+
+Provides administrative endpoints for user management.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from pydantic import BaseModel
+
+from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole
+from agent_system.auth.database import get_db, UserDatabase
+from agent_system.auth.dependencies import require_admin
+
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+class UserListResponse(BaseModel):
+    """User list response with pagination."""
+    users: List[User]
+    total: int
+    skip: int
+    limit: int
+
+
+class MessageResponse(BaseModel):
+    """Generic message response."""
+    message: str
+    detail: Optional[str] = None
+
+
+@router.get("/users", response_model=UserListResponse)
+async def list_users(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> UserListResponse:
+    """
+    List all users (admin only).
+    
+    Args:
+        skip: Number of users to skip
+        limit: Maximum number of users to return
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        List of users with pagination info
+    """
+    users_in_db = db.list_users(skip=skip, limit=limit)
+    
+    # Convert to User models (remove sensitive data)
+    users = [
+        User(
+            id=u.id,
+            username=u.username,
+            email=u.email,
+            full_name=u.full_name,
+            is_active=u.is_active,
+            role=u.role,
+            created_at=u.created_at,
+            updated_at=u.updated_at,
+            last_login=u.last_login,
+        )
+        for u in users_in_db
+    ]
+    
+    logger.info(f"Admin {admin_user.username} listed users (skip={skip}, limit={limit})")
+    
+    return UserListResponse(
+        users=users,
+        total=len(users),
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get("/users/{user_id}", response_model=User)
+async def get_user(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Get user by ID (admin only).
+    
+    Args:
+        user_id: User ID
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        User data
+    
+    Raises:
+        HTTPException: If user not found
+    """
+    user_in_db = db.get_user_by_id(user_id)
+    
+    if not user_in_db:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+    
+    logger.info(f"Admin {admin_user.username} retrieved user {user_in_db.username}")
+    
+    return User(
+        id=user_in_db.id,
+        username=user_in_db.username,
+        email=user_in_db.email,
+        full_name=user_in_db.full_name,
+        is_active=user_in_db.is_active,
+        role=user_in_db.role,
+        created_at=user_in_db.created_at,
+        updated_at=user_in_db.updated_at,
+        last_login=user_in_db.last_login,
+    )
+
+
+@router.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)
+async def create_user_admin(
+    user_data: UserCreate,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Create a new user (admin only).
+    
+    Args:
+        user_data: User creation data
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        Created user
+    
+    Raises:
+        HTTPException: If username or email already exists
+    """
+    try:
+        user_in_db = db.create_user(user_data)
+        logger.info(f"Admin {admin_user.username} created user: {user_in_db.username}")
+        
+        return User(
+            id=user_in_db.id,
+            username=user_in_db.username,
+            email=user_in_db.email,
+            full_name=user_in_db.full_name,
+            is_active=user_in_db.is_active,
+            role=user_in_db.role,
+            created_at=user_in_db.created_at,
+            updated_at=user_in_db.updated_at,
+            last_login=user_in_db.last_login,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.patch("/users/{user_id}", response_model=User)
+async def update_user(
+    user_id: int,
+    update_data: UserUpdate,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Update a user (admin only).
+    
+    Args:
+        user_id: User ID to update
+        update_data: Update data
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        Updated user
+    
+    Raises:
+        HTTPException: If user not found
+    """
+    updated_user = db.update_user(user_id, update_data)
+    
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+    
+    logger.info(f"Admin {admin_user.username} updated user ID {user_id}")
+    
+    return User(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        is_active=updated_user.is_active,
+        role=updated_user.role,
+        created_at=updated_user.created_at,
+        updated_at=updated_user.updated_at,
+        last_login=updated_user.last_login,
+    )
+
+
+@router.delete("/users/{user_id}", response_model=MessageResponse)
+async def delete_user(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> MessageResponse:
+    """
+    Delete a user (admin only).
+    
+    Args:
+        user_id: User ID to delete
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        Success message
+    
+    Raises:
+        HTTPException: If user not found or trying to delete self
+    """
+    # Prevent admin from deleting themselves
+    if user_id == admin_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete your own account"
+        )
+    
+    if db.delete_user(user_id):
+        logger.info(f"Admin {admin_user.username} deleted user ID {user_id}")
+        return MessageResponse(
+            message=f"User {user_id} deleted successfully"
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+
+
+@router.post("/users/{user_id}/activate", response_model=User)
+async def activate_user(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Activate a user account (admin only).
+    
+    Args:
+        user_id: User ID to activate
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        Updated user
+    """
+    update_data = UserUpdate(is_active=True)
+    updated_user = db.update_user(user_id, update_data)
+    
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+    
+    logger.info(f"Admin {admin_user.username} activated user ID {user_id}")
+    
+    return User(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        is_active=updated_user.is_active,
+        role=updated_user.role,
+        created_at=updated_user.created_at,
+        updated_at=updated_user.updated_at,
+        last_login=updated_user.last_login,
+    )
+
+
+@router.post("/users/{user_id}/deactivate", response_model=User)
+async def deactivate_user(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Deactivate a user account (admin only).
+    
+    Args:
+        user_id: User ID to deactivate
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        Updated user
+    
+    Raises:
+        HTTPException: If trying to deactivate self
+    """
+    # Prevent admin from deactivating themselves
+    if user_id == admin_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot deactivate your own account"
+        )
+    
+    update_data = UserUpdate(is_active=False)
+    updated_user = db.update_user(user_id, update_data)
+    
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+    
+    logger.info(f"Admin {admin_user.username} deactivated user ID {user_id}")
+    
+    return User(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        is_active=updated_user.is_active,
+        role=updated_user.role,
+        created_at=updated_user.created_at,
+        updated_at=updated_user.updated_at,
+        last_login=updated_user.last_login,
+    )
+
+
+@router.post("/users/{user_id}/promote", response_model=User)
+async def promote_to_admin(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Promote a user to admin (admin only).
+    
+    Args:
+        user_id: User ID to promote
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        Updated user
+    """
+    update_data = UserUpdate(role=UserRole.ADMIN)
+    updated_user = db.update_user(user_id, update_data)
+    
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+    
+    logger.info(f"Admin {admin_user.username} promoted user ID {user_id} to admin")
+    
+    return User(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        is_active=updated_user.is_active,
+        role=updated_user.role,
+        created_at=updated_user.created_at,
+        updated_at=updated_user.updated_at,
+        last_login=updated_user.last_login,
+    )
+
+
+@router.post("/users/{user_id}/demote", response_model=User)
+async def demote_from_admin(
+    user_id: int,
+    admin_user: User = Depends(require_admin),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Demote a user from admin to regular user (admin only).
+    
+    Args:
+        user_id: User ID to demote
+        admin_user: Current admin user
+        db: Database instance
+    
+    Returns:
+        Updated user
+    
+    Raises:
+        HTTPException: If trying to demote self
+    """
+    # Prevent admin from demoting themselves
+    if user_id == admin_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot demote your own account"
+        )
+    
+    update_data = UserUpdate(role=UserRole.USER)
+    updated_user = db.update_user(user_id, update_data)
+    
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found"
+        )
+    
+    logger.info(f"Admin {admin_user.username} demoted user ID {user_id} from admin")
+    
+    return User(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        is_active=updated_user.is_active,
+        role=updated_user.role,
+        created_at=updated_user.created_at,
+        updated_at=updated_user.updated_at,
+        last_login=updated_user.last_login,
+    )

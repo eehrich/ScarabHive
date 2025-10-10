@@ -335,6 +335,80 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Include API router
     app.include_router(api_router)
 
+    # Initialize authentication system if enabled
+    if config.auth and config.auth.enabled:
+        logger.info("Multi-user authentication enabled, initializing auth system...")
+        
+        # Setup auth database and configuration
+        from agent_system.auth.database import setup_database
+        from agent_system.auth.security import set_jwt_config
+        from agent_system.auth.middleware import configure_cors, configure_security_middleware
+        from agent_system.auth.models import UserCreate, UserRole
+        from pathlib import Path as AuthPath
+        
+        # Configure JWT settings
+        set_jwt_config(
+            secret_key=config.auth.secret_key,
+            algorithm=config.auth.algorithm,
+            expire_minutes=config.auth.access_token_expire_minutes
+        )
+        
+        # Setup database
+        db_path = AuthPath(config.auth.database_path)
+        db = setup_database(db_path)
+        logger.info(f"User database initialized at: {db_path}")
+        
+        # Create default admin user if no users exist
+        users = db.list_users(limit=1)
+        if not users:
+            logger.info("No users found, creating default admin user...")
+            try:
+                default_admin = UserCreate(
+                    username=config.auth.default_admin_username,
+                    email=config.auth.default_admin_email,
+                    password=config.auth.default_admin_password,
+                    full_name="Default Administrator",
+                    role=UserRole.ADMIN,
+                    is_active=True
+                )
+                db.create_user(default_admin)
+                logger.warning(
+                    f"Default admin user created: {config.auth.default_admin_username} / "
+                    f"{config.auth.default_admin_password} - CHANGE PASSWORD IMMEDIATELY!"
+                )
+            except Exception as e:
+                logger.error(f"Failed to create default admin user: {e}")
+        
+        # Configure CORS if enabled
+        if config.auth.cors_enabled:
+            configure_cors(
+                app,
+                allow_origins=config.auth.cors_origins,
+                allow_credentials=config.auth.cors_credentials,
+                allow_methods=config.auth.cors_methods,
+                allow_headers=config.auth.cors_headers,
+            )
+        
+        # Configure security middleware
+        configure_security_middleware(
+            app,
+            rate_limit_enabled=config.auth.rate_limit_enabled,
+            requests_per_minute=config.auth.requests_per_minute,
+            security_headers_enabled=config.auth.security_headers_enabled,
+            trusted_hosts=config.auth.trusted_hosts,
+        )
+        
+        # Include auth and admin routers
+        from api.auth_endpoints import router as auth_router
+        from api.admin_endpoints import router as admin_router
+        
+        app.include_router(auth_router)
+        app.include_router(admin_router)
+        
+        logger.info("Authentication system initialized successfully")
+    else:
+        logger.info("Multi-user authentication is disabled")
+
     # Health check endpoint
     @app.get("/health")
     def health():

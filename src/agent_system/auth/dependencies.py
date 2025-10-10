@@ -1,0 +1,147 @@
+"""
+FastAPI Authentication Dependencies
+
+Provides dependency injection functions for authentication and authorization.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+from fastapi import Depends, HTTPException, status, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from agent_system.auth.models import User, UserRole
+from agent_system.auth.database import get_db, UserDatabase
+from agent_system.auth.security import decode_access_token, verify_api_key, hash_api_key
+
+
+# Security schemes
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    x_api_key: Optional[str] = Header(None),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Get the current authenticated user from JWT token or API key.
+    
+    This dependency checks:
+    1. Bearer token (JWT) in Authorization header
+    2. API key in X-API-Key header
+    
+    Raises:
+        HTTPException: If authentication fails
+    
+    Returns:
+        Authenticated user
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    # Try JWT token first
+    if credentials:
+        token_data = decode_access_token(credentials.credentials)
+        if token_data and token_data.username:
+            user_in_db = db.get_user_by_username(token_data.username)
+            if user_in_db:
+                # Update last login
+                db.update_last_login(user_in_db.id)
+                # Convert to User (remove sensitive data)
+                return User(
+                    id=user_in_db.id,
+                    username=user_in_db.username,
+                    email=user_in_db.email,
+                    full_name=user_in_db.full_name,
+                    is_active=user_in_db.is_active,
+                    role=user_in_db.role,
+                    created_at=user_in_db.created_at,
+                    updated_at=user_in_db.updated_at,
+                    last_login=user_in_db.last_login,
+                )
+    
+    # Try API key
+    if x_api_key:
+        api_key_hash = hash_api_key(x_api_key)
+        user_in_db = db.get_user_by_api_key(api_key_hash)
+        if user_in_db and user_in_db.api_key:
+            if verify_api_key(x_api_key, user_in_db.api_key):
+                # Update last login
+                db.update_last_login(user_in_db.id)
+                return User(
+                    id=user_in_db.id,
+                    username=user_in_db.username,
+                    email=user_in_db.email,
+                    full_name=user_in_db.full_name,
+                    is_active=user_in_db.is_active,
+                    role=user_in_db.role,
+                    created_at=user_in_db.created_at,
+                    updated_at=user_in_db.updated_at,
+                    last_login=user_in_db.last_login,
+                )
+    
+    raise credentials_exception
+
+
+async def get_current_active_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    Get the current active user.
+    
+    Raises:
+        HTTPException: If user is inactive
+    
+    Returns:
+        Active user
+    """
+    if not current_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user"
+        )
+    return current_user
+
+
+async def require_admin(
+    current_user: User = Depends(get_current_active_user),
+) -> User:
+    """
+    Require admin role for the current user.
+    
+    Raises:
+        HTTPException: If user is not an admin
+    
+    Returns:
+        Admin user
+    """
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required"
+        )
+    return current_user
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    x_api_key: Optional[str] = Header(None),
+    db: UserDatabase = Depends(get_db),
+) -> Optional[User]:
+    """
+    Get the current user if authenticated, None otherwise.
+    
+    This is useful for optional authentication where endpoints can work
+    with or without authentication.
+    
+    Returns:
+        User if authenticated, None otherwise
+    """
+    try:
+        return await get_current_user(credentials, x_api_key, db)
+    except HTTPException:
+        return None

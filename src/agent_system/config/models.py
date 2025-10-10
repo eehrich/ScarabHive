@@ -255,6 +255,37 @@ class ContextConfig(BaseModel):
     location: str = "Germany"
 
 
+class AuthConfig(BaseModel):
+    """Authentication and authorization configuration"""
+    enabled: bool = False  # Enable multi-user authentication
+    secret_key: str = "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    
+    # Database settings
+    database_path: str = "data/users.db"
+    
+    # Security settings
+    rate_limit_enabled: bool = True
+    requests_per_minute: int = 60
+    security_headers_enabled: bool = True
+    
+    # CORS settings
+    cors_enabled: bool = True
+    cors_origins: List[str] = Field(default_factory=lambda: ["*"])
+    cors_credentials: bool = True
+    cors_methods: List[str] = Field(default_factory=lambda: ["*"])
+    cors_headers: List[str] = Field(default_factory=lambda: ["*"])
+    
+    # Trusted hosts (optional)
+    trusted_hosts: Optional[List[str]] = None
+    
+    # Default admin user (created on first startup if no users exist)
+    default_admin_username: str = "admin"
+    default_admin_password: str = "admin"  # CHANGE THIS IN PRODUCTION
+    default_admin_email: str = "admin@localhost"
+
+
 class AgentSystemConfig(BaseModel):
     """Main configuration model for the entire AgentSystem"""
     # Basic metadata
@@ -270,6 +301,7 @@ class AgentSystemConfig(BaseModel):
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     
     # Included configurations (will be populated from included files)
     llm_system: Optional[LLMSystemConfig] = None

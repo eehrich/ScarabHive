@@ -1,0 +1,613 @@
+# Multi-User Authentication and Authorization
+
+## Overview
+
+The AgentSystem now supports multi-user authentication and authorization, enabling multiple users to access the API with isolated sessions and proper access controls. This feature is **disabled by default** and can be enabled through configuration.
+
+## Architecture
+
+### Components
+
+1. **User Database (`src/agent_system/auth/database.py`)**
+   - SQLite-based user storage (with PostgreSQL migration path)
+   - User CRUD operations
+   - API key generation and management
+   - Last login tracking
+
+2. **Security Module (`src/agent_system/auth/security.py`)**
+   - Password hashing using bcrypt (direct implementation)
+   - JWT token generation and validation
+   - API key generation, hashing, and verification
+   - Configurable token expiration
+
+3. **Authentication Middleware (`src/agent_system/auth/middleware.py`)**
+   - Rate limiting (60 requests/minute per IP)
+   - Security headers (X-Frame-Options, CSP, HSTS, etc.)
+   - CORS configuration
+
+4. **User Models (`src/agent_system/auth/models.py`)**
+   - Pydantic models for validation
+   - User roles: ADMIN, USER, GUEST
+   - Token and API key schemas
+
+5. **FastAPI Dependencies (`src/agent_system/auth/dependencies.py`)**
+   - `get_current_user`: Extract user from JWT or API key
+   - `get_current_active_user`: Ensure user is active
+   - `require_admin`: Restrict access to admin users
+   - `get_optional_user`: Allow both authenticated and anonymous access
+
+6. **API Endpoints**
+   - **Auth Endpoints** (`src/api/auth_endpoints.py`): `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, API key management
+   - **Admin Endpoints** (`src/api/admin_endpoints.py`): `/admin/users/*` for user management (admin-only)
+
+7. **CLI Commands (`src/agent_system/cli/users.py`)**
+   - `agent-cli users list`: List all users
+   - `agent-cli users create`: Create a new user
+   - `agent-cli users delete`: Delete a user
+   - `agent-cli users update`: Update user details
+   - `agent-cli users info`: Show user information
+   - `agent-cli users generate-api-key`: Generate API key
+   - `agent-cli users revoke-api-key`: Revoke API key
+
+### User Roles
+
+- **ADMIN**: Full access including user management
+- **USER**: Standard access to API features
+- **GUEST**: Limited read-only access
+
+### Authentication Methods
+
+1. **JWT Tokens**
+   - Bearer token authentication
+   - 30-minute expiration (configurable)
+   - Header: `Authorization: Bearer <token>`
+
+2. **API Keys**
+   - Long-lived authentication
+   - Header: `X-API-Key: <key>`
+   - Hashed with SHA-256 before storage
+
+## Configuration
+
+### Enabling Multi-User Mode
+
+Edit `config/config.yaml`:
+
+```yaml
+auth:
+  enabled: true  # Set to true to enable multi-user authentication
+  secret_key: "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars"
+  algorithm: "HS256"
+  access_token_expire_minutes: 30
+  database_path: "data/users.db"
+  
+  # Security settings
+  security:
+    rate_limit_per_minute: 60
+    security_headers: true
+    cors_enabled: true
+    cors_origins:
+      - "http://localhost:3000"
+      - "http://127.0.0.1:8000"
+    cors_allow_credentials: true
+  
+  # Default admin user (created on first startup if no users exist)
+  default_admin:
+    username: "admin"
+    password: "CHANGE_THIS_PASSWORD"  # WARNING: Change immediately
+    email: "admin@example.com"
+```
+
+### Security Best Practices
+
+1. **Secret Key**
+   - Use a strong, random secret key (minimum 32 characters)
+   - Generate with: `openssl rand -hex 32`
+   - Never commit secrets to version control
+
+2. **Default Admin Password**
+   - Change the default admin password immediately after first login
+   - Use strong passwords (minimum 8 characters, mix of letters, numbers, symbols)
+
+3. **HTTPS**
+   - Always use HTTPS in production
+   - JWT tokens and API keys are sensitive credentials
+
+4. **Rate Limiting**
+   - Adjust `rate_limit_per_minute` based on your needs
+   - Monitor for abuse patterns
+
+5. **CORS Configuration**
+   - Restrict `cors_origins` to trusted domains only
+   - Set `cors_allow_credentials: true` only when necessary
+
+## API Reference
+
+### Authentication Endpoints
+
+#### POST /auth/register
+Register a new user (requires admin privileges when auth is enabled).
+
+**Request:**
+```json
+{
+  "username": "johndoe",
+  "email": "john@example.com",
+  "password": "SecurePass123!",
+  "full_name": "John Doe"
+}
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "username": "johndoe",
+  "email": "john@example.com",
+  "full_name": "John Doe",
+  "is_active": true,
+  "role": "USER",
+  "created_at": "2025-10-10T20:00:00.000000"
+}
+```
+
+#### POST /auth/login
+Login and receive JWT token.
+
+**Request:**
+```json
+{
+  "username": "johndoe",
+  "password": "SecurePass123!"
+}
+```
+
+**Response:**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer"
+}
+```
+
+#### POST /auth/logout
+Logout (client-side token disposal).
+
+**Response:**
+```json
+{
+  "message": "Successfully logged out"
+}
+```
+
+#### GET /auth/me
+Get current user information.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "username": "johndoe",
+  "email": "john@example.com",
+  "full_name": "John Doe",
+  "is_active": true,
+  "role": "USER",
+  "created_at": "2025-10-10T20:00:00.000000"
+}
+```
+
+#### POST /auth/api-key
+Generate a new API key for the current user.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "api_key": "ak_1234567890abcdef",
+  "message": "API key generated successfully. Store it securely - it won't be shown again."
+}
+```
+
+#### DELETE /auth/api-key
+Revoke the current user's API key.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "message": "API key revoked successfully"
+}
+```
+
+### Admin Endpoints
+
+All admin endpoints require the `ADMIN` role.
+
+#### GET /admin/users
+List all users with pagination.
+
+**Query Parameters:**
+- `skip`: Number of users to skip (default: 0)
+- `limit`: Maximum number of users to return (default: 100)
+
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "username": "admin",
+    "email": "admin@example.com",
+    "full_name": "Administrator",
+    "is_active": true,
+    "role": "ADMIN",
+    "created_at": "2025-10-10T20:00:00.000000",
+    "last_login": "2025-10-10T20:30:00.000000"
+  }
+]
+```
+
+#### GET /admin/users/{user_id}
+Get a specific user by ID.
+
+#### POST /admin/users
+Create a new user (admin operation).
+
+**Request:**
+```json
+{
+  "username": "newuser",
+  "email": "new@example.com",
+  "password": "SecurePass123!",
+  "full_name": "New User",
+  "role": "USER",
+  "is_active": true
+}
+```
+
+#### PATCH /admin/users/{user_id}
+Update user details.
+
+**Request:**
+```json
+{
+  "full_name": "Updated Name",
+  "role": "ADMIN"
+}
+```
+
+#### DELETE /admin/users/{user_id}
+Delete a user.
+
+#### POST /admin/users/{user_id}/activate
+Activate a user account.
+
+#### POST /admin/users/{user_id}/deactivate
+Deactivate a user account.
+
+#### POST /admin/users/{user_id}/promote
+Promote user to ADMIN role.
+
+#### POST /admin/users/{user_id}/demote
+Demote admin to USER role.
+
+## CLI Usage
+
+### List Users
+
+```bash
+agent-cli users list
+```
+
+Example output:
+```
+ID  USERNAME    EMAIL              FULL_NAME       ROLE   ACTIVE
+─────────────────────────────────────────────────────────────────
+1   admin       admin@example.com  Administrator   ADMIN  ✓
+2   johndoe     john@example.com   John Doe        USER   ✓
+3   janedoe     jane@example.com   Jane Doe        GUEST  ✗
+```
+
+### Create User
+
+```bash
+# Interactive (prompts for password securely)
+agent-cli users create --email john@example.com --name "John Doe" --admin
+
+# With password (not recommended for scripts)
+agent-cli users create --email john@example.com --password SecurePass123! --name "John Doe"
+
+# As regular user (default role)
+agent-cli users create --email user@example.com
+```
+
+### Delete User
+
+```bash
+agent-cli users delete --email john@example.com
+```
+
+### Update User
+
+```bash
+# Update name
+agent-cli users update --email john@example.com --name "John Smith"
+
+# Change role
+agent-cli users update --email john@example.com --admin
+
+# Deactivate user
+agent-cli users update --email john@example.com --deactivate
+```
+
+### Show User Info
+
+```bash
+agent-cli users info --email john@example.com
+```
+
+Example output:
+```
+User Information:
+─────────────────
+ID:         2
+Username:   johndoe
+Email:      john@example.com
+Full Name:  John Doe
+Role:       USER
+Active:     ✓
+Created:    2025-10-10 20:00:00
+Last Login: 2025-10-10 20:30:00
+```
+
+### API Key Management
+
+```bash
+# Generate API key
+agent-cli users generate-api-key --email john@example.com
+
+# Revoke API key
+agent-cli users revoke-api-key --email john@example.com
+```
+
+## Migration Guide
+
+### From Single-User to Multi-User
+
+1. **Backup Your Data**
+   ```bash
+   # Backup configuration
+   cp config/config.yaml config/config.yaml.backup
+   
+   # Backup any session data
+   cp -r data/ data.backup/
+   ```
+
+2. **Update Configuration**
+   - Edit `config/config.yaml`
+   - Set `auth.enabled: true`
+   - Configure `auth.secret_key` (generate new secret)
+   - Update `auth.default_admin` credentials
+
+3. **Start the API**
+   ```bash
+   agent-cli run-api
+   ```
+   The system will automatically create the admin user on first startup.
+
+4. **Change Default Admin Password**
+   ```bash
+   # Login as admin and generate API key
+   curl -X POST http://127.0.0.1:8000/auth/login \
+     -H "Content-Type: application/json" \
+     -d '{"username": "admin", "password": "CHANGE_THIS_PASSWORD"}'
+   
+   # Use CLI to update password
+   agent-cli users update --email admin@example.com --password NewSecurePassword
+   ```
+
+5. **Create Additional Users**
+   ```bash
+   agent-cli users create --email user@example.com --name "Regular User"
+   ```
+
+### Backward Compatibility
+
+When `auth.enabled: false` (default):
+- All endpoints work without authentication
+- No user isolation or access controls
+- Single-user mode (existing behavior)
+
+When `auth.enabled: true`:
+- Authentication required for most endpoints
+- User isolation enforced
+- Rate limiting and security headers active
+- Admin-only endpoints restricted
+
+### Session Isolation (Future Work)
+
+**Note:** The current implementation provides authentication and user management, but **session isolation is not yet implemented**. Task 9181 tracks this work.
+
+To implement full session isolation:
+1. Add `user_id` column to session storage
+2. Filter sessions by user in all session endpoints
+3. Update `/run` endpoint to associate requests with users
+4. Add user context to agent execution
+5. Implement session-level access controls
+
+## Database Schema
+
+The user database (`data/users.db`) contains a single `users` table:
+
+```sql
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    full_name TEXT,
+    hashed_password TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT 1,
+    role TEXT DEFAULT 'USER',  -- ADMIN, USER, GUEST
+    api_key TEXT,  -- SHA-256 hashed
+    created_at TEXT NOT NULL,
+    updated_at TEXT,
+    last_login TEXT
+)
+```
+
+### PostgreSQL Migration
+
+To migrate to PostgreSQL:
+
+1. Install psycopg2: `pip install psycopg2-binary`
+2. Update database connection in `auth/database.py`
+3. Convert SQLite schema to PostgreSQL (adjust types as needed)
+4. Migrate user data
+
+Example PostgreSQL schema:
+```sql
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    full_name VARCHAR(255),
+    hashed_password VARCHAR(255) NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    role VARCHAR(50) DEFAULT 'USER',
+    api_key VARCHAR(255),
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP,
+    last_login TIMESTAMP
+);
+```
+
+## Security Considerations
+
+### Password Security
+- Passwords hashed with bcrypt (work factor 12)
+- Never stored or logged in plain text
+- Minimum password complexity enforced by applications
+
+### Token Security
+- JWT tokens expire after 30 minutes (configurable)
+- Tokens signed with HS256 algorithm
+- Secret key must be kept secure
+
+### API Key Security
+- API keys hashed with SHA-256 before storage
+- Original key shown only once at generation
+- Revocation immediately invalidates key
+
+### Rate Limiting
+- 60 requests per minute per IP (configurable)
+- Protects against brute-force attacks
+- Sliding window implementation
+
+### Security Headers
+- X-Frame-Options: DENY
+- X-Content-Type-Options: nosniff
+- X-XSS-Protection: 1; mode=block
+- Strict-Transport-Security (HSTS)
+- Content-Security-Policy (CSP)
+
+## Testing
+
+Comprehensive test suite available in `tests/test_auth_system.py`:
+
+```bash
+# Run auth system tests
+python -m pytest tests/test_auth_system.py -v
+
+# Run all tests
+python -m pytest tests/ -v
+```
+
+Test coverage includes:
+- Password hashing and verification
+- JWT token creation, decoding, and expiration
+- API key generation, hashing, and verification
+- User database CRUD operations
+- User role management
+- User activation/deactivation
+- Duplicate username/email prevention
+- API key management
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Authentication failed" errors**
+   - Check that `auth.enabled: true` in config
+   - Verify token hasn't expired (30-minute default)
+   - Ensure correct Authorization header format
+
+2. **"User not found" errors**
+   - Verify user exists: `agent-cli users list`
+   - Check username/email spelling
+   - Ensure user is active
+
+3. **"Permission denied" errors**
+   - Check user role (ADMIN required for admin endpoints)
+   - Verify user is active (`is_active: true`)
+
+4. **Database errors**
+   - Check `data/users.db` file exists and is writable
+   - Verify database path in config
+   - Check file permissions
+
+5. **Rate limit errors**
+   - Adjust `security.rate_limit_per_minute` in config
+   - Wait for rate limit window to reset (60 seconds)
+
+### Debug Mode
+
+Enable debug logging to troubleshoot authentication issues:
+
+```bash
+# Set log level in config
+AGENT_LOG_LEVEL=debug agent-cli run-api
+```
+
+Check logs for:
+- JWT token validation errors
+- Database connection issues
+- Authentication middleware execution
+- Rate limiting triggers
+
+## Future Enhancements
+
+Planned improvements tracked in Epic 0038:
+
+- **Task 9181**: Full session isolation per user
+- **Task 9184**: Web UI for user management
+- **Task 9188**: User management plugin for web UI
+
+Additional ideas:
+- OAuth2 integration (Google, GitHub, etc.)
+- Two-factor authentication (2FA)
+- User groups and granular permissions
+- Audit logging for user actions
+- Password reset via email
+- User session management (view/revoke active sessions)
+- IP whitelisting per user
+- User quotas and usage tracking
+
+## References
+
+- [FastAPI Security](https://fastapi.tiangolo.com/tutorial/security/)
+- [JWT Introduction](https://jwt.io/introduction)
+- [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)
+- [bcrypt](https://pypi.org/project/bcrypt/)
+- [python-jose](https://github.com/mpdavis/python-jose)

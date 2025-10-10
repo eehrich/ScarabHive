@@ -352,6 +352,99 @@ mcp:
         api_key: "${WEATHER_API_KEY}"
 ```
 
+## Multi-User Authentication (Optional)
+
+AgentSystem supports multi-user authentication and authorization, allowing multiple users to access the API with role-based access control. This feature is **disabled by default** and must be explicitly enabled in configuration.
+
+### Quick Start
+
+1. **Enable authentication** in `config/config.yaml`:
+
+```yaml
+auth:
+  enabled: true
+  secret_key: "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars"
+  # Generate with: openssl rand -hex 32
+```
+
+2. **Start the API** — the system automatically creates a default admin user on first startup:
+
+```bash
+agent-cli run-api
+```
+
+3. **Login and get a token**:
+
+```bash
+curl -X POST http://127.0.0.1:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "CHANGE_THIS_PASSWORD"}'
+```
+
+4. **Use the token** in subsequent requests:
+
+```bash
+curl http://127.0.0.1:8000/auth/me \
+  -H "Authorization: Bearer <your_token_here>"
+```
+
+### Features
+
+- **User Management**: Create, update, delete users via CLI or API
+- **Role-Based Access**: ADMIN, USER, and GUEST roles with different permissions
+- **Multiple Auth Methods**:
+  - JWT tokens (30-minute expiration, configurable)
+  - API keys for long-lived access
+- **Security Features**:
+  - bcrypt password hashing
+  - Rate limiting (60 req/min per IP)
+  - Security headers (HSTS, CSP, X-Frame-Options, etc.)
+  - CORS configuration
+- **CLI Commands**:
+  ```bash
+  agent-cli users list            # List all users
+  agent-cli users create          # Create new user (prompts for password)
+  agent-cli users delete          # Delete a user
+  agent-cli users update          # Update user details
+  agent-cli users generate-api-key  # Generate API key for a user
+  ```
+
+### API Endpoints
+
+- `POST /auth/register` — Register a new user (admin-only when enabled)
+- `POST /auth/login` — Login and receive JWT token
+- `POST /auth/logout` — Logout (client-side token disposal)
+- `GET /auth/me` — Get current user information
+- `POST /auth/api-key` — Generate API key for current user
+- `DELETE /auth/api-key` — Revoke API key
+- `GET /admin/users` — List all users (admin-only)
+- `GET /admin/users/{id}` — Get user by ID (admin-only)
+- `POST /admin/users` — Create user (admin-only)
+- `PATCH /admin/users/{id}` — Update user (admin-only)
+- `DELETE /admin/users/{id}` — Delete user (admin-only)
+- `POST /admin/users/{id}/activate` — Activate user (admin-only)
+- `POST /admin/users/{id}/deactivate` — Deactivate user (admin-only)
+
+### Documentation
+
+For complete setup instructions, configuration options, API reference, security best practices, and migration guide, see:
+
+**[Multi-User Authentication](docs/multi_user_authentication.md)** — Complete authentication and authorization guide
+
+### Backward Compatibility
+
+When `auth.enabled: false` (default):
+- All endpoints work without authentication
+- No user isolation or access controls
+- Single-user mode (existing behavior)
+
+When `auth.enabled: true`:
+- Authentication required for most endpoints
+- Admin-only endpoints restricted to ADMIN role
+- Rate limiting and security headers automatically activated
+
+**Note:** Full session isolation (per-user sessions) is planned for a future update. Current implementation provides authentication, user management, and access controls, but sessions are not yet isolated by user.
+
 ## Development (with AI)
 - Follow instructions and guidlines. For repository rules: venv activation, testing, and commit guidance.
 - Run tests with `pytest -q` or `python -m pytest -q` and do not leave failing tests.

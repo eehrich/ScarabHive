@@ -446,6 +446,22 @@ def main() -> None:
     tool_p.add_argument("value", nargs="?", help="Tool name for allow/block actions")
     # enable/disable always persist; no interactive prompt or dry-run
 
+    # users subcommand for user management
+    users_parser = subparsers.add_parser("users", help="Manage users (admin)")
+    users_parser.add_argument("action", choices=["list", "create", "delete", "update", "info", "generate-api-key", "revoke-api-key"], nargs="?", default="list", help="Action to perform on users")
+    users_parser.add_argument("username", nargs="?", help="Username for user actions")
+    users_parser.add_argument("--email", "-e", dest="email", help="Email address")
+    users_parser.add_argument("--password", "-p", dest="password", help="Password")
+    users_parser.add_argument("--name", "-n", dest="full_name", help="Full name")
+    users_parser.add_argument("--role", "-r", dest="role", choices=["user", "admin", "guest"], help="User role")
+    users_parser.add_argument("--admin", dest="admin", action="store_true", help="Make user an admin")
+    users_parser.add_argument("--inactive", dest="inactive", action="store_true", help="Create user as inactive")
+    users_parser.add_argument("--activate", dest="activate", action="store_true", help="Activate user")
+    users_parser.add_argument("--deactivate", dest="deactivate", action="store_true", help="Deactivate user")
+    users_parser.add_argument("--force", "-f", dest="force", action="store_true", help="Skip confirmation prompts")
+    users_parser.add_argument("--limit", dest="limit", type=int, default=100, help="Maximum number of users to show")
+    users_parser.add_argument("--skip", dest="skip", type=int, default=0, help="Number of users to skip")
+
     args = parser.parse_args(argv[1:])
 
     # If no subcommand was provided, show help and exit instead of proceeding
@@ -969,6 +985,49 @@ def main() -> None:
             asyncio.run(handle_mcp_command())
         except Exception as e:
             print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        return
+
+    # Handle users management subcommand
+    if args.subcommand == "users":
+        # Import typer-based user CLI
+        from agent_system.cli.users import app as users_app
+        
+        # Build arguments for typer command
+        typer_args = [args.action] if args.action else []
+        
+        if args.username:
+            typer_args.append(args.username)
+        
+        # Add optional arguments
+        if hasattr(args, 'email') and args.email:
+            typer_args.extend(['--email', args.email])
+        if hasattr(args, 'password') and args.password:
+            typer_args.extend(['--password', args.password])
+        if hasattr(args, 'full_name') and args.full_name:
+            typer_args.extend(['--name', args.full_name])
+        if hasattr(args, 'role') and args.role:
+            typer_args.extend(['--role', args.role])
+        if hasattr(args, 'admin') and args.admin:
+            typer_args.append('--admin')
+        if hasattr(args, 'inactive') and args.inactive:
+            typer_args.append('--inactive')
+        if hasattr(args, 'activate') and args.activate:
+            typer_args.append('--activate')
+        if hasattr(args, 'deactivate') and args.deactivate:
+            typer_args.append('--deactivate')
+        if hasattr(args, 'force') and args.force:
+            typer_args.append('--force')
+        if hasattr(args, 'limit') and args.limit:
+            typer_args.extend(['--limit', str(args.limit)])
+        if hasattr(args, 'skip') and args.skip:
+            typer_args.extend(['--skip', str(args.skip)])
+        
+        # Execute typer command
+        try:
+            users_app(typer_args, standalone_mode=False)
+        except SystemExit:
+            # Typer raises SystemExit, catch it to prevent full CLI exit
+            pass
         return
 
     # Setup logging from config; file handler is created here. Console level is adjusted below.
