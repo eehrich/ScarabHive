@@ -11,20 +11,8 @@ capabilities:
 mcp:
   enabled: false  # This plugin only provides web UI, no MCP tools
 
-description: |
-  Provides a comprehensive web interface for user management when multi-user
-  authentication is enabled. Features include:
-  
-  - User list with search and filtering
-  - Create new users with role assignment
-  - Edit user details (name, email, role, status)
-  - Delete users with confirmation
-  - Activate/deactivate user accounts
-  - Generate and revoke API keys
-  - View user activity and last login
-  
-  This plugin integrates with the auth system and requires auth.enabled: true
-  in the configuration to function properly.
+description: Provides a comprehensive web interface for user management.
+
 
 configuration:
   items_per_page: 20
