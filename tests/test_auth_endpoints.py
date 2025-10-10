@@ -88,10 +88,22 @@ class TestLoginEndpoint:
     """Test login endpoint functionality"""
     
     def test_login_success(self, client, test_user):
-        """Test successful login"""
+        """Test successful login with username"""
         response = client.post(
             "/auth/login",
             json={"username": "testuser", "password": "password123"}
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "access_token" in data
+        assert data["token_type"] == "bearer"
+    
+    def test_login_with_email(self, client, test_user):
+        """Test successful login with email instead of username"""
+        response = client.post(
+            "/auth/login",
+            json={"username": "test@example.com", "password": "password123"}
         )
         
         assert response.status_code == 200

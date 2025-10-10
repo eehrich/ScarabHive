@@ -131,6 +131,7 @@ API endpoints (FastAPI):
   - `POST /auth/login` — login and receive JWT token
   - `POST /auth/logout` — logout (client-side token disposal)
   - `GET /auth/me` — get current user information
+  - `PATCH /auth/me` — update current user profile (email, name, password)
   - `POST /auth/api-key` — generate API key for current user
   - `DELETE /auth/api-key` — revoke API key
 - **Admin Endpoints** (admin-only, when auth enabled):
@@ -438,6 +439,7 @@ curl http://127.0.0.1:8000/auth/me \
 - `POST /auth/login` — Login and receive JWT token
 - `POST /auth/logout` — Logout (client-side token disposal)
 - `GET /auth/me` — Get current user information
+- `PATCH /auth/me` — Update current user profile (email, name, password)
 - `POST /auth/api-key` — Generate API key for current user
 - `DELETE /auth/api-key` — Revoke API key
 - `GET /admin/users` — List all users (admin-only)

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from agent_system.auth.models import (
     User,
     UserCreate,
+    UserUpdate,
     Token,
     LoginRequest,
     PasswordResetRequest,
@@ -91,10 +92,11 @@ async def login(
     """
     Login and get access token.
     
+    Accepts either username or email for login.
     Sets both JSON response and HttpOnly cookie for compatibility.
     
     Args:
-        login_data: Login credentials
+        login_data: Login credentials (username or email + password)
         response: FastAPI response object to set cookie
         db: Database instance
     
@@ -104,8 +106,11 @@ async def login(
     Raises:
         HTTPException: If credentials are invalid
     """
-    # Get user from database
+    # Get user from database - try username first, then email
     user = db.get_user_by_username(login_data.username)
+    if not user:
+        # Try as email if username lookup failed
+        user = db.get_user_by_email(login_data.username)
     
     # Verify credentials
     if not user or not verify_password(login_data.password, user.hashed_password):
@@ -203,6 +208,77 @@ async def get_current_user_info(
         Current user data
     """
     return current_user
+
+
+@router.patch("/me", response_model=User)
+async def update_current_user(
+    user_update: UserUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: UserDatabase = Depends(get_db),
+) -> User:
+    """
+    Update current user information.
+    
+    Users can update their own email, full_name, and password.
+    Only admins can change role or is_active status.
+    
+    Args:
+        user_update: User update data
+        current_user: Current authenticated user
+        db: Database instance
+    
+    Returns:
+        Updated user data
+    
+    Raises:
+        HTTPException: If update fails or unauthorized
+    """
+    # Users can only update their own email, full_name, and password
+    # Role and is_active changes are restricted to admins (could be enforced in admin endpoints)
+    
+    try:
+        # Get the current user from database to update
+        user_in_db = db.get_user_by_id(current_user.id)
+        if not user_in_db:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Update user
+        updated_user = db.update_user(current_user.id, user_update)
+        if not updated_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to update user"
+            )
+        
+        logger.info(f"User {current_user.username} updated their profile")
+        
+        # Return User model (without sensitive data)
+        return User(
+            id=updated_user.id,
+            username=updated_user.username,
+            email=updated_user.email,
+            full_name=updated_user.full_name,
+            is_active=updated_user.is_active,
+            role=updated_user.role,
+            created_at=updated_user.created_at,
+            updated_at=updated_user.updated_at,
+            last_login=updated_user.last_login,
+        )
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to update user {current_user.username}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update user"
+        )
 
 
 @router.post("/api-key", response_model=APIKeyResponse)

@@ -201,6 +201,46 @@ Authorization: Bearer <token>
 }
 ```
 
+#### PATCH /auth/me
+Update current user's profile information. Users can update their own email, full name, and password.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**Request Body:** (all fields optional)
+```json
+{
+  "email": "newemail@example.com",
+  "full_name": "New Full Name",
+  "password": "newpassword123"
+}
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "username": "johndoe",
+  "email": "newemail@example.com",
+  "full_name": "New Full Name",
+  "is_active": true,
+  "role": "USER",
+  "created_at": "2025-10-10T20:00:00.000000",
+  "updated_at": "2025-10-11T10:30:00.000000"
+}
+```
+
+**Example:**
+```bash
+curl -X PATCH http://localhost:8000/auth/me \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "newemail@example.com", "password": "newsecurepassword"}'
+```
+
 #### POST /auth/api-key
 Generate a new API key for the current user.
 
