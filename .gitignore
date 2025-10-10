@@ -14,3 +14,4 @@ logs/
 .tmp
 .cache/
 tmp_backlog.md
+data/users.db
