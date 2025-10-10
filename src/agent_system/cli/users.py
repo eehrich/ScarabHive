@@ -7,6 +7,8 @@ Provides command-line interface for user management operations.
 from __future__ import annotations
 
 import getpass
+import sys
+import os
 from pathlib import Path
 from typing import Optional
 import logging
@@ -21,6 +23,33 @@ from agent_system.config.settings import load_settings
 
 app = typer.Typer(help="User management commands")
 logger = logging.getLogger(__name__)
+
+
+def _supports_color() -> bool:
+    """Check if terminal supports ANSI color codes.
+    
+    Respects NO_COLOR environment variable and checks if stdout is a TTY.
+    """
+    # Respect NO_COLOR standard
+    if os.environ.get("NO_COLOR"):
+        return False
+    
+    # Check if FORCE_COLOR is set (for CI/testing)
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    
+    # Check if stdout is a TTY
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _colorize(text: str, color_code: str) -> str:
+    """Wrap text in ANSI color codes when supported."""
+    if not _supports_color():
+        return text
+    return f"\x1b[{color_code}m{text}\x1b[0m"
 
 
 def get_configured_db() -> UserDatabase:
@@ -52,22 +81,40 @@ def list_users(
             typer.echo("No users found.")
             return
         
-        # Prepare table data
-        headers = ["ID", "Username", "Email", "Full Name", "Role", "Active", "Created"]
-        rows = [
-            [
+        # Prepare colorful table data
+        headers = ["ID", "USERNAME", "EMAIL", "FULL NAME", "ROLE", "ACTIVE", "CREATED"]
+        rows = []
+        
+        for user in users:
+            # Colorize role
+            role_text = user.role.value.upper()
+            if _supports_color():
+                if user.role == UserRole.ADMIN:
+                    role_text = _colorize(role_text, "35")  # Magenta for admin
+                elif user.role == UserRole.USER:
+                    role_text = _colorize(role_text, "36")  # Cyan for user
+                else:
+                    role_text = _colorize(role_text, "37")  # White for guest
+            
+            # Colorize active status
+            active_text = "YES" if user.is_active else "NO"
+            if _supports_color():
+                if user.is_active:
+                    active_text = _colorize(active_text, "32")  # Green for active
+                else:
+                    active_text = _colorize(active_text, "31")  # Red for inactive
+            
+            rows.append([
                 user.id,
                 user.username,
                 user.email,
                 user.full_name or "-",
-                user.role.value,
-                "Yes" if user.is_active else "No",
+                role_text,
+                active_text,
                 user.created_at.strftime("%Y-%m-%d %H:%M") if user.created_at else "-"
-            ]
-            for user in users
-        ]
+            ])
         
-        typer.echo(tabulate(rows, headers=headers, tablefmt="grid"))
+        typer.echo(tabulate(rows, headers=headers, tablefmt="github"))
         typer.echo(f"\nTotal: {len(users)} users")
         
     except Exception as e:
