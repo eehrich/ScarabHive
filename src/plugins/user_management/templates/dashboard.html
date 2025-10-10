@@ -143,6 +143,130 @@
             font-size: 12px;
         }
         
+        .btn-secondary {
+            background: #718096;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: #4a5568;
+        }
+        
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            animation: fadeIn 0.3s;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 0;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            animation: slideDown 0.3s;
+        }
+        
+        @keyframes slideDown {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        .modal-header {
+            padding: 20px 30px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-header h2 {
+            margin: 0;
+            font-size: 24px;
+            color: #333;
+        }
+        
+        .close {
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: color 0.3s;
+        }
+        
+        .close:hover {
+            color: #000;
+        }
+        
+        .modal-content form {
+            padding: 30px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .form-group input[type="text"],
+        .form-group input[type="email"],
+        .form-group input[type="password"],
+        .form-group select {
+            width: 100%;
+            padding: 10px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .form-group small {
+            display: block;
+            margin-top: 5px;
+            color: #666;
+            font-size: 12px;
+        }
+        
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            margin-top: 20px;
+        }
+        
         .table-container {
             padding: 30px;
             overflow-x: auto;
@@ -283,9 +407,57 @@
             <div class="search-box">
                 <input type="text" id="search-input" placeholder="Search users by name, email, or username...">
             </div>
-            <button class="btn btn-primary" onclick="window.location.href='/admin/users'">
-                ➕ Create New User (via API)
+            <button class="btn btn-primary" onclick="openCreateUserModal()">
+                ➕ Create New User
             </button>
+        </div>
+        
+        <!-- Create User Modal -->
+        <div id="createUserModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Create New User</h2>
+                    <span class="close" onclick="closeCreateUserModal()">&times;</span>
+                </div>
+                <form id="createUserForm" onsubmit="createUser(event)">
+                    <div class="form-group">
+                        <label for="new-username">Username *</label>
+                        <input type="text" id="new-username" name="username" required minlength="3" 
+                               pattern="[a-zA-Z0-9_]+" title="Username must be alphanumeric with underscores">
+                    </div>
+                    <div class="form-group">
+                        <label for="new-email">Email *</label>
+                        <input type="email" id="new-email" name="email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-password">Password *</label>
+                        <input type="password" id="new-password" name="password" required minlength="8">
+                        <small>Minimum 8 characters</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-full-name">Full Name</label>
+                        <input type="text" id="new-full-name" name="full_name">
+                    </div>
+                    <div class="form-group">
+                        <label for="new-role">Role *</label>
+                        <select id="new-role" name="role" required>
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                            <option value="guest">Guest</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="new-is-active" name="is_active" checked>
+                            Active
+                        </label>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" onclick="closeCreateUserModal()">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Create User</button>
+                    </div>
+                </form>
+            </div>
         </div>
         
         <div class="table-container">
@@ -355,6 +527,84 @@
     </div>
     
     <script>
+        // Helper function to get JWT token from cookie
+        function getAuthToken() {
+            const cookies = document.cookie.split(';');
+            for (let cookie of cookies) {
+                const [name, value] = cookie.trim().split('=');
+                if (name === 'access_token') {
+                    return value;
+                }
+            }
+            return null;
+        }
+        
+        // Modal functions
+        function openCreateUserModal() {
+            document.getElementById('createUserModal').style.display = 'block';
+        }
+        
+        function closeCreateUserModal() {
+            document.getElementById('createUserModal').style.display = 'none';
+            document.getElementById('createUserForm').reset();
+        }
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('createUserModal');
+            if (event.target === modal) {
+                closeCreateUserModal();
+            }
+        }
+        
+        // Create user function
+        async function createUser(event) {
+            event.preventDefault();
+            
+            const form = event.target;
+            const formData = new FormData(form);
+            
+            // Build user data object
+            const userData = {
+                username: formData.get('username'),
+                email: formData.get('email'),
+                password: formData.get('password'),
+                full_name: formData.get('full_name') || null,
+                role: formData.get('role'),
+                is_active: formData.get('is_active') === 'on'
+            };
+            
+            try {
+                const token = getAuthToken();
+                if (!token) {
+                    alert('Authentication required. Please log in again.');
+                    window.location.href = '/';
+                    return;
+                }
+                
+                const response = await fetch('/admin/users', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(userData)
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert(`User "${result.username}" created successfully!`);
+                    closeCreateUserModal();
+                    location.reload();
+                } else {
+                    const error = await response.json();
+                    alert('Error creating user: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Network error: ' + error.message);
+            }
+        }
+        
         // Search functionality
         const searchInput = document.getElementById('search-input');
         const table = document.getElementById('users-table');

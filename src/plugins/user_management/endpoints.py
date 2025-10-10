@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -67,6 +67,21 @@ class UserManagementWebEndpoints(PluginWebInterface):
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router with user management endpoints"""
         router = APIRouter(prefix=f"/plugins/{self.name}")
+        
+        # Import auth dependencies if auth is enabled
+        if self.auth_enabled:
+            try:
+                from agent_system.auth.dependencies import require_admin, get_current_active_user
+                from agent_system.auth.models import User
+            except ImportError:
+                logger.warning("Auth dependencies not available, endpoints will not have auth protection")
+                require_admin = None
+                get_current_active_user = None
+                User = None
+        else:
+            require_admin = None
+            get_current_active_user = None
+            User = None
         
         @router.get("/", response_class=HTMLResponse)
         async def user_management_home(request: Request):
@@ -180,10 +195,11 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 raise HTTPException(status_code=500, detail=str(e))
         
         @router.post("/users/{user_id}/toggle-active")
-        async def toggle_user_active(user_id: int):
-            """Toggle user active status"""
-            self._check_admin_permission(None)
-            
+        async def toggle_user_active(
+            user_id: int,
+            admin_user=Depends(require_admin) if require_admin else None
+        ):
+            """Toggle user active status (admin only)"""
             try:
                 db = self._get_user_database()
                 user = db.get_user_by_id(user_id)
@@ -208,10 +224,12 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 raise HTTPException(status_code=500, detail=str(e))
         
         @router.post("/users/{user_id}/change-role")
-        async def change_user_role(user_id: int, role: str):
-            """Change user role"""
-            self._check_admin_permission(None)
-            
+        async def change_user_role(
+            user_id: int, 
+            role: str,
+            admin_user=Depends(require_admin) if require_admin else None
+        ):
+            """Change user role (admin only)"""
             try:
                 from agent_system.auth.models import UserRole, UserUpdate
                 
@@ -243,10 +261,11 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 raise HTTPException(status_code=500, detail=str(e))
         
         @router.delete("/users/{user_id}")
-        async def delete_user(user_id: int):
-            """Delete a user"""
-            self._check_admin_permission(None)
-            
+        async def delete_user(
+            user_id: int,
+            admin_user=Depends(require_admin) if require_admin else None
+        ):
+            """Delete a user (admin only)"""
             try:
                 db = self._get_user_database()
                 user = db.get_user_by_id(user_id)
