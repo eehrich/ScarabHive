@@ -56,16 +56,6 @@ web_ui:
   panel_type: "fetch"  # How to load content: "fetch" or "iframe"
   description: "View application logs with polling-based updates (avoids infinite logging loops)"
   
-  # Legacy panel configuration (for compatibility)
-  panels:
-    - id: "log_viewer_panel"
-      title: "System Logs"
-      icon: "file-text"
-      position: "bottom"
-      width: "100%"
-      height: "400px"
-      url: "/plugins/{name}/panel.html"
-  
   endpoints:
     - path: "/logs/list"
       method: "GET"
