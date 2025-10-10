@@ -586,13 +586,110 @@ Check logs for:
 - Authentication middleware execution
 - Rate limiting triggers
 
+## Web UI Integration
+
+### User Management Plugin
+
+The system includes a comprehensive web-based user management interface accessible through the main web UI:
+
+**Features:**
+- User dashboard with list view and statistics
+- Create, update, and delete users
+- Role management (promote/demote users)
+- Activate/deactivate user accounts
+- User statistics and analytics
+- Admin-only access with proper authorization
+
+**Access:**
+1. Navigate to `http://127.0.0.1:8000/` (web UI home)
+2. Login with admin credentials
+3. Click on the user profile dropdown (top-right corner)
+4. Select "Manage Users" from the dropdown menu
+
+**Plugin Configuration:**
+
+The user management plugin is configured via `src/plugins/user_management/schema.yaml`:
+
+```yaml
+web_ui:
+  button:
+    enabled: false  # No header button
+  
+  menu:
+    enabled: true
+    items:
+      - id: "manage_users"
+        menu_id: "user_dropdown"
+        section: "admin"
+        label: "Manage Users"
+        action: "openPanel"
+        panel_id: "user_management"
+        icon: "users"
+        requires_admin: true
+        order: 10
+  
+  panel:
+    enabled: true
+    title: "User Management"
+    endpoint: "/plugins/user_management/"
+    type: "iframe"
+```
+
+### Dropdown Menu System
+
+The web UI features a flexible dropdown menu system that supports:
+
+- **User Profile Menu**: Account settings, profile, logout
+- **Admin Menu**: User management, system settings (admin-only items)
+- **Dynamic Menu Items**: Plugins can contribute menu items via schema configuration
+- **Role-Based Filtering**: Menu items automatically hidden based on user role
+- **Real-time Updates**: Menu reflects authentication state changes
+
+**Menu Configuration in Plugins:**
+
+Plugins can add menu items by defining them in `schema.yaml`:
+
+```yaml
+web_ui:
+  menu:
+    enabled: true
+    items:
+      - id: "my_feature"
+        menu_id: "user_dropdown"  # or "admin_dropdown"
+        section: "tools"
+        label: "My Feature"
+        action: "openPanel"  # or "navigate"
+        panel_id: "my_plugin_panel"
+        icon: "wrench"
+        requires_admin: false
+        order: 20
+```
+
+### Authentication Flow in Web UI
+
+1. **Login Page**: `http://127.0.0.1:8000/login`
+   - Username/password authentication
+   - JWT token stored in cookie and localStorage
+   - Automatic redirect to home page on success
+
+2. **Authenticated Session**:
+   - User profile dropdown appears in header
+   - Admin-only menu items visible for admin users
+   - All API requests include Bearer token
+
+3. **Logout**:
+   - Token cleared from browser
+   - Real-time UI update (dropdown menu disappears)
+   - Redirect to login page
+
 ## Future Enhancements
 
-Planned improvements tracked in Epic 0038:
+Completed in Epic 0038:
+- ✅ **Task 9184**: Web UI for user management
+- ✅ **Task 9188**: User management plugin for web UI
 
+Still planned:
 - **Task 9181**: Full session isolation per user
-- **Task 9184**: Web UI for user management
-- **Task 9188**: User management plugin for web UI
 
 Additional ideas:
 - OAuth2 integration (Google, GitHub, etc.)

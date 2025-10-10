@@ -21,6 +21,7 @@ This README is a concise developer and user guide matching this repository layou
   - [Script Interpreter](src/plugins/script_interpreter/README.md) — Sandboxed Python code execution
   - [SSH Control](src/plugins/ssh_control/README.md) — Multi-machine SSH management with web UI
   - [Twitter Search](src/plugins/twitter_search/README.md) — Twitter/X public content search
+  - [User Management](src/plugins/user_management/) — Web-based user administration and role management
   - [Weather](src/plugins/weather/README.md) — Weather information with multiple data sources
   - [Web Research Agent](src/plugins/web_research_agent/README.md) — Advanced web research and fact-checking
   - [Web Scraper](src/plugins/web_scraper/README.md) — Web content extraction and scraping
@@ -34,6 +35,11 @@ This README is a concise developer and user guide matching this repository layou
 ## Features
 * Modular agent core with MCP integration (consume & expose tool servers)
 * Pluggable plugin system (local + external MCP servers)
+* **Multi-user authentication and authorization** with JWT tokens and API keys
+  - Role-based access control (ADMIN, USER, GUEST)
+  - Web-based user management interface
+  - Flexible dropdown menu system for UI organization
+  - CLI commands for user administration
 * **Multimodal vision support** with image uploads via WebUI and API (see [Vision Support](docs/vision_support.md))
 * Backlog & status management
 * Context window management (summarization / truncation strategies)
@@ -121,6 +127,23 @@ API endpoints (FastAPI):
 - `POST /status/publish-test` — publish a test status event
 - `GET /` — web UI home page
 - `GET /status` — web UI status page
+- **Authentication Endpoints** (when auth enabled):
+  - `POST /auth/login` — login and receive JWT token
+  - `POST /auth/logout` — logout (client-side token disposal)
+  - `GET /auth/me` — get current user information
+  - `POST /auth/api-key` — generate API key for current user
+  - `DELETE /auth/api-key` — revoke API key
+- **Admin Endpoints** (admin-only, when auth enabled):
+  - `GET /admin/users` — list all users
+  - `POST /admin/users` — create new user
+  - `GET /admin/users/{id}` — get user by ID
+  - `PATCH /admin/users/{id}` — update user
+  - `DELETE /admin/users/{id}` — delete user
+  - `POST /admin/users/{id}/activate` — activate user
+  - `POST /admin/users/{id}/deactivate` — deactivate user
+- **Menu API** (for dynamic UI menus):
+  - `GET /api/menu-definitions` — get available menu definitions
+  - `GET /api/menu-items` — get menu items (filtered by user role)
 
 ## How to debug
 1. Use two terminals: one for the API, one for running tests / CLI commands. Do not run a long-lived server and tests in the same terminal.
