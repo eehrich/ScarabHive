@@ -33,6 +33,19 @@
           Context
         </button>
         <!-- Plugin buttons will be dynamically inserted here -->
+        <!-- Auth UI -->
+        <div id="authUI" style="display: none; margin-left: auto; display: flex; align-items: center; gap: 12px;">
+          <div id="userProfile" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(255,255,255,0.1); border-radius: 6px;">
+            <span style="font-size: 18px;">👤</span>
+            <span id="usernameDisplay" style="font-size: 14px;">Guest</span>
+          </div>
+          <button id="logoutBtn" style="padding: 6px 12px; background: rgba(255,255,255,0.15); border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 14px;" title="Logout">
+            Logout
+          </button>
+        </div>
+        <a id="loginLink" href="/login" style="display: none; margin-left: auto; padding: 6px 12px; background: rgba(255,255,255,0.15); border-radius: 6px; color: white; text-decoration: none; font-size: 14px;" title="Login">
+          Login
+        </a>
       </div>
     </header>
 
@@ -100,6 +113,7 @@
     </div>
 
         <!-- Load JavaScript Modules (order matters) -->
+    <script src="{{ url_for('static', path='js/auth.js') }}"></script>
     <script src="{{ url_for('static', path='js/panel_manager.js') }}"></script>
     <script src="{{ url_for('static', path='js/plugin_manager.js') }}"></script>
     <script src="{{ url_for('static', path='js/mcp_module.js') }}?v=blocked-tools"></script>
@@ -110,5 +124,54 @@
     <script src="{{ url_for('static', path='js/chat_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/textarea_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/main.js') }}"></script>
+    
+    <!-- Initialize Auth UI -->
+    <script>
+      // Initialize auth UI on page load
+      document.addEventListener('DOMContentLoaded', () => {
+        const authUI = document.getElementById('authUI');
+        const loginLink = document.getElementById('loginLink');
+        const usernameDisplay = document.getElementById('usernameDisplay');
+        const logoutBtn = document.getElementById('logoutBtn');
+        
+        // Update UI based on auth status
+        function updateAuthUI() {
+          if (authManager.isAuthenticated()) {
+            authUI.style.display = 'flex';
+            loginLink.style.display = 'none';
+            usernameDisplay.textContent = authManager.getUsername();
+            
+            // Add admin badge if user is admin
+            if (authManager.isAdmin()) {
+              usernameDisplay.innerHTML = `${authManager.getUsername()} <span style="background: rgba(255,215,0,0.3); padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 4px;">ADMIN</span>`;
+            }
+          } else {
+            authUI.style.display = 'none';
+            // Only show login link if auth is enabled (check by trying to access auth endpoint)
+            fetch('/auth/me').then(response => {
+              if (response.status === 401 || response.status === 403) {
+                loginLink.style.display = 'block';
+              }
+            }).catch(() => {
+              // Auth not available, hide login link
+              loginLink.style.display = 'none';
+            });
+          }
+        }
+        
+        // Logout handler
+        logoutBtn.addEventListener('click', async () => {
+          if (confirm('Are you sure you want to logout?')) {
+            await authManager.logout();
+            updateAuthUI();
+            // Optionally redirect to login
+            // window.location.href = '/login';
+          }
+        });
+        
+        // Initial update
+        updateAuthUI();
+      });
+    </script>
   </body>
 </html>

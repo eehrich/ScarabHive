@@ -1018,6 +1018,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             response.headers["Expires"] = "0"
 
         return response
+    
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request):
+        """Login page for multi-user authentication"""
+        response = templates.TemplateResponse(request, "login.html")
+        
+        # Disable caching for login page
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        
+        return response
+    
     @app.get("/status", response_class=HTMLResponse)
     async def status_page(request: Request):
         # Redirect to main page with integrated status
