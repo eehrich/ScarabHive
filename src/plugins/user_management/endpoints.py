@@ -108,8 +108,9 @@ class UserManagementWebEndpoints(PluginWebInterface):
             """User management dashboard"""
             if not self.auth_enabled:
                 return self.templates.TemplateResponse(
-                    "auth_disabled.html",
-                    {"request": request, "plugin_name": self.name}
+                    request=request,
+                    name="auth_disabled.html",
+                    context={"plugin_name": self.name}
                 )
             
             try:
@@ -134,9 +135,9 @@ class UserManagementWebEndpoints(PluginWebInterface):
                     users_data.append(user_dict)
                 
                 return self.templates.TemplateResponse(
-                    "dashboard.html",
-                    {
-                        "request": request,
+                    request=request,
+                    name="dashboard.html",
+                    context={
                         "plugin_name": self.name,
                         "users": users_data,
                         "total_users": total_users,

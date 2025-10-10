@@ -1,4 +1,5 @@
 name: user_management
+version: "1.0.0"
 summary: "Web UI for user administration with multi-user authentication"
 homepage: "https://github.com/yourorg/agent-system"
 authors:
