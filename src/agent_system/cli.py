@@ -315,7 +315,7 @@ def main() -> None:
         pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
-    known = ("plugins", "mcp", "run", "status", "-h", "--help")
+    known = ("plugins", "mcp", "run", "status", "users", "-h", "--help")
     if rest:
         if not rest[0].startswith("-") and rest[0] not in known:
             rest.insert(0, "run")
@@ -989,8 +989,21 @@ def main() -> None:
 
     # Handle users management subcommand
     if args.subcommand == "users":
-        # Import typer-based user CLI
-        from agent_system.cli.users import app as users_app
+        # Import typer-based user CLI using importlib to avoid package/module name conflict
+        # (cli.py and cli/ directory both exist)
+        import importlib.util
+        
+        # Dynamically import users module from cli/ directory
+        users_module_path = Path(__file__).parent / "cli" / "users.py"
+        spec = importlib.util.spec_from_file_location("agent_system.cli.users", users_module_path)
+        if spec and spec.loader:
+            users_module = importlib.util.module_from_spec(spec)
+            sys.modules["agent_system.cli.users"] = users_module
+            spec.loader.exec_module(users_module)
+            users_app = users_module.app
+        else:
+            print("ERROR: Could not load users module", file=sys.stderr)
+            return
         
         # Build arguments for typer command
         typer_args = [args.action] if args.action else []
