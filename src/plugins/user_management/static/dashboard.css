@@ -1,6 +1,6 @@
 /**
  * User Management Dashboard Styles
- * Modern, clean interface for user administration
+ * Dark theme matching main Agent System interface
  */
 
 /* ============================================================================
@@ -13,10 +13,11 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #111820;  /* --bg-darkest from main site */
     min-height: 100vh;
     padding: 20px;
+    color: #e6edf3;
 }
 
 /* ============================================================================
@@ -25,27 +26,30 @@ body {
 .container {
     max-width: 1400px;
     margin: 0 auto;
-    background: white;
+    background: #1a2129;  /* --bg-dark */
     border-radius: 12px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
     overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);  /* --border-normal */
 }
 
 /* ============================================================================
    HEADER
    ============================================================================ */
 .header {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: #313845;  /* --bg-light */
     color: white;
     padding: 30px;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .header h1 {
     font-size: 28px;
     font-weight: 600;
+    color: #e6edf3;
 }
 
 .header .stats {
@@ -54,20 +58,23 @@ body {
 }
 
 .stat-box {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.08);
     padding: 10px 20px;
     border-radius: 8px;
     text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .stat-box .number {
     font-size: 24px;
     font-weight: 700;
+    color: #58a6ff;  /* Blue accent */
 }
 
 .stat-box .label {
     font-size: 12px;
-    opacity: 0.9;
+    opacity: 0.7;
+    color: #e6edf3;
 }
 
 /* ============================================================================
@@ -75,10 +82,11 @@ body {
    ============================================================================ */
 .toolbar {
     padding: 20px 30px;
-    border-bottom: 1px solid #e0e0e0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
     justify-content: space-between;
     align-items: center;
+    background: #1e242d;  /* --bg-medium */
 }
 
 .search-box {
@@ -90,15 +98,18 @@ body {
 .search-box input {
     width: 100%;
     padding: 10px 15px 10px 40px;
-    border: 2px solid #e0e0e0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
     font-size: 14px;
-    transition: border-color 0.3s;
+    transition: all 0.3s;
+    background: #1a2129;
+    color: #e6edf3;
 }
 
 .search-box input:focus {
     outline: none;
-    border-color: #667eea;
+    border-color: #58a6ff;
+    background: #1e242d;
 }
 
 .search-box::before {
@@ -107,6 +118,7 @@ body {
     left: 15px;
     top: 50%;
     transform: translateY(-50%);
+    opacity: 0.6;
 }
 
 /* ============================================================================
@@ -123,32 +135,32 @@ body {
 }
 
 .btn-primary {
-    background: #667eea;
-    color: white;
+    background: #58a6ff;
+    color: #0d1117;
 }
 
 .btn-primary:hover {
-    background: #5568d3;
+    background: #79c0ff;
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.4);
 }
 
 .btn-danger {
-    background: #f56565;
+    background: #f85149;
     color: white;
 }
 
 .btn-danger:hover {
-    background: #e53e3e;
+    background: #ff7066;
 }
 
 .btn-success {
-    background: #48bb78;
+    background: #3fb950;
     color: white;
 }
 
 .btn-success:hover {
-    background: #38a169;
+    background: #56d364;
 }
 
 .btn-sm {
@@ -157,12 +169,14 @@ body {
 }
 
 .btn-secondary {
-    background: #718096;
-    color: white;
+    background: #313845;
+    color: #e6edf3;
+    border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .btn-secondary:hover {
-    background: #4a5568;
+    background: #3d4553;
+    border-color: rgba(255, 255, 255, 0.2);
 }
 
 /* ============================================================================
@@ -176,7 +190,7 @@ body {
     top: 0;
     width: 100%;
     height: 100%;
-    background-color: rgba(0, 0, 0, 0.5);
+    background-color: rgba(0, 0, 0, 0.7);
     animation: fadeIn 0.3s;
 }
 
@@ -186,14 +200,15 @@ body {
 }
 
 .modal-content {
-    background-color: white;
+    background-color: #1a2129;  /* --bg-dark */
     margin: 5% auto;
     padding: 0;
     border-radius: 12px;
     width: 90%;
     max-width: 500px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
     animation: slideDown 0.3s;
+    border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 @keyframes slideDown {
@@ -209,20 +224,21 @@ body {
 
 .modal-header {
     padding: 20px 30px;
-    border-bottom: 1px solid #e0e0e0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
     justify-content: space-between;
     align-items: center;
+    background: #1e242d;
 }
 
 .modal-header h2 {
     margin: 0;
     font-size: 24px;
-    color: #333;
+    color: #e6edf3;
 }
 
 .close {
-    color: #aaa;
+    color: #8b949e;
     font-size: 28px;
     font-weight: bold;
     cursor: pointer;
@@ -230,7 +246,7 @@ body {
 }
 
 .close:hover {
-    color: #000;
+    color: #e6edf3;
 }
 
 .modal-content form {
@@ -248,7 +264,7 @@ body {
     display: block;
     margin-bottom: 8px;
     font-weight: 600;
-    color: #333;
+    color: #e6edf3;
 }
 
 .form-group input[type="text"],
@@ -257,22 +273,41 @@ body {
 .form-group select {
     width: 100%;
     padding: 10px 15px;
-    border: 2px solid #e0e0e0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
     font-size: 14px;
-    transition: border-color 0.3s;
+    transition: all 0.3s;
+    background: #1e242d;
+    color: #e6edf3;
 }
 
 .form-group input:focus,
 .form-group select:focus {
     outline: none;
-    border-color: #667eea;
+    border-color: #58a6ff;
+    background: #1a2129;
+}
+
+.form-group input[readonly] {
+    background: #313845 !important;
+    cursor: not-allowed;
+    color: #8b949e;
+}
+
+/* Fix autofill background */
+.form-group input:-webkit-autofill,
+.form-group input:-webkit-autofill:hover,
+.form-group input:-webkit-autofill:focus,
+.form-group input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px #1e242d inset !important;
+    -webkit-text-fill-color: #e6edf3 !important;
+    transition: background-color 5000s ease-in-out 0s;
 }
 
 .form-group small {
     display: block;
     margin-top: 5px;
-    color: #666;
+    color: #8b949e;
     font-size: 12px;
 }
 
@@ -281,7 +316,7 @@ body {
     gap: 10px;
     justify-content: flex-end;
     padding-top: 20px;
-    border-top: 1px solid #e0e0e0;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
     margin-top: 20px;
 }
 
@@ -291,6 +326,7 @@ body {
 .table-container {
     padding: 30px;
     overflow-x: auto;
+    background: #1a2129;
 }
 
 table {
@@ -299,26 +335,32 @@ table {
 }
 
 thead {
-    background: #f7fafc;
+    background: #1e242d;
 }
 
 th {
     padding: 15px;
     text-align: left;
     font-weight: 600;
-    color: #4a5568;
+    color: #8b949e;
     font-size: 13px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 td {
     padding: 15px;
-    border-top: 1px solid #e0e0e0;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+    color: #e6edf3;
+}
+
+tbody tr {
+    transition: background 0.2s;
 }
 
 tbody tr:hover {
-    background: #f7fafc;
+    background: #1e242d;
 }
 
 /* ============================================================================
@@ -333,32 +375,35 @@ tbody tr:hover {
 }
 
 .badge-admin {
-    background: #fed7d7;
-    color: #c53030;
+    background: rgba(248, 81, 73, 0.15);
+    color: #ff7066;
+    border: 1px solid rgba(248, 81, 73, 0.3);
 }
 
 .badge-user {
-    background: #bee3f8;
-    color: #2c5282;
+    background: rgba(88, 166, 255, 0.15);
+    color: #79c0ff;
+    border: 1px solid rgba(88, 166, 255, 0.3);
 }
 
 .badge-guest {
-    background: #e6fffa;
-    color: #234e52;
+    background: rgba(139, 148, 158, 0.15);
+    color: #8b949e;
+    border: 1px solid rgba(139, 148, 158, 0.3);
 }
 
 .status-active {
-    color: #48bb78;
+    color: #3fb950;
     font-weight: 600;
 }
 
 .status-inactive {
-    color: #f56565;
+    color: #f85149;
     font-weight: 600;
 }
 
 /* ============================================================================
-   ACTION BUTTONS
+   ACTION BUTTONS (Keep colorful icons!)
    ============================================================================ */
 .actions {
     display: flex;
@@ -372,23 +417,40 @@ tbody tr:hover {
     cursor: pointer;
     font-size: 14px;
     transition: all 0.2s;
-    background: #e0e0e0;
+    background: #313845;
+    border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .icon-btn:hover {
     transform: scale(1.1);
+    border-color: rgba(255, 255, 255, 0.2);
 }
 
 .icon-btn.edit {
-    background: #90cdf4;
+    background: rgba(88, 166, 255, 0.15);
+    border-color: rgba(88, 166, 255, 0.3);
+}
+
+.icon-btn.edit:hover {
+    background: rgba(88, 166, 255, 0.25);
 }
 
 .icon-btn.delete {
-    background: #feb2b2;
+    background: rgba(248, 81, 73, 0.15);
+    border-color: rgba(248, 81, 73, 0.3);
+}
+
+.icon-btn.delete:hover {
+    background: rgba(248, 81, 73, 0.25);
 }
 
 .icon-btn.toggle {
-    background: #fbd38d;
+    background: rgba(210, 153, 34, 0.15);
+    border-color: rgba(210, 153, 34, 0.3);
+}
+
+.icon-btn.toggle:hover {
+    background: rgba(210, 153, 34, 0.25);
 }
 
 /* ============================================================================
@@ -397,18 +459,19 @@ tbody tr:hover {
 .loading {
     text-align: center;
     padding: 40px;
-    color: #718096;
+    color: #8b949e;
 }
 
 .empty-state {
     text-align: center;
     padding: 60px 20px;
-    color: #718096;
+    color: #8b949e;
 }
 
 .empty-state h2 {
     font-size: 24px;
     margin-bottom: 10px;
+    color: #e6edf3;
 }
 
 /* ============================================================================
@@ -416,5 +479,5 @@ tbody tr:hover {
    ============================================================================ */
 .api-key-indicator {
     font-size: 12px;
-    color: #48bb78;
+    color: #3fb950;
 }
