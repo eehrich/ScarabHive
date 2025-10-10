@@ -149,8 +149,10 @@ class AuthManager {
 
 // Global auth manager instance
 const authManager = new AuthManager();
+window.authManager = authManager;
 
 // Export for use in other scripts
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = AuthManager;
 }
+

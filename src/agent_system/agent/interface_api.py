@@ -401,9 +401,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Include auth and admin routers
         from api.auth_endpoints import router as auth_router
         from api.admin_endpoints import router as admin_router
+        from api.menu_endpoints import menu_router
         
         app.include_router(auth_router)
         app.include_router(admin_router)
+        app.include_router(menu_router)
         
         logger.info("Authentication system initialized successfully")
     else:

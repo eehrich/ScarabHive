@@ -58,6 +58,26 @@ document.addEventListener('DOMContentLoaded', function() {
     console.warn('PluginManager not available; plugin buttons disabled');
   }
   
+  // Initialize dropdown menu system (wait for auth to be ready)
+  if (window.AgentSystem.DropdownMenu && typeof window.AgentSystem.DropdownMenu.init === 'function') {
+    try {
+      // Wait for auth.js to verify token before initializing menus
+      if (window.authManager && window.authManager.token) {
+        // Auth token exists, wait for verification to complete
+        window.authManager.verifyToken().finally(() => {
+          window.AgentSystem.DropdownMenu.init();
+        });
+      } else {
+        // No token, init immediately
+        window.AgentSystem.DropdownMenu.init();
+      }
+    } catch (err) {
+      console.error('DropdownMenu.init() failed', err);
+    }
+  } else {
+    console.warn('DropdownMenu not available; dropdown menus disabled');
+  }
+  
   // Initialize chat form
   // Initialize file upload module
   if (window.fileUploadModule && typeof window.fileUploadModule.init === 'function') {

@@ -191,21 +191,20 @@ tools:
 
 # Web UI Configuration
 web_ui:
-  enabled: true
-  button_text: "SSH Control"
-  button_icon: "🖥️"
-  panel_title: "SSH Machine Control"
-  panel_endpoint: "/plugins/ssh_control/panel"
-  panel_type: "iframe"  # Use iframe instead of fetch/shadow DOM
+  # Header button configuration
+  button:
+    enabled: true
+    text: "SSH Control"
+    icon: "🖥️"
+    tooltip: "SSH Machine Control Panel"
   
-  panels:
-    - id: "ssh_control_panel"
-      title: "SSH Control"
-      icon: "🖥️"
-      position: "right"
-      width: "600px"
-      height: "500px"
-      url: "/plugins/{name}/panel.html"
+  # Panel configuration
+  panel:
+    enabled: true
+    title: "SSH Machine Control"
+    endpoint: "/plugins/ssh_control/panel"
+    type: "iframe"
+    description: "Control and monitor SSH-connected machines"
   
   endpoints:
     - path: "/panel.html"

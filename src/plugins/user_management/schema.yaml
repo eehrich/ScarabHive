@@ -5,16 +5,37 @@ tools: []
 
 # Web UI configuration
 web_ui:
-  # Button registration configuration
-  enabled: true
-  button_text: "User Management"
-  button_icon: "👥"  # Users icon
-  panel_title: "User Management Dashboard" 
-  panel_endpoint: "/plugins/user_management/"
-  panel_type: "iframe"  # Load as iframe - X-Frame-Options set to SAMEORIGIN in endpoints.py
-  description: "Admin dashboard for managing user accounts, roles, and permissions"
+  # Header button configuration (optional)
+  button:
+    enabled: false  # Don't create a header button - only dropdown menu
+    text: "User Management"
+    icon: "👥"
+    tooltip: "User administration dashboard"
   
-  # Admin-only access
+  # Dropdown menu integration (optional)
+  menu:
+    enabled: true  # Add items to dropdown menus
+    items:
+      - id: "manage_users"
+        menu_id: "user"  # Add to user dropdown
+        section: "admin"  # Admin section within user menu
+        label: "Manage Users"
+        action: "openPanel"
+        panel_id: "user_management"
+        icon: "👥"
+        requires_admin: true
+        order: 50
+        tooltip: "User administration dashboard"
+  
+  # Panel configuration
+  panel:
+    enabled: true
+    title: "User Management Dashboard" 
+    endpoint: "/plugins/user_management/"
+    type: "iframe"  # Load as iframe - X-Frame-Options set to SAMEORIGIN in endpoints.py
+    description: "Admin dashboard for managing user accounts, roles, and permissions"
+  
+  # Access control
   requires_auth: true
   requires_role: "admin"
   

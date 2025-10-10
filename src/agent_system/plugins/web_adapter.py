@@ -55,6 +55,52 @@ class PluginWebInterface(ABC):
         """
         return []
     
+    def get_menu_items(self) -> List[Dict[str, Any]]:
+        """Return list of dropdown menu item configurations
+        
+        Plugins can add items to predefined menus (user, admin, tools, help)
+        or custom menus defined via get_menu_definitions().
+        
+        Returns:
+            List[Dict[str, Any]]: List of menu item configuration dictionaries.
+                Each menu item config should include:
+                - id: unique menu item identifier
+                - menu_id: which menu to add to ("user", "admin", "tools", "help", or custom)
+                - label: display text for menu item
+                - url: URL to navigate to (optional if onclick provided)
+                - icon: icon emoji or class (optional)
+                - requires_admin: bool, show only to admins (default: False)
+                - section: section within menu (e.g., "account", "settings") (optional)
+                - order: integer for sorting (default: 100)
+                - target: "_blank", "_self", etc. (default: "_self")
+                - onclick: JavaScript function name (optional, instead of url)
+                - divider_after: bool, add divider after this item (default: False)
+                - divider_before: bool, add divider before this item (default: False)
+                - badge: badge text/count to show (optional)
+                - shortcut: keyboard shortcut hint (optional)
+        """
+        return []
+    
+    def get_menu_definitions(self) -> List[Dict[str, Any]]:
+        """Return custom dropdown menu definitions
+        
+        Allows plugins to create entirely new dropdown menus in the header.
+        Built-in menus: "user" (always present when authenticated)
+        
+        Returns:
+            List[Dict[str, Any]]: List of menu definition dictionaries.
+                Each menu definition should include:
+                - id: unique menu identifier (used in menu_items)
+                - label: button text for menu dropdown
+                - icon: icon emoji or class (optional)
+                - position: "left" or "right" in header (default: "right")
+                - order: integer for menu button positioning (default: 100)
+                - requires_admin: bool, show only to admins (default: False)
+                - tooltip: hover tooltip text (optional)
+                - button_class: additional CSS classes for button (optional)
+        """
+        return []
+    
     def get_security_config(self) -> Dict[str, Any]:
         """Return security configuration for endpoints
         

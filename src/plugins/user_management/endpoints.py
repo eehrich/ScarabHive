@@ -544,6 +544,9 @@ class UserManagementWebEndpoints(PluginWebInterface):
             }
         ]
     
+    # Note: get_menu_items() removed - menu items are now defined in schema.yaml
+    # under web_ui.menu.items section for cleaner configuration
+    
     def get_security_config(self) -> Dict[str, Any]:
         """Return security configuration for this plugin"""
         return {

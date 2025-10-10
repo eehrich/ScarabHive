@@ -47,14 +47,20 @@ tools:
 
 # Web UI configuration
 web_ui:
-  # Button registration configuration
-  enabled: true
-  button_text: "Log Viewer"
-  button_icon: "📄"  # Optional icon
-  panel_title: "Real-time Log Viewer" 
-  panel_endpoint: "/plugins/log_viewer/panel"
-  panel_type: "fetch"  # How to load content: "fetch" or "iframe"
-  description: "View application logs with polling-based updates (avoids infinite logging loops)"
+  # Header button configuration
+  button:
+    enabled: true
+    text: "Log Viewer"
+    icon: "📄"
+    tooltip: "Real-time Log Viewer"
+  
+  # Panel configuration
+  panel:
+    enabled: true
+    title: "Real-time Log Viewer"
+    endpoint: "/plugins/log_viewer/panel"
+    type: "fetch"  # How to load content: "fetch" or "iframe"
+    description: "View application logs with polling-based updates (avoids infinite logging loops)"
   
   endpoints:
     - path: "/logs/list"

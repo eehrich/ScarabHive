@@ -181,22 +181,31 @@ async def get_plugin_ui_metadata():
                         web_ui = schema.get('web_ui') if schema else None
                         logger.info(f"Web UI config for {plugin_id}: {web_ui}")
                         
-                        if web_ui and web_ui.get('enabled', False):
-                            plugin_metadata = PluginUIMetadata(
-                                id=plugin_id,
-                                name=plugin_info.get('name', plugin_id),
-                                enabled=True,
-                                button_text=web_ui.get('button_text', plugin_id.replace('_', ' ').title()),
-                                button_icon=web_ui.get('button_icon'),
-                                panel_title=web_ui.get('panel_title', plugin_info.get('name', plugin_id)),
-                                panel_endpoint=web_ui.get('panel_endpoint', f'/plugins/{plugin_id}/panel'),
-                                panel_type=web_ui.get('panel_type', 'fetch'),
-                                description=web_ui.get('description', plugin_info.get('description'))
-                            )
-                            ui_plugins.append(plugin_metadata)
-                            logger.info(f"Added UI plugin: {plugin_metadata}")
+                        if web_ui:
+                            # Check button.enabled
+                            button_config = web_ui.get('button', {})
+                            button_enabled = button_config.get('enabled', False)
+                            
+                            if button_enabled:
+                                panel_config = web_ui.get('panel', {})
+                                
+                                plugin_metadata = PluginUIMetadata(
+                                    id=plugin_id,
+                                    name=plugin_info.get('name', plugin_id),
+                                    enabled=True,
+                                    button_text=button_config.get('text', plugin_id.replace('_', ' ').title()),
+                                    button_icon=button_config.get('icon'),
+                                    panel_title=panel_config.get('title', plugin_info.get('name', plugin_id)),
+                                    panel_endpoint=panel_config.get('endpoint', f'/plugins/{plugin_id}/panel'),
+                                    panel_type=panel_config.get('type', 'fetch'),
+                                    description=panel_config.get('description', plugin_info.get('description'))
+                                )
+                                ui_plugins.append(plugin_metadata)
+                                logger.info(f"Added UI plugin button: {plugin_metadata}")
+                            else:
+                                logger.info(f"Plugin {plugin_id} button disabled in schema")
                         else:
-                            logger.info(f"Plugin {plugin_id} web UI not enabled or missing")
+                            logger.info(f"Plugin {plugin_id} has no web_ui config")
                     except Exception as schema_error:
                         logger.error(f"Error parsing schema for {plugin_id}: {schema_error}")
                 else:
