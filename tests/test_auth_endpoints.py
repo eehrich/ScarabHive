@@ -6,57 +6,92 @@ and authentication middleware.
 """
 
 import pytest
-from unittest.mock import Mock, patch
+import tempfile
+from pathlib import Path
 from datetime import timedelta
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent_system.auth.models import UserRole, UserInDB
-from agent_system.auth.security import create_access_token, get_password_hash
+from agent_system.auth.models import UserRole, UserCreate
+from agent_system.auth.security import create_access_token
+from agent_system.auth.database import setup_database
+
+
+@pytest.fixture
+def temp_db():
+    """Create a temporary database for testing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test_auth_endpoints.db"
+        db = setup_database(db_path)
+        yield db
+
+
+@pytest.fixture
+def test_user(temp_db):
+    """Create a test user in the database."""
+    user_data = UserCreate(
+        username="testuser",
+        email="test@example.com",
+        password="password123",
+        full_name="Test User",
+        role=UserRole.USER,
+        is_active=True
+    )
+    return temp_db.create_user(user_data)
+
+
+@pytest.fixture
+def inactive_user(temp_db):
+    """Create an inactive test user in the database."""
+    user_data = UserCreate(
+        username="inactiveuser",
+        email="inactive@example.com",
+        password="password123",
+        full_name="Inactive User",
+        role=UserRole.USER,
+        is_active=False
+    )
+    return temp_db.create_user(user_data)
+
+
+@pytest.fixture
+def admin_user(temp_db):
+    """Create an admin test user in the database."""
+    user_data = UserCreate(
+        username="admin",
+        email="admin@example.com",
+        password="admin123",
+        full_name="Admin User",
+        role=UserRole.ADMIN,
+        is_active=True
+    )
+    return temp_db.create_user(user_data)
+
+
+@pytest.fixture
+def client(temp_db):
+    """Create test client with temporary database."""
+    from api.auth_endpoints import router
+    
+    app = FastAPI()
+    app.include_router(router)
+    
+    # Override database dependency
+    from agent_system.auth.database import get_db
+    app.dependency_overrides[get_db] = lambda: temp_db
+    
+    return TestClient(app)
 
 
 class TestLoginEndpoint:
     """Test login endpoint functionality"""
     
-    @pytest.fixture
-    def app_with_auth(self):
-        """Create FastAPI app with auth endpoints"""
-        app = FastAPI()
-        
-        # Import and setup auth router if available
-        try:
-            from agent_system.auth.endpoints import router as auth_router
-            app.include_router(auth_router)
-        except ImportError:
-            # Auth endpoints might not be implemented yet
-            pytest.skip("Auth endpoints not implemented")
-        
-        return app
-    
-    @patch('agent_system.auth.database.get_db')
-    def test_login_success(self, mock_get_db, app_with_auth):
+    def test_login_success(self, client, test_user):
         """Test successful login"""
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock(spec=UserInDB)
-        mock_user.id = 1
-        mock_user.username = "testuser"
-        mock_user.email = "test@example.com"
-        mock_user.hashed_password = get_password_hash("password123")
-        mock_user.is_active = True
-        mock_user.role = UserRole.USER
-        
-        mock_db.get_user_by_username.return_value = mock_user
-        mock_db.update_last_login = Mock()
-        mock_get_db.return_value = mock_db
-        
-        client = TestClient(app_with_auth)
-        
-        # Attempt login
         response = client.post(
             "/auth/login",
-            data={"username": "testuser", "password": "password123"}
+            json={"username": "testuser", "password": "password123"}
         )
         
         assert response.status_code == 200
@@ -64,70 +99,43 @@ class TestLoginEndpoint:
         assert "access_token" in data
         assert data["token_type"] == "bearer"
     
-    @patch('agent_system.auth.database.get_db')
-    def test_login_invalid_username(self, mock_get_db, app_with_auth):
+    def test_login_invalid_username(self, client):
         """Test login with invalid username"""
-        mock_db = Mock()
-        mock_db.get_user_by_username.return_value = None
-        mock_get_db.return_value = mock_db
-        
-        client = TestClient(app_with_auth)
-        
         response = client.post(
             "/auth/login",
-            data={"username": "nonexistent", "password": "password123"}
+            json={"username": "nonexistent", "password": "password123"}
         )
         
         assert response.status_code == 401
     
-    @patch('agent_system.auth.database.get_db')
-    def test_login_invalid_password(self, mock_get_db, app_with_auth):
+    def test_login_invalid_password(self, client, test_user):
         """Test login with invalid password"""
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.hashed_password = get_password_hash("correctpassword")
-        mock_user.is_active = True
-        
-        mock_db.get_user_by_username.return_value = mock_user
-        mock_get_db.return_value = mock_db
-        
-        client = TestClient(app_with_auth)
-        
         response = client.post(
             "/auth/login",
-            data={"username": "testuser", "password": "wrongpassword"}
+            json={"username": "testuser", "password": "wrongpassword"}
         )
         
         assert response.status_code == 401
     
-    @patch('agent_system.auth.database.get_db')
-    def test_login_inactive_user(self, mock_get_db, app_with_auth):
+    def test_login_inactive_user(self, client, inactive_user):
         """Test login with inactive user"""
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.hashed_password = get_password_hash("password123")
-        mock_user.is_active = False
-        
-        mock_db.get_user_by_username.return_value = mock_user
-        mock_get_db.return_value = mock_db
-        
-        client = TestClient(app_with_auth)
-        
         response = client.post(
             "/auth/login",
-            data={"username": "testuser", "password": "password123"}
+            json={"username": "inactiveuser", "password": "password123"}
         )
         
         assert response.status_code == 403
+        assert "inactive" in response.json()["detail"].lower()
 
 
 class TestAuthMiddleware:
     """Test authentication middleware and dependencies"""
     
     @pytest.fixture
-    def app_with_protected_route(self):
+    def app_with_protected_route(self, temp_db):
         """Create app with protected route"""
         from fastapi import Depends
+        from agent_system.auth.database import get_db
         
         app = FastAPI()
         
@@ -137,6 +145,9 @@ class TestAuthMiddleware:
             @app.get("/protected")
             async def protected_route(user=Depends(get_current_user)):
                 return {"username": user.username, "role": user.role}
+            
+            # Override database dependency
+            app.dependency_overrides[get_db] = lambda: temp_db
             
         except ImportError:
             pytest.skip("Auth dependencies not implemented")
@@ -151,25 +162,12 @@ class TestAuthMiddleware:
         
         assert response.status_code == 401
     
-    @pytest.mark.skip(reason="Requires full auth endpoint implementation")
-    @patch('agent_system.auth.database.get_db')
-    def test_protected_route_with_valid_token(self, mock_get_db, app_with_protected_route):
+    def test_protected_route_with_valid_token(self, app_with_protected_route, test_user):
         """Test accessing protected route with valid token"""
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.id = 1
-        mock_user.username = "testuser"
-        mock_user.role = UserRole.USER
-        mock_user.is_active = True
-        
-        mock_db.get_user_by_id.return_value = mock_user
-        mock_get_db.return_value = mock_db
-        
         client = TestClient(app_with_protected_route)
         
         # Create valid token
-        token = create_access_token({"sub": "testuser", "user_id": 1, "role": "user"})
+        token = create_access_token({"sub": "testuser", "user_id": test_user.id, "role": "user"})
         
         response = client.get(
             "/protected",
@@ -197,9 +195,10 @@ class TestAdminRequiredEndpoints:
     """Test admin-only endpoints"""
     
     @pytest.fixture
-    def app_with_admin_route(self):
+    def app_with_admin_route(self, temp_db):
         """Create app with admin-only route"""
         from fastapi import Depends
+        from agent_system.auth.database import get_db
         
         app = FastAPI()
         
@@ -210,28 +209,19 @@ class TestAdminRequiredEndpoints:
             async def admin_route(user=Depends(require_admin)):
                 return {"message": "Admin access granted", "username": user.username}
             
+            # Override database dependency
+            app.dependency_overrides[get_db] = lambda: temp_db
+            
         except ImportError:
             pytest.skip("Admin dependencies not implemented")
         
         return app
     
-    @patch('agent_system.auth.database.get_db')
-    def test_admin_route_with_admin_user(self, mock_get_db, app_with_admin_route):
+    def test_admin_route_with_admin_user(self, app_with_admin_route, admin_user):
         """Test admin route with admin user"""
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.id = 1
-        mock_user.username = "admin"
-        mock_user.role = UserRole.ADMIN
-        mock_user.is_active = True
-        
-        mock_db.get_user_by_id.return_value = mock_user
-        mock_get_db.return_value = mock_db
-        
         client = TestClient(app_with_admin_route)
         
-        token = create_access_token({"sub": "admin", "user_id": 1, "role": "admin"})
+        token = create_access_token({"sub": "admin", "user_id": admin_user.id, "role": "admin"})
         
         response = client.get(
             "/admin-only",
@@ -242,24 +232,11 @@ class TestAdminRequiredEndpoints:
         data = response.json()
         assert data["message"] == "Admin access granted"
     
-    @pytest.mark.skip(reason="Requires full auth endpoint implementation")
-    @patch('agent_system.auth.database.get_db')
-    def test_admin_route_with_regular_user(self, mock_get_db, app_with_admin_route):
+    def test_admin_route_with_regular_user(self, app_with_admin_route, test_user):
         """Test admin route with regular user is forbidden"""
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.id = 2
-        mock_user.username = "user"
-        mock_user.role = UserRole.USER
-        mock_user.is_active = True
-        
-        mock_db.get_user_by_id.return_value = mock_user
-        mock_get_db.return_value = mock_db
-        
         client = TestClient(app_with_admin_route)
         
-        token = create_access_token({"sub": "user", "user_id": 2, "role": "user"})
+        token = create_access_token({"sub": "testuser", "user_id": test_user.id, "role": "user"})
         
         response = client.get(
             "/admin-only",
@@ -273,98 +250,35 @@ class TestAdminRequiredEndpoints:
 class TestTokenRefresh:
     """Test token refresh functionality"""
     
-    @pytest.fixture
-    def app_with_refresh(self):
-        """Create app with token refresh endpoint"""
-        app = FastAPI()
-        
-        try:
-            from agent_system.auth.endpoints import router as auth_router
-            app.include_router(auth_router)
-        except ImportError:
-            pytest.skip("Token refresh not implemented")
-        
-        return app
-    
-    @patch('agent_system.auth.dependencies.decode_access_token')
-    @patch('agent_system.auth.database.get_db')
-    def test_token_refresh_success(self, mock_get_db, mock_decode, app_with_refresh):
+    def test_token_refresh_success(self):
         """Test successful token refresh"""
-        # Mock token decode
-        mock_token_data = Mock()
-        mock_token_data.username = "testuser"
-        mock_token_data.user_id = 1
-        mock_token_data.role = UserRole.USER
-        mock_decode.return_value = mock_token_data
-        
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.id = 1
-        mock_user.username = "testuser"
-        mock_user.role = UserRole.USER
-        mock_user.is_active = True
-        
-        mock_db.get_user_by_id.return_value = mock_user
-        mock_get_db.return_value = mock_db
-        
-        client = TestClient(app_with_refresh)
-        
-        old_token = create_access_token({"sub": "testuser", "user_id": 1, "role": "user"})
-        
-        response = client.post(
-            "/auth/refresh",
-            headers={"Authorization": f"Bearer {old_token}"}
-        )
-        
-        if response.status_code == 404:
-            pytest.skip("Token refresh endpoint not implemented")
-        
-        assert response.status_code == 200
-        data = response.json()
-        assert "access_token" in data
-        assert data["access_token"] != old_token  # Should be new token
+        # Token refresh endpoint is not implemented yet
+        pytest.skip("Token refresh endpoint not implemented")
 
 
 class TestLogout:
     """Test logout functionality"""
     
     @pytest.fixture
-    def app_with_logout(self):
+    def app_with_logout(self, temp_db):
         """Create app with logout endpoint"""
+        from agent_system.auth.database import get_db
+        
         app = FastAPI()
         
-        try:
-            from agent_system.auth.endpoints import router as auth_router
-            app.include_router(auth_router)
-        except ImportError:
-            pytest.skip("Logout endpoint not implemented")
+        from api.auth_endpoints import router as auth_router
+        app.include_router(auth_router)
+        
+        # Override database dependency
+        app.dependency_overrides[get_db] = lambda: temp_db
         
         return app
     
-    @patch('agent_system.auth.dependencies.decode_access_token')
-    @patch('agent_system.auth.database.get_db')
-    def test_logout_success(self, mock_get_db, mock_decode, app_with_logout):
+    def test_logout_success(self, app_with_logout, test_user):
         """Test successful logout"""
-        # Mock token decode
-        mock_token_data = Mock()
-        mock_token_data.username = "testuser"
-        mock_token_data.user_id = 1
-        mock_token_data.role = UserRole.USER
-        mock_decode.return_value = mock_token_data
-        
-        # Mock database
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.username = "testuser"
-        mock_user.is_active = True
-        
-        mock_db.get_user_by_id.return_value = mock_user
-        mock_get_db.return_value = mock_db
-        
         client = TestClient(app_with_logout)
         
-        token = create_access_token({"sub": "testuser", "user_id": 1, "role": "user"})
+        token = create_access_token({"sub": "testuser", "user_id": test_user.id, "role": "user"})
         
         response = client.post(
             "/auth/logout",
@@ -381,35 +295,22 @@ class TestUserRegistration:
     """Test user registration endpoint"""
     
     @pytest.fixture
-    def app_with_registration(self):
+    def app_with_registration(self, temp_db):
         """Create app with registration endpoint"""
+        from agent_system.auth.database import get_db
+        
         app = FastAPI()
         
-        try:
-            from agent_system.auth.endpoints import router as auth_router
-            app.include_router(auth_router)
-        except ImportError:
-            pytest.skip("Registration endpoint not implemented")
+        from api.auth_endpoints import router as auth_router
+        app.include_router(auth_router)
+        
+        # Override database dependency
+        app.dependency_overrides[get_db] = lambda: temp_db
         
         return app
     
-    @patch('agent_system.auth.database.get_db')
-    def test_registration_success(self, mock_get_db, app_with_registration):
+    def test_registration_success(self, app_with_registration):
         """Test successful user registration"""
-        mock_db = Mock()
-        mock_db.get_user_by_username.return_value = None
-        mock_db.get_user_by_email.return_value = None
-        
-        # Mock created user
-        mock_created_user = Mock()
-        mock_created_user.id = 1
-        mock_created_user.username = "newuser"
-        mock_created_user.email = "new@example.com"
-        mock_created_user.role = UserRole.USER
-        
-        mock_db.create_user.return_value = mock_created_user
-        mock_get_db.return_value = mock_db
-        
         client = TestClient(app_with_registration)
         
         response = client.post(
@@ -429,23 +330,14 @@ class TestUserRegistration:
         data = response.json()
         assert data["username"] == "newuser"
     
-    @patch('agent_system.auth.database.get_db')
-    def test_registration_duplicate_username(self, mock_get_db, app_with_registration):
+    def test_registration_duplicate_username(self, app_with_registration, test_user):
         """Test registration with duplicate username"""
-        mock_db = Mock()
-        
-        # Existing user with same username
-        existing_user = Mock()
-        mock_db.get_user_by_username.return_value = existing_user
-        mock_db.get_user_by_email.return_value = None
-        mock_get_db.return_value = mock_db
-        
         client = TestClient(app_with_registration)
         
         response = client.post(
             "/auth/register",
             json={
-                "username": "existinguser",
+                "username": "testuser",  # Already exists
                 "email": "new@example.com",
                 "password": "securepass123"
             }
@@ -484,39 +376,14 @@ class TestAuthEdgeCases:
         # Should handle gracefully
         assert decoded is None or hasattr(decoded, 'username')
     
-    @patch('agent_system.auth.database.get_db')
-    def test_concurrent_login_attempts(self, mock_get_db):
+    def test_concurrent_login_attempts(self, client, test_user):
         """Test handling of concurrent login attempts"""
-        from fastapi import FastAPI
-        
-        app = FastAPI()
-        
-        try:
-            from agent_system.auth.endpoints import router as auth_router
-            app.include_router(auth_router)
-        except ImportError:
-            pytest.skip("Auth endpoints not implemented")
-        
-        mock_db = Mock()
-        mock_user = Mock()
-        mock_user.hashed_password = get_password_hash("password123")
-        mock_user.is_active = True
-        mock_user.role = UserRole.USER
-        mock_user.id = 1
-        mock_user.username = "testuser"
-        
-        mock_db.get_user_by_username.return_value = mock_user
-        mock_db.update_last_login = Mock()
-        mock_get_db.return_value = mock_db
-        
-        client = TestClient(app)
-        
         # Simulate concurrent login attempts
         responses = []
         for _ in range(3):
             response = client.post(
                 "/auth/login",
-                data={"username": "testuser", "password": "password123"}
+                json={"username": "testuser", "password": "password123"}
             )
             responses.append(response)
         

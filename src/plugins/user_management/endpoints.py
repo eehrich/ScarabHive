@@ -489,19 +489,12 @@ class UserManagementWebEndpoints(PluginWebInterface):
         
         return router
     
-    def get_static_assets(self) -> Dict[str, Path]:
-        """Return static asset paths"""
-        static_dir = Path(__file__).parent / "static"
-        if not static_dir.exists():
-            return {}
-        
-        assets = {}
-        for file in static_dir.glob("*.js"):
-            assets[file.name] = file
-        for file in static_dir.glob("*.css"):
-            assets[file.name] = file
-        
-        return assets
+    def get_static_assets(self) -> Optional[Path]:
+        """Return path to plugin static assets"""
+        static_path = Path(__file__).parent / "static"
+        if static_path.exists():
+            return static_path
+        return None
     
     def get_panels(self) -> List[Dict[str, Any]]:
         """Return panel definitions for main UI integration"""
