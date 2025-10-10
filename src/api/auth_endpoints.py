@@ -136,13 +136,13 @@ async def login(
     # Update last login
     db.update_last_login(user.id)
     
-    # Set HttpOnly cookie for browser clients
+    # Set cookie for browser clients (NOT HttpOnly because iframe needs access)
     response.set_cookie(
         key="access_token",
         value=access_token,
-        httponly=True,  # Prevents JavaScript access (XSS protection)
-        secure=False,   # Set to True in production with HTTPS
-        samesite="lax", # CSRF protection
+        httponly=False,  # Allow JavaScript access for iframe compatibility
+        secure=False,    # Set to True in production with HTTPS
+        samesite="lax",  # CSRF protection
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Same as token expiry
     )
     
@@ -174,10 +174,10 @@ async def logout(
     Returns:
         Success message
     """
-    # Delete the HttpOnly cookie
+    # Delete the cookie
     response.delete_cookie(
         key="access_token",
-        httponly=True,
+        httponly=False,
         secure=False,
         samesite="lax"
     )

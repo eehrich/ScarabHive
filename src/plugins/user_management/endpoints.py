@@ -192,8 +192,7 @@ class UserManagementWebEndpoints(PluginWebInterface):
             """Create a new user (admin only)"""
             try:
                 from agent_system.auth.database import UserDatabase
-                from agent_system.auth.models import UserRole
-                from agent_system.auth.security import hash_password
+                from agent_system.auth.models import UserRole, UserCreate
                 
                 db = UserDatabase()
                 
@@ -212,18 +211,18 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 if existing_email:
                     raise HTTPException(status_code=400, detail="Email already exists")
                 
-                # Hash password
-                hashed_password = hash_password(user_data.password)
-                
-                # Create user
-                user = db.create_user(
+                # Create UserCreate object
+                user_create = UserCreate(
                     username=user_data.username,
                     email=user_data.email,
-                    hashed_password=hashed_password,
+                    password=user_data.password,  # Will be hashed by create_user
                     full_name=user_data.full_name,
                     role=user_role,
                     is_active=user_data.is_active
                 )
+                
+                # Create user
+                user = db.create_user(user_create)
                 
                 return {
                     "message": f"User '{user_data.username}' created successfully",
@@ -280,7 +279,7 @@ class UserManagementWebEndpoints(PluginWebInterface):
             """Update user details (admin only)"""
             try:
                 from agent_system.auth.database import UserDatabase
-                from agent_system.auth.models import UserRole
+                from agent_system.auth.models import UserRole, UserUpdate
                 
                 db = UserDatabase()
                 
@@ -289,41 +288,36 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 if not user:
                     raise HTTPException(status_code=404, detail="User not found")
                 
-                # Build update dict with only provided fields
-                updates = {}
-                
+                # Validate username uniqueness if provided
                 if user_data.username is not None:
-                    # Check if username is already taken by another user
                     existing = db.get_user_by_username(user_data.username)
                     if existing and existing.id != user_id:
                         raise HTTPException(status_code=400, detail="Username already exists")
-                    updates['username'] = user_data.username
                 
+                # Validate email uniqueness if provided
                 if user_data.email is not None:
-                    # Check if email is already taken by another user
                     existing = db.get_user_by_email(user_data.email)
                     if existing and existing.id != user_id:
                         raise HTTPException(status_code=400, detail="Email already exists")
-                    updates['email'] = user_data.email
                 
-                if user_data.full_name is not None:
-                    updates['full_name'] = user_data.full_name
-                
+                # Convert role string to UserRole if provided
+                user_role = None
                 if user_data.role is not None:
                     try:
                         user_role = UserRole(user_data.role.lower())
-                        updates['role'] = user_role
                     except ValueError:
                         raise HTTPException(status_code=400, detail=f"Invalid role: {user_data.role}")
                 
-                if user_data.is_active is not None:
-                    updates['is_active'] = user_data.is_active
-                
-                if not updates:
-                    raise HTTPException(status_code=400, detail="No fields to update")
+                # Build UserUpdate object (username is not updateable in UserUpdate model)
+                update_obj = UserUpdate(
+                    email=user_data.email,
+                    full_name=user_data.full_name,
+                    role=user_role,
+                    is_active=user_data.is_active
+                )
                 
                 # Update user
-                updated_user = db.update_user(user_id, **updates)
+                updated_user = db.update_user(user_id, update_obj)
                 
                 return {
                     "message": f"User '{updated_user.username}' updated successfully",

@@ -3,19 +3,54 @@
  * Handles user creation, editing, deletion, and search functionality
  */
 
-// Helper function to get JWT token from cookie
-function getAuthToken() {
-    const cookies = document.cookie.split(';');
-    for (let cookie of cookies) {
-        const [name, value] = cookie.trim().split('=');
-        if (name === 'access_token') {
-            return value;
-        }
-    }
-    return null;
+// Note: Authentication is handled via cookies automatically
+// fetch() with credentials: 'include' sends cookies with every request
+
+// =============================================================================
+// UTILITY FUNCTIONS
+// =============================================================================
+
+// Show toast notification
+function showToast(message, duration = 3000) {
+    const toast = document.getElementById('toast');
+    const toastMessage = document.getElementById('toastMessage');
+    toastMessage.textContent = message;
+    toast.style.display = 'block';
+    setTimeout(() => {
+        toast.style.display = 'none';
+    }, duration);
 }
 
-// Modal functions
+// Show confirm dialog modal
+function showConfirm(title, message, onConfirm) {
+    const modal = document.getElementById('confirmModal');
+    const titleEl = document.getElementById('confirmTitle');
+    const messageEl = document.getElementById('confirmMessage');
+    const confirmBtn = document.getElementById('confirmBtn');
+    
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    modal.style.display = 'block';
+    
+    // Remove old event listeners
+    const newConfirmBtn = confirmBtn.cloneNode(true);
+    confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+    
+    // Add new event listener
+    newConfirmBtn.onclick = () => {
+        closeConfirmModal();
+        onConfirm();
+    };
+}
+
+function closeConfirmModal() {
+    document.getElementById('confirmModal').style.display = 'none';
+}
+
+// =============================================================================
+// CREATE USER MODAL
+// =============================================================================
+
 function openCreateUserModal() {
     document.getElementById('createUserModal').style.display = 'block';
 }
@@ -23,14 +58,6 @@ function openCreateUserModal() {
 function closeCreateUserModal() {
     document.getElementById('createUserModal').style.display = 'none';
     document.getElementById('createUserForm').reset();
-}
-
-// Close modal when clicking outside
-window.onclick = function(event) {
-    const modal = document.getElementById('createUserModal');
-    if (event.target === modal) {
-        closeCreateUserModal();
-    }
 }
 
 // Create user function
@@ -51,38 +78,222 @@ async function createUser(event) {
     };
     
     try {
-        const token = getAuthToken();
-        if (!token) {
-            alert('Authentication required. Please log in again.');
-            window.top.location.href = '/';
-            return;
-        }
-        
         const response = await fetch('/plugins/user_management/users', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
+                'Content-Type': 'application/json'
             },
+            credentials: 'include',  // Send cookie automatically
             body: JSON.stringify(userData)
         });
         
         if (response.ok) {
             const result = await response.json();
-            alert(`User "${result.username}" created successfully!`);
+            showToast(`User "${result.username}" created successfully!`);
             closeCreateUserModal();
-            location.reload();
+            setTimeout(() => location.reload(), 1000);
         } else {
+            if (response.status === 401) {
+                showToast('Authentication required. Please log in again.');
+                setTimeout(() => window.top.location.href = '/', 1500);
+                return;
+            }
             const error = await response.json();
-            alert('Error creating user: ' + (error.detail || 'Unknown error'));
+            showToast('Error: ' + (error.detail || 'Unknown error'));
         }
     } catch (error) {
-        alert('Network error: ' + error.message);
+        showToast('Network error: ' + error.message);
     }
 }
 
-// Search functionality
+// =============================================================================
+// EDIT USER MODAL
+// =============================================================================
+
+function openEditUserModal() {
+    document.getElementById('editUserModal').style.display = 'block';
+}
+
+function closeEditUserModal() {
+    document.getElementById('editUserModal').style.display = 'none';
+    document.getElementById('editUserForm').reset();
+}
+
+// Edit user - opens modal with current data
+async function editUser(userId) {
+    try {
+        // Fetch current user data
+        const response = await fetch(`/plugins/user_management/users/${userId}`, {
+            method: 'GET',
+            credentials: 'include'
+        });
+        
+        if (!response.ok) {
+            if (response.status === 401) {
+                showToast('Authentication required. Please log in again.');
+                setTimeout(() => window.top.location.href = '/', 1500);
+                return;
+            }
+            throw new Error('Failed to fetch user data');
+        }
+        
+        const user = await response.json();
+        
+        // Populate form
+        document.getElementById('edit-user-id').value = userId;
+        document.getElementById('edit-username').value = user.username;
+        document.getElementById('edit-email').value = user.email;
+        document.getElementById('edit-full-name').value = user.full_name || '';
+        document.getElementById('edit-role').value = user.role;
+        document.getElementById('edit-is-active').checked = user.is_active;
+        
+        // Open modal
+        openEditUserModal();
+    } catch (error) {
+        showToast('Error: ' + error.message);
+    }
+}
+
+// Submit edit user form
+async function submitEditUser(event) {
+    event.preventDefault();
+    
+    const userId = document.getElementById('edit-user-id').value;
+    const form = event.target;
+    const formData = new FormData(form);
+    
+    // Build update object (username is read-only, don't send it)
+    const updateData = {
+        email: formData.get('email'),
+        full_name: formData.get('full_name') || null,
+        role: formData.get('role'),
+        is_active: formData.get('is_active') === 'on'
+    };
+    
+    try {
+        const response = await fetch(`/plugins/user_management/users/${userId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify(updateData)
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            showToast(result.message || 'User updated successfully!');
+            closeEditUserModal();
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            if (response.status === 401) {
+                showToast('Authentication required. Please log in again.');
+                setTimeout(() => window.top.location.href = '/', 1500);
+                return;
+            }
+            const error = await response.json();
+            showToast('Error: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        showToast('Error: ' + error.message);
+    }
+}
+
+// =============================================================================
+// TOGGLE USER STATUS
+// =============================================================================
+
+async function toggleUserStatus(userId, isCurrentlyActive) {
+    showConfirm(
+        'Toggle User Status',
+        `${isCurrentlyActive ? 'Deactivate' : 'Activate'} this user?`,
+        async () => {
+            try {
+                const response = await fetch(`/plugins/user_management/users/${userId}/toggle-active`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    showToast(result.message);
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    if (response.status === 401) {
+                        showToast('Authentication required. Please log in again.');
+                        setTimeout(() => window.top.location.href = '/', 1500);
+                        return;
+                    }
+                    const error = await response.json();
+                    showToast('Error: ' + (error.detail || 'Failed to toggle user status'));
+                }
+            } catch (error) {
+                showToast('Network error: ' + error.message);
+            }
+        }
+    );
+}
+
+// =============================================================================
+// DELETE USER
+// =============================================================================
+
+async function deleteUser(userId, username) {
+    showConfirm(
+        'Delete User',
+        `Delete user "${username}"? This action cannot be undone.`,
+        async () => {
+            try {
+                const response = await fetch(`/plugins/user_management/users/${userId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    showToast(result.message);
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    if (response.status === 401) {
+                        showToast('Authentication required. Please log in again.');
+                        setTimeout(() => window.top.location.href = '/', 1500);
+                        return;
+                    }
+                    const error = await response.json();
+                    showToast('Error: ' + (error.detail || 'Failed to delete user'));
+                }
+            } catch (error) {
+                showToast('Network error: ' + error.message);
+            }
+        }
+    );
+}
+
+// =============================================================================
+// SEARCH & INITIALIZATION
+// =============================================================================
+
+// Close modals when clicking outside
+window.onclick = function(event) {
+    const createModal = document.getElementById('createUserModal');
+    const editModal = document.getElementById('editUserModal');
+    const confirmModal = document.getElementById('confirmModal');
+    
+    if (event.target === createModal) {
+        closeCreateUserModal();
+    } else if (event.target === editModal) {
+        closeEditUserModal();
+    } else if (event.target === confirmModal) {
+        closeConfirmModal();
+    }
+}
+
+// Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
+    // Search functionality
     const searchInput = document.getElementById('search-input');
     const table = document.getElementById('users-table');
     
@@ -102,7 +313,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateActiveCount();
 });
 
-// Update active count
+// Update active user count
 function updateActiveCount() {
     const rows = document.querySelectorAll('tbody tr');
     let activeCount = 0;
@@ -113,145 +324,5 @@ function updateActiveCount() {
     const activeCountEl = document.getElementById('active-count');
     if (activeCountEl) {
         activeCountEl.textContent = activeCount;
-    }
-}
-
-// Toggle user active status
-async function toggleUserStatus(userId, isCurrentlyActive) {
-    if (!confirm(`${isCurrentlyActive ? 'Deactivate' : 'Activate'} this user?`)) {
-        return;
-    }
-    
-    try {
-        const token = getAuthToken();
-        if (!token) {
-            alert('Authentication required. Please log in again.');
-            window.top.location.href = '/';
-            return;
-        }
-        
-        const response = await fetch(`/plugins/user_management/users/${userId}/toggle-active`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            }
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            alert(result.message);
-            location.reload();
-        } else {
-            const error = await response.json();
-            alert('Error: ' + (error.detail || 'Failed to toggle user status'));
-        }
-    } catch (error) {
-        alert('Network error: ' + error.message);
-    }
-}
-
-// Edit user
-async function editUser(userId) {
-    try {
-        const token = getAuthToken();
-        if (!token) {
-            alert('Authentication required. Please log in again.');
-            window.top.location.href = '/';
-            return;
-        }
-        
-        // Fetch current user data
-        const response = await fetch(`/plugins/user_management/users/${userId}`, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        });
-        
-        if (!response.ok) {
-            throw new Error('Failed to fetch user data');
-        }
-        
-        const user = await response.json();
-        
-        // Prompt for new values (you could create a modal instead)
-        const newUsername = prompt('Username:', user.username);
-        if (newUsername === null) return; // Cancelled
-        
-        const newEmail = prompt('Email:', user.email);
-        if (newEmail === null) return;
-        
-        const newFullName = prompt('Full Name:', user.full_name || '');
-        if (newFullName === null) return;
-        
-        const newRole = prompt('Role (admin/user/guest):', user.role);
-        if (newRole === null) return;
-        
-        const newIsActive = confirm('User is active?');
-        
-        // Build update object
-        const updateData = {
-            username: newUsername || user.username,
-            email: newEmail || user.email,
-            full_name: newFullName || null,
-            role: newRole || user.role,
-            is_active: newIsActive
-        };
-        
-        // Send update request
-        const updateResponse = await fetch(`/plugins/user_management/users/${userId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify(updateData)
-        });
-        
-        if (updateResponse.ok) {
-            const result = await updateResponse.json();
-            alert(result.message || 'User updated successfully!');
-            location.reload();
-        } else {
-            const error = await updateResponse.json();
-            alert('Error updating user: ' + (error.detail || 'Unknown error'));
-        }
-    } catch (error) {
-        alert('Error: ' + error.message);
-    }
-}
-
-// Delete user
-async function deleteUser(userId, username) {
-    if (!confirm(`Delete user "${username}"? This action cannot be undone.`)) {
-        return;
-    }
-    
-    try {
-        const token = getAuthToken();
-        if (!token) {
-            alert('Authentication required. Please log in again.');
-            window.top.location.href = '/';
-            return;
-        }
-        
-        const response = await fetch(`/plugins/user_management/users/${userId}`, {
-            method: 'DELETE',
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            alert(result.message);
-            location.reload();
-        } else {
-            const error = await response.json();
-            alert('Error: ' + (error.detail || 'Failed to delete user'));
-        }
-    } catch (error) {
-        alert('Network error: ' + error.message);
     }
 }

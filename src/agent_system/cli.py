@@ -447,20 +447,29 @@ def main() -> None:
     # enable/disable always persist; no interactive prompt or dry-run
 
     # users subcommand for user management
-    users_parser = subparsers.add_parser("users", help="Manage users (admin)")
-    users_parser.add_argument("action", choices=["list", "create", "delete", "update", "info", "generate-api-key", "revoke-api-key"], nargs="?", default="list", help="Action to perform on users")
-    users_parser.add_argument("username", nargs="?", help="Username for user actions")
-    users_parser.add_argument("email", nargs="?", help="Email address (required for create command)")
-    users_parser.add_argument("--password", "-p", dest="password", help="Password")
-    users_parser.add_argument("--name", "-n", dest="full_name", help="Full name")
-    users_parser.add_argument("--role", "-r", dest="role", choices=["user", "admin", "guest"], help="User role")
-    users_parser.add_argument("--admin", dest="admin", action="store_true", help="Make user an admin")
-    users_parser.add_argument("--inactive", dest="inactive", action="store_true", help="Create user as inactive")
-    users_parser.add_argument("--activate", dest="activate", action="store_true", help="Activate user")
-    users_parser.add_argument("--deactivate", dest="deactivate", action="store_true", help="Deactivate user")
+    users_parser = subparsers.add_parser(
+        "users", 
+        help="Manage users (admin)",
+        description="User management commands. Examples:\n"
+                    "  agent-cli users list\n"
+                    "  agent-cli users info admin\n"
+                    "  agent-cli users update admin --activate\n"
+                    "  agent-cli users create newuser user@example.com --password secret",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    users_parser.add_argument("action", choices=["list", "create", "delete", "update", "info", "generate-api-key", "revoke-api-key"], nargs="?", default="list", help="Action to perform (default: list)")
+    users_parser.add_argument("username", nargs="?", help="Target username to operate on")
+    users_parser.add_argument("email", nargs="?", help="Email address (required for 'create' action)")
+    users_parser.add_argument("--password", "-p", dest="password", help="User password (for create/update)")
+    users_parser.add_argument("--name", "-n", dest="full_name", help="User's full display name (e.g., 'John Doe')")
+    users_parser.add_argument("--role", "-r", dest="role", choices=["user", "admin", "guest"], help="User role (for create/update)")
+    users_parser.add_argument("--admin", dest="admin", action="store_true", help="Make user an admin (shortcut for --role admin)")
+    users_parser.add_argument("--inactive", dest="inactive", action="store_true", help="Create user as inactive (for 'create' action)")
+    users_parser.add_argument("--activate", dest="activate", action="store_true", help="Activate user (for 'update' action)")
+    users_parser.add_argument("--deactivate", dest="deactivate", action="store_true", help="Deactivate user (for 'update' action)")
     users_parser.add_argument("--force", "-f", dest="force", action="store_true", help="Skip confirmation prompts")
-    users_parser.add_argument("--limit", dest="limit", type=int, default=100, help="Maximum number of users to show")
-    users_parser.add_argument("--skip", dest="skip", type=int, default=0, help="Number of users to skip")
+    users_parser.add_argument("--limit", dest="limit", type=int, default=100, help="Maximum number of users to show (for 'list' action)")
+    users_parser.add_argument("--skip", dest="skip", type=int, default=0, help="Number of users to skip (for 'list' action)")
 
     args = parser.parse_args(argv[1:])
 
