@@ -93,8 +93,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         
         # Allow SAMEORIGIN for plugin panels (they need iframe embedding in the main UI)
-        # Don't override if the response already set X-Frame-Options (e.g., plugin endpoints)
-        if "X-Frame-Options" not in response.headers:
+        # Check if the response already set X-Frame-Options or if it's a plugin path
+        if "X-Frame-Options" in response.headers:
+            # Keep existing header (e.g., from plugin endpoints)
+            pass
+        elif request.url.path.startswith("/plugins/"):
+            # Allow iframe embedding for plugin panels
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        else:
+            # Default: deny iframe embedding for security
             response.headers["X-Frame-Options"] = "DENY"
         
         response.headers["X-XSS-Protection"] = "1; mode=block"

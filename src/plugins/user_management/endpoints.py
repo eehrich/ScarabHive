@@ -72,33 +72,43 @@ class UserManagementWebEndpoints(PluginWebInterface):
         async def user_management_home(request: Request):
             """User management dashboard"""
             if not self.auth_enabled:
-                response = self.templates.TemplateResponse(
+                return self.templates.TemplateResponse(
                     "auth_disabled.html",
                     {"request": request, "plugin_name": self.name}
                 )
-                # Allow iframe embedding from same origin
-                response.headers["X-Frame-Options"] = "SAMEORIGIN"
-                return response
             
             try:
                 db = self._get_user_database()
                 users = db.list_users(skip=0, limit=self.items_per_page)
                 total_users = len(db.list_users(skip=0, limit=10000))  # Get all for count
                 
-                response = self.templates.TemplateResponse(
+                # Convert users to dicts with datetime serialization
+                users_data = []
+                for user in users:
+                    user_dict = {
+                        "id": user.id,
+                        "username": user.username,
+                        "email": user.email,
+                        "full_name": user.full_name,
+                        "is_active": user.is_active,
+                        "role": user.role.value if hasattr(user.role, 'value') else str(user.role),
+                        "created_at": user.created_at.isoformat() if user.created_at else None,
+                        "last_login": user.last_login.isoformat() if user.last_login else None,
+                        "has_api_key": bool(getattr(user, 'api_key', None))
+                    }
+                    users_data.append(user_dict)
+                
+                return self.templates.TemplateResponse(
                     "dashboard.html",
                     {
                         "request": request,
                         "plugin_name": self.name,
-                        "users": users,
+                        "users": users_data,
                         "total_users": total_users,
                         "items_per_page": self.items_per_page,
                         "show_api_keys": self.show_api_keys
                     }
                 )
-                # Allow iframe embedding from same origin
-                response.headers["X-Frame-Options"] = "SAMEORIGIN"
-                return response
             except Exception as e:
                 logger.error(f"Error loading user dashboard: {e}")
                 return HTMLResponse(
