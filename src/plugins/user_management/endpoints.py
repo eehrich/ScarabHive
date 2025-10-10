@@ -311,6 +311,44 @@ class UserManagementWebEndpoints(PluginWebInterface):
                 logger.error(f"Error getting user stats: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
+        @router.get("/static/{file_path:path}")
+        async def serve_static(file_path: str):
+            """Serve static files (CSS, JS)"""
+            from fastapi.responses import FileResponse
+            
+            static_dir = Path(__file__).parent / "static"
+            file_full_path = static_dir / file_path
+            
+            # Security check - ensure file is within static directory
+            try:
+                file_full_path = file_full_path.resolve()
+                static_dir = static_dir.resolve()
+                if not str(file_full_path).startswith(str(static_dir)):
+                    raise HTTPException(status_code=403, detail="Access denied")
+                
+                if not file_full_path.exists() or not file_full_path.is_file():
+                    raise HTTPException(status_code=404, detail="File not found")
+                
+                # Determine content type
+                content_type = "text/plain"
+                if file_path.endswith(".js"):
+                    content_type = "application/javascript"
+                elif file_path.endswith(".css"):
+                    content_type = "text/css"
+                elif file_path.endswith(".html"):
+                    content_type = "text/html"
+                elif file_path.endswith(".json"):
+                    content_type = "application/json"
+                
+                return FileResponse(
+                    path=file_full_path,
+                    media_type=content_type,
+                    headers={"Cache-Control": "public, max-age=3600"}
+                )
+            except Exception as e:
+                logger.error(f"Error serving static file {file_path}: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+        
         return router
     
     def get_static_assets(self) -> Dict[str, Path]:
