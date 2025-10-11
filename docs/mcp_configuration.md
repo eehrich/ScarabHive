@@ -704,3 +704,470 @@ mcp:
 ```
 
 This configuration provides a robust, secure, and flexible MCP integration for your AgentSystem deployment.
+
+## MCP Server Mode (Epic 0037)
+
+AgentSystem can operate as an MCP server, exposing activated plugins as remote tools to MCP clients.
+
+### Configuration
+
+Add the `server_mode` section to `config/mcp.yaml`:
+
+```yaml
+mcp_system:
+  server_mode:
+    enabled: true
+    endpoint: "/mcp"
+    
+    # Plugins to expose (wildcard or specific list)
+    expose_plugins:
+      - "*"  # Expose all plugins
+      # Or specify: ["plugin_name_1", "plugin_name_2"]
+    
+    # Authentication settings
+    authentication:
+      required: true  # Require JWT or API key
+      methods:
+        - jwt      # Accept JWT tokens
+        - api_key  # Accept API keys
+    
+    # Rate limiting (token bucket algorithm)
+    rate_limit:
+      enabled: true
+      requests_per_minute: 60    # Max requests per minute
+      requests_per_hour: 1000    # Max requests per hour
+      burst_size: 10             # Max burst requests
+    
+    # Session settings
+    session_ttl_seconds: 3600  # Session timeout (1 hour)
+```
+
+### Server Endpoints
+
+When server mode is enabled, AgentSystem exposes:
+
+#### POST /mcp
+
+Main JSON-RPC 2.0 endpoint for MCP protocol communication.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "MyClient",
+      "version": "1.0.0"
+    }
+  },
+  "id": 1
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "tools": {}
+    },
+    "serverInfo": {
+      "name": "AgentSystem",
+      "version": "1.0.0"
+    }
+  },
+  "id": 1
+}
+```
+
+**Headers:**
+- `Mcp-Session-Id`: Session identifier (returned in response, use in subsequent requests)
+- `Authorization: Bearer <token>`: JWT authentication (if auth required)
+- `X-API-Key: <key>`: API key authentication (if auth required)
+
+#### GET /mcp/sse
+
+SSE stream endpoint for server-initiated messages (future implementation).
+
+#### GET /mcp/server-info
+
+REST endpoint for server metadata and statistics.
+
+**Response:**
+```json
+{
+  "name": "AgentSystem",
+  "version": "1.0.0",
+  "protocol_version": "2024-11-05",
+  "capabilities": {
+    "tools": {}
+  },
+  "active_sessions": 5,
+  "total_requests": 1234
+}
+```
+
+### Supported MCP Methods
+
+The MCP server handler supports the following JSON-RPC methods:
+
+#### initialize
+
+Initialize a new MCP session.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "MyClient",
+      "version": "1.0.0"
+    }
+  },
+  "id": 1
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "tools": {}
+    },
+    "serverInfo": {
+      "name": "AgentSystem",
+      "version": "1.0.0"
+    }
+  },
+  "id": 1
+}
+```
+
+#### tools/list
+
+List all available tools from exposed plugins.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/list",
+  "params": {},
+  "id": 2
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "tools": [
+      {
+        "name": "plugin_name.tool_name",
+        "description": "Tool description",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "param1": {"type": "string"}
+          }
+        }
+      }
+    ]
+  },
+  "id": 2
+}
+```
+
+#### tools/call
+
+Execute a tool from an exposed plugin.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "plugin_name.tool_name",
+    "arguments": {
+      "param1": "value1"
+    }
+  },
+  "id": 3
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Tool execution result"
+      }
+    ]
+  },
+  "id": 3
+}
+```
+
+### Authentication
+
+MCP server mode integrates with Epic 0038 authentication system:
+
+#### JWT Authentication
+
+Obtain a JWT token via the auth endpoints:
+
+```bash
+curl -X POST http://127.0.0.1:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "your_password"}'
+```
+
+Use the token in MCP requests:
+
+```bash
+curl -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05"},"id":1}'
+```
+
+#### API Key Authentication
+
+Generate an API key:
+
+```bash
+agent-cli users generate-api-key --username admin
+```
+
+Use the key in MCP requests:
+
+```bash
+curl -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <api_key>" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05"},"id":1}'
+```
+
+### Session Management
+
+Each MCP client connection gets a unique session ID via the `Mcp-Session-Id` header:
+
+1. **Initial Request**: Client sends request without session ID
+2. **Server Response**: Server generates session ID and returns it in `Mcp-Session-Id` header
+3. **Subsequent Requests**: Client includes session ID in all subsequent requests
+
+Sessions track:
+- Client information (name, version)
+- Rate limit counters (per minute, per hour)
+- Last request timestamp
+- Total request count
+
+Sessions expire after `session_ttl_seconds` (default: 3600s) of inactivity.
+
+### Rate Limiting
+
+MCP server mode implements token bucket rate limiting per session:
+
+**Algorithm**: Token Bucket
+- Tokens are added at a constant rate
+- Each request consumes one token
+- Burst allows temporary spikes
+
+**Configuration:**
+- `requests_per_minute`: Maximum sustained rate (tokens per minute)
+- `requests_per_hour`: Maximum hourly rate (prevents long-term abuse)
+- `burst_size`: Maximum burst requests (bucket capacity)
+
+**Example:**
+```yaml
+rate_limit:
+  enabled: true
+  requests_per_minute: 60    # 1 request/second sustained
+  requests_per_hour: 1000    # ~16.67/minute average
+  burst_size: 10             # Can burst 10 requests instantly
+```
+
+**Rate Limit Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32000,
+    "message": "Rate limit exceeded"
+  },
+  "id": null
+}
+```
+
+### Error Handling
+
+The MCP server handler returns standard JSON-RPC 2.0 errors:
+
+**Protocol Errors:**
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32600,
+    "message": "Invalid Request"
+  },
+  "id": null
+}
+```
+
+**Method Errors:**
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32601,
+    "message": "Method not found: unknown_method"
+  },
+  "id": 1
+}
+```
+
+**Server Errors:**
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32000,
+    "message": "Rate limit exceeded"
+  },
+  "id": null
+}
+```
+
+### Python Client Example
+
+Connect to AgentSystem from an MCP client using HTTP Streamable Transport:
+
+```python
+import asyncio
+from mcp.client import Client
+from agent_system.mcp.streaming_transport import HTTPStreamingTransport
+
+async def main():
+    # Create transport with authentication
+    transport = HTTPStreamingTransport(
+        endpoint="http://127.0.0.1:8000/mcp",
+        headers={"Authorization": "Bearer YOUR_JWT_TOKEN"}
+    )
+    
+    # Initialize client
+    async with Client(server_name="AgentSystem") as client:
+        # Connect to server
+        await client.connect(transport)
+        
+        # Initialize session
+        result = await client.initialize(
+            client_info={"name": "MyClient", "version": "1.0"}
+        )
+        print(f"Server: {result.serverInfo.name} v{result.serverInfo.version}")
+        
+        # List available tools
+        tools_result = await client.list_tools()
+        print(f"\nAvailable tools ({len(tools_result.tools)}):")
+        for tool in tools_result.tools:
+            print(f"  - {tool.name}: {tool.description}")
+        
+        # Call a tool
+        if tools_result.tools:
+            tool_name = tools_result.tools[0].name
+            result = await client.call_tool(
+                tool_name,
+                {"param": "value"}
+            )
+            print(f"\nTool result: {result.content}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Security Considerations
+
+1. **Enable Authentication**: Always require authentication in production
+   ```yaml
+   authentication:
+     required: true
+   ```
+
+2. **Use HTTPS**: Deploy behind reverse proxy with TLS
+   ```nginx
+   server {
+       listen 443 ssl;
+       ssl_certificate /path/to/cert.pem;
+       ssl_certificate_key /path/to/key.pem;
+       
+       location /mcp {
+           proxy_pass http://127.0.0.1:8000/mcp;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+       }
+   }
+   ```
+
+3. **Configure Rate Limits**: Prevent abuse
+   ```yaml
+   rate_limit:
+     enabled: true
+     requests_per_minute: 60
+     requests_per_hour: 1000
+   ```
+
+4. **Limit Exposed Plugins**: Only expose necessary plugins
+   ```yaml
+   expose_plugins:
+     - "web_scraper"
+     - "datetime"
+     # Don't expose sensitive plugins
+   ```
+
+5. **Monitor Sessions**: Track active sessions and request patterns
+   ```bash
+   curl http://127.0.0.1:8000/mcp/server-info
+   ```
+
+### Troubleshooting
+
+**"Protocol version not supported"**
+- Ensure client uses protocol version "2024-11-05"
+- Check `protocolVersion` in initialize request
+
+**"Rate limit exceeded"**
+- Reduce request frequency
+- Increase `requests_per_minute` or `burst_size` in config
+- Check session management (ensure session ID is reused)
+
+**"Unauthorized"**
+- Verify JWT token or API key is valid
+- Check authentication configuration
+- Ensure `Authorization` or `X-API-Key` header is set
+
+**"Method not found"**
+- Verify JSON-RPC method name is correct
+- Supported methods: `initialize`, `tools/list`, `tools/call`
+
+**"No tools available"**
+- Check `expose_plugins` configuration
+- Verify plugins are activated
+- Use `/mcp/server-info` to check capabilities

@@ -35,6 +35,11 @@ This README is a concise developer and user guide matching this repository layou
 ## Features
 * Modular agent core with MCP integration (consume & expose tool servers)
 * Pluggable plugin system (local + external MCP servers)
+* **MCP Server Mode (Epic 0037)**: Expose AgentSystem as a remote MCP server
+  - Activated plugins become MCP tools accessible to remote MCP clients
+  - JSON-RPC 2.0 protocol with HTTP Streamable Transport
+  - Session management, authentication, and rate limiting
+  - Tool discovery and execution via MCP protocol endpoints
 * **Multi-user authentication and authorization** with JWT tokens and API keys
   - Role-based access control (ADMIN, USER, GUEST)
   - Web-based user management interface
@@ -127,6 +132,10 @@ API endpoints (FastAPI):
 - `POST /status/publish-test` — publish a test status event
 - `GET /` — web UI home page
 - `GET /status` — web UI status page
+- **MCP Server Mode Endpoints** (when `mcp_system.server_mode.enabled: true`):
+  - `POST /mcp` — Main MCP JSON-RPC 2.0 endpoint for remote MCP clients
+  - `GET /mcp/sse` — SSE stream for server-initiated messages (future)
+  - `GET /mcp/server-info` — MCP server information and statistics
 - **Authentication Endpoints** (when auth enabled):
   - `POST /auth/login` — login and receive JWT token
   - `POST /auth/logout` — logout (client-side token disposal)
@@ -469,6 +478,114 @@ When `auth.enabled: true`:
 - Rate limiting and security headers automatically activated
 
 **Note:** Full session isolation (per-user sessions) is planned for a future update. Current implementation provides authentication, user management, and access controls, but sessions are not yet isolated by user.
+
+## MCP Server Mode
+
+AgentSystem can operate as an MCP server, exposing activated plugins as remote tools to MCP clients.
+
+### Enabling MCP Server Mode
+
+Edit `config/mcp.yaml`:
+
+```yaml
+mcp_system:
+  server_mode:
+    enabled: true
+    endpoint: "/mcp"
+    expose_plugins:
+      - "*"  # Expose all plugins, or specify: ["plugin_name_1", "plugin_name_2"]
+    authentication:
+      required: true  # Require JWT or API key authentication
+      methods:
+        - jwt
+        - api_key
+    rate_limit:
+      enabled: true
+      requests_per_minute: 60
+      requests_per_hour: 1000
+      burst_size: 10
+    session_ttl_seconds: 3600  # Session timeout (1 hour)
+```
+
+### Using MCP Server Mode
+
+Once enabled, AgentSystem exposes the following MCP endpoints:
+
+- **`POST /mcp`** — Main JSON-RPC 2.0 endpoint for MCP clients
+- **`GET /mcp/sse`** — SSE stream for server-initiated messages (future)
+- **`GET /mcp/server-info`** — Server metadata and statistics
+
+### MCP Client Example
+
+Connect to AgentSystem from an MCP client using HTTP Streamable Transport:
+
+```python
+from mcp.client import Client
+from agent_system.mcp.streaming_transport import HTTPStreamingTransport
+
+# Create transport
+transport = HTTPStreamingTransport(
+    endpoint="http://127.0.0.1:8000/mcp",
+    headers={"Authorization": "Bearer YOUR_JWT_TOKEN"}
+)
+
+# Initialize client
+async with Client(server_name="AgentSystem") as client:
+    # Connect
+    await client.connect(transport)
+    
+    # Initialize session
+    await client.initialize(client_info={"name": "MyClient", "version": "1.0"})
+    
+    # List available tools
+    tools = await client.list_tools()
+    for tool in tools.tools:
+        print(f"Tool: {tool.name} - {tool.description}")
+    
+    # Call a tool
+    result = await client.call_tool("tool_name", {"param": "value"})
+    print(result)
+```
+
+### Authentication
+
+MCP server mode supports two authentication methods:
+
+1. **JWT Token**: Pass in `Authorization: Bearer <token>` header
+2. **API Key**: Pass in `X-API-Key: <api_key>` header
+
+Obtain tokens via the authentication endpoints (see Authentication section).
+
+### Session Management
+
+Each MCP client connection gets a unique session ID via the `Mcp-Session-Id` header. Sessions:
+
+- Track rate limits per client
+- Expire after `session_ttl_seconds` (default: 3600s)
+- Are automatically cleaned up when expired
+
+### Rate Limiting
+
+MCP server mode implements token bucket rate limiting per session:
+
+- **requests_per_minute**: Maximum requests per minute (default: 60)
+- **requests_per_hour**: Maximum requests per hour (default: 1000)
+- **burst_size**: Maximum burst requests (default: 10)
+
+When rate limits are exceeded, the server returns a JSON-RPC error:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32000,
+    "message": "Rate limit exceeded"
+  },
+  "id": null
+}
+```
+
+For more details, see [MCP Configuration Documentation](docs/mcp_configuration.md).
 
 ## Development (with AI)
 - Follow instructions and guidlines. For repository rules: venv activation, testing, and commit guidance.

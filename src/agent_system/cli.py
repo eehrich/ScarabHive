@@ -255,6 +255,170 @@ async def _block_server_tool(tool_service: ToolService, server_name: str, tool_n
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
 
 
+async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
+    """Manage MCP server mode."""
+    mcp_integration = None
+    
+    try:
+        # Initialize MCPIntegration for actions that need it
+        if action in ("tools",):
+            from .mcp.integration import MCPIntegration
+            mcp_integration = MCPIntegration(config=config)
+            try:
+                await mcp_integration.initialize(config)
+            except Exception as e:
+                logger.warning(f"MCP integration initialization failed: {e}", exc_info=True)
+        
+        if action == "status":
+            # Show MCP server configuration and status
+            server_config = config.mcp_system.server_mode
+            status_data = {
+                "enabled": server_config.enabled,
+                "endpoint": server_config.endpoint,
+                "expose_plugins": server_config.expose_plugins,
+                "authentication": {
+                    "required": server_config.authentication.required,
+                    "methods": server_config.authentication.methods
+                },
+                "rate_limit": {
+                    "enabled": server_config.rate_limit.enabled,
+                    "requests_per_minute": server_config.rate_limit.requests_per_minute,
+                    "requests_per_hour": server_config.rate_limit.requests_per_hour,
+                    "burst_size": server_config.rate_limit.burst_size
+                },
+                "session_ttl": server_config.session_ttl
+            }
+            
+            if args.out_format == "json":
+                print(json.dumps(status_data, indent=2, ensure_ascii=False))
+            else:
+                print("MCP Server Mode Configuration")
+                print("=" * 40)
+                print(f"Enabled: {status_data['enabled']}")
+                print(f"Endpoint: {status_data['endpoint']}")
+                print(f"Exposed Plugins: {', '.join(status_data['expose_plugins'])}")
+                print("\nAuthentication:")
+                print(f"  Required: {status_data['authentication']['required']}")
+                print(f"  Methods: {', '.join(status_data['authentication']['methods'])}")
+                print("\nRate Limiting:")
+                print(f"  Enabled: {status_data['rate_limit']['enabled']}")
+                print(f"  Requests/Minute: {status_data['rate_limit']['requests_per_minute']}")
+                print(f"  Requests/Hour: {status_data['rate_limit']['requests_per_hour']}")
+                print(f"  Burst Size: {status_data['rate_limit']['burst_size']}")
+                print(f"\nSession TTL: {status_data['session_ttl']} seconds")
+                
+        elif action == "tools":
+            # List tools exposed by MCP server mode
+            if not config.mcp_system.server_mode.enabled:
+                print(json.dumps({"error": "MCP server mode is not enabled"}, ensure_ascii=False))
+                return
+            
+            # Get list of tools that would be exposed
+            tools = []
+            for plugin_name in config.mcp_system.server_mode.expose_plugins:
+                if plugin_name == "*":
+                    # Expose all plugins
+                    for name, plugin in mcp_integration.registry.plugin_servers.items():
+                        plugin_tools = await plugin.list_tools()
+                        for tool in plugin_tools.tools:
+                            tools.append({
+                                "plugin": name,
+                                "name": tool.name,
+                                "description": tool.description
+                            })
+                else:
+                    # Expose specific plugin
+                    if plugin_name in mcp_integration.registry.plugin_servers:
+                        plugin = mcp_integration.registry.plugin_servers[plugin_name]
+                        plugin_tools = await plugin.list_tools()
+                        for tool in plugin_tools.tools:
+                            tools.append({
+                                "plugin": plugin_name,
+                                "name": tool.name,
+                                "description": tool.description
+                            })
+            
+            # Clean up integration
+            if mcp_integration:
+                try:
+                    await mcp_integration.shutdown()
+                except Exception as e:
+                    logger.debug(f"Error shutting down MCPIntegration: {e}")
+            
+            if args.out_format == "json":
+                print(json.dumps({"tools": tools}, indent=2, ensure_ascii=False))
+            else:
+                print(f"\nExposed Tools ({len(tools)}):")
+                print("=" * 40)
+                for tool in tools:
+                    print(f"{tool['plugin']}.{tool['name']}")
+                    print(f"  {tool['description']}")
+                    print()
+                    
+        elif action == "sessions":
+            # List active MCP sessions
+            if not config.mcp_system.server_mode.enabled:
+                print(json.dumps({"error": "MCP server mode is not enabled"}, ensure_ascii=False))
+                return
+            
+            # This would require accessing the server handler's active sessions
+            # For now, return a placeholder message
+            print(json.dumps({
+                "message": "Session management requires running MCP server API",
+                "info": "Use GET /mcp/server-info to query active sessions"
+            }, indent=2, ensure_ascii=False))
+            
+        elif action == "config":
+            # Show full MCP server configuration
+            server_config = config.mcp_system.server_mode
+            config_dict = {
+                "enabled": server_config.enabled,
+                "endpoint": server_config.endpoint,
+                "expose_plugins": server_config.expose_plugins,
+                "authentication": {
+                    "required": server_config.authentication.required,
+                    "methods": server_config.authentication.methods
+                },
+                "rate_limit": {
+                    "enabled": server_config.rate_limit.enabled,
+                    "requests_per_minute": server_config.rate_limit.requests_per_minute,
+                    "requests_per_hour": server_config.rate_limit.requests_per_hour,
+                    "burst_size": server_config.rate_limit.burst_size
+                },
+                "session_ttl": server_config.session_ttl
+            }
+            print(json.dumps(config_dict, indent=2, ensure_ascii=False))
+            
+        elif action == "start":
+            print(json.dumps({
+                "error": "Use 'uvicorn' to start the MCP server API",
+                "command": "uvicorn agent_system.agent.interface_api:build_app --factory --host {host} --port {port}".format(
+                    host=getattr(args, 'server_host', '127.0.0.1'),
+                    port=getattr(args, 'server_port', 8000)
+                )
+            }, indent=2, ensure_ascii=False))
+            
+        elif action == "stop":
+            print(json.dumps({
+                "error": "MCP server is managed by the API process",
+                "info": "Stop the uvicorn API process to stop the MCP server"
+            }, indent=2, ensure_ascii=False))
+            
+        else:
+            print(json.dumps({"error": f"Unknown server action: {action}"}, ensure_ascii=False))
+            
+    except Exception as e:
+        logger.exception("Failed to manage MCP server mode: action=%s, error=%s", action, e)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
+    finally:
+        # Clean up integration if it was created
+        if mcp_integration:
+            try:
+                await mcp_integration.shutdown()
+            except Exception as e:
+                logger.debug(f"Error shutting down MCPIntegration in finally: {e}")
+
+
 def _supports_color() -> bool:
     """Return whether ANSI color sequences should be used.
 
@@ -445,6 +609,18 @@ def main() -> None:
     tool_p.add_argument("key", nargs="?", choices=["list", "allow", "block"], help="Tool action: list, allow, or block")
     tool_p.add_argument("value", nargs="?", help="Tool name for allow/block actions")
     # enable/disable always persist; no interactive prompt or dry-run
+
+    # MCP server mode subcommands
+    server_p = mcp_subparsers.add_parser("server", help="Manage MCP server mode")
+    _add_mcp_common_opts(server_p)
+    server_p.add_argument("server_action", nargs="?", choices=["start", "stop", "status", "tools", "config", "sessions"], 
+                         help="Server action: start, stop, status, tools (list exposed tools), config (show configuration), sessions (list active sessions)")
+    server_p.add_argument("--host", dest="server_host", default="127.0.0.1", help="Host to bind MCP server to (default: 127.0.0.1)")
+    server_p.add_argument("--port", dest="server_port", type=int, default=8000, help="Port to bind MCP server to (default: 8000)")
+    server_p.add_argument("--expose", dest="expose_plugins", nargs="+", help="Plugins to expose (default: all)")
+    server_p.add_argument("--auth", dest="require_auth", action="store_true", help="Require authentication")
+    server_p.add_argument("--no-auth", dest="no_auth", action="store_true", help="Disable authentication")
+    server_p.add_argument("--session-id", dest="session_id", help="Session ID to query (for 'sessions' action)")
 
     # users subcommand for user management
     users_parser = subparsers.add_parser(
@@ -966,6 +1142,11 @@ def main() -> None:
                         result = None
                         return
                     result = await _mcp_test_server(mcp_service, server_name, args)
+                    return
+                elif action == "server":
+                    # MCP server mode management
+                    server_action = getattr(args, "server_action", "status")
+                    result = await _mcp_server_mode(config, server_action, args)
                     return
                 elif action == "tool":
                     if not server_name:

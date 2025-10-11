@@ -10,7 +10,7 @@ import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 
 import uvicorn
 from fastapi import FastAPI, Request, Query, Header, HTTPException
@@ -44,6 +44,7 @@ from ..services import ConfigService, MCPService, ToolService, AgentService
 _app_registry: Optional[MCPRegistry] = None
 _app_config: Optional[AgentConfig] = None
 _mcp_integration = None
+_mcp_server_handler: Optional[Any] = None  # MCPServerHandler instance for server mode
 
 # Global services (initialized in build_app)
 _config_service: Optional[ConfigService] = None
@@ -328,9 +329,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     agent = selected_agent
 
     # Store registry and config globally
-    global _app_registry, _app_config
+    global _app_registry, _app_config, _mcp_server_handler
     _app_registry = registry
     _app_config = config
+
+    # Initialize MCP server mode if enabled (Epic 0037)
+    if config.mcp_system and config.mcp_system.server_mode.enabled:
+        logger.info("Initializing MCP server handler for server mode")
+        try:
+            from ..mcp.server_handler import MCPServerHandler
+            _mcp_server_handler = MCPServerHandler(config, registry)
+            logger.info("MCP server handler initialized successfully")
+        except Exception as e:
+            logger.error("Failed to initialize MCP server handler: %s", e, exc_info=True)
+            _mcp_server_handler = None
+    else:
+        logger.debug("MCP server mode is disabled")
+        _mcp_server_handler = None
 
     # Include API router
     app.include_router(api_router)
@@ -1375,6 +1390,137 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.error(f"MCP cache invalidation error: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {"error": f"Failed to invalidate cache: {str(e)}"}
+
+    # ===========================
+    # MCP Server Mode Endpoints (Epic 0037)
+    # ===========================
+
+    @app.post("/mcp")
+    async def mcp_server_endpoint(request: Request):
+        """
+        MCP JSON-RPC 2.0 server endpoint.
+        
+        Handles MCP protocol requests when running in server mode.
+        Exposes activated plugins as MCP tools to remote MCP clients.
+        
+        Requires MCP server mode to be enabled in configuration.
+        Authentication required if server_mode.authentication.required is true.
+        """
+        logger = logging.getLogger(__name__)
+        
+        # Check if MCP server mode is enabled
+        if not _mcp_server_handler:
+            raise HTTPException(
+                status_code=501,
+                detail="MCP server mode is not enabled. Set mcp_system.server_mode.enabled: true in config/mcp.yaml"
+            )
+        
+        # Check authentication if required
+        server_config = config.mcp_system.server_mode
+        if server_config.authentication.required:
+            # Try to get user from JWT or API key
+            current_user = None
+            
+            # Try JWT first (Bearer token)
+            if "jwt" in server_config.authentication.methods:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    try:
+                        from agent_system.auth.dependencies import get_current_user_from_token
+                        from agent_system.auth.database import get_db
+                        
+                        token = auth_header.split(" ", 1)[1]
+                        db = await anext(get_db())  # Get database instance
+                        current_user = await get_current_user_from_token(token, db)
+                    except Exception as e:
+                        logger.debug(f"JWT authentication failed: {e}")
+            
+            # Try API key if JWT failed
+            if not current_user and "api_key" in server_config.authentication.methods:
+                api_key = request.headers.get("X-API-Key")
+                if api_key:
+                    try:
+                        from agent_system.auth.database import get_db, verify_api_key
+                        
+                        db = await anext(get_db())
+                        current_user = await verify_api_key(db, api_key)
+                    except Exception as e:
+                        logger.debug(f"API key authentication failed: {e}")
+            
+            # If authentication required but no valid credentials
+            if not current_user:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Authentication required. Provide valid JWT token (Authorization: Bearer <token>) or API key (X-API-Key: <key>)"
+                )
+            
+            logger.info(f"MCP request authenticated for user: {current_user.username}")
+        
+        # Delegate request to MCP server handler
+        try:
+            return await _mcp_server_handler.handle_request(request)
+        except Exception as e:
+            logger.exception("MCP server request failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/mcp/sse")
+    async def mcp_server_sse(request: Request):
+        """
+        MCP server SSE stream endpoint (optional).
+        
+        Provides standalone SSE stream for server-initiated messages.
+        Clients can connect to this endpoint to receive asynchronous updates.
+        """
+        if not _mcp_server_handler:
+            raise HTTPException(
+                status_code=501,
+                detail="MCP server mode is not enabled"
+            )
+        
+        # TODO: Implement SSE stream for server-initiated messages
+        raise HTTPException(
+            status_code=501,
+            detail="SSE stream not yet implemented"
+        )
+
+    @app.get("/mcp/server-info")
+    async def mcp_server_info():
+        """
+        Get MCP server information (non-MCP REST endpoint).
+        
+        Provides server capabilities, exposed plugins, and session statistics
+        without requiring MCP protocol.
+        """
+        if not _mcp_server_handler:
+            return {
+                "enabled": False,
+                "message": "MCP server mode is not enabled"
+            }
+        
+        try:
+            server_config = config.mcp_system.server_mode
+            session_stats = _mcp_server_handler.get_session_stats()
+            
+            return {
+                "enabled": True,
+                "endpoint": server_config.endpoint,
+                "sse_endpoint": server_config.sse_endpoint,
+                "exposed_plugins": server_config.expose_plugins,
+                "authentication_required": server_config.authentication.required,
+                "authentication_methods": server_config.authentication.methods,
+                "rate_limit_enabled": server_config.rate_limit.enabled,
+                "session_ttl": server_config.session_ttl,
+                "max_concurrent_sessions": server_config.max_concurrent_sessions,
+                "sessions": session_stats
+            }
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to get MCP server info: %s", e)
+            return {"error": str(e)}
+
+    # ===========================
+    # End MCP Server Mode Endpoints
+    # ===========================
 
     @app.get("/favicon.ico")
     async def favicon():
