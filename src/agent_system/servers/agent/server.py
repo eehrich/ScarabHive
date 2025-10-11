@@ -72,9 +72,12 @@ class Agent(MCPServer):
             raise ValueError(f"Agent '{name}' requires MCPRegistry instance")
         self.registry = registry
         
-        # Mark this Agent as internal by default so it doesn't show up in UI lists
-        # Consumers who want it visible can set `agent._mcp_public = True` after construction.
+        # Visibility flags control where the agent appears
+        # _mcp_public: Show in UI agent dropdown (GET /agents endpoint)
+        # _mcp_tool_visible: Available as tool for other agents
+        # Default both to False for config agents, can be overridden based on metadata
         self._mcp_public = False
+        self._mcp_tool_visible = False
         
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
@@ -651,11 +654,27 @@ class Agent(MCPServer):
         # External + plugin + adapter tools via integration manager helper
         available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
 
-        # Local registry (directly registered mock/test servers)
+        # Local registry (directly registered servers including agents)
+        # Filter by _mcp_tool_visible to only include agents exposed as tools
         if hasattr(self, 'registry') and self.registry:
             for tool_name in self.registry.list():
-                if tool_name not in available_tools:
-                    available_tools.append(tool_name)
+                if tool_name in available_tools:
+                    continue  # Already added from plugins/external
+                
+                # Check if this is an agent and if it's exposed as a tool
+                try:
+                    server = self.registry.get(tool_name)
+                    if hasattr(server, '_mcp_tool_visible'):
+                        if not server._mcp_tool_visible:
+                            logger.debug(
+                                f"Skipping agent '{tool_name}' in tool discovery "
+                                f"(not exposed as tool: _mcp_tool_visible=False)"
+                            )
+                            continue
+                except Exception as e:
+                    logger.debug(f"Failed to check tool visibility for '{tool_name}': {e}")
+                
+                available_tools.append(tool_name)
 
         # Apply allow-list (guaranteed non-empty here)
         try:

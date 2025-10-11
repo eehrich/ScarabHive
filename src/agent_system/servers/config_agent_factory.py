@@ -150,11 +150,22 @@ def create_config_based_agent_factory(
             registry=temp_registry
         )
         
+        # Set visibility flags based on metadata.visibility
+        # This controls where the agent appears (UI, tool discovery, both, or neither)
+        visibility = "ui"  # Default: UI-only (not exposed as tool)
+        if definition.metadata and hasattr(definition.metadata, 'visibility'):
+            visibility = definition.metadata.visibility
+        
+        # Map visibility to flags
+        agent._mcp_public = visibility in ["ui", "both"]
+        agent._mcp_tool_visible = visibility in ["tool", "both"]
+        
         logger.info(
             f"Config agent '{name}' created as '{agent_name}' (type: {definition.base_type}): "
             f"LLM={merged_config.agent_config.llm_profile}, "
             f"steps={merged_config.agent_config.max_steps}, "
-            f"tools={len(merged_config.agent_config.tools.allowed) if merged_config.agent_config.tools else 0} allowed"
+            f"tools={len(merged_config.agent_config.tools.allowed) if merged_config.agent_config.tools else 0} allowed, "
+            f"visibility={visibility} (ui={agent._mcp_public}, tool={agent._mcp_tool_visible})"
         )
         
         return agent

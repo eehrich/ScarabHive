@@ -155,6 +155,25 @@ class AgentConfig(BaseModel):
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
 
 
+class AgentMetadata(BaseModel):
+    """Metadata for agent configuration.
+    
+    Provides additional information about agents for discoverability, 
+    categorization, and visibility control.
+    """
+    author: Optional[str] = None  # Author/creator of the agent
+    version: Optional[str] = None  # Version string (e.g., "1.0.0")
+    tags: Optional[List[str]] = None  # Tags for categorization/search
+    category: Optional[str] = None  # Category (e.g., "financial", "research", "development")
+    
+    # Visibility control: determines where the agent appears
+    visibility: Literal["ui", "tool", "both", "private"] = "ui"
+    # - "ui": Visible in UI dropdown, NOT available as tool for other agents
+    # - "tool": Available as tool for other agents, NOT in UI dropdown
+    # - "both": Visible in UI AND available as tool
+    # - "private": Neither UI nor tool (for testing/experimental agents)
+
+
 class ConfigBasedAgentDefinition(BaseModel):
     """Definition for a configuration-based agent (Epic 0043).
     
@@ -171,7 +190,7 @@ class ConfigBasedAgentDefinition(BaseModel):
     description: str  # Human-readable description of the agent's purpose
     base_type: str = "agent"  # Base agent class to use ("agent" or "basic_agent")
     agent_config: AgentConfig  # Agent configuration (tools, LLM, prompts, etc.)
-    metadata: Optional[Dict[str, Any]] = None  # Optional metadata (author, version, tags, etc.)
+    metadata: Optional[AgentMetadata] = None  # Agent metadata (author, version, visibility, etc.)
 
 
 class MCPConfig(BaseModel):
