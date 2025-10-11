@@ -335,12 +335,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to bind registry to agent: {e}", exc_info=True)
 
-    # Register 'agent' alias for backward compatibility
-    if entry_name != 'agent':
-        try:
-            registry.register('agent', selected_agent)
-        except Exception as e:
-            logger.warning(f"Failed to register 'agent' alias: {e}", exc_info=True)
     agent = selected_agent
 
     # Store registry and config globally
@@ -528,7 +522,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/agents")
     def list_agents():
-        """List registered agent-like servers (those extending Agent)."""
+        """List registered agent-like servers that are publicly visible (UI dropdown).
+        
+        Returns agents with _mcp_public=True OR agents without _mcp_public attribute (backward compat).
+        Agents with visibility='tool' or 'private' (_mcp_public=False) are excluded.
+        """
         agents = []
         try:
             for name in _app_registry.list():  # type: ignore[attr-defined]
@@ -536,6 +534,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     srv = _app_registry.get(name)  # type: ignore[attr-defined]
                     from ..servers.agent.server import Agent as _Agent
                     if isinstance(srv, _Agent):
+                        # Filter by _mcp_public flag (visibility control)
+                        # Default to True if attribute doesn't exist (backward compatibility with plugin agents)
+                        if hasattr(srv, '_mcp_public'):
+                            if not srv._mcp_public:
+                                logger.debug(f"Skipping agent '{name}' in UI list (_mcp_public=False)")
+                                continue
+                        # else: No _mcp_public attribute → show in UI (backward compat)
                         agents.append(name)
                 except Exception as e:
                     logger.debug(f"Failed to check agent {name}: {e}")

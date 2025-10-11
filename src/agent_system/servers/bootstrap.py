@@ -138,6 +138,25 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                     logger.debug("Updated agent %s to use shared registry with %d servers", 
                                key, len(registry._servers))
                     
+                    # Set visibility for plugin agents
+                    # 1. Check if plugin.yaml has visibility field
+                    # 2. Otherwise use default "private" (secure by default)
+                    if not hasattr(inst, '_visibility_set_explicitly'):
+                        visibility = "private"  # Default: not visible
+                        
+                        # Check plugin.yaml metadata for visibility
+                        if hasattr(factory, '_plugin_metadata') and factory._plugin_metadata:
+                            plugin_vis = factory._plugin_metadata.get('visibility')
+                            if plugin_vis in ["ui", "tool", "both", "private"]:
+                                visibility = plugin_vis
+                                logger.debug("Plugin agent '%s' using visibility from plugin.yaml: %s", key, visibility)
+                        
+                        # Map visibility to flags
+                        inst._mcp_public = visibility in ["ui", "both"]
+                        inst._mcp_tool_visible = visibility in ["tool", "both"]
+                        logger.debug("Plugin agent '%s' visibility set: %s (ui=%s, tool=%s)", 
+                                   key, visibility, inst._mcp_public, inst._mcp_tool_visible)
+                    
             except Exception as e:
                 logger.exception("Failed to instantiate plugin '%s' for server '%s': %s", typ, key, e)
                 if "test" in str(Path.cwd()):

@@ -193,7 +193,7 @@
               "type": "string",
               "description": "Controls where the agent appears (UI dropdown, tool discovery, both, or neither)",
               "enum": ["ui", "tool", "both", "private"],
-              "default": "ui",
+              "default": "private",
               "examples": ["ui", "tool", "both", "private"]
             },
             "changelog": {

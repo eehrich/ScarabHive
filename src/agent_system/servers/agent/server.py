@@ -284,6 +284,45 @@ class Agent(MCPServer):
             self.token_optimizer = None
 
     # ------------------------------------------------------------------
+    # Unified Server Resolution (Central Method)
+    # ------------------------------------------------------------------
+    def _get_server_from_any_registry(self, server_name: str) -> Optional[MCPServer]:
+        """Get a server from either plugin_registry or self.registry.
+        
+        This is the CENTRAL method for resolving servers. All code that needs to
+        find a server should use this method instead of accessing registries directly.
+        
+        Search order:
+        1. self.registry (contains ALL servers: plugins + config agents)
+        2. plugin_registry (fallback for plugin adapters)
+        
+        Args:
+            server_name: Name of the server to find (e.g., 'basic_operations', 'meta_web_research_agent')
+            
+        Returns:
+            The server instance or None if not found
+        """
+        # First, try local registry (contains all servers)
+        if hasattr(self, 'registry') and self.registry:
+            try:
+                server = self.registry.get(server_name)
+                if server:
+                    return server
+            except Exception as e:
+                logger.debug(f"Failed to get server '{server_name}' from local registry: {e}")
+        
+        # Fallback: try plugin registry (for plugin adapters)
+        if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
+            try:
+                plugin_adapter = self._mcp_integration_manager.mcp_integration.plugin_registry.get_server(server_name)
+                if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
+                    return plugin_adapter.plugin_server
+            except Exception as e:
+                logger.debug(f"Failed to get server '{server_name}' from plugin registry: {e}")
+        
+        return None
+
+    # ------------------------------------------------------------------
     # Prompt customization hook
     # ------------------------------------------------------------------
     def get_custom_system_prompt(self, context: Dict[str, Any]) -> Optional[str]:  # pragma: no cover - default noop
@@ -662,6 +701,7 @@ class Agent(MCPServer):
                     continue  # Already added from plugins/external
                 
                 # Check if this is an agent and if it's exposed as a tool
+                # Default to True if _mcp_tool_visible doesn't exist (backward compatibility)
                 try:
                     server = self.registry.get(tool_name)
                     if hasattr(server, '_mcp_tool_visible'):
@@ -671,6 +711,7 @@ class Agent(MCPServer):
                                 f"(not exposed as tool: _mcp_tool_visible=False)"
                             )
                             continue
+                    # else: No _mcp_tool_visible attribute → include as tool (backward compat)
                 except Exception as e:
                     logger.debug(f"Failed to check tool visibility for '{tool_name}': {e}")
                 
@@ -966,33 +1007,47 @@ class Agent(MCPServer):
             tools_schema.extend(external_schemas)
             tool_name_mapping.update(external_mapping)
 
-            # Build schemas for internal plugin tools and update available_tools for multi-tool plugins
-            plugin_tools_to_add: List[str] = []  # Individual tool names to add to available_tools
-            if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
-                plugin_registry = self._mcp_integration_manager.mcp_integration.plugin_registry
-                for tool_name in available_tools.copy():  # Use copy to avoid modifying during iteration
-                    if "." not in tool_name:  # Internal plugin tool
-                        # Get plugin server from MCP integration plugin registry
-                        plugin_adapter = plugin_registry.get_server(tool_name)
-                        if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                            server = plugin_adapter.plugin_server
-                            if hasattr(server, 'get_tools'):
-                                # New multi-tool interface
-                                server_tools = server.get_tools()
-                                tools_schema.extend(server_tools)
-                                # For multi-tool plugins, map individual tool names back to the registry name
-                                for tool_schema in server_tools:
-                                    if tool_schema.get("type") == "function" and "function" in tool_schema:
-                                        individual_tool_name = tool_schema["function"].get("name")
-                                        if individual_tool_name:
-                                            tool_name_mapping[individual_tool_name] = tool_name
-                                            plugin_tools_to_add.append(individual_tool_name)
-                            else:
-                                # Fallback to legacy single-tool interface
-                                tools_schema.append(server.get_schema())
+            # Build schemas for internal tools (plugins + config agents) and update available_tools
+            internal_tools_to_add: List[str] = []  # Individual tool names to add to available_tools
             
-            # Add individual tool names to available_tools for multi-tool plugins
-            available_tools.extend(plugin_tools_to_add)
+            for tool_name in available_tools.copy():  # Use copy to avoid modifying during iteration
+                if "." in tool_name:  # External tool (e.g., "context7.resolve-library-id"), skip
+                    continue
+                
+                # Get server using central method (checks both registries)
+                server = self._get_server_from_any_registry(tool_name)
+                if not server:
+                    logger.debug(f"Server '{tool_name}' not found in any registry")
+                    continue
+                
+                # Get tools from this server
+                if hasattr(server, 'get_tools'):
+                    # New multi-tool interface
+                    try:
+                        server_tools = server.get_tools()
+                        tools_schema.extend(server_tools)
+                        # Map individual tool names back to the server name
+                        for tool_schema in server_tools:
+                            if tool_schema.get("type") == "function" and "function" in tool_schema:
+                                individual_tool_name = tool_schema["function"].get("name")
+                                if individual_tool_name:
+                                    tool_name_mapping[individual_tool_name] = tool_name
+                                    internal_tools_to_add.append(individual_tool_name)
+                        logger.debug(
+                            f"Added {len(server_tools)} tools from server '{tool_name}': "
+                            f"{[t['function']['name'] for t in server_tools if 'function' in t]}"
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to get tools from server '{tool_name}': {e}")
+                elif hasattr(server, 'get_schema'):
+                    # Fallback to legacy single-tool interface
+                    try:
+                        tools_schema.append(server.get_schema())
+                    except Exception as e:
+                        logger.debug(f"Failed to get schema from server '{tool_name}': {e}")
+            
+            # Add individual tool names to available_tools for multi-tool servers
+            available_tools.extend(internal_tools_to_add)
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}

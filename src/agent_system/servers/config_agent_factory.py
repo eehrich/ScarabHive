@@ -152,13 +152,15 @@ def create_config_based_agent_factory(
         
         # Set visibility flags based on metadata.visibility
         # This controls where the agent appears (UI, tool discovery, both, or neither)
-        visibility = "ui"  # Default: UI-only (not exposed as tool)
+        # Default: "private" - agents must explicitly opt-in to visibility (secure by default)
+        visibility = "private"  # Default: not visible anywhere
         if definition.metadata and hasattr(definition.metadata, 'visibility'):
             visibility = definition.metadata.visibility
         
         # Map visibility to flags
         agent._mcp_public = visibility in ["ui", "both"]
         agent._mcp_tool_visible = visibility in ["tool", "both"]
+        agent._visibility_set_explicitly = True  # Mark that visibility was explicitly configured
         
         logger.info(
             f"Config agent '{name}' created as '{agent_name}' (type: {definition.base_type}): "

@@ -151,6 +151,6 @@ class TestAgentVisibility:
         
         agent = factory("test_default_agent", mock_system_config, MCPConfig())
         
-        # Default should be 'ui' (public in UI, not as tool)
-        assert agent._mcp_public is True, "Default should be UI-visible"
+        # Default should be 'private' (secure by default - not visible anywhere)
+        assert agent._mcp_public is False, "Default should NOT be UI-visible"
         assert agent._mcp_tool_visible is False, "Default should NOT be tool-visible"

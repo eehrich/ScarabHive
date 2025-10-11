@@ -10,12 +10,12 @@ The `metadata.visibility` field controls agent exposure:
 
 | Mode | UI Dropdown | Tool Discovery | Use Case |
 |------|-------------|----------------|----------|
-| `ui` | ✅ Yes | ❌ No | User-facing agents (chat interface, default) |
+| `ui` | ✅ Yes | ❌ No | User-facing agents (chat interface only) |
 | `tool` | ❌ No | ✅ Yes | Backend services for other agents |
 | `both` | ✅ Yes | ✅ Yes | Dual-purpose agents |
-| `private` | ❌ No | ❌ No | Testing/experimental agents |
+| `private` | ❌ No | ❌ No | Testing/experimental agents (default - secure by default) |
 
-**Default:** `ui` (backward compatible - agents visible in UI, not as tools)
+**Default:** `private` (secure by default - agents must explicitly opt-in to visibility)
 
 ## Configuration
 
@@ -83,6 +83,27 @@ agents:
       visibility: "private"  # Neither UI nor tool
       category: "development"
 ```
+
+### Plugin Agents (plugin.yaml)
+
+For plugin-based agents, add `visibility` as a top-level field in `plugin.yaml`:
+
+```yaml
+# src/plugins/web_research_agent/plugin.yaml
+name: web_research_agent
+author: "Enrico Ehrich"
+version: 0.1.0
+description: "Specialized web research agent"
+entrypoint: plugin:PLUGIN_FACTORY
+type: mcp_only
+category: tools
+visibility: both  # Optional: "ui", "tool", "both" (default), or "private"
+```
+
+**Behavior:**
+- If `visibility` is specified in `plugin.yaml`, it will be used
+- If omitted, defaults to `"both"` (backward compatible)
+- Works exactly like config-based agents
 
 ## Internal Implementation
 

@@ -167,7 +167,8 @@ class AgentMetadata(BaseModel):
     category: Optional[str] = None  # Category (e.g., "financial", "research", "development")
     
     # Visibility control: determines where the agent appears
-    visibility: Literal["ui", "tool", "both", "private"] = "ui"
+    # Default: "private" - agents must explicitly opt-in to visibility
+    visibility: Literal["ui", "tool", "both", "private"] = "private"
     # - "ui": Visible in UI dropdown, NOT available as tool for other agents
     # - "tool": Available as tool for other agents, NOT in UI dropdown
     # - "both": Visible in UI AND available as tool

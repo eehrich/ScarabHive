@@ -5,6 +5,8 @@ description: "Basic agent plugin providing agent execution capabilities as MCP t
 entrypoint: plugin:PLUGIN_FACTORY
 type: mcp_only
 category: tools
+visibility: both
+
 tags:
   - agent
   - execution

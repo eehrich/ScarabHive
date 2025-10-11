@@ -6,10 +6,10 @@
 
 agents:
   # Financial Analyst Agent
-  financial_analyst:
+  financial_analyst_agent:
     enabled: true
     description: "Professional financial analyst for stock market analysis, fundamentals research, and investment insights"
-    base_type: agent
+    base_type: basic_agent
     
     agent_config:
       llm_profile: turbo
@@ -36,12 +36,13 @@ agents:
       version: "1.0.0"
       tags: ["finance", "stocks", "analysis", "research"]
       category: "financial"
+      visibility: "both"
   
   # Code Reviewer Agent
-  code_reviewer:
+  code_reviewer_agent:
     enabled: true
     description: "Expert code reviewer for quality analysis, security audits, and best practices validation"
-    base_type: agent
+    base_type: basic_agent
     
     agent_config:
       llm_profile: chat
@@ -67,46 +68,14 @@ agents:
       version: "1.1.0"
       tags: ["code", "review", "quality", "security"]
       category: "development"
+      visibility: "both"
   
-  # Research Assistant Agent
-  research_assistant:
-    enabled: true
-    description: "Comprehensive research assistant for information gathering, fact-checking, and synthesis"
-    base_type: agent
-    
-    agent_config:
-      llm_profile: normal
-      max_steps: 30
-      system_template: "config/prompts/research_assistant_prompt.yaml"
-      
-      tools:
-        allowed:
-          - "duckduckgo_search/*"
-          - "web_scraper/*"
-          - "context7/*"
-          - "basic_operations/*"
-        blocked:
-          - "ssh_control/*"
-          - "script_interpreter/*"
-          - "yahoo_finance/*"
-      
-      context_management:
-        enabled: true
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 15
-        summarization_threshold: 0.75
-    
-    metadata:
-      author: "AgentSystem"
-      version: "1.0.0"
-      tags: ["research", "fact-checking", "synthesis", "information"]
-      category: "research"
-  
+
   # Simple Q&A Agent
-  simple_qa:
+  simple_qa_agent:
     enabled: true
     description: "Lightweight Q&A agent for general knowledge questions without external tools"
-    base_type: agent
+    base_type: basic_agent
     
     agent_config:
       llm_profile: normal
@@ -140,27 +109,26 @@ agents:
       author: "AgentSystem"
       version: "1.0.0"
       tags: ["qa", "simple", "knowledge", "general"]
+      visibility: "ui"
       category: "general"
   
 
   # System Administrator Agent
-  system_admin:
+  sysadmin_agent:
     enabled: true
     description: "System Administrator who has ssh access to different servers"
     base_type: basic_agent
     
     agent_config:
       llm_profile: chat
-      max_steps: 15
+      max_steps: 100
       system_template: "config/prompts/system_admin_prompt.yaml"
       
       tools:
         allowed:
           - "ssh_control/*"
           - "basic_operations/*"
-          - "web_scraper/*"
-          - "web_research_agent/*"
-          - "duckduckgo_search/*"
+          - "meta_web_research_agent/*"
       
       context_management:
         enabled: true
@@ -173,6 +141,7 @@ agents:
       version: "1.1.0"
       tags: ["ssh", "server", "Administrator", "security"]
       category: "it"
+      visibility: "both"  
 
   # Meta Web Research Agent
   meta_web_research_agent:
@@ -181,7 +150,7 @@ agents:
     base_type: web_research_agent
     
     agent_config:
-      llm_profile: normal
+      llm_profile: turbo
       max_steps: 10
       system_template: "config/prompts/meta_web_research_agent.yaml"
 
@@ -190,14 +159,13 @@ agents:
           - "web_research_agent/*"
           - "web_scraper/*"
           - "duckduckgo_search/*"
+          - "weather/*"
       context_management:
-        enabled: true
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 5
-        summarization_threshold: 0.75
+        enabled: false
     
     metadata:
       author: "AgentSystem"
       version: "1.1.0"
       tags: ["web", "research", "meta"]
       category: "it"
+      visibility: "both"

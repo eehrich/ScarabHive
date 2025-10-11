@@ -80,15 +80,17 @@ def discover_config_agents(
             )
             
             # Attach plugin metadata as dictionary (like filesystem plugins)
+            # Note: definition.metadata is now AgentMetadata (Pydantic model), not dict
             metadata_dict = {
                 "name": agent_name,
                 "description": definition.description or f"Config-based agent: {agent_name}",
                 "type": "agent",  # or definition.base_type
                 "source": "config",  # Mark as config-based (vs "filesystem" for code-based)
-                "version": definition.metadata.get("version", "1.0.0") if definition.metadata else "1.0.0",
-                "author": definition.metadata.get("author", "Unknown") if definition.metadata else "Unknown",
-                "tags": definition.metadata.get("tags", []) if definition.metadata else [],
-                "category": definition.metadata.get("category") if definition.metadata else None
+                "version": definition.metadata.version if definition.metadata else "1.0.0",
+                "author": definition.metadata.author if definition.metadata else "Unknown",
+                "tags": definition.metadata.tags if definition.metadata else [],
+                "category": definition.metadata.category if definition.metadata else None,
+                "visibility": definition.metadata.visibility if definition.metadata else "ui"
             }
             
             try:

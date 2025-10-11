@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: web_research_agent
+      name: "{{ name }}_web_research"
       description: "Advanced multi-source web research - automatically searches, scrapes, and synthesizes information from multiple websites into comprehensive reports with source citations. Superior to basic search for complex topics."
       parameters:
         type: object
@@ -22,7 +22,7 @@ tools:
 
   - type: function
     function:
-      name: fact_check_agent
+      name: "{{ name }}_fact_check"
       description: "Professional fact-checking service - searches authoritative sources, analyzes evidence, and provides verification status (True/False/Partially True) with detailed supporting evidence and source credibility assessment"
       parameters:
         type: object
@@ -43,7 +43,7 @@ tools:
 
   - type: function
     function:
-      name: source_analysis_agent
+      name: "{{ name }}_source_analysis"
       description: "Expert source analysis - compares information across multiple websites, identifies contradictions, assesses source reliability, and provides balanced perspective analysis. Essential for controversial or complex topics."
       parameters:
         type: object
@@ -64,7 +64,7 @@ tools:
 
   - type: function
     function:
-      name: research_assistant_agent
+      name: "{{ name }}_research_assistant"
       description: "AI-powered research assistant - intelligently selects the most relevant sources, performs deep analysis, and synthesizes findings into actionable insights. Perfect for research tasks requiring judgment and context understanding."
       parameters:
         type: object

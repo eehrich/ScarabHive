@@ -5,3 +5,4 @@ description: "Specialized web research agent combining DuckDuckGo search with we
 entrypoint: plugin:PLUGIN_FACTORY
 type: mcp_only
 category: tools
+visibility: both  # Optional: "ui", "tool", "both" (default), or "private"

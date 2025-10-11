@@ -53,44 +53,53 @@ class ToolExecutionManager:
     async def _invoke_tool(self, tool_name: str, params: Dict[str, Any], action_name: Optional[str] = None):
         """Execute a tool call against the registry and return results."""
 
-        # Get plugin adapter from MCP integration plugin registry
-        plugin_adapter = None
-        if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
-            mcp_integration = self._agent._mcp_integration_manager.mcp_integration
-            if mcp_integration is not None:  # type: ignore[unreachable]
-                if mcp_integration.initialized:  # type: ignore[unreachable]
-                    plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+        # Try to get server using agent's central method (preferred)
+        server = None
+        if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
+            server = self._agent._get_server_from_any_registry(tool_name)
+        
+        # Fallback: Try plugin adapter from MCP integration plugin registry
+        if not server:
+            plugin_adapter = None
+            if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
+                mcp_integration = self._agent._mcp_integration_manager.mcp_integration
+                if mcp_integration is not None:  # type: ignore[unreachable]
+                    if mcp_integration.initialized:  # type: ignore[unreachable]
+                        plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
 
-        if plugin_adapter:
-            # Use the PluginMCPAdapter which handles tool routing correctly
-            if not action_name:  # type: ignore[unreachable]
-                action_name = params.get("action") or plugin_adapter.plugin_server.get_default_action()
-            try:
-                # Call through the PluginMCPAdapter which will route to the correct tool
-                result = await plugin_adapter.call_tool(action_name, params)
-                return result
-            except Exception as e:
-                logger.exception("Plugin tool %s invocation failed: %s", tool_name, e)
-                raise
-        else:
-            # Fallback to legacy registry
+            if plugin_adapter:
+                # Use the PluginMCPAdapter which handles tool routing correctly
+                if not action_name:  # type: ignore[unreachable]
+                    action_name = params.get("action") or plugin_adapter.plugin_server.get_default_action()
+                try:
+                    # Call through the PluginMCPAdapter which will route to the correct tool
+                    result = await plugin_adapter.call_tool(action_name, params)
+                    return result
+                except Exception as e:
+                    logger.exception("Plugin tool %s invocation failed: %s", tool_name, e)
+                    raise
+        
+        # Final fallback to legacy registry (though it's usually empty)
+        if not server:
             server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
-            if not server:
-                raise RuntimeError(f"Unknown tool: {tool_name}")
 
-            if not action_name:
-                action_name = params.get("action") or server.get_default_action()
-            try:
-                # Check if server has call_with_status (MCP server interface)
-                if hasattr(server, 'call_with_status'):
-                    result = await server.call_with_status(action_name, params)
-                else:
-                    # Fallback to regular call method
-                    result = await server.call(action_name, params)
-                return result
-            except Exception as e:
-                logger.exception("Legacy tool %s invocation failed: %s", tool_name, e)
-                raise
+        if not server:
+            raise RuntimeError(f"Unknown tool: {tool_name}")
+
+        if not action_name:
+            action_name = params.get("action") or server.get_default_action()
+        
+        try:
+            # Check if server has call_with_status (MCP server interface)
+            if hasattr(server, 'call_with_status'):
+                result = await server.call_with_status(action_name, params)
+            else:
+                # Fallback to regular call method
+                result = await server.call(action_name, params)
+            return result
+        except Exception as e:
+            logger.exception("Tool %s invocation failed: %s", tool_name, e)
+            raise
 
     async def execute_tools(self, tool_calls: List[Dict], tool_name_mapping: Dict[str, str],
                           available_tools: List[str], step: int, request_id: str | None = None) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
@@ -353,23 +362,36 @@ class ToolExecutionManager:
 
     async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
-        """Execute a plugin tool."""
-        # Get plugin server from MCP integration plugin registry
+        """Execute a plugin tool (or config agent tool)."""
+        # Use agent's central method to get server from any registry
         server = None
-        if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
-            mcp_integration = self._agent._mcp_integration_manager.mcp_integration
-            if mcp_integration is not None:  # type: ignore[unreachable]
-                if mcp_integration.initialized:  # type: ignore[unreachable]
-                    plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
-                    if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                        server = plugin_adapter.plugin_server
+        if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
+            server = self._agent._get_server_from_any_registry(tool_name)
+        
+        # Fallback to legacy lookup if central method not available
+        if not server:
+            # Get plugin server from MCP integration plugin registry
+            if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
+                mcp_integration = self._agent._mcp_integration_manager.mcp_integration
+                if mcp_integration is not None:  # type: ignore[unreachable]
+                    if mcp_integration.initialized:  # type: ignore[unreachable]
+                        plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                        if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
+                            server = plugin_adapter.plugin_server
+
+            if not server:
+                # Fallback to agent's registry (for config agents and other servers)
+                if self._agent and hasattr(self._agent, 'registry'):
+                    agent_registry = self._agent.registry
+                    if agent_registry and tool_name in agent_registry.list():
+                        server = agent_registry.get(tool_name)
+                
+                # Final fallback to legacy registry (though it may be empty)
+                if not server:
+                    server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
 
         if not server:
-            # Fallback to legacy registry (though it will be empty)
-            server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
-
-        if not server:
-            raise RuntimeError(f"Plugin server not found for tool: {tool_name}")
+            raise RuntimeError(f"Server not found for tool: {tool_name}")
 
         # For multi-tool plugins, the openai_tool_name contains the actual tool name to call
         # The tool_name is the plugin registry name that was mapped back
