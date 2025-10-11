@@ -11,7 +11,7 @@ from typing import List, Dict, Optional
 import logging
 from pathlib import Path
 
-from ..config.models import ConfigBasedAgentDefinition, MCPSystemConfig
+from ..config.models import ConfigBasedAgentDefinition
 
 
 logger = logging.getLogger(__name__)
@@ -196,14 +196,14 @@ def validate_config_agent(
 
 
 def validate_all_config_agents(
-    mcp_system_config: MCPSystemConfig,
+    agents_config: Optional[Dict[str, ConfigBasedAgentDefinition]],
     llm_profiles: Optional[List[str]] = None
 ) -> Dict[str, List[str]]:
     """
     Validate all config agents in the system configuration.
     
     Args:
-        mcp_system_config: The MCPSystemConfig containing config_agents
+        agents_config: Dict mapping agent name to ConfigBasedAgentDefinition
         llm_profiles: Optional list of valid LLM profile names
     
     Returns:
@@ -212,11 +212,11 @@ def validate_all_config_agents(
     """
     validation_results = {}
     
-    if not mcp_system_config.config_agents:
-        logger.info("No config_agents to validate")
+    if not agents_config:
+        logger.info("No config agents to validate")
         return validation_results
     
-    for name, definition in mcp_system_config.config_agents.items():
+    for name, definition in agents_config.items():
         errors = validate_config_agent(name, definition, llm_profiles)
         validation_results[name] = errors
         

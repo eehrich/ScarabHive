@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_system.services.mcp_service import MCPService
-from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, RemoteMCPConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, RemoteMCPConfig
 
 
 @pytest.fixture

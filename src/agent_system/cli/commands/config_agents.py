@@ -19,7 +19,7 @@ def _config_agents_list(config: Any, args: Any) -> None:
     """List all configuration-based agents and their status."""
     from agent_system.plugins.config_agent_discovery import list_config_agents
     
-    agents = list_config_agents(config.mcp_system)
+    agents = list_config_agents(config.agents)
     
     if args.out_format == "json":
         print(json.dumps(agents, indent=2, ensure_ascii=False))
@@ -58,7 +58,7 @@ def _config_agents_show(config: Any, args: Any) -> None:
     agent_name = args.agent_name
     
     try:
-        info = get_config_agent_info(agent_name, config.mcp_system)
+        info = get_config_agent_info(agent_name, config.agents)
     except KeyError:
         print(f"Error: Config agent '{agent_name}' not found", file=sys.stderr)
         sys.exit(1)
@@ -151,7 +151,7 @@ def _config_agents_validate(config: Any, args: Any) -> None:
                 sys.exit(1)
     else:
         # Validate all agents
-        results = validate_all_config_agents(config.mcp_system, llm_profiles)
+        results = validate_all_config_agents(config.agents, llm_profiles)
         
         if args.out_format == "json":
             output = {

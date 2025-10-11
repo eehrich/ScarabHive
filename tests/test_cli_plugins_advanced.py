@@ -11,7 +11,7 @@ from agent_system.config.models import MCPConfig
 
 
 def _make_cfg(tmp_path: Path, plugin_dirs):
-    from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, LLMSystemConfig, LLMModelConfig
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}

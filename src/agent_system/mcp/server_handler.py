@@ -455,8 +455,7 @@ class MCPServerHandler:
     def _get_exposed_plugins(self) -> List[str]:
         """Get list of plugins to expose as MCP tools."""
         # Check configuration for exposed plugins
-        mcp_config = self.config.mcp_system
-        server_config = getattr(mcp_config, 'server_mode', None)
+        server_config = self.config.server_mode
         
         if not server_config or not getattr(server_config, 'enabled', False):
             return []

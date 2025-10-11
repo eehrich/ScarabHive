@@ -1179,7 +1179,7 @@ def main() -> None:
         
         if cmd == "list":
             # List all config agents
-            agents = list_config_agents(_get_legacy_mcp_system(config))
+            agents = list_config_agents(config.agents)
             
             if args.out_format == "json":
                 print(json.dumps(agents, indent=2, ensure_ascii=False))
@@ -1227,7 +1227,7 @@ def main() -> None:
                 return
             
             try:
-                info = get_config_agent_info(agent_name, _get_legacy_mcp_system(config))
+                info = get_config_agent_info(agent_name, config.agents)
             except KeyError:
                 print(json.dumps({"error": f"Config agent '{agent_name}' not found"}, ensure_ascii=False))
                 return
@@ -1327,7 +1327,7 @@ def main() -> None:
                         sys.exit(1)
             else:
                 # Validate all agents
-                results = validate_all_config_agents(_get_legacy_mcp_system(config), llm_profiles)
+                results = validate_all_config_agents(config.agents, llm_profiles)
                 
                 if args.out_format == "json":
                     output = {

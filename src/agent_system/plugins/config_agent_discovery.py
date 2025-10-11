@@ -1,18 +1,18 @@
 """
 Config Agent Discovery Module
 
-Discovers and registers configuration-based agents from mcp.yaml.
+Discovers and registers configuration-based agents from agents.yaml.
 Part of Epic 0043: Configuration-Based Agents.
 
-This module scans the config_agents section of the configuration and creates
+This module scans the agents section of the configuration and creates
 factory functions for each enabled agent, making them available through the
 plugin registry.
 """
 
-from typing import Dict, Callable, Any
+from typing import Dict, Callable, Any, Optional
 import logging
 
-from ..config.models import MCPSystemConfig
+from ..config.models import ConfigBasedAgentDefinition
 from ..servers.config_agent_factory import create_config_based_agent_factory
 from .config_agent_validation import validate_config_agent, ConfigAgentValidationError
 
@@ -21,17 +21,17 @@ logger = logging.getLogger(__name__)
 
 
 def discover_config_agents(
-    mcp_system_config: MCPSystemConfig
+    agents_config: Optional[Dict[str, ConfigBasedAgentDefinition]]
 ) -> Dict[str, Callable[..., Any]]:
     """
-    Discover configuration-based agents from mcp_system_config.
+    Discover configuration-based agents from agents_config.
     
-    Scans the config_agents section and creates factory functions for each
+    Scans the agents dictionary and creates factory functions for each
     enabled agent. The factories are compatible with the plugin system and
     can be registered in the plugin_registry.
     
     Args:
-        mcp_system_config: The MCPSystemConfig containing config_agents
+        agents_config: Dict mapping agent name to ConfigBasedAgentDefinition
     
     Returns:
         Dict mapping agent_name -> factory_function (with _plugin_metadata attached)
@@ -39,27 +39,24 @@ def discover_config_agents(
     
     Example:
         >>> config = load_settings()
-        >>> discovered = discover_config_agents(config.mcp_system)
+        >>> discovered = discover_config_agents(config.agents)
         >>> for name, factory in discovered.items():
         ...     plugin_registry.register(name, factory)
     """
     discovered: Dict[str, Callable[..., Any]] = {}
     
-    # Check if config_agents section exists
-    if not mcp_system_config.config_agents:
-        logger.info("No config_agents section found in configuration")
+    # Check if agents config exists
+    if not agents_config:
+        logger.info("No agents section found in configuration")
         return discovered
     
     logger.info(
         f"Discovering config-based agents: "
-        f"{len(mcp_system_config.config_agents)} definitions found"
+        f"{len(agents_config)} definitions found"
     )
     
-    # Get global default config for merging
-    global_default = mcp_system_config.default_config if mcp_system_config.default_config else None
-    
     # Process each config agent definition
-    for agent_name, definition in mcp_system_config.config_agents.items():
+    for agent_name, definition in agents_config.items():
         try:
             # Skip disabled agents
             if not definition.enabled:
@@ -79,7 +76,7 @@ def discover_config_agents(
             factory = create_config_based_agent_factory(
                 name=agent_name,
                 definition=definition,
-                global_mcp_config=global_default
+                global_mcp_config=None  # No global default in new structure
             )
             
             # Attach plugin metadata as dictionary (like filesystem plugins)
@@ -117,7 +114,7 @@ def discover_config_agents(
     
     logger.info(
         f"Config agent discovery complete: "
-        f"{len(discovered)}/{len(mcp_system_config.config_agents)} agents discovered"
+        f"{len(discovered)}/{len(agents_config.config_agents)} agents discovered"
     )
     
     return discovered
@@ -182,7 +179,7 @@ def _validate_agent_definition(name: str, definition: Any) -> None:
     logger.debug(f"Validation passed for config agent: {name}")
 
 
-def get_config_agent_info(agent_name: str, mcp_system_config: MCPSystemConfig) -> Dict[str, Any]:
+def get_config_agent_info(agent_name: str, agents_config: Optional[Dict[str, ConfigBasedAgentDefinition]]) -> Dict[str, Any]:
     """
     Get detailed information about a specific config agent.
     
@@ -190,7 +187,7 @@ def get_config_agent_info(agent_name: str, mcp_system_config: MCPSystemConfig) -
     
     Args:
         agent_name: Name of the config agent
-        mcp_system_config: The MCPSystemConfig containing config_agents
+        agents_config: Dict mapping agent name to ConfigBasedAgentDefinition
     
     Returns:
         Dict with agent information
@@ -198,10 +195,10 @@ def get_config_agent_info(agent_name: str, mcp_system_config: MCPSystemConfig) -
     Raises:
         KeyError: If agent not found
     """
-    if not mcp_system_config.config_agents or agent_name not in mcp_system_config.config_agents:
+    if not agents_config or agent_name not in agents_config:
         raise KeyError(f"Config agent '{agent_name}' not found")
     
-    definition = mcp_system_config.config_agents[agent_name]
+    definition = agents_config[agent_name]
     
     return {
         "name": agent_name,
@@ -225,21 +222,21 @@ def get_config_agent_info(agent_name: str, mcp_system_config: MCPSystemConfig) -
     }
 
 
-def list_config_agents(mcp_system_config: MCPSystemConfig) -> list[Dict[str, Any]]:
+def list_config_agents(agents_config: Optional[Dict[str, ConfigBasedAgentDefinition]]) -> list[Dict[str, Any]]:
     """
     List all config agents with basic information.
     
     Args:
-        mcp_system_config: The MCPSystemConfig containing config_agents
+        agents_config: Dict mapping agent name to ConfigBasedAgentDefinition
     
     Returns:
         List of dicts with agent information
     """
-    if not mcp_system_config.config_agents:
+    if not agents_config:
         return []
     
     agents = []
-    for name, definition in mcp_system_config.config_agents.items():
+    for name, definition in agents_config.items():
         agents.append({
             "name": name,
             "enabled": definition.enabled,

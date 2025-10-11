@@ -18,7 +18,7 @@ from ..plugins.mcp_adapter import plugin_mcp_registry
 from .http_server import MCPHTTPServer
 from .security import configure_security
 from .tool_cache import ToolCache
-from ..config.models import AgentSystemConfig, RemoteMCPConfig, MCPSystemConfig
+from ..config.models import AgentSystemConfig, RemoteMCPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,6 @@ class MCPIntegration:
 
         # Store full config for network settings access
         self.config = config
-        # Store MCP system config
-        self.mcp_system_config: MCPSystemConfig = config.mcp_system if config and config.mcp_system else MCPSystemConfig()
 
         # Configure security with provided config
         configure_security(config)
@@ -45,13 +43,13 @@ class MCPIntegration:
         self.configured_external_servers: Dict[str, RemoteMCPConfig] = {}  # Type-safe config storage
 
         # Tool caching with config-aware invalidation
-        cache_enabled = self.mcp_system_config.external_servers.cache.enabled if (
-            self.mcp_system_config.external_servers and 
-            self.mcp_system_config.external_servers.cache
+        cache_enabled = config.external_servers.cache.enabled if (
+            config.external_servers and 
+            config.external_servers.cache
         ) else True
-        cache_max_size = self.mcp_system_config.external_servers.cache.max_size if (
-            self.mcp_system_config.external_servers and 
-            self.mcp_system_config.external_servers.cache
+        cache_max_size = config.external_servers.cache.max_size if (
+            config.external_servers and 
+            config.external_servers.cache
         ) else None
         self._tool_cache = ToolCache(enabled=cache_enabled, max_size=cache_max_size)
 
@@ -61,12 +59,9 @@ class MCPIntegration:
         if self.initialized:
             return
 
-        # Access MCP system config
-        mcp_config = config.mcp_system if config.mcp_system else MCPSystemConfig()
-
         # Set cache TTL on client manager (for their internal caching)
-        if mcp_config.external_servers and mcp_config.external_servers.cache:
-            ttl = mcp_config.external_servers.cache.tool_list_ttl
+        if config.external_servers and config.external_servers.cache:
+            ttl = config.external_servers.cache.tool_list_ttl
             self.client_manager.set_cache_ttl(ttl)
             logger.debug(f"MCP client manager cache TTL set to {ttl}s")
 
@@ -82,8 +77,8 @@ class MCPIntegration:
             logger.debug(f"Plugins already discovered ({len(self.plugin_registry.plugin_factories)} factories available)")
 
         # Register enabled plugins as MCP servers
-        # Use servers from mcp_config.servers (Dict[str, MCPConfig])
-        servers_config = mcp_config.servers if mcp_config.servers else {}
+        # Use servers from config.plugins.servers (Dict[str, MCPConfig])
+        servers_config = config.plugins.servers if config.plugins and config.plugins.servers else {}
         enabled_servers = [name for name, server_cfg in servers_config.items() if server_cfg.enabled]
         
         logger.debug(f"MCP integration - enabled servers: {enabled_servers}")
@@ -107,8 +102,8 @@ class MCPIntegration:
                 self.http_server.register_server(server_name, server)
 
         # Connect to external MCP servers from new config format
-        if mcp_config.external_servers and mcp_config.external_servers.remote_servers:
-            remote_servers = mcp_config.external_servers.remote_servers
+        if config.external_servers and config.external_servers.remote_servers:
+            remote_servers = config.external_servers.remote_servers
             
             # Only store enabled servers
             self.configured_external_servers = {
@@ -125,9 +120,9 @@ class MCPIntegration:
                     
                 try:
                     ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
-                    timeout = self.mcp_system_config.external_servers.connection.timeout if (
-                        self.mcp_system_config.external_servers and 
-                        self.mcp_system_config.external_servers.connection
+                    timeout = config.external_servers.connection.timeout if (
+                        config.external_servers and 
+                        config.external_servers.connection
                     ) else 30.0
                     await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
                     logger.info(f"Connected to external MCP server: {server_name}")
@@ -165,9 +160,9 @@ class MCPIntegration:
         # Try to connect
         try:
             ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
-            timeout = self.mcp_system_config.external_servers.connection.timeout if (
-                self.mcp_system_config.external_servers and 
-                self.mcp_system_config.external_servers.connection
+            timeout = self.config.external_servers.connection.timeout if (
+                self.config.external_servers and 
+                self.config.external_servers.connection
             ) else 30.0
             
             await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
@@ -328,9 +323,9 @@ class MCPIntegration:
     async def add_external_server(self, name: str, config: RemoteMCPConfig) -> None:
         """Add an external MCP server"""
         ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
-        timeout = self.mcp_system_config.external_servers.connection.timeout if (
-            self.mcp_system_config.external_servers and 
-            self.mcp_system_config.external_servers.connection
+        timeout = self.config.external_servers.connection.timeout if (
+            self.config.external_servers and 
+            self.config.external_servers.connection
         ) else 30.0
         await self.client_manager.add_client(name, config, ssl_verify=ssl_verify, timeout=timeout)
         # Update local config storage

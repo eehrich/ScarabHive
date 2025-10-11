@@ -639,10 +639,10 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                         config = {}
                     
                     # Ensure mcp_system.servers.ssh_control structure exists
-                    if 'mcp_system' not in config or not isinstance(config['mcp_system'], dict):
-                        config['mcp_system'] = {}
+                    if 'plugins' not in config or not isinstance(config['plugins'], dict):
+                        config['plugins'] = {}
                     
-                    mcp_sys = config['mcp_system']
+                    mcp_sys = config['plugins']
                     if 'servers' not in mcp_sys or not isinstance(mcp_sys['servers'], dict):
                         mcp_sys['servers'] = {}
                     

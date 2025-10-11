@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 import yaml
 
-from agent_system.config.models import MCPConfig, RemoteMCPConfig, MCPSystemConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig, RemoteMCPConfig
 
 
 class TestMCPConfigModern:
@@ -22,7 +22,7 @@ class TestMCPConfigModern:
         assert r.enabled is True
 
     def test_mcp_system_config_serialization(self):
-        syscfg = MCPSystemConfig(plugin_dirs=["plugins"], servers={
+        syscfg = PluginsConfig(plugin_dirs=["plugins"], servers={
             "test": MCPConfig(type="test", enabled=True)
         })
         # Serialize to yaml and reload to ensure structure is preserved
@@ -55,7 +55,7 @@ class TestExampleConfig:
     def test_create_example_config(self):
         """Test creating example configuration"""
         # Create a small example MCPSystemConfig and ensure expected structure
-        example = MCPSystemConfig(plugin_dirs=["plugins"], servers={
+        example = PluginsConfig(plugin_dirs=["plugins"], servers={
             "example_server": MCPConfig(type="example", enabled=True)
         })
 
@@ -90,5 +90,5 @@ async def test_config_integration():
     for name, val in mcp.get("external_servers", {}).items():
         servers[name] = MCPConfig(type=val.get("type", "remote"), enabled=val.get("enabled", False))
 
-    config = MCPSystemConfig(plugin_dirs=["plugins"], servers=servers)
+    config = PluginsConfig(plugin_dirs=["plugins"], servers=servers)
     assert any(s.enabled for s in config.servers.values())

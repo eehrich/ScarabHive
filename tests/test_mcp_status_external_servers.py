@@ -13,8 +13,7 @@ from unittest.mock import Mock, AsyncMock
 from agent_system.mcp.integration import MCPIntegration
 from agent_system.config.models import (
     AgentSystemConfig,
-    MCPSystemConfig,
-    ExternalServersConfig,
+    MCPServersConfig,
     RemoteMCPConfig,
 )
 
@@ -38,20 +37,14 @@ def mock_mcp_config():
         )
     }
     
-    # Build external servers config
-    external_servers = ExternalServersConfig(
+    # Build external servers config (new structure)
+    external_servers = MCPServersConfig(
         remote_servers=remote_servers
     )
     
-    # Build MCP system config
-    mcp_config = MCPSystemConfig(
-        external_servers=external_servers
-    )
-    
-    # Build full agent system config
+    # Build full agent system config (new structure)
     return AgentSystemConfig(
-        mcp_system=mcp_config,
-        servers={}
+        external_servers=external_servers
     )
 
 
@@ -135,12 +128,12 @@ class TestMCPIntegrationExternalServers:
         from agent_system.config.models import (
             AgentSystemConfig,
             MCPSystemConfig,
-            ExternalServersConfig
+            MCPServersConfig
         )
         
         # Build empty config
-        mcp_config = MCPSystemConfig(
-            external_servers=ExternalServersConfig(
+        mcp_config = MCPServersConfig(
+            external_servers=MCPServersConfig(
                 remote_servers={}
             )
         )

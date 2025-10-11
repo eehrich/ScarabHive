@@ -7,7 +7,7 @@ Tests the MCP server mode initialization and basic JSON-RPC protocol handling.
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, MCPServerModeConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServerModeConfig
 from agent_system.mcp.base import MCPRegistry
 from agent_system.mcp.server_handler import MCPServerHandler, MCPServerSession
 
@@ -99,8 +99,8 @@ class TestMCPServerHandler:
     def config(self):
         """Create test configuration."""
         config = AgentSystemConfig()
-        config.plugins = MCPSystemConfig()
-        config.plugins.server_mode = MCPServerModeConfig(
+        config.plugins = PluginsConfig()
+        config.server_mode = MCPServerModeConfig(
             enabled=True,
             expose_plugins=["*"],
             authentication={"required": False, "methods": []},
@@ -231,8 +231,8 @@ class TestMCPServerEndpoint:
         config = AgentSystemConfig()
         config.name = "TestServer"
         config.version = "1.0.0"
-        config.plugins = MCPSystemConfig()
-        config.plugins.server_mode = MCPServerModeConfig(
+        config.plugins = PluginsConfig()
+        config.server_mode = MCPServerModeConfig(
             enabled=True,
             expose_plugins=["*"],
             authentication={"required": False, "methods": []},

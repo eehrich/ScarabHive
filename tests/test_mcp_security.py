@@ -156,7 +156,7 @@ class TestMCPSecurityManager:
         from agent_system.config.models import (
             AgentSystemConfig,
             MCPSystemConfig,
-            ExternalServersConfig,
+            MCPServersConfig,
             RemoteMCPConfig,
             MCPAuthConfig  # Changed from AuthConfig
         )
@@ -185,11 +185,11 @@ class TestMCPSecurityManager:
             )
         }
         
-        external_servers = ExternalServersConfig(
+        external_servers = MCPServersConfig(
             remote_servers=remote_servers
         )
         
-        mcp_config = MCPSystemConfig(
+        mcp_config = MCPServersConfig(
             external_servers=external_servers
         )
         
@@ -220,7 +220,7 @@ class TestMCPSecurityManager:
         from agent_system.config.models import (
             AgentSystemConfig,
             MCPSystemConfig,
-            ExternalServersConfig,
+            MCPServersConfig,
             RemoteMCPConfig,
             MCPAuthConfig  # Changed from AuthConfig
         )
@@ -237,11 +237,11 @@ class TestMCPSecurityManager:
             )
         }
         
-        external_servers = ExternalServersConfig(
+        external_servers = MCPServersConfig(
             remote_servers=remote_servers
         )
         
-        mcp_config = MCPSystemConfig(
+        mcp_config = MCPServersConfig(
             external_servers=external_servers
         )
         
@@ -269,7 +269,7 @@ class TestGlobalSecurity:
         from agent_system.config.models import (
             AgentSystemConfig,
             MCPSystemConfig,
-            ExternalServersConfig,
+            MCPServersConfig,
             RemoteMCPConfig,
             MCPAuthConfig  # Changed from AuthConfig
         )
@@ -286,11 +286,11 @@ class TestGlobalSecurity:
             )
         }
         
-        external_servers = ExternalServersConfig(
+        external_servers = MCPServersConfig(
             remote_servers=remote_servers
         )
         
-        mcp_config = MCPSystemConfig(
+        mcp_config = MCPServersConfig(
             external_servers=external_servers
         )
         
