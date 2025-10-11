@@ -1520,7 +1520,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         "params": resources_result
                     }
                     yield f"event: message\ndata: {json.dumps(resources_notification, ensure_ascii=False)}\n\n"
-                    logger.debug(f"Sent resources list notification")
+                    logger.debug("Sent resources list notification")
                 except Exception as e:
                     logger.debug(f"Resources not available: {e}")
                 
@@ -1533,7 +1533,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         "params": prompts_result
                     }
                     yield f"event: message\ndata: {json.dumps(prompts_notification, ensure_ascii=False)}\n\n"
-                    logger.debug(f"Sent prompts list notification")
+                    logger.debug("Sent prompts list notification")
                 except Exception as e:
                     logger.debug(f"Prompts not available: {e}")
                 
