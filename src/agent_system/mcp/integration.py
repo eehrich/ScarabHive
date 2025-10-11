@@ -144,6 +144,43 @@ class MCPIntegration:
         logging.getLogger(__name__).debug("MCPIntegration.shutdown() completed")
         logger.info("MCP integration shut down")
 
+    async def retry_connect_server(self, server_name: str) -> bool:
+        """
+        Retry connecting to an external MCP server.
+        Used when a server was unavailable at startup but becomes available later.
+        
+        Returns True if connection successful, False otherwise.
+        """
+        # Check if server is already connected
+        if server_name in self.client_manager.list_clients():
+            logger.debug(f"Server {server_name} already has an active client")
+            return True
+        
+        # Check if server is configured
+        server_config = self.configured_external_servers.get(server_name)
+        if not server_config:
+            logger.warning(f"Server {server_name} not found in configured external servers")
+            return False
+        
+        # Try to connect
+        try:
+            ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
+            timeout = self.mcp_system_config.external_servers.connection.timeout if (
+                self.mcp_system_config.external_servers and 
+                self.mcp_system_config.external_servers.connection
+            ) else 30.0
+            
+            await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
+            logger.info(f"Successfully reconnected to external MCP server: {server_name}")
+            
+            # Invalidate tools cache to pick up new tools
+            await self.invalidate_tools_cache()
+            
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to reconnect to external MCP server {server_name}: {e}")
+            return False
+
     def get_app(self) -> FastAPI:
         """Get the FastAPI app with MCP endpoints"""
         return self.http_server.app
@@ -221,7 +258,9 @@ class MCPIntegration:
     async def invalidate_tools_cache(self) -> None:
         """Invalidate the tools cache when connections change"""
         await self._tool_cache.invalidate()
-        logger.debug("Tools cache invalidated")
+        # Also invalidate the client manager's cache
+        self.client_manager.invalidate_tools_cache()
+        logger.debug("Tools cache invalidated (both integration and client manager)")
 
     async def get_cache_statistics(self) -> Dict[str, Any]:
         """Get tool cache statistics for monitoring"""

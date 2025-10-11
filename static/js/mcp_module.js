@@ -4,6 +4,7 @@ window.AgentSystem = window.AgentSystem || {};
 window.AgentSystem.MCP = {
   // Store the original server data for filtering
   originalServerData: null,
+  lastRefreshTime: null,
   
   showPanel: function() {
     console.log('MCP panel requested');
@@ -11,7 +12,8 @@ window.AgentSystem.MCP = {
     // Create header content with filter and refresh button (removed auto-refresh)
     const headerContent = `
       <input id="mcpFilterInput" type="text" placeholder="Filter servers/tools..." class="filter-input" title="Filter by server or tool name" />
-      <button id="mcpRefreshBtn" class="icon-btn" title="Refresh now" aria-label="Refresh now">
+      <span id="mcpLastRefresh" class="last-refresh" style="font-size: 0.8em; color: #999; margin-right: 8px;"></span>
+      <button id="mcpRefreshBtn" class="icon-btn" title="Refresh now (invalidates cache)" aria-label="Refresh now">
         <svg class="mcp-refresh-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M21 3v6h-6" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -40,8 +42,8 @@ window.AgentSystem.MCP = {
     }
     
     if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => {
-        this.loadMCPData(panel);
+      refreshBtn.addEventListener('click', async () => {
+        await this.refreshMCPData(panel);
       });
     }
     
@@ -49,16 +51,63 @@ window.AgentSystem.MCP = {
     this.loadMCPData(panel);
   },
   
-  loadMCPData: async function(panel) {
+  refreshMCPData: async function(panel) {
     try {
-      console.log('Loading MCP data...');
+      console.log('Refreshing MCP data (forcing fresh fetch with connectivity check)...');
       const refreshBtn = panel.querySelector('#mcpRefreshBtn');
       if (refreshBtn) {
         refreshBtn.classList.add('loading');
         refreshBtn.disabled = true;
       }
       
-      const response = await fetch('/mcp/status');
+      // Update last refresh time
+      this.lastRefreshTime = new Date();
+      this.updateRefreshTimestamp(panel);
+      
+      // Fetch with force_refresh=true parameter to invalidate cache and check connectivity
+      await this.loadMCPData(panel, true);
+      
+    } catch (error) {
+      console.error('Failed to refresh MCP data:', error);
+      // Still try to load data even if refresh failed
+      await this.loadMCPData(panel, false);
+    }
+  },
+  
+  updateRefreshTimestamp: function(panel) {
+    const timestampElement = panel.querySelector('#mcpLastRefresh');
+    if (timestampElement && this.lastRefreshTime) {
+      const now = new Date();
+      const diffMs = now - this.lastRefreshTime;
+      const diffSec = Math.floor(diffMs / 1000);
+      
+      let timeText = '';
+      if (diffSec < 60) {
+        timeText = 'Just now';
+      } else if (diffSec < 3600) {
+        const mins = Math.floor(diffSec / 60);
+        timeText = `${mins}m ago`;
+      } else {
+        const hours = Math.floor(diffSec / 3600);
+        timeText = `${hours}h ago`;
+      }
+      
+      timestampElement.textContent = `Updated: ${timeText}`;
+    }
+  },
+  
+  loadMCPData: async function(panel, forceRefresh = false) {
+    try {
+      console.log(`Loading MCP data... (force_refresh=${forceRefresh})`);
+      const refreshBtn = panel.querySelector('#mcpRefreshBtn');
+      if (refreshBtn) {
+        refreshBtn.classList.add('loading');
+        refreshBtn.disabled = true;
+      }
+      
+      // Add force_refresh parameter to URL if true
+      const url = forceRefresh ? '/mcp/status?force_refresh=true' : '/mcp/status';
+      const response = await fetch(url);
       const data = await response.json();
       
       console.log('MCP data loaded:', data);
@@ -71,6 +120,12 @@ window.AgentSystem.MCP = {
       const body = panel.querySelector('.floating-panel-body');
       const contentDiv = body ? body.querySelector('.panel-content') || body : panel.querySelector('.panel-content') || panel;
       contentDiv.innerHTML = content;
+      
+      // Update refresh timestamp
+      if (!this.lastRefreshTime) {
+        this.lastRefreshTime = new Date();
+      }
+      this.updateRefreshTimestamp(panel);
 
     } catch (error) {
       console.error('Failed to load MCP data:', error);

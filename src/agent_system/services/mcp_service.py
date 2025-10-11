@@ -646,6 +646,23 @@ class MCPService:
                     except Exception as e:
                         logger.debug(f"Failed to get config for {server_name}: {e}")
 
+                    # Check if server is configured but not connected - try to reconnect
+                    if check_connectivity and url and server_name not in connected_servers:
+                        logger.debug(f"Server {server_name} is configured but has no active client, checking connectivity...")
+                        reachable = await self._check_external_connectivity(server_name, url)
+                        if reachable:
+                            logger.info(f"Server {server_name} is reachable but not connected, attempting to connect...")
+                            try:
+                                success = await self._mcp.retry_connect_server(server_name)
+                                if success:
+                                    logger.info(f"Successfully connected to {server_name}")
+                                    # Refresh connected servers and tools after successful connection
+                                    connected_servers = self._mcp.client_manager.list_clients()
+                                    all_tools = await self._mcp.list_all_tools()
+                                    servers_with_tools = all_tools.get("external_servers", {})
+                            except Exception as e:
+                                logger.warning(f"Failed to reconnect to {server_name}: {e}")
+
                     # Get tools
                     tools = servers_with_tools.get(server_name, [])
                     tool_names = [tool["name"] for tool in tools]
@@ -658,15 +675,9 @@ class MCPService:
 
                     # Check connection status
                     if check_connectivity and url:
-                        # Perform real-time connectivity check
+                        # Perform real-time connectivity check (strict mode for refresh)
                         reachable = await self._check_external_connectivity(server_name, url)
-                        if reachable:
-                            connected = True
-                        elif server_name in connected_servers and len(tool_names) > 0:
-                            # Server has active client with tools
-                            connected = True
-                        else:
-                            connected = False
+                        connected = reachable  # Trust only the actual connectivity check
                     else:
                         # Fast path: check if has active client with tools
                         connected = server_name in connected_servers and len(tool_names) > 0

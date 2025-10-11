@@ -1315,13 +1315,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return {"error": f"Failed to clear context usage history: {str(e)}"}
 
     @app.get("/mcp/status")
-    async def mcp_status():
-        """Get MCP server status including plugins and external servers."""
+    async def mcp_status(force_refresh: bool = False):
+        """Get MCP server status including plugins and external servers.
+        
+        Args:
+            force_refresh: If True, invalidates cache before fetching status
+        """
         try:
             logger = logging.getLogger(__name__)
             
             # Use MCPService for comprehensive status
-            global _mcp_service, _app_registry
+            global _mcp_service, _app_registry, _mcp_integration
             
             if not _mcp_service:
                 return {"error": "MCP service not initialized"}
@@ -1329,10 +1333,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if not _app_registry:
                 return {"error": "Registry not initialized"}
             
+            # If force_refresh requested, invalidate cache first
+            if force_refresh and _mcp_integration:
+                try:
+                    await _mcp_integration.invalidate_tools_cache()
+                    logger.debug("Cache invalidated due to force_refresh=True")
+                except Exception as e:
+                    logger.warning(f"Failed to invalidate cache: {e}")
+            
             # Delegate to MCPService
             status = await _mcp_service.get_comprehensive_status(
                 registry=_app_registry,
-                check_connectivity=True
+                check_connectivity=True  # Always check connectivity for accurate status
             )
             
             return status
