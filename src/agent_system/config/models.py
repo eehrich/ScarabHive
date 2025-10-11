@@ -152,6 +152,26 @@ class AgentConfig(BaseModel):
     tools: ToolConfig = Field(default_factory=ToolConfig)
     context_management: ContextManagementConfig = Field(default_factory=ContextManagementConfig)
     system_template: Optional[str] = None  # Path to system prompt template file
+    system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
+
+
+class ConfigBasedAgentDefinition(BaseModel):
+    """Definition for a configuration-based agent (Epic 0043).
+    
+    Config-based agents are defined purely in YAML configuration without requiring
+    Python plugin code. They are suitable for agents that differ only in:
+    - System prompt/instructions
+    - Tool allow/block lists
+    - LLM profile selection
+    - Max steps configuration
+    
+    For agents requiring custom logic, use the plugin system instead.
+    """
+    enabled: bool = True  # Whether this agent is enabled
+    description: str  # Human-readable description of the agent's purpose
+    base_type: str = "agent"  # Base agent class to use ("agent" or "basic_agent")
+    agent_config: AgentConfig  # Agent configuration (tools, LLM, prompts, etc.)
+    metadata: Optional[Dict[str, Any]] = None  # Optional metadata (author, version, tags, etc.)
 
 
 class MCPConfig(BaseModel):
@@ -251,6 +271,7 @@ class MCPSystemConfig(BaseModel):
     external_servers: ExternalServersConfig = Field(default_factory=ExternalServersConfig)
     servers: Dict[str, MCPConfig] = Field(default_factory=dict)  # Named MCP server configurations
     server_mode: MCPServerModeConfig = Field(default_factory=MCPServerModeConfig)  # MCP server mode configuration
+    config_agents: Dict[str, ConfigBasedAgentDefinition] = Field(default_factory=dict)  # Config-based agents (Epic 0043)
 
 
 # ===========================
