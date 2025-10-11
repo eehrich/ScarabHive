@@ -146,7 +146,7 @@ llm_system:
       model_ref: gpt-4.1
       description: "Expensive model with big context window, legacy and medium powerful."
       max_steps: 100
-    deepseek:
+    chat:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks"
       max_steps: 100
