@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -451,13 +452,30 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
             print(json.dumps(config_dict, indent=2, ensure_ascii=False))
             
         elif action == "start":
-            print(json.dumps({
-                "error": "Use 'uvicorn' to start the MCP server API",
-                "command": "uvicorn agent_system.agent.interface_api:build_app --factory --host {host} --port {port}".format(
-                    host=getattr(args, 'server_host', '127.0.0.1'),
-                    port=getattr(args, 'server_port', 8000)
-                )
-            }, indent=2, ensure_ascii=False))
+            host = getattr(args, 'server_host', '127.0.0.1')
+            port = getattr(args, 'server_port', 8000)
+            log_level = os.getenv('AGENT_LOG_LEVEL', 'info').lower()
+            
+            print(f"Starting MCP server on {host}:{port}...")
+            print(f"Log level: {log_level}")
+            print("Press Ctrl+C to stop the server\n")
+            
+            try:
+                # Start uvicorn with the same environment
+                cmd = [
+                    sys.executable, "-m", "uvicorn",
+                    "agent_system.agent.interface_api:build_app",
+                    "--factory",
+                    "--host", str(host),
+                    "--port", str(port),
+                    "--log-level", log_level
+                ]
+                subprocess.run(cmd, check=True)
+            except KeyboardInterrupt:
+                print("\nServer stopped by user")
+            except subprocess.CalledProcessError as e:
+                print(f"Error starting server: {e}")
+                sys.exit(1)
             
         elif action == "stop":
             print(json.dumps({
