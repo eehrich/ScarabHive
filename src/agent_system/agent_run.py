@@ -20,7 +20,7 @@ import asyncio
 import logging
 import sys
 
-from .config.settings import load_settings, get_mcp_config_by_name
+from .config.settings import load_settings
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .servers.agent.server import Agent
@@ -91,70 +91,13 @@ async def initialize_system(config):
 
 
 async def create_agent(config, registry, agent_name: str):
-    """Create and initialize the specified agent."""
-    from .config.models import MCPConfig
-    from .plugins.config_agent_discovery import discover_config_agents
+    """Create and initialize the specified agent.
     
-    # Try to get MCP config from plugins.servers first
-    mcp_config = get_mcp_config_by_name(agent_name, config)
-    
-    # If not found in plugins.servers, check if it's a config-based agent
-    if not mcp_config:
-        config_agents = discover_config_agents(config.agents)
-        if agent_name in config_agents:
-            # Found as config-based agent - get its definition
-            agent_def = config.agents.get(agent_name) if config.agents else None
-            if agent_def and hasattr(agent_def, 'agent_config'):
-                # Create MCPConfig from config agent definition
-                mcp_config = MCPConfig(
-                    type=agent_def.base_type if hasattr(agent_def, 'base_type') else "agent",
-                    enabled=True,
-                    agent_config=agent_def.agent_config
-                )
-                logger.info(f"Using config-based agent '{agent_name}' (base_type={agent_def.base_type})")
-    
-    if not mcp_config:
-        # Build helpful error message
-        available_agents = []
-        
-        # Get agents from plugins.servers
-        if config.plugins and config.plugins.servers:
-            available_agents.extend([
-                name for name, server in config.plugins.servers.items()
-                if server.enabled and server.agent_config is not None
-            ])
-        
-        # Get config-based agents
-        if config.agents:
-            config_agents = discover_config_agents(config.agents)
-            available_agents.extend(config_agents.keys())
-        
-        # Remove duplicates and sort
-        available_agents = sorted(set(available_agents))
-        
-        error_msg = f"Agent '{agent_name}' not found in configuration."
-        if available_agents:
-            error_msg += "\n\nAvailable agents:\n  " + "\n  ".join(available_agents)
-        else:
-            error_msg += "\n\nNo agents are configured. Check your config files."
-        
-        raise ValueError(error_msg)
-    
-    if not mcp_config.agent_config:
-        raise ValueError(f"Agent '{agent_name}' has no agent_config section")
-    
-    # Create the agent using the new signature:
-    # Agent(name, system_config, mcp_config, registry)
-    agent = Agent(agent_name, config, mcp_config, registry)
-    
-    # Make agent public so it shows up in tool lists if needed
-    agent._mcp_public = True
-    
-    # Register the agent in the registry
-    registry.register(agent_name, agent)
-    
-    logger.info(f"Created agent '{agent_name}' with LLM profile '{mcp_config.agent_config.llm_profile}'")
-    return agent
+    This function is a wrapper around the shared agent_runner.create_and_register_agent
+    to maintain backward compatibility with existing code.
+    """
+    from .agent_runner import create_and_register_agent
+    return await create_and_register_agent(config, registry, agent_name)
 
 
 async def run_agent_request(agent: Agent, request: str, llm_override=None, llm_profile_info: str | None = None) -> dict:

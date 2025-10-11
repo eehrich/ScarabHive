@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union, Optional
 
 try:
     from tabulate import tabulate  # optional dependency for pretty tables
@@ -683,6 +683,9 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="Run an agent task (default)")
     run_parser.add_argument("task", nargs="?", default="What can you do?", help="Task to run")
     run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
+    run_parser.add_argument("--agent", dest="agent_override", help="Override the default agent (use agent name from config)")
+    run_parser.add_argument("--llm", dest="llm_profile_override", help="Override the LLM profile (use profile name from llm.yaml)")
+
 
 
     # plugins subcommand
@@ -1434,8 +1437,8 @@ def main() -> None:
         logger.warning("Failed to initialize MCP integration: %s", e)
         vprint(f"[cli] Warning: MCP integration failed: {e}")
     
-    # Determine CLI agent name from config
-    entry_name = config.default_agent
+    # Determine CLI agent name from config (can be overridden with --agent)
+    entry_name = getattr(args, "agent_override", None) or config.default_agent
 
     # Get or create the agent
     from .servers.agent.server import Agent as _Agent
@@ -1498,7 +1501,9 @@ def main() -> None:
         agent: Agent, 
         task: Union[str, ChatMessage], 
         show_mcp: bool = False, 
-        show_status: bool = True
+        show_status: bool = True,
+        llm_override=None,
+        llm_profile_info: Optional[str] = None
     ) -> dict:
         """Stream and run agent with status display.
         
@@ -1507,6 +1512,8 @@ def main() -> None:
             task: Either a string task or ChatMessage with multimodal content
             show_mcp: Whether to show MCP call details
             show_status: Whether to show status events
+            llm_override: Optional LLM client to override agent's default
+            llm_profile_info: Optional profile info string for logging
         """
         # Extract task text for logging
         if isinstance(task, ChatMessage):
@@ -1614,7 +1621,7 @@ def main() -> None:
                 logger.warning(f"Failed to create SSE subscriber task: {e}", exc_info=True)
                 sse_task = None
         try:
-            async for ev in agent.run_events(task):
+            async for ev in agent.run_events(task, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 t = ev.get("type")
                 if t == "mcp_call" and show_mcp:
                     srv = ev.get("server")
@@ -1722,15 +1729,55 @@ def main() -> None:
     # Execute with new status-aware streaming
     show_mcp = getattr(args, "show_mcp", False)
     show_status = not getattr(args, "no_status", False)
+    
+    # Create LLM override if --llm was specified
+    llm_override = None
+    llm_profile_info = None
+    llm_profile_override = getattr(args, "llm_profile_override", None)
+    
+    if llm_profile_override:
+        if config.llm_system and config.llm_system.profiles:
+            if llm_profile_override not in config.llm_system.profiles:
+                available_profiles = sorted(config.llm_system.profiles.keys())
+                error_msg = f"ERROR: LLM profile '{llm_profile_override}' not found in configuration."
+                if available_profiles:
+                    error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
+                print(error_msg, file=sys.stderr)
+                return
+            
+            try:
+                # Resolve profile to model config using the factory
+                from .llm.factory import resolve_llm_config_for_agent
+                from .config.models import AgentConfig
+                from .llm.clients import make_llm
+                
+                # Create temporary agent config with override profile
+                temp_agent_config = AgentConfig(llm_profile=llm_profile_override)
+                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
+                
+                # Create new LLM with resolved config
+                llm_override = make_llm(**llm_kwargs)
+                
+                # Build profile info string for logging
+                model = llm_kwargs.get('model', 'unknown')
+                provider = llm_kwargs.get('provider', 'unknown')
+                llm_profile_info = f"{llm_profile_override}:{provider}/{model}"
+                
+                logger.info(f"Using LLM override: {llm_profile_info}")
+                vprint(f"[cli] Using LLM profile: {llm_profile_info}")
+            except Exception as e:
+                logger.error(f"Failed to create LLM override: {e}", exc_info=True)
+                print(f"ERROR: Failed to apply LLM profile '{llm_profile_override}': {str(e)}", file=sys.stderr)
+                return
 
     try:
         if getattr(args, "raw", False):
             # Raw mode: use run_events with result collection
             from .servers.agent.result_utils import collect_final_result
             
-            result = asyncio.run(collect_final_result(agent, task_input))
+            result = asyncio.run(collect_final_result(agent, task_input, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
         else:
-            result = asyncio.run(_stream_and_run_with_status(agent, task_input, show_mcp=show_mcp, show_status=show_status))
+            result = asyncio.run(_stream_and_run_with_status(agent, task_input, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
         vprint("[cli] done")
         logger.info("Task completed")
     finally:
