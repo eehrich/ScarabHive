@@ -1466,10 +1466,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/mcp/sse")
     async def mcp_server_sse(request: Request):
         """
-        MCP server SSE stream endpoint (optional).
+        MCP server SSE stream endpoint (MCP spec compliant).
         
-        Provides standalone SSE stream for server-initiated messages.
-        Clients can connect to this endpoint to receive asynchronous updates.
+        According to MCP spec, this endpoint:
+        1. Accepts client SSE connections
+        2. Sends an 'endpoint' event with the POST URI for client messages
+        3. Sends server messages as 'message' events (tools/resources/prompts notifications)
+        
+        This implements server-initiated notifications for:
+        - tools/list: Tool availability changes
+        - resources/list: Resource availability changes  
+        - prompts/list: Prompt availability changes
+        
+        Spec: https://modelcontextprotocol.io/specification/2024-11-05/basic/transports#http-with-sse
         """
         if not _mcp_server_handler:
             raise HTTPException(
@@ -1477,38 +1486,81 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 detail="MCP server mode is not enabled"
             )
         
-        # Create SSE event generator for keep-alive and server messages
+        logger.info("MCP SSE client connected")
+        
+        # Create SSE event generator following MCP spec
         async def event_generator():
             try:
-                # Send initial connection event
-                connection_data = {
-                    "type": "connection",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "message": "MCP SSE stream connected"
-                }
-                yield f"data: {json.dumps(connection_data, ensure_ascii=False)}\n\n"
+                # 1. Send 'endpoint' event with POST URI (required by MCP spec)
+                endpoint_uri = str(request.url_for("mcp_server_endpoint"))
+                endpoint_event = f"event: endpoint\ndata: {endpoint_uri}\n\n"
+                yield endpoint_event
+                logger.debug(f"Sent endpoint event: {endpoint_uri}")
                 
-                # Keep connection alive with periodic heartbeat
+                # 2. Send initial server capabilities and available tools
+                # Send tools/list notification
+                try:
+                    tools_result = await _mcp_server_handler._handle_tools_list({}, None)
+                    tools_notification = {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/tools/list_changed",
+                        "params": tools_result
+                    }
+                    yield f"event: message\ndata: {json.dumps(tools_notification, ensure_ascii=False)}\n\n"
+                    logger.debug(f"Sent tools list notification: {len(tools_result.get('tools', []))} tools")
+                except Exception as e:
+                    logger.error(f"Failed to send tools list: {e}")
+                
+                # Send resources/list notification
+                try:
+                    resources_result = await _mcp_server_handler._handle_resources_list({}, None)
+                    resources_notification = {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/resources/list_changed",
+                        "params": resources_result
+                    }
+                    yield f"event: message\ndata: {json.dumps(resources_notification, ensure_ascii=False)}\n\n"
+                    logger.debug(f"Sent resources list notification")
+                except Exception as e:
+                    logger.debug(f"Resources not available: {e}")
+                
+                # Send prompts/list notification
+                try:
+                    prompts_result = await _mcp_server_handler._handle_prompts_list({}, None)
+                    prompts_notification = {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/prompts/list_changed",
+                        "params": prompts_result
+                    }
+                    yield f"event: message\ndata: {json.dumps(prompts_notification, ensure_ascii=False)}\n\n"
+                    logger.debug(f"Sent prompts list notification")
+                except Exception as e:
+                    logger.debug(f"Prompts not available: {e}")
+                
+                # 3. Keep connection alive with periodic heartbeats
                 while True:
                     # Check if client disconnected
                     if await request.is_disconnected():
-                        logger.debug("SSE client disconnected")
+                        logger.debug("MCP SSE client disconnected")
                         break
                     
-                    # Send heartbeat every 30 seconds
-                    heartbeat_data = {
-                        "type": "heartbeat",
-                        "timestamp": datetime.utcnow().isoformat()
+                    # Send heartbeat as a 'message' event with JSON-RPC notification
+                    heartbeat_message = {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/heartbeat",
+                        "params": {
+                            "timestamp": datetime.now().astimezone().isoformat()
+                        }
                     }
-                    yield f"data: {json.dumps(heartbeat_data, ensure_ascii=False)}\n\n"
+                    yield f"event: message\ndata: {json.dumps(heartbeat_message, ensure_ascii=False)}\n\n"
                     
-                    # Wait before next heartbeat
+                    # Wait before next heartbeat (30 seconds)
                     await asyncio.sleep(30)
                     
             except asyncio.CancelledError:
-                logger.debug("SSE stream cancelled")
+                logger.debug("MCP SSE stream cancelled")
             except Exception as e:
-                logger.exception("SSE stream error: %s", e)
+                logger.exception("MCP SSE stream error: %s", e)
         
         return StreamingResponse(
             event_generator(),
