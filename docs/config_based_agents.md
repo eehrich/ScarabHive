@@ -17,12 +17,12 @@ For agents requiring custom logic or advanced behaviors, use the [Plugin System]
 
 ## Quick Start
 
-### 1. Define Your Agent in `config/mcp.yaml`
+### 1. Define Your Agent in `config/agents.yaml`
 
-Add a new entry under the `config_agents` section:
+Add a new entry under the `agents` section:
 
 ```yaml
-config_agents:
+agents:
   my_financial_analyst:
     enabled: true
     description: "Professional financial analyst for stock market analysis"
@@ -607,7 +607,7 @@ variables:
 
 Config agents are discovered at bootstrap. To add/modify agents dynamically:
 
-1. Edit `config/mcp.yaml`
+1. Edit `config/agents.yaml`
 2. Restart application or reload config
 3. Validate with `config-agents validate`
 
@@ -668,8 +668,10 @@ Keep plugin if your agent:
 
 ## Support
 
+
 For issues, questions, or contributions:
 - Check troubleshooting section above
 - Validate configuration: `config-agents validate`
-- Review example agents in `config/mcp.yaml`
+- Review example agents in `config/agents.yaml`
 - See Epic 0043 in `backlog.md` for development status
+
