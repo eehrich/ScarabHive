@@ -380,7 +380,11 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 rows = []
                 for tool in tools:
                     full_name = f"{tool['plugin']}.{tool['name']}"
-                    rows.append((full_name, tool['description']))
+                    # Limit description to 120 chars
+                    desc = tool['description']
+                    if len(desc) > 120:
+                        desc = desc[:117] + "..."
+                    rows.append((full_name, desc))
                 
                 headers = ["TOOL NAME", "DESCRIPTION"]
                 
