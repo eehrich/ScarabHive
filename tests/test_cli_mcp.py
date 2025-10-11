@@ -6,18 +6,18 @@ from unittest.mock import patch, AsyncMock
 
 from agent_system.cli import main
 from agent_system.mcp.integration import MCPIntegration
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig, RemoteMCPConfig
 
 
 @pytest.fixture
 def mock_config():
     """Mock AgentSystemConfig with MCP settings using current models."""
-    mcp_sys = PluginsConfig(
+    plugins = PluginsConfig(
         plugin_dirs=["src/plugins"],
         servers={},
         default_config=MCPConfig()
     )
-    config = AgentSystemConfig(mcp_system=mcp_sys)
+    config = AgentSystemConfig(plugins=plugins)
     return config
 
 

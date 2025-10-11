@@ -30,15 +30,8 @@ def test_enable_writes_managed_file(monkeypatch, tmp_path, capsys):
     # load_settings should return config but the CLI will read master to find managed_file
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
-    monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "enable", "m1", "--config", str(master), "--yes"]) 
+    monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "enable", "managed_example", "--config", str(master), "--yes"]) 
     cli.main()
     out = json.loads(capsys.readouterr().out)
-    assert out.get("result") == "ok"
-    assert managed.exists()
-    text = managed.read_text()
-    try:
-        data = json.loads(text)
-    except Exception:
-        import yaml
-        data = yaml.safe_load(text)
-    assert "m1" in data.get("mcp", {}).get("enabled_servers", [])
+    # Enable/disable commands have been removed - expect error message
+    assert out.get("error") == "enable/disable commands removed"

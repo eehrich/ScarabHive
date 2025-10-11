@@ -41,8 +41,8 @@ def test_cli_invokes_weather_tool(monkeypatch, tmp_path):
     tmp_config = tmp_path / "config"
     tmp_config.mkdir()
 
-    # Copy baseline configs
-    for name in ["config.yaml", "llm.yaml", "mcp.yaml"]:
+    # Copy baseline configs (using new split config structure)
+    for name in ["config.yaml", "llm.yaml", "plugins.yaml", "mcp_servers.yaml", "mcp_server_mode.yaml"]:
         src = repo_root / "config" / name
         dst = tmp_config / name
         dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")

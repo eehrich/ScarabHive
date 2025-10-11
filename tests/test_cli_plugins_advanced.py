@@ -37,8 +37,8 @@ def test_cli_plugins_enable_dry_run(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "enable", "adv_example", "--config", str(cfg_file), "--dry-run"]) 
     cli.main()
     out = json.loads(capsys.readouterr().out)
-    assert out["dry_run"] is True
-    assert "adv_example" in out["preview_enabled"]
+    # Enable/disable commands have been removed - expect error message
+    assert out.get("error") == "enable/disable commands removed"
 
 
 def test_cli_plugins_enable_yes(monkeypatch, tmp_path, capsys):
@@ -58,8 +58,8 @@ def test_cli_plugins_enable_yes(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "enable", "adv_yes", "--config", str(cfg_file), "--yes"]) 
     cli.main()
     out = json.loads(capsys.readouterr().out)
-    assert out["result"] == "ok"
-    assert "adv_yes" in out["enabled"]
+    # Enable/disable commands have been removed - expect error message
+    assert out.get("error") == "enable/disable commands removed"
 
 def test_cli_plugins_status(monkeypatch, tmp_path, capsys):
     pdir = tmp_path / "plugins"

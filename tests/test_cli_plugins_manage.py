@@ -45,15 +45,15 @@ def test_cli_plugins_enable_disable(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "enable", "pm_example", "--config", str(cfg_file)])
     cli.main()
     out = json.loads(capsys.readouterr().out)
-    assert out["result"] == "ok"
-    assert "pm_example" in out["enabled"]
+    # Enable/disable commands have been removed - expect error message
+    assert out.get("error") == "enable/disable commands removed"
 
     # Disable the plugin
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "disable", "pm_example", "--config", str(cfg_file)])
     cli.main()
     out2 = json.loads(capsys.readouterr().out)
-    assert out2["result"] == "ok"
-    assert "pm_example" not in out2["enabled"]
+    # Enable/disable commands have been removed - expect error message
+    assert out2.get("error") == "enable/disable commands removed"
 
 
 def test_cli_plugins_search(monkeypatch, tmp_path, capsys):

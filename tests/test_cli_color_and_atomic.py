@@ -39,10 +39,6 @@ def test_enable_atomic_write(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "enable", "example", "--config", str(cfg), "--yes"]) 
     cli.main()
     out = json.loads(capsys.readouterr().out)
-    assert out.get("result") == "ok"
-    import yaml
-    data = yaml.safe_load(managed.read_text())
-    assert "example" in data.get("mcp", {}).get("enabled_servers", [])
-    # No backup rotation files should be created for YAML-managed files
-    bak = managed.with_suffix(".yaml.bak")
-    assert not bak.exists()
+    # Enable/disable commands have been removed - expect error message
+    assert out.get("error") == "enable/disable commands removed"
+    assert "config/plugins.yaml" in out.get("message", "")

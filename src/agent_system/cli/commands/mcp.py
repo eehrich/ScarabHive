@@ -380,7 +380,7 @@ async def _list_server_tools(mcp_integration: MCPIntegration, server_name: str, 
 
 async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
     """Add a tool to the allowed_tools list for a server."""
-    cfg_path = Path("config/mcp.yaml")
+    cfg_path = Path("config/mcp_servers.yaml")
     if not cfg_path.exists():
         print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
         return
@@ -391,15 +391,18 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
         print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
         return
 
-    mcp_block = raw.get("mcp", raw)
-    servers = mcp_block.get("external_servers", {})
-    if server_name not in servers:
+    # New structure: top-level external_servers key
+    servers_block = raw.get("external_servers", {})
+    remote_servers = servers_block.get("remote_servers", {})
+    
+    if server_name not in remote_servers:
         print(json.dumps({"error": f"Server {server_name} not found in config"}, ensure_ascii=False))
         return
 
-    server_cfg = servers[server_name] or {}
-    allowed = list(server_cfg.get("allowed_tools") or [])
-    blocked = list(server_cfg.get("blocked_tools") or [])
+    server_cfg = remote_servers[server_name] or {}
+    tools_block = server_cfg.get("tools", {})
+    allowed = list(tools_block.get("allowed", []))
+    blocked = list(tools_block.get("blocked", []))
 
     if tool_name in allowed:
         print(json.dumps({"message": "Tool already allowed", "server": server_name, "tool": tool_name}, ensure_ascii=False))
@@ -408,17 +411,14 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     # Ensure tool is not in blocked list
     if tool_name in blocked:
         blocked.remove(tool_name)
-        server_cfg["blocked_tools"] = blocked
+        tools_block["blocked"] = blocked
 
     allowed.append(tool_name)
-    server_cfg["allowed_tools"] = allowed
-    servers[server_name] = server_cfg
-    mcp_block["external_servers"] = servers
-    # Put back into top-level structure if original used mcp key
-    if "mcp" in raw:
-        raw["mcp"] = mcp_block
-    else:
-        raw = mcp_block
+    tools_block["allowed"] = allowed
+    server_cfg["tools"] = tools_block
+    remote_servers[server_name] = server_cfg
+    servers_block["remote_servers"] = remote_servers
+    raw["external_servers"] = servers_block
 
     try:
         data = yaml.safe_dump(raw, sort_keys=False)
@@ -430,7 +430,7 @@ async def _allow_server_tool(mcp_integration: MCPIntegration, server_name: str, 
 
 async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, tool_name: str) -> None:
     """Add a tool to the blocked_tools list for a server."""
-    cfg_path = Path("config/mcp.yaml")
+    cfg_path = Path("config/mcp_servers.yaml")
     if not cfg_path.exists():
         print(json.dumps({"error": f"Configuration file {cfg_path} not found"}, ensure_ascii=False))
         return
@@ -441,15 +441,18 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
         print(json.dumps({"error": f"Failed to read config: {str(e)}"}, ensure_ascii=False))
         return
 
-    mcp_block = raw.get("mcp", raw)
-    servers = mcp_block.get("external_servers", {})
-    if server_name not in servers:
+    # New structure: top-level external_servers key
+    servers_block = raw.get("external_servers", {})
+    remote_servers = servers_block.get("remote_servers", {})
+    
+    if server_name not in remote_servers:
         print(json.dumps({"error": f"Server {server_name} not found in config"}, ensure_ascii=False))
         return
 
-    server_cfg = servers[server_name] or {}
-    allowed = list(server_cfg.get("allowed_tools") or [])
-    blocked = list(server_cfg.get("blocked_tools") or [])
+    server_cfg = remote_servers[server_name] or {}
+    tools_block = server_cfg.get("tools", {})
+    allowed = list(tools_block.get("allowed", []))
+    blocked = list(tools_block.get("blocked", []))
 
     if tool_name in blocked:
         print(json.dumps({"message": "Tool already blocked", "server": server_name, "tool": tool_name}, ensure_ascii=False))
@@ -458,16 +461,14 @@ async def _block_server_tool(mcp_integration: MCPIntegration, server_name: str, 
     # Ensure tool is not in allowed list
     if tool_name in allowed:
         allowed.remove(tool_name)
-        server_cfg["allowed_tools"] = allowed
+        tools_block["allowed"] = allowed
 
     blocked.append(tool_name)
-    server_cfg["blocked_tools"] = blocked
-    servers[server_name] = server_cfg
-    mcp_block["external_servers"] = servers
-    if "mcp" in raw:
-        raw["mcp"] = mcp_block
-    else:
-        raw = mcp_block
+    tools_block["blocked"] = blocked
+    server_cfg["tools"] = tools_block
+    remote_servers[server_name] = server_cfg
+    servers_block["remote_servers"] = remote_servers
+    raw["external_servers"] = servers_block
 
     try:
         data = yaml.safe_dump(raw, sort_keys=False)

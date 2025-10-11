@@ -141,7 +141,7 @@ class ToolService:
         Args:
             server_name: Name of the MCP server.
             tool_name: Name of the tool to block.
-            config_path: Path to config file (default: config/mcp.yaml).
+            config_path: Path to config file (default: config/mcp_servers.yaml).
         
         Returns:
             Dictionary with keys:
@@ -158,7 +158,7 @@ class ToolService:
                 "error": f"Server {server_name} not found in configuration"
             }
         
-        cfg_path = config_path or Path("config/mcp.yaml")
+        cfg_path = config_path or Path("config/mcp_servers.yaml")
         if not cfg_path.exists():
             return {
                 "success": False,
@@ -174,9 +174,8 @@ class ToolService:
                 "error": f"Failed to read config: {str(e)}"
             }
         
-        # Navigate YAML structure
-        mcp_block = raw.get("mcp", raw)
-        external_servers_block = mcp_block.get("external_servers", {})
+        # Navigate YAML structure (new structure: top-level external_servers key)
+        external_servers_block = raw.get("external_servers", {})
         remote_servers = external_servers_block.get("remote_servers", {})
         
         if server_name not in remote_servers:
@@ -212,15 +211,10 @@ class ToolService:
         blocked.append(tool_name)
         tools_dict["blocked"] = blocked
         
-        # Update YAML structure
+        # Update YAML structure (new structure: top-level external_servers)
         remote_servers[server_name] = server_cfg
         external_servers_block["remote_servers"] = remote_servers
-        mcp_block["external_servers"] = external_servers_block
-        
-        if "mcp" in raw:
-            raw["mcp"] = mcp_block
-        else:
-            raw = mcp_block
+        raw["external_servers"] = external_servers_block
         
         # Write back to file
         try:
@@ -250,7 +244,7 @@ class ToolService:
         Args:
             server_name: Name of the MCP server.
             tool_name: Name of the tool to allow.
-            config_path: Path to config file (default: config/mcp.yaml).
+            config_path: Path to config file (default: config/mcp_servers.yaml).
         
         Returns:
             Dictionary with keys:
@@ -267,7 +261,7 @@ class ToolService:
                 "error": f"Server {server_name} not found in configuration"
             }
         
-        cfg_path = config_path or Path("config/mcp.yaml")
+        cfg_path = config_path or Path("config/mcp_servers.yaml")
         if not cfg_path.exists():
             return {
                 "success": False,
@@ -283,9 +277,8 @@ class ToolService:
                 "error": f"Failed to read config: {str(e)}"
             }
         
-        # Navigate YAML structure
-        mcp_block = raw.get("mcp", raw)
-        external_servers_block = mcp_block.get("external_servers", {})
+        # Navigate YAML structure (new structure: top-level external_servers key)
+        external_servers_block = raw.get("external_servers", {})
         remote_servers = external_servers_block.get("remote_servers", {})
         
         if server_name not in remote_servers:
@@ -321,15 +314,10 @@ class ToolService:
         allowed.append(tool_name)
         tools_dict["allowed"] = allowed
         
-        # Update YAML structure
+        # Update YAML structure (new structure: top-level external_servers)
         remote_servers[server_name] = server_cfg
         external_servers_block["remote_servers"] = remote_servers
-        mcp_block["external_servers"] = external_servers_block
-        
-        if "mcp" in raw:
-            raw["mcp"] = mcp_block
-        else:
-            raw = mcp_block
+        raw["external_servers"] = external_servers_block
         
         # Write back to file
         try:

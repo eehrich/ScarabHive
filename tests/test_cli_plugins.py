@@ -21,9 +21,9 @@ def test_cli_plugins_list(monkeypatch, tmp_path, capsys):
     # Use new AgentSystemConfig structure
     from agent_system.config.models import (
         AgentSystemConfig, 
-        MCPSystemConfig, 
         LLMSystemConfig, 
-        LLMModelConfig
+        LLMModelConfig,
+        PluginsConfig
     )
 
     cfg = AgentSystemConfig(
