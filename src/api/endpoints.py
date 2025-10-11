@@ -7,6 +7,73 @@ import logging
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+# Pydantic models for API responses
+class MessageResponse(BaseModel):
+    messages: List[Dict[str, Any]]
+    usage_stats: Dict[str, Any]
+    message_count: int
+
+
+class ContextStatsResponse(BaseModel):
+    context_window: Optional[int] = None
+    prediction_threshold: Optional[float] = None
+    summarization_threshold: Optional[float] = None
+    actual_usage: Optional[Dict[str, Any]] = None
+    warning_levels: Optional[Dict[str, Any]] = None
+
+
+class PluginUIMetadata(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+    button_text: str
+    button_icon: Optional[str] = None
+    panel_title: str
+    panel_endpoint: str
+    panel_type: str
+    description: Optional[str] = None
+
+
+class ConfigAgentInfo(BaseModel):
+    """Information about a configuration-based agent"""
+    name: str
+    enabled: bool
+    description: Optional[str] = None
+    base_type: str
+    llm_profile: str
+    max_steps: int
+    system_template: Optional[str] = None
+    has_inline_prompt: bool
+    tools: Optional[Dict[str, List[str]]] = None
+    context_management: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any]
+
+
+class ConfigAgentListResponse(BaseModel):
+    """List of configuration-based agents"""
+    total: int
+    enabled: int
+    disabled: int
+    agents: List[Dict[str, Any]]
+
+
+class ValidationResult(BaseModel):
+    """Validation result for config agents"""
+    agent_name: str
+    valid: bool
+    errors: List[str]
+
+
+class ValidationResponse(BaseModel):
+    """Response for config agents validation"""
+    total: int
+    passed: int
+    failed: int
+    results: List[ValidationResult]
+
+
+# Helper functions
 def get_agent():
     """Get the current agent instance from the global registry."""
     try:
@@ -17,17 +84,18 @@ def get_agent():
         pass
     return None
 
-class MessageResponse(BaseModel):
-    messages: List[Dict[str, Any]]
-    usage_stats: Dict[str, Any]
-    message_count: int
 
-class ContextStatsResponse(BaseModel):
-    context_window: Optional[int] = None
-    prediction_threshold: Optional[float] = None
-    summarization_threshold: Optional[float] = None
-    actual_usage: Optional[Dict[str, Any]] = None
-    warning_levels: Optional[Dict[str, Any]] = None
+def get_config():
+    """Get the current system configuration."""
+    try:
+        from agent_system.config.settings import load_settings
+        return load_settings()
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}")
+        return None
+
+
+# Existing endpoints
 
 @router.get("/api/debug/messages", response_model=MessageResponse)
 async def get_debug_messages():
@@ -132,16 +200,6 @@ async def get_version():
         "service": "agent-system"
     }
 
-class PluginUIMetadata(BaseModel):
-    id: str
-    name: str
-    enabled: bool
-    button_text: str
-    button_icon: Optional[str] = None
-    panel_title: str
-    panel_endpoint: str
-    panel_type: str
-    description: Optional[str] = None
 
 @router.get("/api/plugins/ui", response_model=List[PluginUIMetadata])
 async def get_plugin_ui_metadata():
@@ -220,3 +278,127 @@ async def get_plugin_ui_metadata():
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve plugin UI metadata: {str(e)}")
+
+
+# Configuration-Based Agents Endpoints (Epic 0043)
+
+@router.get("/api/config-agents", response_model=ConfigAgentListResponse)
+async def list_config_agents():
+    """List all configuration-based agents."""
+    try:
+        config = get_config()
+        if not config or not config.mcp_system:
+            return ConfigAgentListResponse(total=0, enabled=0, disabled=0, agents=[])
+        
+        from agent_system.plugins.config_agent_discovery import list_config_agents as list_agents
+        agents_list = list_agents(config.mcp_system)
+        
+        enabled_count = sum(1 for a in agents_list if a.get('enabled', False))
+        disabled_count = len(agents_list) - enabled_count
+        
+        return ConfigAgentListResponse(
+            total=len(agents_list),
+            enabled=enabled_count,
+            disabled=disabled_count,
+            agents=agents_list
+        )
+    except Exception as e:
+        logger.error(f"Error listing config agents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/config-agents/{agent_name}", response_model=ConfigAgentInfo)
+async def get_config_agent_details(agent_name: str):
+    """Get detailed information about a specific configuration-based agent."""
+    try:
+        config = get_config()
+        if not config or not config.mcp_system:
+            raise HTTPException(status_code=404, detail="Configuration not found")
+        
+        from agent_system.plugins.config_agent_discovery import get_config_agent_info
+        
+        try:
+            info = get_config_agent_info(agent_name, config.mcp_system)
+            return ConfigAgentInfo(**info)
+        except KeyError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Config agent '{agent_name}' not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting config agent details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/config-agents/validate/all", response_model=ValidationResponse)
+async def validate_all_config_agents():
+    """Validate all configuration-based agents."""
+    try:
+        config = get_config()
+        if not config or not config.mcp_system:
+            return ValidationResponse(total=0, passed=0, failed=0, results=[])
+        
+        from agent_system.plugins.config_agent_validation import validate_all_config_agents as validate_all
+        
+        # Get LLM profiles for validation
+        llm_profiles = list(config.llm_system.profiles.keys()) if config.llm_system else None
+        
+        validation_results = validate_all(config.mcp_system, llm_profiles)
+        
+        results = [
+            ValidationResult(
+                agent_name=name,
+                valid=len(errors) == 0,
+                errors=errors
+            )
+            for name, errors in validation_results.items()
+        ]
+        
+        passed = sum(1 for r in results if r.valid)
+        failed = len(results) - passed
+        
+        return ValidationResponse(
+            total=len(results),
+            passed=passed,
+            failed=failed,
+            results=results
+        )
+    except Exception as e:
+        logger.error(f"Error validating config agents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/config-agents/validate/{agent_name}", response_model=ValidationResult)
+async def validate_config_agent(agent_name: str):
+    """Validate a specific configuration-based agent."""
+    try:
+        config = get_config()
+        if not config or not config.mcp_system:
+            raise HTTPException(status_code=404, detail="Configuration not found")
+        
+        if not config.mcp_system.config_agents or agent_name not in config.mcp_system.config_agents:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Config agent '{agent_name}' not found"
+            )
+        
+        from agent_system.plugins.config_agent_validation import validate_config_agent as validate_agent
+        
+        # Get LLM profiles for validation
+        llm_profiles = list(config.llm_system.profiles.keys()) if config.llm_system else None
+        
+        definition = config.mcp_system.config_agents[agent_name]
+        errors = validate_agent(agent_name, definition, llm_profiles)
+        
+        return ValidationResult(
+            agent_name=agent_name,
+            valid=len(errors) == 0,
+            errors=errors
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating config agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
