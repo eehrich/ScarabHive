@@ -264,8 +264,34 @@ class MCPServerModeConfig(BaseModel):
     max_concurrent_sessions: int = 100  # Maximum concurrent MCP client sessions
 
 
+class PluginsConfig(BaseModel):
+    """Configuration for local plugins (matches config/plugins.yaml)"""
+    plugin_dirs: List[str] = Field(default_factory=list)
+    default_config: MCPConfig = Field(default_factory=MCPConfig)
+    servers: Dict[str, MCPConfig] = Field(default_factory=dict)  # Named MCP server configurations
+
+
+class MCPServersConfig(BaseModel):
+    """Configuration for external MCP servers (matches config/mcp_servers.yaml)"""
+    connection: ExternalServerConnectionConfig = Field(default_factory=ExternalServerConnectionConfig)
+    cache: ExternalServerCacheConfig = Field(default_factory=ExternalServerCacheConfig)
+    remote_servers: Dict[str, RemoteMCPConfig] = Field(default_factory=dict)
+
+
+class AgentsConfig(BaseModel):
+    """Configuration for config-based agents (matches config/agents.yaml)"""
+    # This is a flat dict of agent definitions (no wrapper needed)
+    # Will be loaded as Dict[str, ConfigBasedAgentDefinition]
+    pass
+
+
+# Backward compatibility: Keep MCPSystemConfig for transition period
 class MCPSystemConfig(BaseModel):
-    """Complete MCP system configuration (matches type comment in mcp.yaml)"""
+    """
+    DEPRECATED: Old monolithic MCP system configuration.
+    Use separate configs instead: PluginsConfig, MCPServersConfig, AgentsConfig, MCPServerModeConfig.
+    This model is kept for backward compatibility during migration.
+    """
     plugin_dirs: List[str] = Field(default_factory=list)
     default_config: MCPConfig = Field(default_factory=MCPConfig)
     external_servers: ExternalServersConfig = Field(default_factory=ExternalServersConfig)
@@ -359,4 +385,12 @@ class AgentSystemConfig(BaseModel):
     
     # Included configurations (will be populated from included files)
     llm_system: Optional[LLMSystemConfig] = None
-    mcp_system: Optional[MCPSystemConfig] = None
+    
+    # New structure (Epic 0044)
+    plugins: Optional[PluginsConfig] = None  # From config/plugins.yaml
+    mcp_servers: Optional[MCPServersConfig] = None  # From config/mcp_servers.yaml
+    mcp_server_mode: Optional[MCPServerModeConfig] = None  # From config/mcp_server_mode.yaml
+    agents: Optional[Dict[str, ConfigBasedAgentDefinition]] = None  # From config/agents.yaml
+    
+    # Backward compatibility (DEPRECATED - will be removed)
+    mcp_system: Optional[MCPSystemConfig] = None  # Old monolithic config
