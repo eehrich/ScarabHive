@@ -113,8 +113,16 @@ class MCPIntegrationManager:
     async def _build_external_tool_schema(self, tool_name: str) -> tuple[Optional[Dict], Dict[str, str]]:
         """Build schema for an external MCP tool."""
         server_name, actual_tool_name = tool_name.split(".", 1)
-        # Create OpenAI-compatible name (replace dots with underscores)
-        openai_tool_name = tool_name.replace(".", "_")
+        
+        # Create OpenAI-compatible name (replace dots and other invalid chars with underscores)
+        # OpenAI requires pattern: ^[a-zA-Z0-9_-]+$
+        openai_tool_name = tool_name.replace(".", "_")  # Replace dots first
+        openai_tool_name = openai_tool_name.replace("/", "__")  # Replace slashes with double underscore
+        openai_tool_name = openai_tool_name.replace(" ", "_")  # Replace spaces
+        # Remove any remaining invalid characters
+        import re
+        openai_tool_name = re.sub(r'[^a-zA-Z0-9_-]', '', openai_tool_name)
+        
         tool_name_mapping = {openai_tool_name: tool_name}
 
         try:
