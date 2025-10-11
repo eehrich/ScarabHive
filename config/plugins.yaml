@@ -114,7 +114,6 @@ plugins:
         llm_profile: normal
         tools:
           allowed:
-            - "web_research_agent/*"
             - "duckduckgo_search/*"
             - "web_scraper/*"
     

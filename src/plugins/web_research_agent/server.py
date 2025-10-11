@@ -154,10 +154,24 @@ class WebResearchAgent(Agent):
     # ------------------------------------------------------------------
     def get_custom_system_prompt(self, context: Dict[str, Any]):  # type: ignore[override]
         """Load system_prompt from plugin-local YAML and render with Jinja2.
+        
+        Priority order:
+        1. If agent_config.system_prompt is set (inline override), return None to use that
+        2. If agent_config.system_template is set (custom template), return None to use that
+        3. Otherwise load plugin's default template from prompts/system_prompt.yaml
 
-        Returning None would fall back to generic config logic; instead we read the
-        file so that subclass control is explicit while content lives in the template.
+        Returning None delegates to Agent._render_prompts() which handles config-based prompts.
         """
+        # Check if config-based prompt is defined (takes precedence over plugin default)
+        if hasattr(self.agent_config, 'system_prompt') and self.agent_config.system_prompt:
+            logger.debug("Agent %s: system_prompt defined in config, skipping plugin template", self.name)
+            return None
+        
+        if hasattr(self.agent_config, 'system_template') and self.agent_config.system_template:
+            logger.debug("Agent %s: system_template defined in config, skipping plugin template", self.name)
+            return None
+        
+        # No config-based prompt, load plugin's default template
         try:
             prompt_file = Path(__file__).parent / "prompts" / "system_prompt.yaml"
             if prompt_file.exists():
@@ -170,6 +184,7 @@ class WebResearchAgent(Agent):
                 if isinstance(raw_prompt, str) and raw_prompt.strip():
                     # Render template with context (tools, max_steps, datetime, etc.)
                     rendered_prompt = Template(raw_prompt).render(**context)
+                    logger.debug("Agent %s: loaded and rendered plugin template (%d chars)", self.name, len(rendered_prompt))
                     return rendered_prompt
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("Failed loading custom system_prompt YAML: %s", e)

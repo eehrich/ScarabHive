@@ -183,27 +183,13 @@ agents:
     agent_config:
       llm_profile: normal
       max_steps: 10
-      system_prompt: |
-        You are a skilled Meta Web Research Agent specializing in advanced web scraping and research tasks.
-
-        Guidelines:
-        - Provide accurate, concise answers
-        - If you don't know something, say so honestly
-        - Avoid speculation without clear indication
-        - Use examples when helpful
-        - Be friendly and professional
-        
-        Operational Context:
-        - No external tools available (knowledge cutoff applies)
-        - Planning budget: {{ max_steps }} steps
-        - Current date: {{ current_date | default('n/a') }}
-
-        Make compact Output, MD-Formatted, Structured.
+      system_template: "config/prompts/meta_web_research_agent.yaml"
 
       tools:
         allowed:
           - "web_research_agent/*"
           - "web_scraper/*"
+          - "duckduckgo_search/*"
       context_management:
         enabled: true
         strategy: "SUMMARIZE_OLDEST"
