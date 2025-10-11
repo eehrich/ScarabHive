@@ -315,28 +315,56 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
             
             # Get list of tools that would be exposed
             tools = []
+            
+            # Use the plugin_registry from MCPIntegration
+            plugin_registry = mcp_integration.plugin_registry if mcp_integration else None
+            if not plugin_registry:
+                print(json.dumps({"error": "Plugin registry not available"}, ensure_ascii=False))
+                return
+            
+            # Debug: Log registered plugins
+            registered_count = len(plugin_registry.plugin_servers)
+            logger.debug(f"Found {registered_count} registered plugins in registry")
+            
             for plugin_name in config.mcp_system.server_mode.expose_plugins:
                 if plugin_name == "*":
-                    # Expose all plugins
-                    for name, plugin in mcp_integration.registry.plugin_servers.items():
-                        plugin_tools = await plugin.list_tools()
-                        for tool in plugin_tools.tools:
-                            tools.append({
-                                "plugin": name,
-                                "name": tool.name,
-                                "description": tool.description
-                            })
+                    # Expose all plugins - iterate over plugin_servers dict
+                    for name, adapter in plugin_registry.plugin_servers.items():
+                        try:
+                            logger.debug(f"Attempting to list tools for plugin: {name}")
+                            if hasattr(adapter, 'list_tools'):
+                                plugin_tools = await adapter.list_tools()
+                                # Handle both direct list and ListToolsResult object
+                                tool_list = plugin_tools.tools if hasattr(plugin_tools, 'tools') else plugin_tools
+                                logger.debug(f"Plugin {name} returned {len(tool_list)} tools")
+                                for tool in tool_list:
+                                    tools.append({
+                                        "plugin": name,
+                                        "name": tool.name,
+                                        "description": tool.description
+                                    })
+                            else:
+                                logger.debug(f"Plugin {name} adapter has no list_tools method")
+                        except Exception as e:
+                            logger.warning(f"Error listing tools for plugin {name}: {e}", exc_info=True)
+                            continue
                 else:
                     # Expose specific plugin
-                    if plugin_name in mcp_integration.registry.plugin_servers:
-                        plugin = mcp_integration.registry.plugin_servers[plugin_name]
-                        plugin_tools = await plugin.list_tools()
-                        for tool in plugin_tools.tools:
-                            tools.append({
-                                "plugin": plugin_name,
-                                "name": tool.name,
-                                "description": tool.description
-                            })
+                    try:
+                        adapter = plugin_registry.plugin_servers.get(plugin_name)
+                        if adapter and hasattr(adapter, 'list_tools'):
+                            plugin_tools = await adapter.list_tools()
+                            # Handle both direct list and ListToolsResult object
+                            tool_list = plugin_tools.tools if hasattr(plugin_tools, 'tools') else plugin_tools
+                            for tool in tool_list:
+                                tools.append({
+                                    "plugin": plugin_name,
+                                    "name": tool.name,
+                                    "description": tool.description
+                                })
+                    except Exception as e:
+                        logger.warning(f"Error listing tools for plugin {plugin_name}: {e}", exc_info=True)
+                        continue
             
             # Clean up integration
             if mcp_integration:
