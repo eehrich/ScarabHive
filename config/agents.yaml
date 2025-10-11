@@ -44,7 +44,7 @@ agents:
     base_type: agent
     
     agent_config:
-      llm_profile: deepseek
+      llm_profile: chat
       max_steps: 15
       system_template: "config/prompts/code_reviewer_prompt.yaml"
       
@@ -150,7 +150,7 @@ agents:
     base_type: basic_agent
     
     agent_config:
-      llm_profile: deepseek
+      llm_profile: chat
       max_steps: 15
       system_template: "config/prompts/system_admin_prompt.yaml"
       
