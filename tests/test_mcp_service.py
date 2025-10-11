@@ -647,11 +647,11 @@ class TestGetComprehensiveStatus:
         with patch.object(mcp_service, '_check_external_connectivity', new=AsyncMock(return_value=False)):
             status = await mcp_service.get_comprehensive_status(registry=None, check_connectivity=True)
             
-            # When connectivity check returns False, but server has active client with tools,
-            # it should still be marked as connected
-            # This is according to the logic in lines 644-650 of mcp_service.py
+            # With strict mode (check_connectivity=True), connectivity check result is authoritative
+            # Even if server has cached tools, if socket check fails, mark as disconnected
+            # This prevents showing "connected" for servers that are actually down
             assert "test_server" in status["external_servers"]
-            assert status["external_servers"]["test_server"]["connected"] is True  # Has active client + tools
+            assert status["external_servers"]["test_server"]["connected"] is False  # Strict mode: trust socket check
 
     @pytest.mark.asyncio
     async def test_comprehensive_status_truly_disconnected(self, mcp_service):

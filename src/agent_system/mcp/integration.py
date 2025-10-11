@@ -70,9 +70,16 @@ class MCPIntegration:
             self.client_manager.set_cache_ttl(ttl)
             logger.debug(f"MCP client manager cache TTL set to {ttl}s")
 
-        # Discover and register plugins
+        # Discover and register plugins (only if not already done by another MCPIntegration instance)
+        # The plugin_registry is a global singleton, so we need to check if plugins are already registered
         plugin_dirs = ['src/plugins']  # Default plugin directory
-        self.plugin_registry.discover_plugins(plugin_dirs)
+        
+        # Check if plugins are already discovered
+        if not self.plugin_registry.plugin_factories:
+            logger.debug("Discovering plugins for the first time")
+            self.plugin_registry.discover_plugins(plugin_dirs)
+        else:
+            logger.debug(f"Plugins already discovered ({len(self.plugin_registry.plugin_factories)} factories available)")
 
         # Register enabled plugins as MCP servers
         # Use servers from mcp_config.servers (Dict[str, MCPConfig])
@@ -80,10 +87,18 @@ class MCPIntegration:
         enabled_servers = [name for name, server_cfg in servers_config.items() if server_cfg.enabled]
         
         logger.debug(f"MCP integration - enabled servers: {enabled_servers}")
-        logger.debug(f"MCP integration - servers_config type: {type(servers_config)}")
+        logger.debug(f"MCP integration - already registered servers: {list(self.plugin_registry.plugin_servers.keys())}")
 
-        # Pass complete AgentSystemConfig for plugin registration
-        await self.plugin_registry.register_from_config(enabled_servers, servers_config, config)
+        # Only register plugins that are not already registered
+        # This prevents duplicate registration when multiple MCPIntegration instances are created
+        servers_to_register = [name for name in enabled_servers if name not in self.plugin_registry.plugin_servers]
+        
+        if servers_to_register:
+            logger.debug(f"Registering new servers: {servers_to_register}")
+            # Pass complete AgentSystemConfig for plugin registration
+            await self.plugin_registry.register_from_config(servers_to_register, servers_config, config)
+        else:
+            logger.debug("All enabled servers already registered, skipping re-registration")
 
         # Register plugin servers with HTTP server
         for server_name in self.plugin_registry.list_servers():
@@ -128,6 +143,43 @@ class MCPIntegration:
         await self.client_manager.close_all()
         logging.getLogger(__name__).debug("MCPIntegration.shutdown() completed")
         logger.info("MCP integration shut down")
+
+    async def retry_connect_server(self, server_name: str) -> bool:
+        """
+        Retry connecting to an external MCP server.
+        Used when a server was unavailable at startup but becomes available later.
+        
+        Returns True if connection successful, False otherwise.
+        """
+        # Check if server is already connected
+        if server_name in self.client_manager.list_clients():
+            logger.debug(f"Server {server_name} already has an active client")
+            return True
+        
+        # Check if server is configured
+        server_config = self.configured_external_servers.get(server_name)
+        if not server_config:
+            logger.warning(f"Server {server_name} not found in configured external servers")
+            return False
+        
+        # Try to connect
+        try:
+            ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
+            timeout = self.mcp_system_config.external_servers.connection.timeout if (
+                self.mcp_system_config.external_servers and 
+                self.mcp_system_config.external_servers.connection
+            ) else 30.0
+            
+            await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
+            logger.info(f"Successfully reconnected to external MCP server: {server_name}")
+            
+            # Invalidate tools cache to pick up new tools
+            await self.invalidate_tools_cache()
+            
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to reconnect to external MCP server {server_name}: {e}")
+            return False
 
     def get_app(self) -> FastAPI:
         """Get the FastAPI app with MCP endpoints"""
@@ -206,7 +258,9 @@ class MCPIntegration:
     async def invalidate_tools_cache(self) -> None:
         """Invalidate the tools cache when connections change"""
         await self._tool_cache.invalidate()
-        logger.debug("Tools cache invalidated")
+        # Also invalidate the client manager's cache
+        self.client_manager.invalidate_tools_cache()
+        logger.debug("Tools cache invalidated (both integration and client manager)")
 
     async def get_cache_statistics(self) -> Dict[str, Any]:
         """Get tool cache statistics for monitoring"""

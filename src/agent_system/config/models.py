@@ -212,12 +212,45 @@ class ExternalServersConfig(BaseModel):
     remote_servers: Dict[str, RemoteMCPConfig] = Field(default_factory=dict)
 
 
+class MCPServerRateLimitConfig(BaseModel):
+    """Rate limiting configuration for MCP server mode"""
+    enabled: bool = True
+    requests_per_minute: int = 60
+    requests_per_hour: int = 1000
+    burst_size: int = 10  # Allow bursts up to this many requests
+
+
+class MCPServerAuthConfig(BaseModel):
+    """Authentication configuration for MCP server mode"""
+    required: bool = True
+    methods: List[Literal["jwt", "api_key"]] = Field(default_factory=lambda: ["jwt", "api_key"])
+
+
+class MCPServerModeConfig(BaseModel):
+    """Configuration for MCP server mode (exposing AgentSystem as remote MCP server)"""
+    enabled: bool = False
+    endpoint: str = "/mcp"  # Main JSON-RPC endpoint
+    sse_endpoint: Optional[str] = "/mcp/sse"  # SSE stream endpoint (optional)
+    
+    # Plugin exposure configuration
+    expose_plugins: List[str] = Field(default_factory=lambda: ["*"])  # ['*'] = all, or list specific plugins
+    
+    # Authentication and security
+    authentication: MCPServerAuthConfig = Field(default_factory=MCPServerAuthConfig)
+    rate_limit: MCPServerRateLimitConfig = Field(default_factory=MCPServerRateLimitConfig)
+    
+    # Session configuration
+    session_ttl: float = 3600.0  # Session timeout in seconds (1 hour)
+    max_concurrent_sessions: int = 100  # Maximum concurrent MCP client sessions
+
+
 class MCPSystemConfig(BaseModel):
     """Complete MCP system configuration (matches type comment in mcp.yaml)"""
     plugin_dirs: List[str] = Field(default_factory=list)
     default_config: MCPConfig = Field(default_factory=MCPConfig)
     external_servers: ExternalServersConfig = Field(default_factory=ExternalServersConfig)
     servers: Dict[str, MCPConfig] = Field(default_factory=dict)  # Named MCP server configurations
+    server_mode: MCPServerModeConfig = Field(default_factory=MCPServerModeConfig)  # MCP server mode configuration
 
 
 # ===========================

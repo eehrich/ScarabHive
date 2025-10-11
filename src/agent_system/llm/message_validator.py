@@ -7,12 +7,16 @@ common issues like orphaned tool calls, missing tool responses, and malformed co
 """
 
 import logging
+import re
 from typing import List, Dict, Any, Set
 from dataclasses import dataclass
 
 from .models import ChatMessage
 
 logger = logging.getLogger(__name__)
+
+# OpenAI tool name pattern requirement
+OPENAI_TOOL_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
 @dataclass
@@ -60,6 +64,7 @@ class MessageValidator:
         
         # Run all validation checks
         issues.extend(self._check_tool_call_consistency(repaired_messages))
+        issues.extend(self._check_tool_names(repaired_messages))
         issues.extend(self._check_content_structure(repaired_messages))
         issues.extend(self._check_message_sequence(repaired_messages))
         
@@ -135,6 +140,56 @@ class MessageValidator:
                 details={"tool_call_id": tool_call_id}
             ))
             
+        return issues
+    
+    def _check_tool_names(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
+        """Check that tool names comply with OpenAI's naming requirements."""
+        issues = []
+        
+        for i, msg in enumerate(messages):
+            # Check tool calls in assistant messages
+            if msg.role == "assistant" and msg.tool_calls:
+                for tool_idx, tool_call in enumerate(msg.tool_calls):
+                    # Extract tool name from various formats
+                    tool_name = None
+                    if hasattr(tool_call, 'function') and hasattr(tool_call.function, 'name'):
+                        tool_name = tool_call.function.name
+                    elif isinstance(tool_call, dict):
+                        if 'function' in tool_call and isinstance(tool_call['function'], dict):
+                            tool_name = tool_call['function'].get('name')
+                        elif 'name' in tool_call:
+                            tool_name = tool_call['name']
+                    
+                    if tool_name and not OPENAI_TOOL_NAME_PATTERN.match(tool_name):
+                        issues.append(ValidationIssue(
+                            type="invalid_tool_name",
+                            severity="error",
+                            message_index=i,
+                            description=f"Tool name '{tool_name}' does not match OpenAI pattern ^[a-zA-Z0-9_-]+$",
+                            details={
+                                "tool_name": tool_name,
+                                "tool_index": tool_idx,
+                                "pattern": "^[a-zA-Z0-9_-]+$"
+                            }
+                        ))
+            
+            # Check tool names in tool messages
+            elif msg.role == "tool":
+                # Tool messages have the name in the response, not typically validated
+                # but we can check if there's a 'name' field
+                if hasattr(msg, 'name') and msg.name:
+                    if not OPENAI_TOOL_NAME_PATTERN.match(msg.name):
+                        issues.append(ValidationIssue(
+                            type="invalid_tool_name",
+                            severity="error",
+                            message_index=i,
+                            description=f"Tool message name '{msg.name}' does not match OpenAI pattern",
+                            details={
+                                "tool_name": msg.name,
+                                "pattern": "^[a-zA-Z0-9_-]+$"
+                            }
+                        ))
+                        
         return issues
     
     def _check_content_structure(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
@@ -229,6 +284,35 @@ class MessageValidator:
                 # Remove tool messages without proper ID
                 remove_indices.add(issue.message_index)
                 logger.debug(f"Marking message {issue.message_index} for removal: missing tool_call_id")
+            
+            elif issue.type == "invalid_tool_name":
+                # Try to repair invalid tool names
+                msg_idx = issue.message_index
+                if 0 <= msg_idx < len(repaired):
+                    msg = repaired[msg_idx]
+                    original_name = issue.details.get("tool_name", "")
+                    
+                    # Attempt to sanitize the tool name
+                    sanitized_name = self._sanitize_tool_name(original_name)
+                    
+                    if sanitized_name and OPENAI_TOOL_NAME_PATTERN.match(sanitized_name):
+                        # Apply repair
+                        if msg.role == "assistant" and msg.tool_calls:
+                            tool_idx = issue.details.get("tool_index", 0)
+                            if tool_idx < len(msg.tool_calls):
+                                tool_call = msg.tool_calls[tool_idx]
+                                if hasattr(tool_call, 'function'):
+                                    tool_call.function.name = sanitized_name
+                                elif isinstance(tool_call, dict):
+                                    if 'function' in tool_call:
+                                        tool_call['function']['name'] = sanitized_name
+                                    else:
+                                        tool_call['name'] = sanitized_name
+                                logger.info(f"Repaired tool name: '{original_name}' -> '{sanitized_name}'")
+                    else:
+                        # Cannot repair, mark for removal
+                        remove_indices.add(msg_idx)
+                        logger.warning(f"Cannot repair invalid tool name '{original_name}', removing message")
         
         # Remove problematic messages (in reverse order to preserve indices)
         for idx in sorted(remove_indices, reverse=True):
@@ -237,6 +321,41 @@ class MessageValidator:
                 logger.debug(f"Removed message {idx}: {removed_msg.role} - {str(removed_msg.content)[:50]}")
                 
         return repaired
+    
+    def _sanitize_tool_name(self, name: str) -> str:
+        """
+        Attempt to sanitize an invalid tool name to match OpenAI's requirements.
+        
+        Replaces common invalid characters:
+        - Forward slash (/) -> double underscore (__)
+        - Dot (.) -> underscore (_)
+        - Space -> underscore (_)
+        - Other invalid chars -> removed
+        
+        Args:
+            name: Original tool name
+            
+        Returns:
+            Sanitized tool name, or empty string if cannot be sanitized
+        """
+        if not name:
+            return ""
+        
+        # Replace common separators with valid ones
+        sanitized = name.replace("/", "__")  # slash to double underscore
+        sanitized = sanitized.replace(".", "_")  # dot to single underscore
+        sanitized = sanitized.replace(" ", "_")  # space to underscore
+        
+        # Remove any remaining invalid characters (keep only a-zA-Z0-9_-)
+        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '', sanitized)
+        
+        # Collapse multiple underscores to double underscore
+        sanitized = re.sub(r'_{3,}', '__', sanitized)
+        
+        # Ensure it doesn't start/end with underscore (cleanup)
+        sanitized = sanitized.strip('_')
+        
+        return sanitized
     
     def _generate_repair_summary(self, issues: List[ValidationIssue]) -> str:
         """Generate human-readable repair summary."""

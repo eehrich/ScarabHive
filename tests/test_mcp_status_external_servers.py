@@ -69,6 +69,8 @@ def mock_client_manager():
 def mock_plugin_registry():
     """Mock plugin registry"""
     registry = Mock()
+    registry.plugin_factories = {}  # Empty dict to satisfy len() check
+    registry.plugin_servers = {}  # Empty dict for registered servers
     registry.discover_plugins = Mock()
     registry.register_from_config = AsyncMock()
     registry.list_servers = Mock(return_value=[])
