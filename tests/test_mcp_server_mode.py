@@ -209,7 +209,7 @@ class TestMCPServerHandler:
     
     def test_get_exposed_plugins_specific(self, handler, config):
         """Test getting exposed plugins with specific list."""
-        config.plugins.server_mode.expose_plugins = ["weather", "yahoo_finance"]
+        config.server_mode.expose_plugins = ["weather", "yahoo_finance"]
         
         exposed = handler._get_exposed_plugins()
         

@@ -32,42 +32,19 @@ from .services import MCPService, ToolService
 
 
 def _get_plugins_config(config: AgentSystemConfig):
-    """Get plugins configuration, preferring new structure over legacy."""
-    return config.plugins if config.plugins else config.mcp_system
+    """Get plugins configuration."""
+    return config.plugins
 
 
 def _get_server_mode_config(config: AgentSystemConfig):
-    """Get server_mode configuration from new structure."""
+    """Get server_mode configuration."""
     return config.server_mode
 
 
 def _get_agents_dict(config: AgentSystemConfig):
-    """Get agents configuration dict from new structure."""
+    """Get agents configuration dict."""
     return config.agents if config.agents else {}
 
-
-def _get_legacy_mcp_system(config: AgentSystemConfig):
-    """Get legacy MCPSystemConfig for compatibility with existing functions.
-    
-    This helper constructs an MCPSystemConfig from new structure if needed,
-    allowing gradual migration of functions that still expect MCPSystemConfig.
-    """
-    from .config.models import MCPSystemConfig
-    
-    if config.mcp_system:
-        return config.mcp_system
-    
-    # Construct from new structure for backward compatibility
-    # This allows config-agent functions to work with both structures
-    if config.plugins or config.agents:
-        return MCPSystemConfig(
-            servers=config.plugins.servers if config.plugins else {},
-            plugin_dirs=config.plugins.plugin_dirs if config.plugins else [],
-            default_config=config.plugins.default_config if config.plugins else None,
-            config_agents=config.agents if config.agents else {},
-        )
-    
-    return MCPSystemConfig()
 
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
@@ -365,29 +342,21 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 print(json.dumps({"error": "Plugin registry not available"}, ensure_ascii=False))
                 return
             
-            # Debug: Log registered plugins
-            registered_count = len(plugin_registry.plugin_servers)
-            logger.debug(f"Found {registered_count} registered plugins in registry")
-            
             for plugin_name in server_config.expose_plugins:
                 if plugin_name == "*":
                     # Expose all plugins - iterate over plugin_servers dict
                     for name, adapter in plugin_registry.plugin_servers.items():
                         try:
-                            logger.debug(f"Attempting to list tools for plugin: {name}")
                             if hasattr(adapter, 'list_tools'):
                                 plugin_tools = await adapter.list_tools()
                                 # Handle both direct list and ListToolsResult object
                                 tool_list = plugin_tools.tools if hasattr(plugin_tools, 'tools') else plugin_tools
-                                logger.debug(f"Plugin {name} returned {len(tool_list)} tools")
                                 for tool in tool_list:
                                     tools.append({
                                         "plugin": name,
                                         "name": tool.name,
                                         "description": tool.description
                                     })
-                            else:
-                                logger.debug(f"Plugin {name} adapter has no list_tools method")
                         except Exception as e:
                             logger.warning(f"Error listing tools for plugin {name}: {e}", exc_info=True)
                             continue

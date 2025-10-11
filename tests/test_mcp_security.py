@@ -155,7 +155,6 @@ class TestMCPSecurityManager:
         """Test creating security manager from AgentSystemConfig"""
         from agent_system.config.models import (
             AgentSystemConfig,
-            MCPSystemConfig,
             MCPServersConfig,
             RemoteMCPConfig,
             MCPAuthConfig  # Changed from AuthConfig
@@ -189,12 +188,8 @@ class TestMCPSecurityManager:
             remote_servers=remote_servers
         )
         
-        mcp_config = MCPServersConfig(
-            external_servers=external_servers
-        )
-        
         config = AgentSystemConfig(
-            mcp_system=mcp_config
+            external_servers=external_servers
         )
 
         manager = MCPSecurityManager.from_config(config)
@@ -219,7 +214,6 @@ class TestMCPSecurityManager:
         """Test creating security manager with environment variables"""
         from agent_system.config.models import (
             AgentSystemConfig,
-            MCPSystemConfig,
             MCPServersConfig,
             RemoteMCPConfig,
             MCPAuthConfig  # Changed from AuthConfig
@@ -241,12 +235,8 @@ class TestMCPSecurityManager:
             remote_servers=remote_servers
         )
         
-        mcp_config = MCPServersConfig(
-            external_servers=external_servers
-        )
-        
         config = AgentSystemConfig(
-            mcp_system=mcp_config
+            external_servers=external_servers
         )
 
         manager = MCPSecurityManager.from_config(config)
@@ -268,7 +258,6 @@ class TestGlobalSecurity:
         """Test configuring global security"""
         from agent_system.config.models import (
             AgentSystemConfig,
-            MCPSystemConfig,
             MCPServersConfig,
             RemoteMCPConfig,
             MCPAuthConfig  # Changed from AuthConfig
@@ -290,12 +279,8 @@ class TestGlobalSecurity:
             remote_servers=remote_servers
         )
         
-        mcp_config = MCPServersConfig(
-            external_servers=external_servers
-        )
-        
         config = AgentSystemConfig(
-            mcp_system=mcp_config
+            external_servers=external_servers
         )
 
         configure_security(config)

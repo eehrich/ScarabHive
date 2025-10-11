@@ -36,7 +36,6 @@ class TestConfigAgentDiscovery:
     def sample_config(self, tmp_path: Path):
         """Create sample config with config agents."""
         from agent_system.config.models import (
-            MCPSystemConfig,
             AgentConfig,
             ToolConfig,
             ContextManagementConfig,
@@ -64,7 +63,7 @@ class TestConfigAgentDiscovery:
             system_prompt="You are a simple assistant.",  # Inline prompt
         )
         
-        # Create ConfigBasedAgentDefinitions
+        # Create ConfigBasedAgentDefinitions dict (new structure)
         config_dict = {
             "test_agent": ConfigBasedAgentDefinition(
                 enabled=True,
@@ -84,11 +83,7 @@ class TestConfigAgentDiscovery:
             ),
         }
         
-        # Create MCPSystemConfig with config_agents
-        mcp_config = MCPSystemConfig()
-        mcp_config.config_agents = config_dict
-        
-        return mcp_config
+        return config_dict
 
     def test_discover_config_agents(self, sample_config):
         """Test discovering all config agents from config."""
@@ -154,7 +149,6 @@ class TestConfigAgentValidation:
     def sample_config(self, tmp_path: Path):
         """Create sample config with config agents (reused from Discovery)."""
         from agent_system.config.models import (
-            MCPSystemConfig,
             AgentConfig,
             ToolConfig,
             ContextManagementConfig,
@@ -182,7 +176,7 @@ class TestConfigAgentValidation:
             system_prompt="You are a simple Q&A assistant.",  # Inline prompt
         )
         
-        # Create ConfigBasedAgentDefinitions
+        # Create ConfigBasedAgentDefinitions dict (new structure)
         config_dict = {
             "test_agent": ConfigBasedAgentDefinition(
                 enabled=True,
@@ -202,11 +196,7 @@ class TestConfigAgentValidation:
             ),
         }
         
-        # Create MCPSystemConfig with config_agents
-        mcp_config = MCPSystemConfig()
-        mcp_config.config_agents = config_dict
-        
-        return mcp_config
+        return config_dict
 
     @pytest.fixture
     def valid_agent_def(self) -> ConfigBasedAgentDefinition:
