@@ -38,14 +38,8 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     plugins = discover_all_plugins(dirs=dirs if dirs else None)
 
     # Discover configuration-based agents (Epic 0043)
-    # Build temporary MCPSystemConfig-like dict for discover_config_agents
-    # TODO: Refactor discover_config_agents to accept agents dict directly
-    from ..config.models import MCPSystemConfig
-    temp_mcp_config = MCPSystemConfig(
-        servers=config.plugins.servers if config.plugins else {},
-        config_agents=config.agents if config.agents else {}
-    )
-    config_agents = discover_config_agents(temp_mcp_config)
+    # Pass agents dict directly (no longer needs MCPSystemConfig wrapper)
+    config_agents = discover_config_agents(config.agents)
     
     # Merge config agents into plugins dict (config agents override if name conflicts)
     if config_agents:

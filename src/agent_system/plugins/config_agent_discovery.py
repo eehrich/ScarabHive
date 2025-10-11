@@ -114,7 +114,7 @@ def discover_config_agents(
     
     logger.info(
         f"Config agent discovery complete: "
-        f"{len(discovered)}/{len(agents_config.config_agents)} agents discovered"
+        f"{len(discovered)}/{len(agents_config)} agents discovered"
     )
     
     return discovered
