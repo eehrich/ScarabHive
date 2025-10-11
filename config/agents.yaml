@@ -174,8 +174,8 @@ agents:
       tags: ["ssh", "server", "Administrator", "security"]
       category: "it"
 
-# Meta Web Research Agent
-meta_web_research_agent:
+  # Meta Web Research Agent
+  meta_web_research_agent:
     enabled: true
     description: "Meta Web Research Agent for advanced web scraping and research tasks"
     base_type: web_research_agent
@@ -185,7 +185,7 @@ meta_web_research_agent:
       max_steps: 10
       system_prompt: |
         You are a skilled Meta Web Research Agent specializing in advanced web scraping and research tasks.
-                
+
         Guidelines:
         - Provide accurate, concise answers
         - If you don't know something, say so honestly
