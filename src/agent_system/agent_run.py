@@ -157,14 +157,26 @@ async def create_agent(config, registry, agent_name: str):
     return agent
 
 
-async def run_agent_request(agent: Agent, request: str) -> dict:
-    """Execute a request with the agent and return the result."""
+async def run_agent_request(agent: Agent, request: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
+    """Execute a request with the agent and return the result.
+    
+    Args:
+        agent: The agent instance to execute the request with
+        request: The user's request/question
+        llm_override: Optional LLM client to override agent's default
+        llm_profile_info: Optional profile info string for status display
+    """
     try:
         logger.info(f"Executing request: {request[:100]}{'...' if len(request) > 100 else ''}")
         
         # Use the same pattern as CLI - collect final result from run_events
         from .servers.agent.result_utils import collect_final_result
-        result = await collect_final_result(agent, request)
+        result = await collect_final_result(
+            agent, 
+            request, 
+            llm_override=llm_override,
+            llm_profile_info_override=llm_profile_info
+        )
         
         return result
     
@@ -173,12 +185,18 @@ async def run_agent_request(agent: Agent, request: str) -> dict:
         raise
 
 
-async def main_async(request: str, agent_name: str | None = None, show_status: bool = True) -> None:
+async def main_async(
+    request: str, 
+    agent_name: str | None = None, 
+    llm_profile: str | None = None,
+    show_status: bool = True
+) -> None:
     """Main async function to execute the agent request.
     
     Args:
         request: The user's request/question
         agent_name: Optional agent name to use (defaults to config.default_agent)
+        llm_profile: Optional LLM profile to override agent's default
         show_status: Whether to display status messages (default: True)
     """
     try:
@@ -199,6 +217,40 @@ async def main_async(request: str, agent_name: str | None = None, show_status: b
         # Create and initialize agent
         logger.info("Creating agent...")
         agent = await create_agent(config, registry, agent_name)
+        
+        # Create LLM override if profile specified
+        llm_override = None
+        llm_profile_info = None
+        if llm_profile and config.llm_system and config.llm_system.profiles:
+            if llm_profile not in config.llm_system.profiles:
+                error_msg = f"LLM profile '{llm_profile}' not found in configuration."
+                available_profiles = sorted(config.llm_system.profiles.keys())
+                if available_profiles:
+                    error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
+                raise ValueError(error_msg)
+            
+            try:
+                # Resolve profile to model config using the factory
+                from .llm.factory import resolve_llm_config_for_agent
+                from .config.models import AgentConfig
+                
+                # Create temporary agent config with override profile
+                temp_agent_config = AgentConfig(llm_profile=llm_profile)
+                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
+                
+                # Create new LLM with resolved config
+                from .llm.clients import make_llm
+                llm_override = make_llm(**llm_kwargs)
+                
+                # Build profile info string for status display
+                model = llm_kwargs.get('model', 'unknown')
+                provider = llm_kwargs.get('provider', 'unknown')
+                llm_profile_info = f"{llm_profile}:{provider}/{model}"
+                
+                logger.info(f"Using LLM override: {llm_profile_info}")
+            except Exception as e:
+                logger.error(f"Failed to create LLM override: {e}", exc_info=True)
+                raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")
         
         # Subscribe to status events if enabled
         status_queue = None
@@ -245,7 +297,7 @@ async def main_async(request: str, agent_name: str | None = None, show_status: b
         # Execute the request
         logger.info("Executing request...")
         try:
-            result = await run_agent_request(agent, request)
+            result = await run_agent_request(agent, request, llm_override, llm_profile_info)
         finally:
             # Cancel status subscriber
             if status_task:
@@ -302,6 +354,9 @@ Examples:
     agent-run "What's the weather like today?"
     agent-run "Search for information about Python MCP protocol"
     agent-run "Help me analyze this data: [1, 2, 3, 4, 5]"
+    agent-run --agent sysadmin_agent "List all SSH servers"
+    agent-run --llm fast "Quick question about Python"
+    agent-run --agent financial_analyst_agent --llm smart "Analyze AAPL stock"
     agent-run --no-status "What time is it?"
     agent-run --no-color "Tell me a joke"
         """
@@ -321,6 +376,12 @@ Examples:
     parser.add_argument(
         "--agent",
         help="Override the default agent (use agent name from config)"
+    )
+    
+    parser.add_argument(
+        "--llm",
+        dest="llm_profile",
+        help="Override the LLM profile (use profile name from llm.yaml)"
     )
     
     parser.add_argument(
@@ -367,7 +428,7 @@ Examples:
     
     # Run the async main function
     try:
-        asyncio.run(main_async(args.request, args.agent, show_status))
+        asyncio.run(main_async(args.request, args.agent, args.llm_profile, show_status))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(130)
