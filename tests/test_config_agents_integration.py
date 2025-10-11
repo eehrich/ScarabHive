@@ -344,16 +344,19 @@ class TestConfigAgentFactory:
             agent_config=AgentConfig()
         )
         
-        # Mock the Agent class to avoid full initialization
-        with patch("agent_system.servers.config_agent_factory.Agent") as mock_agent_class:
+        # Mock the dynamic agent class resolution to avoid full initialization
+        with patch("agent_system.servers.config_agent_factory._get_agent_class_for_base_type") as mock_get_class:
             mock_agent = MagicMock()
-            mock_agent_class.return_value = mock_agent
+            mock_agent_class = MagicMock(return_value=mock_agent)
+            mock_get_class.return_value = mock_agent_class
             
             # Call the factory
             agent = factory_func("test_agent", system_config, mcp_config)
             
             assert agent is not None
-            # Verify Agent constructor was called
+            # Verify agent class resolution was called
+            mock_get_class.assert_called_once_with("agent")
+            # Verify agent constructor was called
             mock_agent_class.assert_called()
 
 

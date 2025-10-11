@@ -142,50 +142,76 @@ agents:
       tags: ["qa", "simple", "knowledge", "general"]
       category: "general"
   
-  # Customer Support Agent (template/example)
-  customer_support:
-    enabled: false
-    description: "Customer support agent for handling inquiries and troubleshooting"
-    base_type: agent
+
+  # System Administrator Agent
+  system_admin:
+    enabled: true
+    description: "System Administrator who has ssh access to different servers"
+    base_type: basic_agent
     
     agent_config:
-      llm_profile: turbo
-      max_steps: 10
-      system_prompt: |
-        You are a friendly and professional Customer Support Agent.
-        
-        Your Role:
-        - Help customers with questions and issues
-        - Provide clear, step-by-step solutions
-        - Escalate complex issues when needed
-        - Maintain a positive, empathetic tone
-        
-        Guidelines:
-        - Always greet customers warmly
-        - Listen carefully to understand the issue
-        - Ask clarifying questions if needed
-        - Provide actionable solutions
-        - Thank customers for their patience
-        
-        Available: {{ max_steps }} steps to resolve the issue
-        Tools: {% if tools %}{{ tools | join(', ') }}{% else %}No tools configured{% endif %}
-        
-        If you cannot resolve an issue, clearly state the limitation and
-        suggest escalation to human support.
+      llm_profile: deepseek
+      max_steps: 15
+      system_template: "config/prompts/system_admin_prompt.yaml"
       
       tools:
         allowed:
+          - "ssh_control/*"
+          - "basic_operations/*"
           - "web_scraper/*"
-          - "log_viewer/*"
-        blocked: []
+          - "web_research_agent/*"
+          - "duckduckgo_search/*"
       
       context_management:
         enabled: true
-        strategy: "SLIDING_WINDOW"
-        preserve_recent_messages: 10
+        strategy: "SUMMARIZE_OLDEST"
+        preserve_recent_messages: 15
+        summarization_threshold: 0.75
     
     metadata:
       author: "AgentSystem"
-      version: "1.0.0"
-      tags: ["support", "customer-service", "troubleshooting"]
-      category: "support"
+      version: "1.1.0"
+      tags: ["ssh", "server", "Administrator", "security"]
+      category: "it"
+
+# Meta Web Research Agent
+meta_web_research_agent:
+    enabled: true
+    description: "Meta Web Research Agent for advanced web scraping and research tasks"
+    base_type: web_research_agent
+    
+    agent_config:
+      llm_profile: normal
+      max_steps: 10
+      system_prompt: |
+        You are a skilled Meta Web Research Agent specializing in advanced web scraping and research tasks.
+                
+        Guidelines:
+        - Provide accurate, concise answers
+        - If you don't know something, say so honestly
+        - Avoid speculation without clear indication
+        - Use examples when helpful
+        - Be friendly and professional
+        
+        Operational Context:
+        - No external tools available (knowledge cutoff applies)
+        - Planning budget: {{ max_steps }} steps
+        - Current date: {{ current_date | default('n/a') }}
+
+        Make compact Output, MD-Formatted, Structured.
+
+      tools:
+        allowed:
+          - "web_research_agent/*"
+          - "web_scraper/*"
+      context_management:
+        enabled: true
+        strategy: "SUMMARIZE_OLDEST"
+        preserve_recent_messages: 5
+        summarization_threshold: 0.75
+    
+    metadata:
+      author: "AgentSystem"
+      version: "1.1.0"
+      tags: ["web", "research", "meta"]
+      category: "it"

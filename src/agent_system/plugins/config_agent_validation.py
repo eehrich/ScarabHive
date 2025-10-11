@@ -59,10 +59,15 @@ def validate_config_agent(
         )
     
     # Base type validation
-    if definition.base_type not in ["agent", "server"]:
+    # Note: base_type can be any valid plugin name (e.g., "agent", "basic_agent", 
+    # "web_research_agent", etc.). The actual validation happens at runtime when
+    # the plugin is loaded. Here we just check for basic sanity.
+    if not definition.base_type or not definition.base_type.strip():
+        errors.append("base_type is required and cannot be empty")
+    elif not definition.base_type.replace('_', '').isalnum():
         errors.append(
             f"Invalid base_type '{definition.base_type}'. "
-            f"Must be 'agent' or 'server'."
+            f"Use only alphanumeric characters and underscores."
         )
     
     # Agent config validation

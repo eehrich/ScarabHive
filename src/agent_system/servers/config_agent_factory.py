@@ -14,11 +14,55 @@ import logging
 from pathlib import Path
 
 from ..config.models import ConfigBasedAgentDefinition, MCPConfig
-from ..servers.agent.server import Agent
 from ..mcp.base import MCPRegistry
 
 
 logger = logging.getLogger(__name__)
+
+
+def _get_agent_class_for_base_type(base_type: str) -> type:
+    """
+    Dynamically resolve the agent class based on base_type.
+    
+    Args:
+        base_type: The base_type from config (e.g., "agent", "basic_agent", "web_research_agent")
+    
+    Returns:
+        Agent class to instantiate
+    
+    Raises:
+        ImportError: If the plugin type cannot be imported
+    """
+    # Map common base types to their module paths
+    type_map = {
+        "agent": "agent_system.servers.agent.server",
+        "basic_agent": "plugins.basic_agent.server",
+        "web_research_agent": "plugins.web_research_agent.server",
+    }
+    
+    # Get module path (either from map or assume it's a plugin)
+    if base_type in type_map:
+        module_path = type_map[base_type]
+    else:
+        # Assume it's a plugin with standard structure
+        module_path = f"plugins.{base_type}.server"
+    
+    # Extract class name (CamelCase version of base_type)
+    # e.g., "basic_agent" -> "BasicAgent"
+    class_name = "".join(word.capitalize() for word in base_type.split("_"))
+    
+    try:
+        # Dynamic import
+        module = __import__(module_path, fromlist=[class_name])
+        agent_class = getattr(module, class_name)
+        logger.debug(f"Resolved base_type '{base_type}' to class {agent_class.__name__}")
+        return agent_class
+    except (ImportError, AttributeError) as e:
+        logger.error(f"Failed to import agent class for base_type '{base_type}': {e}")
+        raise ImportError(
+            f"Cannot import agent class for base_type '{base_type}'. "
+            f"Expected module: {module_path}, class: {class_name}"
+        ) from e
 
 
 def create_config_based_agent_factory(
@@ -66,9 +110,9 @@ def create_config_based_agent_factory(
             mcp_config: MCPConfig for this agent (may contain overrides)
         
         Returns:
-            Initialized Agent instance
+            Initialized Agent instance (or specific plugin type based on base_type)
         """
-        logger.info(f"Creating config-based agent: {name} (instance name: {agent_name})")
+        logger.info(f"Creating config-based agent: {name} (instance name: {agent_name}, type: {definition.base_type})")
         
         # Merge configurations (runtime config takes precedence)
         merged_config = _merge_agent_configs(
@@ -87,9 +131,12 @@ def create_config_based_agent_factory(
         # (bootstrap will override with shared registry)
         temp_registry = MCPRegistry()
         
-        # Create the Agent using standard constructor
-        # Agent constructor: (name, system_config, mcp_config, registry)
-        agent = Agent(
+        # Select the appropriate agent class based on base_type
+        agent_class = _get_agent_class_for_base_type(definition.base_type)
+        
+        # Create the Agent using selected class
+        # Constructor: (name, system_config, mcp_config, registry)
+        agent = agent_class(
             name=agent_name,
             system_config=system_config,
             mcp_config=merged_config,
@@ -101,7 +148,7 @@ def create_config_based_agent_factory(
             agent._system_prompt_override = system_prompt
         
         logger.info(
-            f"Config agent '{name}' created as '{agent_name}': "
+            f"Config agent '{name}' created as '{agent_name}' (type: {definition.base_type}): "
             f"LLM={merged_config.agent_config.llm_profile}, "
             f"steps={merged_config.agent_config.max_steps}, "
             f"tools={len(merged_config.agent_config.tools.allowed) if merged_config.agent_config.tools else 0} allowed"
