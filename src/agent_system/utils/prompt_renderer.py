@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from typing import Dict, Any
+import logging
 import yaml
 from jinja2 import Template
 from datetime import datetime, timedelta
 import pytz
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_datetime_context(timezone_str: str = "UTC", location: str = "Unknown") -> Dict[str, Any]:
@@ -64,11 +68,18 @@ def render_system_prompt(template_path: str, context: Dict[str, Any]) -> str:
 def render_prompts(template_path: str, context: Dict[str, Any], auto_datetime: bool = True, timezone: str = "UTC", location: str = "Unknown") -> Dict[str, str]:
     """Render a YAML template that may contain multiple sections.
 
-    Expected keys:
-      - system_prompt: str (jinja2 template)
-      - tools_prompt: str (jinja2 template)
-
-    Backward-compat: if only 'template' key exists, map it to system_prompt.
+    This function supports flexible multi-section prompts. All top-level
+    string keys in the YAML file are treated as sections and rendered separately.
+    
+    Common sections (from system_prompt.yaml):
+      - system_prompt: Main agent identity and behavior
+      - tools_prompt: Tool usage instructions
+      - general_instructions_prompt: Formatting and context guidelines
+    
+    Any additional sections defined in agent-specific templates will also be included.
+    
+    Returns:
+        Dict mapping section_name -> rendered_content (after Jinja2 template rendering)
     """
     # Add automatic datetime context if enabled
     if auto_datetime:
@@ -77,14 +88,28 @@ def render_prompts(template_path: str, context: Dict[str, Any], auto_datetime: b
     
     with open(template_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    
     out: Dict[str, str] = {}
+    
     if isinstance(data, dict):
-        sys_raw = data.get("system_prompt") or data.get("template")
-        tools_raw = data.get("tools_prompt")
-        if sys_raw:
-            out["system_prompt"] = Template(sys_raw).render(**context)
-        if tools_raw:
-            out["tools_prompt"] = Template(tools_raw).render(**context)
+        # Render all string-valued top-level keys as sections
+        for section_name, section_content in data.items():
+            # Skip non-string values and internal keys (starting with _)
+            if not isinstance(section_content, str):
+                continue
+            if section_name.startswith('_'):
+                continue
+            
+            # Render the section with Jinja2
+            try:
+                rendered = Template(section_content).render(**context)
+                out[section_name] = rendered
+            except Exception as e:
+                logger.warning(f"Failed to render section '{section_name}' in template {template_path}: {e}")
+                out[section_name] = section_content  # Fallback to unrendered content
     else:
+        # Non-dict YAML: treat entire content as system_prompt
+        logger.warning(f"Template {template_path} is not a dict, treating as single system_prompt section")
         out["system_prompt"] = str(data)
+    
     return out

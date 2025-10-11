@@ -71,10 +71,7 @@ system_prompt: |
   - Use web_scraper for extracting detailed content from pages
   - Use context7 for technical documentation when available
   - Parallelize searches for different aspects of the topic
+  - Always cite sources with URLs and access dates.
 
-tools_prompt: |
-  Available Tools: {{ tools | join(', ') }}
-  
-  Use multiple search queries and sources for comprehensive coverage.
-  Synthesize findings rather than listing raw search results.
-  Always cite sources with URLs and access dates.
+
+

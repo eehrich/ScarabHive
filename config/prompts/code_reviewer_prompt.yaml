@@ -68,14 +68,3 @@ system_prompt: |
   ## Positive Observations
   - [What was done well]
   ```
-  
-  **Tool Usage:**
-  - Use script_interpreter to analyze code, run static analysis tools
-  - Use log_viewer to check application logs for issues
-  - Execute linters, formatters, type checkers when available
-
-tools_prompt: |
-  Available Tools: {{ tools | join(', ') }}
-  
-  Use tools to validate code quality, run tests, and perform static analysis.
-  Provide concrete evidence and examples in your feedback.

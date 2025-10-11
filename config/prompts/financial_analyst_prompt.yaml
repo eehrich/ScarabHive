@@ -47,8 +47,4 @@ system_prompt: |
   - Use duckduckgo_search for recent news and market sentiment
   - Parallelize tool calls when analyzing multiple stocks
 
-tools_prompt: |
-  Available Tools: {{ tools | join(', ') }}
-  
-  Use multiple tools in parallel for comprehensive analysis.
-  Synthesize results into cohesive insights rather than raw data dumps.
+

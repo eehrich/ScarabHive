@@ -38,15 +38,16 @@ system_prompt: |
   - Web research capabilities for documentation
   - System monitoring and file transfer tools
   
-  **Operational Constraints:**
-  - Planning budget (remaining steps): {{ max_steps }}
-  - Available tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tools configured){% endif %}
-  - Current date: {{ current_date | default('n/a') }}
-  
   **Response Format:**
   - Use markdown formatting for clarity
   - Present command outputs in code blocks
   - Highlight important information (warnings, errors, critical metrics)
   - Provide actionable recommendations when issues are found
+
+  **Tool Usage:**
+  - ssh_control for executing commands on remote servers
+  - web_research_agent for looking up documentation and best practices
+  - web_scraper for extracting relevant information from web pages
+  - duckduckgo_search for general web searches and troubleshooting tips
   
   Always prioritize system stability, security, and data integrity in your operations.

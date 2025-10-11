@@ -127,6 +127,13 @@ def create_config_based_agent_factory(
             agent_name=name
         )
         
+        # Override merged_config.agent_config.system_prompt with the fully merged prompt
+        # This ensures the Agent class uses the complete multi-section prompt
+        if system_prompt:
+            merged_config.agent_config.system_prompt = system_prompt
+            # Clear system_template to prevent double-rendering
+            merged_config.agent_config.system_template = None
+        
         # Create a temporary registry for this agent
         # (bootstrap will override with shared registry)
         temp_registry = MCPRegistry()
@@ -142,10 +149,6 @@ def create_config_based_agent_factory(
             mcp_config=merged_config,
             registry=temp_registry
         )
-        
-        # Override system prompt if defined in config
-        if system_prompt:
-            agent._system_prompt_override = system_prompt
         
         logger.info(
             f"Config agent '{name}' created as '{agent_name}' (type: {definition.base_type}): "
@@ -217,61 +220,127 @@ def _load_system_prompt(
     agent_name: str
 ) -> Optional[str]:
     """
-    Load system prompt from template file or inline definition.
+    Load and merge system prompt sections from base template and agent template.
+    
+    Multi-level prompt merging strategy:
+    1. Load base template sections (from default_config.system_template if exists)
+    2. Load agent template sections (from agent_config.system_template)
+    3. Override with inline system_prompt (agent_config.system_prompt) - replaces only system_prompt section
+    
+    All YAML keys in template files are treated as sections and merged.
     
     Args:
         definition: ConfigBasedAgentDefinition
         agent_name: Name of the agent (for logging)
     
     Returns:
-        System prompt string or None if not specified
+        Merged system prompt string or None if not specified
     """
     agent_config = definition.agent_config
     
-    # Check for inline system_prompt
-    if agent_config.system_prompt:
-        logger.debug(f"Using inline system_prompt for agent '{agent_name}'")
-        return agent_config.system_prompt
+    # Step 1: Load base template sections (from plugins.yaml default_config)
+    base_sections = _load_prompt_sections("config/prompts/system_prompt.yaml", "base template")
     
-    # Check for system_template file
+    # Step 2: Load agent-specific template sections (merge with base)
+    merged_sections = base_sections.copy()
+    
     if agent_config.system_template:
-        template_path = Path(agent_config.system_template)
-        
-        if not template_path.is_absolute():
-            # Resolve relative to project root
-            template_path = Path.cwd() / template_path
-        
-        if not template_path.exists():
-            logger.warning(
-                f"System template not found for agent '{agent_name}': "
-                f"{template_path}"
-            )
-            return None
-        
-        try:
-            # Load template content (YAML file with system_prompt key)
-            import yaml
-            with open(template_path, 'r', encoding='utf-8') as f:
-                template_data = yaml.safe_load(f)
-            
-            if isinstance(template_data, dict) and 'system_prompt' in template_data:
-                logger.debug(
-                    f"Loaded system_prompt from template for agent '{agent_name}': "
-                    f"{template_path}"
-                )
-                return template_data['system_prompt']
-            else:
-                logger.warning(
-                    f"Template file missing 'system_prompt' key: {template_path}"
-                )
-                return None
-        
-        except Exception as e:
-            logger.error(
-                f"Failed to load system template for agent '{agent_name}': {e}",
-                exc_info=True
-            )
-            return None
+        agent_sections = _load_prompt_sections(agent_config.system_template, f"agent '{agent_name}'")
+        # Merge: agent sections override base sections
+        merged_sections.update(agent_sections)
+        logger.debug(
+            f"Merged {len(agent_sections)} sections from agent template for '{agent_name}': "
+            f"{list(agent_sections.keys())}"
+        )
     
-    # No prompt specified
-    return None
+    # Step 3: Inline system_prompt overrides only the 'system_prompt' section
+    if agent_config.system_prompt:
+        merged_sections['system_prompt'] = agent_config.system_prompt
+        logger.debug(f"Inline system_prompt overrides 'system_prompt' section for agent '{agent_name}'")
+    
+    # Render final prompt: concatenate all sections in defined order
+    if not merged_sections:
+        logger.warning(f"No prompt sections loaded for agent '{agent_name}'")
+        return None
+    
+    # Define section order (sections not in this list come after, alphabetically)
+    section_order = [
+        'system_prompt',
+        'tools_prompt',
+        'general_instructions_prompt',
+    ]
+    
+    # Sort sections: known sections first (in defined order), then unknown ones (alphabetically)
+    def sort_key(item):
+        section_name, _ = item
+        try:
+            return (0, section_order.index(section_name))
+        except ValueError:
+            return (1, section_name)  # Unknown sections come last, sorted alphabetically
+    
+    sorted_sections = sorted(merged_sections.items(), key=sort_key)
+    
+    # Concatenate sections with separators
+    final_prompt = "\n\n".join(
+        f"# {section_name}\n{content}" if section_name != "system_prompt" else content
+        for section_name, content in sorted_sections
+    )
+    
+    logger.debug(
+        f"Final prompt for '{agent_name}' assembled from {len(merged_sections)} sections: "
+        f"{[name for name, _ in sorted_sections]}"
+    )
+    
+    return final_prompt
+
+
+def _load_prompt_sections(template_path: str | Path, context: str) -> dict[str, str]:
+    """
+    Load all sections from a prompt template YAML file.
+    
+    Args:
+        template_path: Path to YAML template file
+        context: Description for logging (e.g., "agent 'financial_analyst'")
+    
+    Returns:
+        Dictionary mapping section_name -> section_content
+        Returns empty dict if file doesn't exist or has errors
+    """
+    template_path = Path(template_path)
+    
+    if not template_path.is_absolute():
+        template_path = Path.cwd() / template_path
+    
+    if not template_path.exists():
+        logger.debug(f"Template not found for {context}: {template_path}")
+        return {}
+    
+    try:
+        import yaml
+        with open(template_path, 'r', encoding='utf-8') as f:
+            template_data = yaml.safe_load(f)
+        
+        if not isinstance(template_data, dict):
+            logger.warning(f"Template for {context} is not a dict: {template_path}")
+            return {}
+        
+        # Filter out non-string values and comments
+        sections = {
+            key: value
+            for key, value in template_data.items()
+            if isinstance(value, str) and not key.startswith('_')
+        }
+        
+        logger.debug(
+            f"Loaded {len(sections)} sections from {context} template: "
+            f"{list(sections.keys())}"
+        )
+        
+        return sections
+    
+    except Exception as e:
+        logger.error(
+            f"Failed to load template for {context}: {e}",
+            exc_info=True
+        )
+        return {}

@@ -106,8 +106,13 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
         logger.debug(f"Bootstrap server '{key}': type={server_mcp_cfg.type}, enabled={server_mcp_cfg.enabled}")
         typ = server_mcp_cfg.type
         
+        # For config-based agents, use the agent's factory (not the base_type's plugin factory)
+        # This ensures multi-section prompts and config-specific settings are applied
+        if key in config_agents:
+            factory = config_agents[key]
+            logger.debug(f"Using config-based agent factory for '{key}' (base_type={typ})")
         # Check if plugin provides this type
-        if typ in plugins:
+        elif typ in plugins:
             factory = plugins[typ]
             
             # Log plugin metadata if available
@@ -116,7 +121,10 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                 desc = meta.get('description') or meta.get('summary') or ''
                 ver = meta.get('version') or ''
                 logger.info("Using plugin '%s' (version=%s) for server '%s': %s", typ, ver, key, desc)
+        else:
+            factory = None
             
+        if factory:
             try:
                 # MODERN: All plugins use (name, system_config, mcp_config) signature
                 # Pass the MCPConfig object directly (not dict)
@@ -134,8 +142,6 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                 logger.exception("Failed to instantiate plugin '%s' for server '%s': %s", typ, key, e)
                 if "test" in str(Path.cwd()):
                     raise
-            continue
-
         # Direct agent type (non-plugin)
         elif typ == "agent":
             from .agent.server import Agent

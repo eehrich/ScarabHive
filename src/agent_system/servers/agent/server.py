@@ -351,16 +351,43 @@ class Agent(MCPServer):
         logger.debug(
             "Agent %s rendering system_template from path: %s",
             self.name, system_template_path)
-        rendered = render_prompts(
+        rendered_sections = render_prompts(
             system_template_path,
             context_vals,
             auto_datetime=self.system_config.context.auto_datetime if hasattr(self.system_config, 'context') else False,
             timezone=self.system_config.context.timezone if hasattr(self.system_config, 'context') else None,
             location=self.system_config.context.location if hasattr(self.system_config, 'context') else None
         )
-        system_msg = rendered.get("system_prompt") or "You are an assistant agent."
-        tools_msg = rendered.get("tools_prompt")
-        return system_msg, tools_msg
+        
+        # Merge all sections into a single prompt (priority-based ordering)
+        # This matches the behavior of config_agent_factory._load_system_prompt()
+        section_order = [
+            'system_prompt',
+            'tools_prompt',
+            'general_instructions_prompt',
+        ]
+        
+        def sort_key(item):
+            section_name, _ = item
+            try:
+                return (0, section_order.index(section_name))
+            except ValueError:
+                return (1, section_name)  # Unknown sections come last, sorted alphabetically
+        
+        sorted_sections = sorted(rendered_sections.items(), key=sort_key)
+        
+        # Concatenate sections with separators
+        merged_prompt = "\n\n".join(
+            f"# {section_name}\n{content}" if section_name != "system_prompt" else content
+            for section_name, content in sorted_sections
+        )
+        
+        logger.debug(
+            f"Agent {self.name} assembled prompt from {len(rendered_sections)} sections: "
+            f"{[name for name, _ in sorted_sections]}"
+        )
+        
+        return merged_prompt, None
 
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
