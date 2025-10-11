@@ -92,11 +92,53 @@ async def initialize_system(config):
 
 async def create_agent(config, registry, agent_name: str):
     """Create and initialize the specified agent."""
-    # Get the agent configuration with inheritance
+    from .config.models import MCPConfig
+    from .plugins.config_agent_discovery import discover_config_agents
+    
+    # Try to get MCP config from plugins.servers first
     mcp_config = get_mcp_config_by_name(agent_name, config)
     
+    # If not found in plugins.servers, check if it's a config-based agent
     if not mcp_config:
-        raise ValueError(f"Agent '{agent_name}' not found in configuration")
+        config_agents = discover_config_agents(config.agents)
+        if agent_name in config_agents:
+            # Found as config-based agent - get its definition
+            agent_def = config.agents.get(agent_name) if config.agents else None
+            if agent_def and hasattr(agent_def, 'agent_config'):
+                # Create MCPConfig from config agent definition
+                mcp_config = MCPConfig(
+                    type=agent_def.base_type if hasattr(agent_def, 'base_type') else "agent",
+                    enabled=True,
+                    agent_config=agent_def.agent_config
+                )
+                logger.info(f"Using config-based agent '{agent_name}' (base_type={agent_def.base_type})")
+    
+    if not mcp_config:
+        # Build helpful error message
+        available_agents = []
+        
+        # Get agents from plugins.servers
+        if config.plugins and config.plugins.servers:
+            available_agents.extend([
+                name for name, server in config.plugins.servers.items()
+                if server.enabled and server.agent_config is not None
+            ])
+        
+        # Get config-based agents
+        if config.agents:
+            config_agents = discover_config_agents(config.agents)
+            available_agents.extend(config_agents.keys())
+        
+        # Remove duplicates and sort
+        available_agents = sorted(set(available_agents))
+        
+        error_msg = f"Agent '{agent_name}' not found in configuration."
+        if available_agents:
+            error_msg += "\n\nAvailable agents:\n  " + "\n  ".join(available_agents)
+        else:
+            error_msg += "\n\nNo agents are configured. Check your config files."
+        
+        raise ValueError(error_msg)
     
     if not mcp_config.agent_config:
         raise ValueError(f"Agent '{agent_name}' has no agent_config section")
@@ -234,6 +276,15 @@ async def main_async(request: str, agent_name: str | None = None, show_status: b
             
         print("="*50)
         
+    except ValueError as e:
+        # User-friendly error for common issues (agent not found, etc.)
+        error_msg = str(e)
+        if _supports_color():
+            error_msg = _colorize(f"ERROR: {error_msg}", "31")  # Red
+        else:
+            error_msg = f"ERROR: {error_msg}"
+        print(error_msg, file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Agent execution failed: {e}", exc_info=True)
         import traceback
