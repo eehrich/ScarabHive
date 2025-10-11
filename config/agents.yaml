@@ -1,0 +1,192 @@
+# ================================
+# Configuration-Based Agents
+# ================================
+# Define agents purely through YAML configuration without plugin code.
+# These agents are discovered and registered alongside plugin-based agents.
+# 
+# Epic 0043: Configuration-Based Agents (Zero-Code Agent Definition)
+
+# Financial Analyst Agent - Stock market analysis and research
+financial_analyst:
+  enabled: true
+  description: "Professional financial analyst for stock market analysis, fundamentals research, and investment insights"
+  base_type: agent
+  
+  agent_config:
+    llm_profile: turbo              # Fast and cost-effective for financial queries
+    max_steps: 20                    # Allow comprehensive multi-step analysis
+    system_template: "config/prompts/financial_analyst_prompt.yaml"
+    
+    tools:
+      allowed:
+        - "yahoo_finance/*"          # Stock data and fundamentals
+        - "web_scraper/*"            # News and company information
+        - "duckduckgo_search/*"      # Market news and sentiment
+        - "basic_operations/wait_for" # For delayed execution
+      blocked:
+        - "ssh_control/*"            # No system access
+        - "script_interpreter/*"     # No code execution
+    
+    context_management:
+      enabled: true
+      strategy: "SUMMARIZE_OLDEST"
+      preserve_recent_messages: 8
+  
+  metadata:
+    author: "AgentSystem"
+    version: "1.0.0"
+    tags: ["finance", "stocks", "analysis", "research"]
+    category: "financial"
+
+# Code Reviewer Agent - Code quality and security review
+code_reviewer:
+  enabled: true
+  description: "Expert code reviewer for quality analysis, security audits, and best practices validation"
+  base_type: agent
+  
+  agent_config:
+    llm_profile: deepseek            # Specialized in code understanding
+    max_steps: 15                    # Code review is usually focused
+    system_template: "config/prompts/code_reviewer_prompt.yaml"
+    
+    tools:
+      allowed:
+        - "script_interpreter/*"     # Run linters, tests, static analysis
+        - "log_viewer/*"             # Check application logs
+        - "web_scraper/*"            # Lookup documentation
+      blocked:
+        - "ssh_control/*"            # No remote system access
+        - "yahoo_finance/*"          # Not relevant for code review
+    
+    context_management:
+      enabled: true
+      strategy: "SMART_COMPRESSION"
+      preserve_recent_messages: 10
+  
+  metadata:
+    author: "AgentSystem"
+    version: "1.1.0"
+    tags: ["code", "review", "quality", "security"]
+    category: "development"
+
+# Research Assistant - Comprehensive research and fact-checking
+research_assistant:
+  enabled: true
+  description: "Comprehensive research assistant for information gathering, fact-checking, and synthesis"
+  base_type: agent
+  
+  agent_config:
+    llm_profile: normal              # Balanced performance for research
+    max_steps: 30                    # Research requires many steps
+    system_template: "config/prompts/research_assistant_prompt.yaml"
+    
+    tools:
+      allowed:
+        - "duckduckgo_search/*"      # Primary search tool
+        - "web_scraper/*"            # Extract detailed content
+        - "context7/*"               # Technical documentation
+        - "basic_operations/*"       # Utility operations
+      blocked:
+        - "ssh_control/*"            # No system access
+        - "script_interpreter/*"     # No code execution
+        - "yahoo_finance/*"          # Use financial_analyst for finance
+    
+    context_management:
+      enabled: true
+      strategy: "SUMMARIZE_OLDEST"
+      preserve_recent_messages: 15   # Keep more context for research
+      summarization_threshold: 0.75  # Summarize a bit later
+  
+  metadata:
+    author: "AgentSystem"
+    version: "1.0.0"
+    tags: ["research", "fact-checking", "synthesis", "information"]
+    category: "research"
+
+# Simple Q&A Agent - Basic question answering without tools
+simple_qa:
+  enabled: true
+  description: "Lightweight Q&A agent for general knowledge questions without external tools"
+  base_type: agent
+  
+  agent_config:
+    llm_profile: normal
+    max_steps: 5                     # Limited steps for simple Q&A
+    system_prompt: |
+      You are a helpful AI assistant for answering general knowledge questions.
+      
+      Guidelines:
+      - Provide accurate, concise answers
+      - If you don't know something, say so honestly
+      - Avoid speculation without clear indication
+      - Use examples when helpful
+      - Be friendly and professional
+      
+      Operational Context:
+      - No external tools available (knowledge cutoff applies)
+      - Planning budget: {{ max_steps }} steps
+      - Current date: {{ current_date | default('n/a') }}
+      
+      If the question requires real-time data, current events, or external resources,
+      clearly state that you cannot access that information.
+    
+    tools:
+      allowed: []                    # No tools - pure LLM knowledge
+      blocked: []
+    
+    context_management:
+      enabled: false                 # Simple Q&A doesn't need complex management
+  
+  metadata:
+    author: "AgentSystem"
+    version: "1.0.0"
+    tags: ["qa", "simple", "knowledge", "general"]
+    category: "general"
+
+# Customer Support Agent - Example for customer service use case
+customer_support:
+  enabled: false                     # Disabled by default (template/example)
+  description: "Customer support agent for handling inquiries and troubleshooting"
+  base_type: agent
+  
+  agent_config:
+    llm_profile: turbo               # Fast responses for customers
+    max_steps: 10
+    system_prompt: |
+      You are a friendly and professional Customer Support Agent.
+      
+      Your Role:
+      - Help customers with questions and issues
+      - Provide clear, step-by-step solutions
+      - Escalate complex issues when needed
+      - Maintain a positive, empathetic tone
+      
+      Guidelines:
+      - Always greet customers warmly
+      - Listen carefully to understand the issue
+      - Ask clarifying questions if needed
+      - Provide actionable solutions
+      - Thank customers for their patience
+      
+      Available: {{ max_steps }} steps to resolve the issue
+      Tools: {% if tools %}{{ tools | join(', ') }}{% else %}No tools configured{% endif %}
+      
+      If you cannot resolve an issue, clearly state the limitation and
+      suggest escalation to human support.
+    
+    tools:
+      allowed:
+        - "web_scraper/*"            # Check documentation, FAQs
+        - "log_viewer/*"             # View user logs if available
+      blocked: []
+    
+    context_management:
+      enabled: true
+      strategy: "SLIDING_WINDOW"
+      preserve_recent_messages: 10
+  
+  metadata:
+    author: "AgentSystem"
+    version: "1.0.0"
+    tags: ["support", "customer-service", "troubleshooting"]
+    category: "support"

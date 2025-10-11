@@ -1,0 +1,148 @@
+# ================================
+# Plugin Configuration
+# ================================
+# Configuration for local MCP plugins (servers)
+
+# Plugin discovery directories
+plugin_dirs:
+  - src/plugins
+
+# Default configuration for all plugins
+default_config:
+  type: basic_agent
+  enabled: false
+  
+  agent_config:
+    llm_profile: normal
+    max_steps: 20
+    system_template: "config/prompts/system_prompt.yaml"
+    
+    tools:
+      allowed: []  # By default no tools allowed (secure default)
+      blocked: []
+    
+    # Context window management
+    context_management:
+      enabled: true
+      summarizer_llm_profile: turbo
+      strategy: "SUMMARIZE_OLDEST"
+      preserve_recent_messages: 10
+      prediction_threshold: 0.95
+      summarization_threshold: 0.70
+      max_summary_words: 5000
+      tool_result_preview_chars: 500
+      warning_levels:
+        yellow: 0.70
+        orange: 0.85
+        red: 0.95
+      token_optimization:
+        enable_compression: true
+        compress_tool_results: true
+        optimize_json: true
+        remove_verbose_patterns: false
+        cooldown_seconds: 10.0
+        min_token_increase: 1000
+
+# Plugin server configurations
+servers:
+  example:
+    type: example
+    enabled: true
+  
+  basic_agent:
+    type: basic_agent
+    enabled: true
+    agent_config:
+      tools:
+        allowed:
+          - "*"
+  
+  duckduckgo_search:
+    type: duckduckgo_search
+    enabled: true
+  
+  basic_operations:
+    type: basic_operations
+    enabled: true
+    max_wait_seconds: 3600
+    default_update_interval: 5.0
+  
+  http_server:
+    type: http_server
+    enabled: false
+    host: 127.0.0.1
+    port: 9000
+  
+  yahoo_finance:
+    type: yahoo_finance
+    enabled: false
+  
+  twitter_search:
+    type: twitter_search
+    enabled: false
+  
+  web_scraper:
+    type: web_scraper
+    enabled: true
+    proxies: []
+  
+  weather:
+    type: weather
+    enabled: true
+  
+  datetime:
+    type: datetime
+    enabled: true
+  
+  llm_router:
+    type: llm_router
+    enabled: true
+  
+  log_viewer:
+    type: log_viewer
+    enabled: true
+  
+  script_interpreter:
+    type: script_interpreter
+    enabled: true
+  
+  web_research_agent:
+    type: web_research_agent
+    enabled: true
+    max_steps: 20
+    agent_config:
+      llm_profile: normal
+      tools:
+        allowed:
+          - "web_research_agent/*"
+          - "duckduckgo_search/*"
+          - "web_scraper/*"
+  
+  ibkr:
+    type: ibkr
+    enabled: false
+    host: 127.0.0.1
+    port: 4002
+  
+  ssh_control:
+    type: ssh_control
+    enabled: true
+    machines:
+      - name: controlhost
+        host: 192.0.2.114
+        port: 22
+        username: root
+        auth_method: key
+        key_path: ~/.ssh/id_rsa
+        max_connections: 3
+      - name: MCP
+        host: 192.0.2.113
+        port: 22
+        username: root
+        auth_method: key
+        key_path: ~/.ssh/id_rsa
+        max_connections: 3
+  
+  user_management:
+    type: user_management
+    enabled: true

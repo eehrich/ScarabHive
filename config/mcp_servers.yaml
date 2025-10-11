@@ -1,0 +1,117 @@
+# ================================
+# External MCP Servers Configuration
+# ================================
+# Configuration for remote/external MCP servers
+
+# Connection settings
+connection:
+  timeout: 5.0
+  parallel_connect: true
+
+# Caching configuration
+cache:
+  enabled: true
+  tool_list_ttl: 3600.0  # TTL for tool list cache (seconds)
+  max_size: null         # Maximum cache entries (null = unlimited)
+
+# Remote MCP server definitions
+remote_servers:
+  localhost:
+    url: http://127.0.0.1:8081
+    enabled: false
+    description: Local streaming MCP server
+    transport: streaming
+    initialization_options:
+      pirate_mode: false
+    features:
+      tools: true
+    tools:
+      allowed:
+        - hello
+      blocked: []
+  
+  controlhost:
+    url: http://192.0.2.114:8000/mcp
+    enabled: false
+    description: controlhost MCP server
+    transport: streaming
+    features:
+      tools: true
+  
+  my1:
+    url: http://192.0.2.113/ts/mcp
+    enabled: false
+    description: My Smithery MCP Server 1
+    transport: streaming
+    features:
+      tools: false
+  
+  my2:
+    url: http://192.0.2.113/other/mcp
+    enabled: false
+    description: My Smithery MCP Server 2
+    transport: streaming
+    features:
+      tools: false
+  
+  open_web_search:
+    url: https://server.smithery.ai/@Aas-ee/open-websearch/mcp?api_key=***REMOVED***&profile=***REMOVED***
+    enabled: false
+    description: Remote Open Web Search
+    transport: streaming
+    features:
+      tools: true
+  
+  x_tools:
+    url: https://server.smithery.ai/@acakom/x-mcp-server/mcp?api_key=***REMOVED***&profile=***REMOVED***
+    enabled: false
+    description: Remote X-Tools (Twitter)
+    transport: streaming
+    features:
+      tools: true
+    initialization_options:
+      key: ***REMOVED***
+      bearer_token: ***REMOVED***
+      consumer_key: ''
+      consumer_secret: ''
+      access_token: ***REMOVED***
+      access_token_secret: ''
+  
+  context7:
+    url: https://server.smithery.ai/@upstash/context7-mcp/mcp?api_key=***REMOVED***&profile=***REMOVED***
+    enabled: true
+    description: Remote Context7 MCP
+    transport: streaming
+    features:
+      tools: true
+  
+  weather_mcp:
+    url: https://server.smithery.ai/@smithery-ai/national-weather-service/mcp?api_key=***REMOVED***&profile=***REMOVED***
+    enabled: false
+    description: Remote Weather Forecast MCP
+    transport: streaming
+    features:
+      tools: true
+    tools:
+      blocked:
+        - get_local_time
+  
+  exa_search:
+    url: https://server.smithery.ai/exa/mcp?api_key=***REMOVED***&profile=***REMOVED***
+    enabled: false
+    description: Remote Exa Search
+    transport: streaming
+    features:
+      tools: true
+    tools:
+      blocked:
+        - deep_researcher_start
+        - deep_researcher_check
+  
+  ai_research_assistant:
+    url: https://server.smithery.ai/@hamid-vakilzadeh/mcpsemanticscholar/mcp?api_key=***REMOVED***&profile=***REMOVED***
+    enabled: false
+    description: AI Research Assistant
+    transport: streaming
+    features:
+      tools: true
