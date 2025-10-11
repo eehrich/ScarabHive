@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -396,9 +395,8 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                     # Simple fallback without tabulate
                     if rows:
                         name_w = max(len(r[0]) for r in rows)
-                        desc_w = max(len(r[1]) for r in rows)
                     else:
-                        name_w = desc_w = 20
+                        name_w = 20
                     
                     print(f"\nExposed Tools ({len(tools)}):")
                     hdr = f"{'TOOL NAME'.ljust(name_w)}  DESCRIPTION"
@@ -491,38 +489,6 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 "session_ttl": server_config.session_ttl
             }
             print(json.dumps(config_dict, indent=2, ensure_ascii=False))
-            
-        elif action == "start":
-            host = getattr(args, 'server_host', '127.0.0.1')
-            port = getattr(args, 'server_port', 8000)
-            log_level = os.getenv('AGENT_LOG_LEVEL', 'info').lower()
-            
-            print(f"Starting MCP server on {host}:{port}...")
-            print(f"Log level: {log_level}")
-            print("Press Ctrl+C to stop the server\n")
-            
-            try:
-                # Start uvicorn with the same environment
-                cmd = [
-                    sys.executable, "-m", "uvicorn",
-                    "agent_system.agent.interface_api:build_app",
-                    "--factory",
-                    "--host", str(host),
-                    "--port", str(port),
-                    "--log-level", log_level
-                ]
-                subprocess.run(cmd, check=True)
-            except KeyboardInterrupt:
-                print("\nServer stopped by user")
-            except subprocess.CalledProcessError as e:
-                print(f"Error starting server: {e}")
-                sys.exit(1)
-            
-        elif action == "stop":
-            print(json.dumps({
-                "error": "MCP server is managed by the API process",
-                "info": "Stop the uvicorn API process to stop the MCP server"
-            }, indent=2, ensure_ascii=False))
             
         else:
             print(json.dumps({"error": f"Unknown server action: {action}"}, ensure_ascii=False))
@@ -733,13 +699,8 @@ def main() -> None:
     # MCP server mode subcommands
     server_p = mcp_subparsers.add_parser("server", help="Manage MCP server mode")
     _add_mcp_common_opts(server_p)
-    server_p.add_argument("server_action", nargs="?", choices=["start", "stop", "status", "tools", "config", "sessions"], 
-                         help="Server action: start, stop, status, tools (list exposed tools), config (show configuration), sessions (list active sessions)")
-    server_p.add_argument("--host", dest="server_host", default="127.0.0.1", help="Host to bind MCP server to (default: 127.0.0.1)")
-    server_p.add_argument("--port", dest="server_port", type=int, default=8000, help="Port to bind MCP server to (default: 8000)")
-    server_p.add_argument("--expose", dest="expose_plugins", nargs="+", help="Plugins to expose (default: all)")
-    server_p.add_argument("--auth", dest="require_auth", action="store_true", help="Require authentication")
-    server_p.add_argument("--no-auth", dest="no_auth", action="store_true", help="Disable authentication")
+    server_p.add_argument("server_action", nargs="?", choices=["status", "tools", "config", "sessions"], default="status",
+                         help="Server action: status (default), tools (list exposed tools), config (show configuration), sessions (list active sessions)")
     server_p.add_argument("--session-id", dest="session_id", help="Session ID to query (for 'sessions' action)")
 
     # users subcommand for user management
