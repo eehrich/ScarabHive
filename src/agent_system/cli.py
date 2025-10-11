@@ -376,12 +376,41 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
             if args.out_format == "json":
                 print(json.dumps({"tools": tools}, indent=2, ensure_ascii=False))
             else:
-                print(f"\nExposed Tools ({len(tools)}):")
-                print("=" * 40)
+                # Format as nice table like agent-cli plugins
+                rows = []
                 for tool in tools:
-                    print(f"{tool['plugin']}.{tool['name']}")
-                    print(f"  {tool['description']}")
-                    print()
+                    full_name = f"{tool['plugin']}.{tool['name']}"
+                    rows.append((full_name, tool['description']))
+                
+                headers = ["TOOL NAME", "DESCRIPTION"]
+                
+                if tabulate:
+                    print(f"\nExposed Tools ({len(tools)}):")
+                    print(tabulate(rows, headers=headers, tablefmt="github"))
+                else:
+                    # Simple fallback without tabulate
+                    if rows:
+                        name_w = max(len(r[0]) for r in rows)
+                        desc_w = max(len(r[1]) for r in rows)
+                    else:
+                        name_w = desc_w = 20
+                    
+                    print(f"\nExposed Tools ({len(tools)}):")
+                    hdr = f"{'TOOL NAME'.ljust(name_w)}  DESCRIPTION"
+                    print(hdr)
+                    print("-" * len(hdr))
+                    for name, desc in rows:
+                        # Wrap long descriptions
+                        if len(desc) > 80:
+                            # Print first line with name
+                            print(f"{name.ljust(name_w)}  {desc[:80]}")
+                            # Print continuation lines
+                            remaining = desc[80:]
+                            while remaining:
+                                print(f"{' ' * (name_w + 2)}{remaining[:80]}")
+                                remaining = remaining[80:]
+                        else:
+                            print(f"{name.ljust(name_w)}  {desc}")
                     
         elif action == "sessions":
             # List active MCP sessions
