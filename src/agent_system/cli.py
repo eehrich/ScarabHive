@@ -41,6 +41,40 @@ def _get_server_mode_config(config: AgentSystemConfig):
     """Get server_mode configuration, preferring new structure over legacy."""
     return config.mcp_server_mode if config.mcp_server_mode else (config.mcp_system.server_mode if config.mcp_system else None)
 
+
+def _get_agents_dict(config: AgentSystemConfig):
+    """Get agents configuration dict, preferring new structure over legacy."""
+    if config.agents:
+        return config.agents
+    elif config.mcp_system and config.mcp_system.config_agents:
+        return config.mcp_system.config_agents
+    else:
+        return {}
+
+
+def _get_legacy_mcp_system(config: AgentSystemConfig):
+    """Get legacy MCPSystemConfig for compatibility with existing functions.
+    
+    This helper constructs an MCPSystemConfig from new structure if needed,
+    allowing gradual migration of functions that still expect MCPSystemConfig.
+    """
+    from .config.models import MCPSystemConfig
+    
+    if config.mcp_system:
+        return config.mcp_system
+    
+    # Construct from new structure for backward compatibility
+    # This allows config-agent functions to work with both structures
+    if config.plugins or config.agents:
+        return MCPSystemConfig(
+            servers=config.plugins.servers if config.plugins else {},
+            plugin_dirs=config.plugins.plugin_dirs if config.plugins else [],
+            default_config=config.plugins.default_config if config.plugins else None,
+            config_agents=config.agents if config.agents else {},
+        )
+    
+    return MCPSystemConfig()
+
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
 
@@ -1256,7 +1290,7 @@ def main() -> None:
         
         if cmd == "list":
             # List all config agents
-            agents = list_config_agents(config.mcp_system)
+            agents = list_config_agents(_get_legacy_mcp_system(config))
             
             if args.out_format == "json":
                 print(json.dumps(agents, indent=2, ensure_ascii=False))
@@ -1304,7 +1338,7 @@ def main() -> None:
                 return
             
             try:
-                info = get_config_agent_info(agent_name, config.mcp_system)
+                info = get_config_agent_info(agent_name, _get_legacy_mcp_system(config))
             except KeyError:
                 print(json.dumps({"error": f"Config agent '{agent_name}' not found"}, ensure_ascii=False))
                 return
@@ -1374,11 +1408,12 @@ def main() -> None:
             
             if agent_name:
                 # Validate single agent
-                if not config.mcp_system.config_agents or agent_name not in config.mcp_system.config_agents:
+                agents_dict = _get_agents_dict(config)
+                if not agents_dict or agent_name not in agents_dict:
                     print(json.dumps({"error": f"Config agent '{agent_name}' not found"}, ensure_ascii=False))
                     return
                 
-                definition = config.mcp_system.config_agents[agent_name]
+                definition = agents_dict[agent_name]
                 errors = validate_config_agent(agent_name, definition, llm_profiles)
                 
                 if args.out_format == "json":
@@ -1403,7 +1438,7 @@ def main() -> None:
                         sys.exit(1)
             else:
                 # Validate all agents
-                results = validate_all_config_agents(config.mcp_system, llm_profiles)
+                results = validate_all_config_agents(_get_legacy_mcp_system(config), llm_profiles)
                 
                 if args.out_format == "json":
                     output = {
@@ -1557,10 +1592,11 @@ def main() -> None:
     if agent is None:
         # Create new agent
         logger.info("Creating new Agent instance '%s'", entry_name)
-        mcp_config = config.mcp_system.servers.get(entry_name) if config.mcp_system else None
+        plugins_cfg = _get_plugins_config(config)
+        mcp_config = plugins_cfg.servers.get(entry_name) if plugins_cfg else None
         if not mcp_config:
             logger.warning("No MCPConfig found for agent '%s', using default_config", entry_name)
-            mcp_config = config.mcp_system.default_config if config.mcp_system else MCPConfig()
+            mcp_config = plugins_cfg.default_config if plugins_cfg else MCPConfig()
         
         agent = _Agent(entry_name, config, mcp_config, registry)
         registry.register(entry_name, agent)
