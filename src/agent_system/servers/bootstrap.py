@@ -20,40 +20,32 @@ logger = logging.getLogger(__name__)
 def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     """Discover and register all configured MCP servers.
     
-    Modern approach:
+    New structure (Epic 0044):
+    - Uses config.plugins for local plugin servers
+    - Uses config.agents for configuration-based agents
     - All plugins use (name, system_config, mcp_config) constructor
-    - No legacy workarounds or parent_llm injection
-    - MCP config passed directly to plugins via mcp_config parameter
+    - No legacy mcp_system support
     """
-    # Ensure mcp_system exists
-    if not config.mcp_system:
-        logger.warning("No mcp_system configuration found, skipping bootstrap")
+    # Check for new structure
+    if not config.plugins and not config.agents:
+        logger.warning("No plugins or agents configuration found, skipping bootstrap")
         return
     
     # Discover plugins from configured directories
-    configured = config.mcp_system.plugin_dirs or []
+    configured = config.plugins.plugin_dirs if config.plugins else []
     dirs = [Path(p) for p in configured if p]
-    
-    # Fallback: check current working directory for plugins/
-    if not dirs:
-        cwd_plugins = Path.cwd() / "plugins"
-        if cwd_plugins.exists() and cwd_plugins.is_dir():
-            dirs = [cwd_plugins]
-        else:
-            # Development fallback: src/plugins
-            src_plugins = Path.cwd() / "src" / "plugins"
-            if src_plugins.exists() and src_plugins.is_dir():
-                dirs = [src_plugins]
-    
-    # Always include src/plugins as fallback for development
-    src_plugins = Path.cwd() / "src" / "plugins"
-    if src_plugins.exists() and src_plugins.is_dir() and src_plugins not in dirs:
-        dirs.append(src_plugins)
 
     plugins = discover_all_plugins(dirs=dirs if dirs else None)
 
     # Discover configuration-based agents (Epic 0043)
-    config_agents = discover_config_agents(config.mcp_system)
+    # Build temporary MCPSystemConfig-like dict for discover_config_agents
+    # TODO: Refactor discover_config_agents to accept agents dict directly
+    from ..config.models import MCPSystemConfig
+    temp_mcp_config = MCPSystemConfig(
+        servers=config.plugins.servers if config.plugins else {},
+        config_agents=config.agents if config.agents else {}
+    )
+    config_agents = discover_config_agents(temp_mcp_config)
     
     # Merge config agents into plugins dict (config agents override if name conflicts)
     if config_agents:
@@ -73,12 +65,16 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     if plugins:
         logger.info("Discovered MCP plugins: %s", ", ".join(sorted(plugins.keys())))
     else:
-        logger.debug("No external MCP plugins discovered in %s", dirs)
+        logger.debug("No external MCP plugins discovered")
 
-    # Instantiate enabled servers (each gets its MCPConfig from mcp_system.servers)
-    enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+    # Instantiate enabled servers from config.plugins.servers
+    if not config.plugins:
+        enabled_servers = []
+    else:
+        enabled_servers = [k for k, v in config.plugins.servers.items() if v.enabled]
     
-    # Add config-based agents to enabled_servers (they have their own enabled flag)
+    # Add enabled config-based agents to enabled_servers
+    # Config agents are already filtered by enabled flag in discover_config_agents
     if config_agents:
         for agent_name in config_agents.keys():
             if agent_name not in enabled_servers:
@@ -88,16 +84,24 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     for key in enabled_servers:
         # Use get_mcp_config_by_name to merge default_config with server-specific config
         # For config agents, create MCPConfig from their definition if not in servers
-        if key in config_agents and key not in config.mcp_system.servers:
-            # Config agent not in servers section - create MCPConfig from definition
-            from ..config.models import MCPConfig
-            agent_def = config.mcp_system.config_agents[key]
-            server_mcp_cfg = MCPConfig(
-                type=agent_def.base_type or "agent",
-                enabled=True,
-                agent_config=agent_def.agent_config
-            )
-            logger.debug(f"Created MCPConfig for config agent '{key}' from definition")
+        if key in config_agents:
+            plugins_servers = config.plugins.servers if config.plugins else {}
+            if key not in plugins_servers:
+                # Config agent not in servers section - create MCPConfig from definition
+                from ..config.models import MCPConfig
+                agent_def_data = config.agents.get(key) if config.agents else None
+                if not agent_def_data:
+                    logger.warning(f"Config agent '{key}' not found in config.agents, skipping")
+                    continue
+                    
+                server_mcp_cfg = MCPConfig(
+                    type=agent_def_data.base_type if hasattr(agent_def_data, 'base_type') else "agent",
+                    enabled=True,
+                    agent_config=agent_def_data.agent_config if hasattr(agent_def_data, 'agent_config') else None
+                )
+                logger.debug(f"Created MCPConfig for config agent '{key}' from definition")
+            else:
+                server_mcp_cfg = get_mcp_config_by_name(key, config)
         else:
             server_mcp_cfg = get_mcp_config_by_name(key, config)
         
