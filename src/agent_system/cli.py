@@ -423,12 +423,53 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 print(json.dumps({"error": "MCP server mode is not enabled"}, ensure_ascii=False))
                 return
             
-            # This would require accessing the server handler's active sessions
-            # For now, return a placeholder message
-            print(json.dumps({
-                "message": "Session management requires running MCP server API",
-                "info": "Use GET /mcp/server-info to query active sessions"
-            }, indent=2, ensure_ascii=False))
+            # Query the running server for session information
+            try:
+                import httpx
+                # Build the full URL - endpoint is just the path
+                endpoint_path = config.mcp_system.server_mode.endpoint.rstrip('/')
+                # Default to localhost:8000 for server info endpoint
+                base_url = "http://127.0.0.1:8000"
+                url = f"{base_url}{endpoint_path}/server-info"
+                
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    try:
+                        response = await client.get(url)
+                        if response.status_code == 200:
+                            data = response.json()
+                            sessions = data.get("sessions", {})
+                            
+                            if args.out_format == "json":
+                                print(json.dumps(sessions, indent=2, ensure_ascii=False))
+                            else:
+                                # Format as table
+                                active = sessions.get("active", 0)
+                                total = sessions.get("total", 0)
+                                print("\nMCP Server Sessions:")
+                                print(f"  Active: {active}")
+                                print(f"  Total:  {total}")
+                                
+                                # If there are details about individual sessions
+                                if "details" in sessions and sessions["details"]:
+                                    print("\n  Session Details:")
+                                    for session_id, info in sessions["details"].items():
+                                        print(f"    {session_id[:12]}... - {info}")
+                        else:
+                            print(json.dumps({
+                                "error": f"Server returned status {response.status_code}",
+                                "message": "MCP server might not be running"
+                            }, indent=2, ensure_ascii=False))
+                    except httpx.ConnectError:
+                        print(json.dumps({
+                            "error": "Cannot connect to MCP server",
+                            "message": f"Server not running at {base_url}",
+                            "info": "Use 'agent-cli mcp server start' to start the server"
+                        }, indent=2, ensure_ascii=False))
+            except ImportError:
+                print(json.dumps({
+                    "error": "httpx library not installed",
+                    "message": "Install with: pip install httpx"
+                }, indent=2, ensure_ascii=False))
             
         elif action == "config":
             # Show full MCP server configuration
