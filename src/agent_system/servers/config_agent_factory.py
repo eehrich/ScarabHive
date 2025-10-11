@@ -14,7 +14,8 @@ import logging
 from pathlib import Path
 
 from ..config.models import ConfigBasedAgentDefinition, MCPConfig
-from ..servers.agent import build_agent_server
+from ..servers.agent.server import Agent
+from ..mcp.base import MCPRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -37,34 +38,37 @@ def create_config_based_agent_factory(
         global_mcp_config: Optional global MCPConfig for defaults/overrides
     
     Returns:
-        Factory function with signature: (mcp_config: MCPConfig) -> server_instance
+        Factory function with signature: (agent_name, system_config, mcp_config) -> Agent
+        Matches plugin factory pattern used in bootstrap
     
     Example:
         >>> definition = config.config_agents["financial_analyst"]
         >>> factory = create_config_based_agent_factory("financial_analyst", definition)
-        >>> metadata = PluginMetadata(
-        ...     name="financial_analyst",
-        ...     description=definition.description,
-        ...     type=PluginType.SERVER,
-        ...     source="config"
-        ... )
-        >>> registry.register("financial_analyst", factory, metadata)
+        >>> metadata = {
+        ...     "name": "financial_analyst",
+        ...     "description": definition.description,
+        ...     "source": "config"
+        ... }
+        >>> factory._plugin_metadata = metadata
+        >>> # Later in bootstrap:
+        >>> agent = factory(agent_name, system_config, mcp_config)
     """
     
-    def config_agent_factory(mcp_config: MCPConfig) -> Any:
+    def config_agent_factory(agent_name: str, system_config: Any, mcp_config: MCPConfig) -> Any:
         """
-        Factory function that creates an agent server instance.
+        Factory function that creates an Agent instance.
         
-        This function merges the config-based agent definition with the
-        runtime MCPConfig to create a fully configured agent.
+        This signature matches the plugin pattern: (name, system_config, mcp_config)
         
         Args:
-            mcp_config: Runtime MCPConfig (may contain overrides)
+            agent_name: Name for this agent instance
+            system_config: AgentSystemConfig with system-wide settings
+            mcp_config: MCPConfig for this agent (may contain overrides)
         
         Returns:
-            Initialized agent server instance
+            Initialized Agent instance
         """
-        logger.info(f"Creating config-based agent: {name}")
+        logger.info(f"Creating config-based agent: {name} (instance name: {agent_name})")
         
         # Merge configurations (runtime config takes precedence)
         merged_config = _merge_agent_configs(
@@ -79,21 +83,31 @@ def create_config_based_agent_factory(
             agent_name=name
         )
         
-        # Build the agent server using the standard build_agent_server function
-        # This ensures config-based agents use the same infrastructure as plugin agents
-        agent_server = build_agent_server(
+        # Create a temporary registry for this agent
+        # (bootstrap will override with shared registry)
+        temp_registry = MCPRegistry()
+        
+        # Create the Agent using standard constructor
+        # Agent constructor: (name, system_config, mcp_config, registry)
+        agent = Agent(
+            name=agent_name,
+            system_config=system_config,
             mcp_config=merged_config,
-            system_prompt_override=system_prompt
+            registry=temp_registry
         )
+        
+        # Override system prompt if defined in config
+        if system_prompt:
+            agent._system_prompt_override = system_prompt
         
         logger.info(
-            f"Config agent '{name}' created: "
+            f"Config agent '{name}' created as '{agent_name}': "
             f"LLM={merged_config.agent_config.llm_profile}, "
             f"steps={merged_config.agent_config.max_steps}, "
-            f"tools={len(merged_config.agent_config.tools.allowed)} allowed"
+            f"tools={len(merged_config.agent_config.tools.allowed) if merged_config.agent_config.tools else 0} allowed"
         )
         
-        return agent_server
+        return agent
     
     # Attach metadata to factory for discovery
     config_agent_factory.__name__ = f"config_agent_{name}"

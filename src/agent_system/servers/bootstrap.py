@@ -77,9 +77,30 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
 
     # Instantiate enabled servers (each gets its MCPConfig from mcp_system.servers)
     enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+    
+    # Add config-based agents to enabled_servers (they have their own enabled flag)
+    if config_agents:
+        for agent_name in config_agents.keys():
+            if agent_name not in enabled_servers:
+                enabled_servers.append(agent_name)
+                logger.debug(f"Added config agent '{agent_name}' to enabled_servers")
+    
     for key in enabled_servers:
         # Use get_mcp_config_by_name to merge default_config with server-specific config
-        server_mcp_cfg = get_mcp_config_by_name(key, config)
+        # For config agents, create MCPConfig from their definition if not in servers
+        if key in config_agents and key not in config.mcp_system.servers:
+            # Config agent not in servers section - create MCPConfig from definition
+            from ..config.models import MCPConfig
+            agent_def = config.mcp_system.config_agents[key]
+            server_mcp_cfg = MCPConfig(
+                type=agent_def.base_type or "agent",
+                enabled=True,
+                agent_config=agent_def.agent_config
+            )
+            logger.debug(f"Created MCPConfig for config agent '{key}' from definition")
+        else:
+            server_mcp_cfg = get_mcp_config_by_name(key, config)
+        
         if not server_mcp_cfg:
             logger.warning("Failed to resolve MCP config for server '%s', skipping", key)
             continue
