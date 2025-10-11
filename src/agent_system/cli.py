@@ -18,7 +18,7 @@ except Exception:
     tabulate = None
 
 from .config.settings import load_settings
-from .config.models import MCPConfig
+from .config.models import MCPConfig, AgentSystemConfig
 from .llm.models import ChatMessage
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
@@ -30,6 +30,16 @@ from .servers.agent.server import Agent
 
 # Import services
 from .services import MCPService, ToolService
+
+
+def _get_plugins_config(config: AgentSystemConfig):
+    """Get plugins configuration, preferring new structure over legacy."""
+    return config.plugins if config.plugins else config.mcp_system
+
+
+def _get_server_mode_config(config: AgentSystemConfig):
+    """Get server_mode configuration, preferring new structure over legacy."""
+    return config.mcp_server_mode if config.mcp_server_mode else (config.mcp_system.server_mode if config.mcp_system else None)
 
 # Global color mode: tests may monkeypatch this variable
 color_mode: str = "auto"
@@ -271,7 +281,11 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
         
         if action == "status":
             # Show MCP server configuration and status
-            server_config = config.mcp_system.server_mode
+            server_config = _get_server_mode_config(config)
+            if not server_config:
+                print(json.dumps({"error": "MCP server mode not configured"}, ensure_ascii=False))
+                return
+            
             status_data = {
                 "enabled": server_config.enabled,
                 "endpoint": server_config.endpoint,
@@ -309,7 +323,8 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 
         elif action == "tools":
             # List tools exposed by MCP server mode
-            if not config.mcp_system.server_mode.enabled:
+            server_config = _get_server_mode_config(config)
+            if not server_config or not server_config.enabled:
                 print(json.dumps({"error": "MCP server mode is not enabled"}, ensure_ascii=False))
                 return
             
@@ -326,7 +341,7 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
             registered_count = len(plugin_registry.plugin_servers)
             logger.debug(f"Found {registered_count} registered plugins in registry")
             
-            for plugin_name in config.mcp_system.server_mode.expose_plugins:
+            for plugin_name in server_config.expose_plugins:
                 if plugin_name == "*":
                     # Expose all plugins - iterate over plugin_servers dict
                     for name, adapter in plugin_registry.plugin_servers.items():
@@ -417,7 +432,8 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                     
         elif action == "sessions":
             # List active MCP sessions
-            if not config.mcp_system.server_mode.enabled:
+            server_config = _get_server_mode_config(config)
+            if not server_config or not server_config.enabled:
                 print(json.dumps({"error": "MCP server mode is not enabled"}, ensure_ascii=False))
                 return
             
@@ -425,7 +441,7 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
             try:
                 import httpx
                 # Build the full URL - endpoint is just the path
-                endpoint_path = config.mcp_system.server_mode.endpoint.rstrip('/')
+                endpoint_path = server_config.endpoint.rstrip('/')
                 # Default to localhost:8000 for server info endpoint
                 base_url = "http://127.0.0.1:8000"
                 url = f"{base_url}{endpoint_path}/server-info"
@@ -471,7 +487,11 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
             
         elif action == "config":
             # Show full MCP server configuration
-            server_config = config.mcp_system.server_mode
+            server_config = _get_server_mode_config(config)
+            if not server_config:
+                print(json.dumps({"error": "MCP server mode not configured"}, ensure_ascii=False))
+                return
+            
             config_dict = {
                 "enabled": server_config.enabled,
                 "endpoint": server_config.endpoint,
@@ -809,7 +829,8 @@ def main() -> None:
         # config file directory, so we can trust these paths as provided by
         # the user. If no plugin dirs are configured, pass None to
         # `discover_all_plugins()` to discover only entrypoint plugins.
-        dirs = [Path(p) for p in (config.mcp_system.plugin_dirs or []) if p]
+        plugins_cfg = _get_plugins_config(config)
+        dirs = [Path(p) for p in (plugins_cfg.plugin_dirs or []) if p] if plugins_cfg else []
         plugins = discover_all_plugins(dirs if dirs else None)
 
         def to_list():
@@ -819,7 +840,8 @@ def main() -> None:
                 # metadata loading is handled centrally in discover_all_plugins();
                 # keep local code minimal.
                 # include whether this plugin is enabled in the current config
-                enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+                plugins_cfg = _get_plugins_config(config)
+                enabled_servers = [k for k, v in plugins_cfg.servers.items() if v.enabled] if plugins_cfg else []
                 enabled_flag = name in enabled_servers
                 out.append({
                     "name": name,
@@ -858,7 +880,8 @@ def main() -> None:
                     "factory_module": fm,
                 }
                 out = {"name": target, "metadata": meta, **factory_info}
-                enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+                plugins_cfg = _get_plugins_config(config)
+                enabled_servers = [k for k, v in plugins_cfg.servers.items() if v.enabled] if plugins_cfg else []
                 out["enabled"] = target in enabled_servers
                 if args.out_format == "table":
                     # Print header and key/value lines
@@ -879,7 +902,8 @@ def main() -> None:
                 print(f"DESCRIPTION: {meta.get('description', '')}")
                 print(f"VERSION: {meta.get('version', '')}")
                 # show enabled status for this plugin
-                enabled_servers = [k for k, v in config.mcp_system.servers.items() if v.enabled]
+                plugins_cfg = _get_plugins_config(config)
+                enabled_servers = [k for k, v in plugins_cfg.servers.items() if v.enabled] if plugins_cfg else []
                 enabled_flag = target in enabled_servers
                 enabled_text = "YES" if enabled_flag else "NO"
                 display_enabled = enabled_text
@@ -893,113 +917,14 @@ def main() -> None:
             print(json.dumps({"name": target, "metadata": meta}, indent=2, ensure_ascii=False))
             return
 
-        # enable/disable actions: persist to the YAML config's mcp.enabled_servers
+        # REMOVED: enable/disable actions (Task #9265 - Epic 0044)
+        # Config mutation removed - users should edit config files directly
         if getattr(args, "action", None) in ("enable", "disable"):
-            target = getattr(args, "name", None)
-            if not target:
-                print(json.dumps({"error": "missing plugin name"}, ensure_ascii=False))
-                return
-            cfg_path = Path(args.config)
-            # Read master manifest to discover included files and prefer writing
-            # to the included file that contains an `mcp` mapping (e.g. `mcp.yaml`).
-            managed_path = cfg_path
-            try:
-                master_raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            except Exception as e:
-                logger.warning(f"Failed to load master config from {cfg_path}: {e}", exc_info=True)
-                master_raw = {}
-
-            includes = master_raw.get("includes") or master_raw.get("files") or []
-            if isinstance(includes, str):
-                includes = [includes]
-
-            # Attempt to find an included file that contains 'mcp' mapping
-            found = None
-            for inc in includes:
-                inc_path = Path(inc)
-                if not inc_path.is_absolute():
-                    inc_path = cfg_path.parent.joinpath(inc_path)
-                if inc_path.exists():
-                    try:
-                        inc_data = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
-                        if isinstance(inc_data, dict) and "mcp" in inc_data:
-                            found = inc_path
-                            break
-                    except Exception as e:
-                        logger.debug(f"Could not read include file {inc_path}: {e}")
-                        continue
-
-            # If a specific mcp-managed file was found in includes, use it.
-            if found:
-                managed_path = found
-            else:
-                # Fallback: if master declares mcp.managed_file, respect it; otherwise
-                # default to writing a `.managed` sibling next to master (legacy behavior)
-                mcp_master = master_raw.get("mcp", {}) or {}
-                mf = mcp_master.get("managed_file")
-                if mf:
-                    mp = Path(mf)
-                    if not mp.is_absolute():
-                        managed_path = cfg_path.parent.joinpath(mp)
-                    else:
-                        managed_path = mp
-                else:
-                    managed_path = cfg_path.with_name(cfg_path.stem + ".managed" + cfg_path.suffix)
-
-            # load managed data (this is what we'll update)
-            managed_data: Dict[str, Any] = {}
-            if managed_path.exists():
-                try:
-                    managed_data = yaml.safe_load(managed_path.read_text(encoding="utf-8")) or {}
-                except Exception as e:
-                    logger.warning(f"Failed to load managed config from {managed_path}: {e}", exc_info=True)
-                    managed_data = {}
-            mcp = managed_data.get("mcp", {}) or {}
-            enabled = set(mcp.get("enabled_servers", []) or [])
-
-            intended = "enable" if args.action == "enable" else "disable"
-            # preview/dry-run
-            if args.dry_run:
-                preview = sorted(enabled | {target}) if intended == "enable" else sorted(enabled - {target})
-                print(json.dumps({"dry_run": True, "action": intended, "preview_enabled": preview}, ensure_ascii=False))
-                return
-
-            # confirm unless --yes. If stdin or stdout are not a TTY (non-interactive/test), skip prompt.
-            if not args.yes and (sys.stdin.isatty() and sys.stdout.isatty()):
-                resp = input(f"Are you sure you want to {intended} plugin '{target}'? [y/N]: ")
-                if resp.strip().lower() not in ("y", "yes"):
-                    print(json.dumps({"result": "cancelled"}, ensure_ascii=False))
-                    return
-
-            if args.action == "enable":
-                enabled.add(target)
-            else:
-                enabled.discard(target)
-            mcp["enabled_servers"] = sorted(enabled)
-            # persist into the managed_data (not the master data) so we don't overwrite
-            # user-edited master config. We'll write managed_data to managed_path.
-            managed_data["mcp"] = mcp
-            # atomic write only: write temp file in same dir and atomically replace target.
-            try:
-                # Write managed data as YAML (not JSON) to preserve expected
-                # config formatting and allow editing by users. Keep atomic
-                # replace semantics: write to a temp file in the same dir and
-                # then atomically replace the target.
-                with tempfile.NamedTemporaryFile("w", delete=False, dir=str(managed_path.parent), encoding="utf-8") as tf:
-                    # Use safe_dump with sort_keys=False to preserve order where possible
-                    yaml.safe_dump(managed_data, tf, allow_unicode=True, sort_keys=False)
-                    tmp_name = tf.name
-                os.replace(tmp_name, str(managed_path))
-            except Exception as e:
-                print(json.dumps({"error": "failed to write config", "reason": str(e)}, ensure_ascii=False))
-                # cleanup temp file if present
-                try:
-                    if 'tmp_name' in locals() and os.path.exists(tmp_name):
-                        os.remove(tmp_name)
-                except Exception as e2:
-                    logger.debug(f"Failed to cleanup temp file {tmp_name}: {e2}")
-                return
-            print(json.dumps({"result": "ok", "enabled": mcp["enabled_servers"]}, ensure_ascii=False))
+            print(json.dumps({
+                "error": "enable/disable commands removed",
+                "message": "Please edit config files directly (config/plugins.yaml)",
+                "info": "Set 'enabled: true/false' for the specific plugin server in plugins.yaml"
+            }, ensure_ascii=False))
             return
 
         # search action: filter plugins by name or description
