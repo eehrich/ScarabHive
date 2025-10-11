@@ -17,7 +17,7 @@ def test_agent_inherits_global_llm():
                 "normal": LLMProfile(model_ref="test-model")
             }
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             servers={
                 "agent": MCPConfig(type="agent", enabled=True, agent_config=AgentConfig())
             }
@@ -43,14 +43,14 @@ def test_agent_server_override():
                 "normal": LLMProfile(model_ref="test-model")
             }
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             servers={
                 "agent": MCPConfig(type="agent", enabled=True, agent_config=AgentConfig())
             }
         )
     )
     # Set custom attribute on the MCPConfig for override test
-    cfg.mcp_system.servers["agent"].default_provider = "ollama"
+    cfg.plugins.servers["agent"].default_provider = "ollama"
 
     registry = MCPRegistry()
     bootstrap_servers(cfg, registry)
@@ -85,15 +85,15 @@ def test_web_research_agent_server_override():
                 "fast": LLMProfile(model_ref="gpt-5-mini")
             }
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             servers={
                 "web_research_agent": MCPConfig(type="web_research_agent", enabled=True, agent_config=AgentConfig())
             }
         )
     )
     # Set custom attributes
-    cfg.mcp_system.servers["web_research_agent"].default_provider = "openai"
-    cfg.mcp_system.servers["web_research_agent"].model = "gpt-5-mini"
+    cfg.plugins.servers["web_research_agent"].default_provider = "openai"
+    cfg.plugins.servers["web_research_agent"].model = "gpt-5-mini"
 
     registry = MCPRegistry()
     try:

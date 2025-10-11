@@ -71,13 +71,13 @@ class TestLLMFactoryIntegration:
     
     def test_all_configured_agents_can_create_llm(self, system_config):
         """Test that all configured agents can create LLM clients."""
-        assert system_config.mcp_system and system_config.mcp_system.servers, "No MCP servers configured in system settings"
+        assert system_config.plugins and system_config.plugins.servers, "No MCP servers configured in system settings"
         
         # Test a few key servers
         test_servers = ["basic_agent", "web_research_agent", "duckduckgo_search"]
         
         for server_name in test_servers:
-            if server_name not in system_config.mcp_system.servers:
+            if server_name not in system_config.plugins.servers:
                 continue
                 
             mcp_config = get_mcp_config_by_name(server_name, system_config)

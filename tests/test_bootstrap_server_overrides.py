@@ -17,7 +17,7 @@ def test_server_llm_override():
             },
             default_profile="normal"
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             servers={
                 "override_agent": MCPConfig(
                     type="agent",
@@ -60,7 +60,7 @@ def test_server_no_override():
             },
             default_profile="normal"
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             servers={
                 "normal_agent": MCPConfig(
                     type="agent",

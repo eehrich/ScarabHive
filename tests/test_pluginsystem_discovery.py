@@ -40,7 +40,7 @@ def test_plugins_discovery_and_bootstrap(tmp_path, monkeypatch):
             default_profile="normal",
             profiles={"normal": {"model_ref": "test-model"}}
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             servers={"fake_plugin": MCPConfig(type="fake_plugin", enabled=True)}
         )
     )
@@ -81,7 +81,7 @@ def test_plugins_discovery_respects_plugin_dirs(tmp_path, monkeypatch):
             default_profile="normal",
             profiles={"normal": {"model_ref": "test-model"}}
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             plugin_dirs=[str(custom_dir)],
             servers={"custom_plugin": MCPConfig(type="custom_plugin", enabled=True)}
         )

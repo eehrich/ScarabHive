@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_system.services.config_service import ConfigService
-from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPConfig
 
 
 @pytest.fixture
@@ -20,9 +20,11 @@ def config_service():
 
 @pytest.fixture
 def mock_config():
-    """Fixture providing a mock AgentSystemConfig."""
+    """Fixture providing a mock AgentSystemConfig with new structure."""
+    from agent_system.config.models import PluginsConfig
     return AgentSystemConfig(
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
+            plugin_dirs=["src/plugins", "external/plugins"],
             servers={
                 "test_server": MCPConfig(
                     enabled=True,
@@ -33,8 +35,7 @@ def mock_config():
                     enabled=False,
                     command="disabled_command"
                 )
-            },
-            plugin_dirs=["src/plugins", "external/plugins"]
+            }
         )
     )
 
@@ -260,7 +261,7 @@ class TestPluginDirs:
     def test_get_plugin_dirs_empty(self, config_service):
         """Test getting plugin dirs when none are configured."""
         empty_config = AgentSystemConfig(
-            mcp_system=MCPSystemConfig(servers={}, plugin_dirs=[])
+            plugins=PluginsConfig(servers={}, plugin_dirs=[])
         )
         config_service._config = empty_config
         
@@ -269,11 +270,12 @@ class TestPluginDirs:
         assert plugin_dirs == []
 
     def test_get_plugin_dirs_filters_empty_strings(self, config_service):
-        """Test that empty strings are filtered from plugin dirs."""
+        """Test that get_plugin_dirs filters out empty strings."""
+        from agent_system.config.models import PluginsConfig
         config = AgentSystemConfig(
-            mcp_system=MCPSystemConfig(
-                servers={},
-                plugin_dirs=["src/plugins", "", "external/plugins"]
+            plugins=PluginsConfig(
+                plugin_dirs=["src/plugins", "", "external/plugins"],
+                servers={}
             )
         )
         config_service._config = config
@@ -322,7 +324,7 @@ class TestIntegration:
         # Create a temporary config file
         config_file = tmp_path / "test_config.yaml"
         config_content = """
-mcp_system:
+plugins:
   servers:
     test_server:
       enabled: true

@@ -16,7 +16,7 @@ def _make_cfg(tmp_path: Path, plugin_dirs):
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}
         ),
-        mcp_system=MCPSystemConfig(plugin_dirs=plugin_dirs)
+        plugins=PluginsConfig(plugin_dirs=plugin_dirs)
     )
     return cfg
 
@@ -73,7 +73,7 @@ def test_cli_plugins_status(monkeypatch, tmp_path, capsys):
     cfg_file.write_text('mcp:\n  enabled_servers:\n    - st_example')
 
     cfg = _make_cfg(tmp_path, [str(pdir)])
-    cfg.mcp_system.servers = {"st_example": MCPConfig(type="st_example", enabled=True, agent_config=None)}  # ensure the plugin is enabled in the config
+    cfg.plugins.servers = {"st_example": MCPConfig(type="st_example", enabled=True, agent_config=None)}  # ensure the plugin is enabled in the config
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "plugins", "status", "--config", str(cfg_file)])

@@ -36,10 +36,10 @@ class TestConfigurationLoading:
     def test_load_settings_loads_mcp_system(self):
         """Test that MCP system configuration is loaded from mcp.yaml."""
         config = load_settings()
-        assert config.mcp_system is not None
-        assert len(config.mcp_system.plugin_dirs) > 0
-        assert config.mcp_system.default_config is not None
-        assert len(config.mcp_system.servers) > 0
+        assert config.plugins is not None
+        assert len(config.plugins.plugin_dirs) > 0
+        assert config.plugins.default_config is not None
+        assert len(config.plugins.servers) > 0
     
     def test_load_settings_includes_context_and_network(self):
         """Test that core configurations are loaded."""
@@ -78,7 +78,7 @@ class TestMCPConfigInheritance:
         # Get a server that truly inherits - duckduckgo_search only overrides 'type' and 'enabled'
         # It should inherit agent_config from default
         duck_config = get_mcp_config_by_name("duckduckgo_search", config)
-        default_config = config.mcp_system.default_config
+        default_config = config.plugins.default_config
         
         assert duck_config is not None
         # duckduckgo_search has explicit enabled: true (overrides default's false)

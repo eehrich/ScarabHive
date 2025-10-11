@@ -53,31 +53,23 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     part = yaml.safe_load(inc_path.read_text(encoding="utf-8")) or {}
                     
                     # Merge based on included file structure
-                    # Legacy support: llm_system, mcp_system (old monolithic structure)
                     if "llm_system" in part:
                         data["llm_system"] = part["llm_system"]
                     elif inc.endswith("llm.yaml"):
                         # If llm.yaml contains the configuration directly
                         data["llm_system"] = part
                     
-                    if "mcp_system" in part:
-                        data["mcp_system"] = part["mcp_system"]
-                    elif inc.endswith("mcp.yaml"):
-                        # If mcp.yaml contains the configuration directly
-                        data["mcp_system"] = part
-                    
                     # New split structure (Epic 0044)
                     if "plugins" in part:
                         data["plugins"] = part["plugins"]
                     
                     if "external_servers" in part:
-                        # mcp_servers.yaml uses "external_servers" wrapper
-                        if "mcp_servers" not in data:
-                            data["mcp_servers"] = {}
-                        data["mcp_servers"].update(part)
+                        # mcp_servers.yaml uses "external_servers" key
+                        data["external_servers"] = part["external_servers"]
                     
                     if "server_mode" in part:
-                        data["mcp_server_mode"] = part["server_mode"]
+                        # mcp_server_mode.yaml uses "server_mode" key
+                        data["server_mode"] = part["server_mode"]
                     
                     if "agents" in part:
                         data["agents"] = part["agents"]
@@ -103,17 +95,14 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
     data = _expand_env(data)
 
-    # Resolve any plugin_dirs entries. We support both old (mcp_system.plugin_dirs)
-    # and new (plugins.plugin_dirs) structure. Paths are resolved relative to the
-    # configuration file directory first, then relative to repository root (parent
-    # of config directory) if the config-relative path doesn't exist. This allows
-    # entries like `src/plugins` in included files to refer to the repository
-    # `src` tree while keeping resolution predictable.
+    # Resolve plugin_dirs to absolute paths
+    # Paths are resolved relative to the configuration file directory first,
+    # then relative to repository root if the config-relative path doesn't exist.
+    # This allows entries like `src/plugins` in included files to refer to the
+    # repository `src` tree while keeping resolution predictable.
     if cfg_path.exists():
         base_dir = cfg_path.parent
-        # repository root is assumed to be parent of the config dir when
-        # config lives in a `config/` subdirectory; fall back to base_dir if
-        # the parent is not meaningful.
+        # repository root is assumed to be parent of the config dir
         repo_root = cfg_path.parent.parent if cfg_path.parent.parent.exists() else base_dir
         try:
             # New structure: plugins.plugin_dirs
@@ -147,38 +136,6 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                                     p = str(candidate)
                         resolved.append(p)
                     data["plugins"]["plugin_dirs"] = resolved
-            
-            # Legacy support: mcp_system.plugin_dirs (DEPRECATED)
-            mcp_block = data.get("mcp_system") if isinstance(data, dict) else None
-            if isinstance(mcp_block, dict):
-                pdirs = mcp_block.get("plugin_dirs")
-                if isinstance(pdirs, list):
-                    resolved = []
-                    for p in pdirs:
-                        if isinstance(p, str) and p:
-                            ppath = Path(p)
-                            if not ppath.is_absolute():
-                                # Try config-folder-relative first
-                                try:
-                                    candidate = (base_dir.joinpath(ppath)).resolve()
-                                except Exception:
-                                    candidate = base_dir.joinpath(ppath)
-                                # If that candidate doesn't exist but an equivalent
-                                # path exists relative to the repo root, prefer the
-                                # repo-root-relative path (handles `src/...`).
-                                if not candidate.exists():
-                                    try:
-                                        repo_candidate = (repo_root.joinpath(ppath)).resolve()
-                                    except Exception:
-                                        repo_candidate = repo_root.joinpath(ppath)
-                                    if repo_candidate.exists():
-                                        p = str(repo_candidate)
-                                    else:
-                                        p = str(candidate)
-                                else:
-                                    p = str(candidate)
-                        resolved.append(p)
-                    data["mcp_system"]["plugin_dirs"] = resolved
         except Exception:
             # Conservative: if resolution fails for any reason, keep original values
             pass
@@ -187,9 +144,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
 
 def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig] = None) -> Optional[MCPConfig]:
-    """Get an MCPConfig by name with inheritance from default_config.
-    
-    This function creates a final MCPConfig by:
+    """Get an MCPConfig by name with inheritance from default_config.    This function creates a final MCPConfig by:
     1. Starting with the default_config (from plugins or legacy mcp_system)
     2. Overlaying/merging the specific server configuration from servers[server_name]
     
@@ -207,17 +162,12 @@ def get_mcp_config_by_name(server_name: str, config: Optional[AgentSystemConfig]
     if config is None:
         config = load_settings()
     
-    # Prefer new structure (plugins) over legacy (mcp_system)
-    if config.plugins:
-        # New structure: config.plugins.servers
-        default_config_dict = config.plugins.default_config.model_dump()
-        server_config = config.plugins.servers.get(server_name)
-    elif config.mcp_system:
-        # Legacy structure: config.mcp_system.servers (DEPRECATED)
-        default_config_dict = config.mcp_system.default_config.model_dump()
-        server_config = config.mcp_system.servers.get(server_name)
-    else:
+    # Use new structure (plugins)
+    if not config.plugins:
         return None
+    
+    default_config_dict = config.plugins.default_config.model_dump()
+    server_config = config.plugins.servers.get(server_name)
     
     if server_config is None:
         return None

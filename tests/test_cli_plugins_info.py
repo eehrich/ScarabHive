@@ -16,7 +16,7 @@ def _make_cfg(pdir: Path):
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
             profiles={}
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             plugin_dirs=[str(pdir)],
             servers={}
         )

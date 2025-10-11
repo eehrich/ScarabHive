@@ -287,11 +287,11 @@ async def list_config_agents():
     """List all configuration-based agents."""
     try:
         config = get_config()
-        if not config or not config.mcp_system:
+        if not config or not config.agents:
             return ConfigAgentListResponse(total=0, enabled=0, disabled=0, agents=[])
         
         from agent_system.plugins.config_agent_discovery import list_config_agents as list_agents
-        agents_list = list_agents(config.mcp_system)
+        agents_list = list_agents(config.agents)
         
         enabled_count = sum(1 for a in agents_list if a.get('enabled', False))
         disabled_count = len(agents_list) - enabled_count
@@ -312,13 +312,13 @@ async def get_config_agent_details(agent_name: str):
     """Get detailed information about a specific configuration-based agent."""
     try:
         config = get_config()
-        if not config or not config.mcp_system:
+        if not config or not config.agents:
             raise HTTPException(status_code=404, detail="Configuration not found")
         
         from agent_system.plugins.config_agent_discovery import get_config_agent_info
         
         try:
-            info = get_config_agent_info(agent_name, config.mcp_system)
+            info = get_config_agent_info(agent_name, config.agents)
             return ConfigAgentInfo(**info)
         except KeyError:
             raise HTTPException(
@@ -337,7 +337,7 @@ async def validate_all_config_agents():
     """Validate all configuration-based agents."""
     try:
         config = get_config()
-        if not config or not config.mcp_system:
+        if not config or not config.agents:
             return ValidationResponse(total=0, passed=0, failed=0, results=[])
         
         from agent_system.plugins.config_agent_validation import validate_all_config_agents as validate_all
@@ -345,7 +345,7 @@ async def validate_all_config_agents():
         # Get LLM profiles for validation
         llm_profiles = list(config.llm_system.profiles.keys()) if config.llm_system else None
         
-        validation_results = validate_all(config.mcp_system, llm_profiles)
+        validation_results = validate_all(config.agents, llm_profiles)
         
         results = [
             ValidationResult(
@@ -375,10 +375,10 @@ async def validate_config_agent(agent_name: str):
     """Validate a specific configuration-based agent."""
     try:
         config = get_config()
-        if not config or not config.mcp_system:
+        if not config:
             raise HTTPException(status_code=404, detail="Configuration not found")
         
-        if not config.mcp_system.config_agents or agent_name not in config.mcp_system.config_agents:
+        if not config.agents or agent_name not in config.agents:
             raise HTTPException(
                 status_code=404,
                 detail=f"Config agent '{agent_name}' not found"
@@ -389,7 +389,7 @@ async def validate_config_agent(agent_name: str):
         # Get LLM profiles for validation
         llm_profiles = list(config.llm_system.profiles.keys()) if config.llm_system else None
         
-        definition = config.mcp_system.config_agents[agent_name]
+        definition = config.agents[agent_name]
         errors = validate_agent(agent_name, definition, llm_profiles)
         
         return ValidationResult(

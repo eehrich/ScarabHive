@@ -106,10 +106,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.debug(f"LLM system loaded with {len(config.llm_system.profiles)} profiles")
     else:
         logger.warning("No llm_system configuration loaded")
-    if config.mcp_system:
-        logger.debug(f"MCP system loaded with {len(config.mcp_system.servers or {})} servers")
+    
+    # Count configured servers
+    plugin_count = len(config.plugins.servers) if config.plugins else 0
+    mcp_remote_count = len(config.external_servers.remote_servers) if config.external_servers else 0
+    if plugin_count or mcp_remote_count:
+        logger.debug(f"MCP system loaded with {plugin_count} plugins and {mcp_remote_count} remote servers")
     else:
-        logger.warning("No mcp_system configuration loaded")
+        logger.warning("No plugins or mcp_servers configuration loaded")
 
     # Initialize MCP integration
     async def _init_mcp_for_app(app: FastAPI):
@@ -234,10 +238,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent = candidate
                 # Apply server-level configuration overrides
                 try:
-                    if not config.mcp_system or not config.mcp_system.servers:
-                        raise ValueError("No servers config to apply overrides from")
+                    # Try to get server config from ConfigService
+                    server_mcp = _config_service.get_mcp_server_config(entry_name, config)
+                    server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
+                    
+                    if not server_cfg:
+                        # Try agent config
+                        agent_cfg = _config_service.get_agent_config(entry_name, config)
+                        server_cfg = agent_cfg or {}
 
-                    server_cfg = config.mcp_system.servers.get(entry_name, {})
                     overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
                     if isinstance(overrides, dict) and overrides:
                         needs_copy = any(k in overrides for k in ('allowed_tools', 'blocked_tools')) or 'max_steps' in server_cfg
@@ -271,13 +280,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     if selected_agent is None:
         from ..servers.agent.server import Agent as CoreAgent
         try:
-            if not config.mcp_system or not config.mcp_system.servers:
+            # Try to get server config from ConfigService
+            server_mcp = _config_service.get_mcp_server_config(entry_name, config)
+            server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
+            
+            if not server_cfg:
+                # Try agent config
+                agent_cfg = _config_service.get_agent_config(entry_name, config)
+                server_cfg = agent_cfg or {}
+            
+            if not server_cfg:
                 logging.getLogger(__name__).warning(
-                    "No 'servers' configuration found, using empty server config for agent '%s'", entry_name
+                    "No server configuration found for agent '%s', using defaults", entry_name
                 )
-                server_cfg = {}
-            else:
-                server_cfg = config.mcp_system.servers.get(entry_name, {})
                 
             # Apply agent-specific overrides from server config
             server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
@@ -298,14 +313,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to apply server config overrides: {e}")
         
-        # Build MCPConfig for agent
+        # Build MCPConfig for agent - use ConfigService
         from agent_system.config.models import MCPConfig, AgentConfig, ToolConfig
-        if config.mcp_system and config.mcp_system.default_config:
-            mcp_cfg = config.mcp_system.default_config
-        else:
+        mcp_cfg = _config_service.get_default_mcp_config(config)
+        
+        if not mcp_cfg:
             # Create default MCPConfig if not found
             logging.getLogger(__name__).warning(
-                "No mcp_system.default_config found in configuration, creating default MCPConfig with llm_profile='normal'"
+                "No default_config found in plugins configuration, creating default MCPConfig with llm_profile='normal'"
             )
             tool_cfg = ToolConfig()
             agent_cfg = AgentConfig(llm_profile="normal", tools=tool_cfg)
@@ -334,7 +349,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     _app_config = config
 
     # Initialize MCP server mode if enabled (Epic 0037)
-    if config.mcp_system and config.mcp_system.server_mode.enabled:
+    server_mode_enabled = config.server_mode and config.server_mode.enabled
+    if server_mode_enabled:
         logger.info("Initializing MCP server handler for server mode")
         try:
             from ..mcp.server_handler import MCPServerHandler
@@ -1544,11 +1560,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not _mcp_server_handler:
             raise HTTPException(
                 status_code=501,
-                detail="MCP server mode is not enabled. Set mcp_system.server_mode.enabled: true in config/mcp.yaml"
+                detail="MCP server mode is not enabled. Set mcp_server_mode.enabled: true in config/mcp_server_mode.yaml"
             )
         
         # Check authentication if required
-        server_config = config.mcp_system.server_mode
+        server_config = config.server_mode
         if server_config.authentication.required:
             # Try to get user from JWT or API key
             current_user = None
@@ -1719,7 +1735,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             }
         
         try:
-            server_config = config.mcp_system.server_mode
+            server_config = config.server_mode
             session_stats = _mcp_server_handler.get_session_stats()
             
             return {

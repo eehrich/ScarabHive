@@ -30,7 +30,7 @@ class TestBootstrapSubAgent:
     def test_bootstrap_sub_agent(self):
         """Test that agent type can be bootstrapped."""
         config = create_test_config(
-            mcp_system=MCPSystemConfig(
+            plugins=PluginsConfig(
                 servers={
                     "test_sub": MCPConfig(
                         type="agent",
@@ -57,7 +57,7 @@ class TestBootstrapSubAgent:
     def test_bootstrap_sub_agent_default_description(self):
         """Test agent bootstrap with default description."""
         config = create_test_config(
-            mcp_system=MCPSystemConfig(
+            plugins=PluginsConfig(
                 servers={
                     "my_sub": MCPConfig(
                         type="agent",
@@ -79,7 +79,7 @@ class TestBootstrapSubAgent:
     def test_bootstrap_mixed_servers_with_sub_agent(self):
         """Test bootstrap with mix of regular servers and agents."""
         config = create_test_config(
-            mcp_system=MCPSystemConfig(
+            plugins=PluginsConfig(
                 servers={
                     "test_sub": MCPConfig(
                         type="agent",

@@ -15,7 +15,7 @@ def _make_cfg(pdir: Path):
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}
         ),
-        mcp_system=MCPSystemConfig(plugin_dirs=[str(pdir)])
+        plugins=PluginsConfig(plugin_dirs=[str(pdir)])
     )
     return cfg
 

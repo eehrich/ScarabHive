@@ -128,11 +128,11 @@ def _config_agents_validate(config: Any, args: Any) -> None:
         # Validate single agent
         agent_name = args.agent_name
         
-        if not config.mcp_system.config_agents or agent_name not in config.mcp_system.config_agents:
+        if not config.agents or agent_name not in config.agents:
             print(f"Error: Config agent '{agent_name}' not found", file=sys.stderr)
             sys.exit(1)
         
-        definition = config.mcp_system.config_agents[agent_name]
+        definition = config.agents[agent_name]
         errors = validate_config_agent(agent_name, definition, llm_profiles)
         
         if args.out_format == "json":

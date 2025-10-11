@@ -69,16 +69,15 @@ class MCPSecurityManager:
         """Create security manager from AgentSystemConfig"""
         manager = cls()
 
-        # Access MCP system config
-        if not config.mcp_system or not config.mcp_system.external_servers:
+        # Access MCP servers config (new structure)
+        if not config.external_servers:
             return manager
             
-        external_servers = config.mcp_system.external_servers
-        if not external_servers.remote_servers:
+        if not config.external_servers.remote_servers:
             return manager
             
         # Process each remote server configuration
-        for server_name, server_config in external_servers.remote_servers.items():
+        for server_name, server_config in config.external_servers.remote_servers.items():
             # Build auth config data dictionary (only auth-related fields for MCPAuthConfig)
             auth_data = {
                 "type": "none",

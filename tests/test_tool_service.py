@@ -17,7 +17,7 @@ from agent_system.config.models import AgentSystemConfig, MCPSystemConfig, Remot
 def mock_config():
     """Fixture providing a mock AgentSystemConfig."""
     return AgentSystemConfig(
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             servers={},
             plugin_dirs=[]
         )

@@ -69,7 +69,12 @@ class ConfigService:
             config = load_settings(config_path)
             self._config = config
             self._config_path = path_obj
-            logger.debug(f"Config loaded successfully: {len(config.mcp_system.servers)} MCP servers configured")
+            
+            # Count all configured servers
+            plugin_count = len(config.plugins.servers) if config.plugins else 0
+            mcp_remote_count = len(config.external_servers.remote_servers) if config.external_servers else 0
+            agent_count = len(config.agents) if config.agents else 0
+            logger.debug(f"Config loaded: {plugin_count} plugins, {mcp_remote_count} remote MCP servers, {agent_count} config-agents")
             return config
         except Exception as e:
             logger.error(f"Failed to load configuration: {e}")
@@ -139,19 +144,25 @@ class ConfigService:
             logger.warning("No configuration loaded")
             return None
         
-        servers = cfg.mcp_system.servers
-        if server_name not in servers:
-            logger.warning(f"MCP server '{server_name}' not found in configuration")
+        # Check plugins first, then external_servers (remote_servers)
+        if cfg.plugins and server_name in cfg.plugins.servers:
+            return cfg.plugins.servers[server_name]
+        
+        if cfg.external_servers and server_name in cfg.external_servers.remote_servers:
+            # remote_servers are RemoteMCPConfig, not MCPConfig
+            # For now, return None - this needs proper handling
+            logger.warning(f"Server '{server_name}' found in remote_servers, not local plugins")
             return None
         
-        return servers[server_name]
+        logger.warning(f"MCP server '{server_name}' not found in configuration")
+        return None
 
     def list_mcp_servers(
         self,
         config: Optional[AgentSystemConfig] = None,
         enabled_only: bool = False
     ) -> dict[str, MCPConfig]:
-        """List all configured MCP servers.
+        """List all configured MCP servers (local plugins only).
         
         Args:
             config: Optional config instance. If None, uses cached config.
@@ -165,7 +176,15 @@ class ConfigService:
             logger.warning("No configuration loaded")
             return {}
         
-        servers = cfg.mcp_system.servers
+        # Only return local plugin servers
+        servers: dict[str, MCPConfig] = {}
+        
+        if cfg.plugins:
+            servers.update(cfg.plugins.servers)
+        
+        # mcp_servers has remote_servers (RemoteMCPConfig), not local servers
+        # Don't include them here as they're different types
+        
         if enabled_only:
             servers = {
                 name: server
@@ -174,6 +193,66 @@ class ConfigService:
             }
         
         return servers
+
+    def get_agent_config(
+        self,
+        agent_name: str,
+        config: Optional[AgentSystemConfig] = None
+    ) -> Optional[dict]:
+        """Get configuration-based agent definition.
+        
+        Args:
+            agent_name: Name of the config-based agent.
+            config: Optional config instance. If None, uses cached config.
+        
+        Returns:
+            Agent definition dict if found, None otherwise.
+        """
+        cfg = config or self._config
+        if not cfg or not cfg.agents:
+            return None
+        
+        return cfg.agents.get(agent_name)
+
+    def list_agents(
+        self,
+        config: Optional[AgentSystemConfig] = None
+    ) -> dict[str, dict]:
+        """List all configuration-based agents.
+        
+        Args:
+            config: Optional config instance. If None, uses cached config.
+        
+        Returns:
+            Dictionary mapping agent names to agent definitions.
+        """
+        cfg = config or self._config
+        if not cfg or not cfg.agents:
+            return {}
+        
+        return dict(cfg.agents)
+
+    def get_default_mcp_config(
+        self,
+        config: Optional[AgentSystemConfig] = None
+    ) -> Optional[MCPConfig]:
+        """Get default MCP configuration for agents.
+        
+        Args:
+            config: Optional config instance. If None, uses cached config.
+        
+        Returns:
+            Default MCPConfig if found, None otherwise.
+        """
+        cfg = config or self._config
+        if not cfg:
+            return None
+        
+        # Try plugins.default_config
+        if cfg.plugins and cfg.plugins.default_config:
+            return cfg.plugins.default_config
+        
+        return None
 
     def get_plugin_dirs(
         self,
@@ -191,8 +270,10 @@ class ConfigService:
         if not cfg:
             return []
         
-        plugin_dirs = cfg.mcp_system.plugin_dirs or []
-        return [Path(p) for p in plugin_dirs if p]
+        if not cfg.plugins or not cfg.plugins.plugin_dirs:
+            return []
+        
+        return [Path(p) for p in cfg.plugins.plugin_dirs if p]
 
     def clear_cache(self) -> None:
         """Clear cached configuration.

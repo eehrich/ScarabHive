@@ -37,18 +37,13 @@ def _get_plugins_config(config: AgentSystemConfig):
 
 
 def _get_server_mode_config(config: AgentSystemConfig):
-    """Get server_mode configuration, preferring new structure over legacy."""
-    return config.mcp_server_mode if config.mcp_server_mode else (config.mcp_system.server_mode if config.mcp_system else None)
+    """Get server_mode configuration from new structure."""
+    return config.server_mode
 
 
 def _get_agents_dict(config: AgentSystemConfig):
-    """Get agents configuration dict, preferring new structure over legacy."""
-    if config.agents:
-        return config.agents
-    elif config.mcp_system and config.mcp_system.config_agents:
-        return config.mcp_system.config_agents
-    else:
-        return {}
+    """Get agents configuration dict from new structure."""
+    return config.agents if config.agents else {}
 
 
 def _get_legacy_mcp_system(config: AgentSystemConfig):
@@ -1090,7 +1085,8 @@ def main() -> None:
                                 capabilities = None
 
                         # Get configured features from config object (read-only)
-                        mcp_servers_cfg = config.mcp_servers if config.mcp_servers else (config.mcp_system.external_servers if config.mcp_system else None)
+                        # Get MCP servers config
+                        mcp_servers_cfg = config.external_servers
                         conf_features = {}
                         if mcp_servers_cfg and hasattr(mcp_servers_cfg, 'remote_servers'):
                             server_cfg = mcp_servers_cfg.remote_servers.get(server_name, {})

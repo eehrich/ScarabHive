@@ -186,7 +186,7 @@ class MCPServerHandler:
                 session = self._sessions.get(session_id)
                 if session:
                     # Apply rate limiting
-                    rate_config = self.config.mcp_system.server_mode.rate_limit
+                    rate_config = self.config.server_mode.rate_limit
                     if rate_config.enabled:
                         allowed, reason = session.check_rate_limit(
                             rate_config.requests_per_minute,

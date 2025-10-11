@@ -13,7 +13,7 @@ def test_api_initializes_mcp(tmp_path, monkeypatch):
     
     # Include mcp configuration directly in config.yaml using the correct structure
     agent_config = {
-        "mcp_system": {
+        "plugins": {
             "default_config": {
                 "type": "agent",
                 "enabled": True,

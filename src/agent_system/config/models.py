@@ -386,11 +386,8 @@ class AgentSystemConfig(BaseModel):
     # Included configurations (will be populated from included files)
     llm_system: Optional[LLMSystemConfig] = None
     
-    # New structure (Epic 0044)
-    plugins: Optional[PluginsConfig] = None  # From config/plugins.yaml
-    mcp_servers: Optional[MCPServersConfig] = None  # From config/mcp_servers.yaml
-    mcp_server_mode: Optional[MCPServerModeConfig] = None  # From config/mcp_server_mode.yaml
-    agents: Optional[Dict[str, ConfigBasedAgentDefinition]] = None  # From config/agents.yaml
-    
-    # Backward compatibility (DEPRECATED - will be removed)
-    mcp_system: Optional[MCPSystemConfig] = None  # Old monolithic config
+    # New structure (Epic 0044) - matches YAML keys
+    plugins: Optional[PluginsConfig] = None  # From config/plugins.yaml -> plugins:
+    external_servers: Optional[MCPServersConfig] = None  # From config/mcp_servers.yaml -> external_servers:
+    server_mode: Optional[MCPServerModeConfig] = None  # From config/mcp_server_mode.yaml -> server_mode:
+    agents: Optional[Dict[str, ConfigBasedAgentDefinition]] = None  # From config/agents.yaml -> agents:

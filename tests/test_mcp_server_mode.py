@@ -99,8 +99,8 @@ class TestMCPServerHandler:
     def config(self):
         """Create test configuration."""
         config = AgentSystemConfig()
-        config.mcp_system = MCPSystemConfig()
-        config.mcp_system.server_mode = MCPServerModeConfig(
+        config.plugins = MCPSystemConfig()
+        config.plugins.server_mode = MCPServerModeConfig(
             enabled=True,
             expose_plugins=["*"],
             authentication={"required": False, "methods": []},
@@ -209,7 +209,7 @@ class TestMCPServerHandler:
     
     def test_get_exposed_plugins_specific(self, handler, config):
         """Test getting exposed plugins with specific list."""
-        config.mcp_system.server_mode.expose_plugins = ["weather", "yahoo_finance"]
+        config.plugins.server_mode.expose_plugins = ["weather", "yahoo_finance"]
         
         exposed = handler._get_exposed_plugins()
         
@@ -231,8 +231,8 @@ class TestMCPServerEndpoint:
         config = AgentSystemConfig()
         config.name = "TestServer"
         config.version = "1.0.0"
-        config.mcp_system = MCPSystemConfig()
-        config.mcp_system.server_mode = MCPServerModeConfig(
+        config.plugins = MCPSystemConfig()
+        config.plugins.server_mode = MCPServerModeConfig(
             enabled=True,
             expose_plugins=["*"],
             authentication={"required": False, "methods": []},

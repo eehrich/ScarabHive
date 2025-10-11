@@ -34,7 +34,7 @@ def test_cli_plugins_enable_disable(monkeypatch, tmp_path, capsys):
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
             profiles={}
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             plugin_dirs=[str(pdir)],
             servers={}
         )
@@ -70,7 +70,7 @@ def test_cli_plugins_search(monkeypatch, tmp_path, capsys):
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
             profiles={}
         ),
-        mcp_system=MCPSystemConfig(
+        plugins=PluginsConfig(
             plugin_dirs=[str(pdir)],
             servers={}
         )

@@ -23,7 +23,7 @@ def test_atomic_write_replace_failure(monkeypatch, tmp_path, capsys):
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}
         ),
-        mcp_system=MCPSystemConfig(plugin_dirs=[])
+        plugins=PluginsConfig(plugin_dirs=[])
     )
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg_model)
 
@@ -50,7 +50,7 @@ def test_atomic_write_tmp_write_failure(monkeypatch, tmp_path, capsys):
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")}
         ),
-        mcp_system=MCPSystemConfig(plugin_dirs=[])
+        plugins=PluginsConfig(plugin_dirs=[])
     )
     monkeypatch.setattr(cli, "load_settings", lambda path=None: cfg_model)
 
