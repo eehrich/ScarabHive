@@ -151,7 +151,7 @@
         },
         "metadata": {
           "type": "object",
-          "description": "Optional metadata for documentation and organization",
+          "description": "Optional metadata for documentation, organization, and visibility control",
           "properties": {
             "author": {
               "type": "string",
@@ -188,6 +188,13 @@
                 "automation",
                 "communication"
               ]
+            },
+            "visibility": {
+              "type": "string",
+              "description": "Controls where the agent appears (UI dropdown, tool discovery, both, or neither)",
+              "enum": ["ui", "tool", "both", "private"],
+              "default": "ui",
+              "examples": ["ui", "tool", "both", "private"]
             },
             "changelog": {
               "type": "string",
@@ -233,7 +240,8 @@
           "author": "AgentSystem",
           "version": "1.0.0",
           "tags": ["finance", "stocks", "analysis"],
-          "category": "financial"
+          "category": "financial",
+          "visibility": "ui"
         }
       }
     },
@@ -258,7 +266,8 @@
           "author": "AgentSystem",
           "version": "1.0.0",
           "tags": ["qa", "simple", "knowledge"],
-          "category": "general"
+          "category": "general",
+          "visibility": "ui"
         }
       }
     }
@@ -290,6 +299,11 @@
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-z0-9.-]+)?(\\+[a-z0-9.-]+)?$",
       "description": "Semantic version string (major.minor.patch)"
+    },
+    "visibility_mode": {
+      "type": "string",
+      "enum": ["ui", "tool", "both", "private"],
+      "description": "Agent visibility mode: 'ui' (UI dropdown only), 'tool' (available as tool only), 'both' (UI + tool), 'private' (neither)"
     }
   }
 }
