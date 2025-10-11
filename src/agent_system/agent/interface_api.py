@@ -1477,10 +1477,47 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 detail="MCP server mode is not enabled"
             )
         
-        # TODO: Implement SSE stream for server-initiated messages
-        raise HTTPException(
-            status_code=501,
-            detail="SSE stream not yet implemented"
+        # Create SSE event generator for keep-alive and server messages
+        async def event_generator():
+            try:
+                # Send initial connection event
+                connection_data = {
+                    "type": "connection",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": "MCP SSE stream connected"
+                }
+                yield f"data: {json.dumps(connection_data, ensure_ascii=False)}\n\n"
+                
+                # Keep connection alive with periodic heartbeat
+                while True:
+                    # Check if client disconnected
+                    if await request.is_disconnected():
+                        logger.debug("SSE client disconnected")
+                        break
+                    
+                    # Send heartbeat every 30 seconds
+                    heartbeat_data = {
+                        "type": "heartbeat",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    yield f"data: {json.dumps(heartbeat_data, ensure_ascii=False)}\n\n"
+                    
+                    # Wait before next heartbeat
+                    await asyncio.sleep(30)
+                    
+            except asyncio.CancelledError:
+                logger.debug("SSE stream cancelled")
+            except Exception as e:
+                logger.exception("SSE stream error: %s", e)
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive"
+            }
         )
 
     @app.get("/mcp/server-info")
