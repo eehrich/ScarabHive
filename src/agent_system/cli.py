@@ -529,6 +529,63 @@ def _colorize(text: str, color_code: str) -> str:
     return f"\x1b[{color_code}m{text}\x1b[0m"
 
 
+def _register_config_agents_commands(subparsers: Any) -> None:
+    """Register config-agents CLI commands (Epic 0043) - inline implementation."""
+    # Main config-agents command group
+    config_agents_parser = subparsers.add_parser(
+        "config-agents",
+        help="Manage configuration-based agents"
+    )
+    config_agents_subparsers = config_agents_parser.add_subparsers(dest="config_agents_cmd")
+    
+    # config-agents list
+    list_parser = config_agents_subparsers.add_parser(
+        "list",
+        help="List all configuration-based agents"
+    )
+    list_parser.add_argument(
+        "--format",
+        dest="out_format",
+        choices=["table", "json"],
+        default="table",
+        help="Output format (default: table)"
+    )
+    
+    # config-agents show
+    show_parser = config_agents_subparsers.add_parser(
+        "show",
+        help="Show detailed information about a config agent"
+    )
+    show_parser.add_argument(
+        "agent_name",
+        help="Name of the configuration-based agent"
+    )
+    show_parser.add_argument(
+        "--format",
+        dest="out_format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)"
+    )
+    
+    # config-agents validate
+    validate_parser = config_agents_subparsers.add_parser(
+        "validate",
+        help="Validate configuration-based agents"
+    )
+    validate_parser.add_argument(
+        "agent_name",
+        nargs="?",
+        help="Name of the agent to validate (if not specified, validates all)"
+    )
+    validate_parser.add_argument(
+        "--format",
+        dest="out_format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)"
+    )
+
 
 def main() -> None:
     global logger
@@ -727,6 +784,9 @@ def main() -> None:
     users_parser.add_argument("--force", "-f", dest="force", action="store_true", help="Skip confirmation prompts")
     users_parser.add_argument("--limit", dest="limit", type=int, default=100, help="Maximum number of users to show (for 'list' action)")
     users_parser.add_argument("--skip", dest="skip", type=int, default=0, help="Number of users to skip (for 'list' action)")
+
+    # config-agents subcommand for configuration-based agents (Epic 0043)
+    _register_config_agents_commands(subparsers)
 
     args = parser.parse_args(argv[1:])
 
