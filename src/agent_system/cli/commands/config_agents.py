@@ -82,7 +82,7 @@ def _config_agents_show(config: Any, args: Any) -> None:
             print("Prompt:       [Inline prompt defined]")
         
         if info.get('tools'):
-            print(f"\nTools:")
+            print("\nTools:")
             allowed = info['tools'].get('allowed', [])
             blocked = info['tools'].get('blocked', [])
             if allowed:
@@ -94,7 +94,7 @@ def _config_agents_show(config: Any, args: Any) -> None:
         
         if info.get('context_management'):
             ctx = info['context_management']
-            print(f"\nContext Management:")
+            print("\nContext Management:")
             print(f"  Enabled:   {ctx.get('enabled', False)}")
             if ctx.get('enabled'):
                 print(f"  Strategy:  {ctx.get('strategy', 'N/A')}")
@@ -103,7 +103,7 @@ def _config_agents_show(config: Any, args: Any) -> None:
         if info.get('metadata'):
             meta = info['metadata']
             if meta:
-                print(f"\nMetadata:")
+                print("\nMetadata:")
                 for key, value in meta.items():
                     if isinstance(value, list):
                         print(f"  {key}: {', '.join(value)}")
