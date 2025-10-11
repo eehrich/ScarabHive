@@ -14,6 +14,7 @@ import logging
 
 from ..config.models import MCPSystemConfig
 from ..servers.config_agent_factory import create_config_based_agent_factory
+from .config_agent_validation import validate_config_agent, ConfigAgentValidationError
 
 
 logger = logging.getLogger(__name__)
@@ -65,8 +66,14 @@ def discover_config_agents(
                 logger.debug(f"Skipping disabled config agent: {agent_name}")
                 continue
             
-            # Validate agent definition
-            _validate_agent_definition(agent_name, definition)
+            # Validate agent definition with detailed error messages
+            validation_errors = validate_config_agent(agent_name, definition)
+            if validation_errors:
+                logger.error(
+                    f"❌ Config agent '{agent_name}' failed validation:\n" +
+                    "\n".join(f"  - {err}" for err in validation_errors)
+                )
+                raise ConfigAgentValidationError(agent_name, validation_errors)
             
             # Create factory function
             factory = create_config_based_agent_factory(
