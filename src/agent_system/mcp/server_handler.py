@@ -333,8 +333,9 @@ class MCPServerHandler:
                     tools = await server.list_tools()
                     for tool in tools:
                         # Add tool with plugin namespace prefix
+                        # Use double underscore instead of slash (OpenAI requires ^[a-zA-Z0-9_-]+$)
                         tool_dict = {
-                            "name": f"{server_name}/{tool.name}",
+                            "name": f"{server_name}__{tool.name}",
                             "description": f"[{server_name}] {tool.description}",
                             "inputSchema": tool.input_schema
                         }
@@ -363,11 +364,21 @@ class MCPServerHandler:
         if not tool_name:
             raise Exception("Tool name is required")
         
-        # Parse plugin name from tool name (format: plugin_name/tool_name)
-        if "/" not in tool_name:
-            raise Exception(f"Invalid tool name format: {tool_name}. Expected: plugin_name/tool_name")
-        
-        plugin_name, actual_tool_name = tool_name.split("/", 1)
+        # Parse plugin name from tool name (format: plugin_name__tool_name)
+        # Use double underscore for OpenAI compatibility (requires ^[a-zA-Z0-9_-]+$)
+        if "__" not in tool_name:
+            # Fallback: try single underscore for backward compatibility
+            if "_" in tool_name:
+                parts = tool_name.split("_", 1)
+                plugin_name = parts[0]
+                actual_tool_name = parts[1]
+            else:
+                raise Exception(
+                    f"Invalid tool name format: {tool_name}. "
+                    f"Expected: plugin_name__tool_name or plugin_name_tool_name"
+                )
+        else:
+            plugin_name, actual_tool_name = tool_name.split("__", 1)
         
         # Verify plugin is exposed
         exposed_plugins = self._get_exposed_plugins()

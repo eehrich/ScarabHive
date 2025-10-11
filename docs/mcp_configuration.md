@@ -876,7 +876,7 @@ List all available tools from exposed plugins.
   "result": {
     "tools": [
       {
-        "name": "plugin_name.tool_name",
+        "name": "plugin_name__tool_name",
         "description": "Tool description",
         "inputSchema": {
           "type": "object",
@@ -891,6 +891,8 @@ List all available tools from exposed plugins.
 }
 ```
 
+**Note:** Tool names use double underscore (`__`) to separate plugin name from tool name. This format is compatible with OpenAI's API requirements (`^[a-zA-Z0-9_-]+$`).
+
 #### tools/call
 
 Execute a tool from an exposed plugin.
@@ -901,7 +903,7 @@ Execute a tool from an exposed plugin.
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "plugin_name.tool_name",
+    "name": "plugin_name__tool_name",
     "arguments": {
       "param1": "value1"
     }
