@@ -57,8 +57,10 @@ class MCPServerSession:
         self.capabilities: Dict[str, Any] = {}
         
         # Rate limiting state (token bucket algorithm)
-        self.rate_limit_tokens = 0.0  # Current token balance
+        # Note: Start with burst_size tokens via first check_rate_limit call
+        self.rate_limit_tokens = 0.0  # Will be initialized on first check
         self.rate_limit_last_refill = time.time()  # Last refill timestamp
+        self.rate_limit_initialized = False  # Track if bucket has been initialized
         self.request_count_minute = 0  # Requests in last minute
         self.request_count_hour = 0  # Requests in last hour
         self.minute_window_start = time.time()
@@ -81,6 +83,11 @@ class MCPServerSession:
             (allowed, reason) - allowed is True if within limits, reason explains denial
         """
         current_time = time.time()
+        
+        # Initialize token bucket on first call with full burst capacity
+        if not self.rate_limit_initialized:
+            self.rate_limit_tokens = float(burst_size)
+            self.rate_limit_initialized = True
         
         # Reset minute window if needed
         if current_time - self.minute_window_start >= 60:
