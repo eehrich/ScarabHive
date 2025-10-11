@@ -1,15 +1,69 @@
-# JSON Schema for Configuration-Based Agents
+# JSON Schemas for AgentSystem Configuration
 
-This directory contains JSON Schema definitions for validating configuration-based agents in AgentSystem.
+This directory contains JSON Schema definitions for validating AgentSystem configuration files.
 
 ## Files
 
-- **`config-agents.schema.json`**: JSON Schema (Draft 7) for validating `config_agents` section in `config/mcp.yaml`
-- **`../scripts/validate_config_agents_schema.py`**: Python validation script using the schema
+### Configuration Schemas
+- **`config-agents.schema.json`**: Schema for `config_agents` section in `config/mcp.yaml` (configuration-based agents)
+- **`llm-config.schema.json`**: Schema for `config/llm.yaml` (LLM models and providers)
+- **`mcp-config.schema.json`**: Schema for `config/config.yaml` (main system configuration)
 
-## Schema Overview
+### Validation Scripts
+- **`../scripts/validate_config_agents_schema.py`**: Python validation script for config-based agents
 
-The schema validates:
+## VS Code Integration
+
+### Setup (Already Configured)
+
+The `.vscode/settings.json` file already contains schema mappings for automatic validation:
+
+```json
+{
+  "yaml.schemas": {
+    "./schemas/llm-config.schema.json": [
+      "config/llm.yaml"
+    ],
+    "./schemas/mcp-config.schema.json": [
+      "config/config.yaml"
+    ]
+  },
+  "yaml.customTags": [
+    "!include"
+  ]
+}
+```
+
+### What You Get
+
+✅ **Autocomplete**: IntelliSense for all config fields
+✅ **Validation**: Real-time error detection while typing
+✅ **Documentation**: Hover tooltips with field descriptions
+✅ **Type checking**: Enum values, patterns, min/max constraints
+
+### How to Use
+
+1. Open any config file (`config/llm.yaml`, `config/config.yaml`, `config/mcp.yaml`)
+2. Start typing - VS Code will suggest valid fields
+3. Hover over fields to see documentation
+4. Errors appear as red squiggles with helpful messages
+
+### Example: Adding a New LLM Model
+
+Open `config/llm.yaml` and start typing under `llm_system.models`:
+
+```yaml
+llm_system:
+  models:
+    my-new-model:  # VS Code suggests: provider, model, context_window, etc.
+      provider: |  # Autocomplete shows: openai, anthropic, deepseek, etc.
+```
+
+## Schema Details
+
+### Config-Agents Schema (`config-agents.schema.json`)
+
+Validates configuration-based agents (Epic 0043):
 
 - **Agent names**: Lowercase, alphanumeric + underscores, 3-50 characters
 - **Required fields**: `enabled`, `description`, `base_type`, `agent_config`
@@ -18,6 +72,27 @@ The schema validates:
 - **LLM profiles**: Must match profiles in `config/llm.yaml`
 - **Context strategies**: Valid strategy names
 - **Metadata**: Optional author, version, tags, category
+
+### LLM Config Schema (`llm-config.schema.json`)
+
+Validates LLM configuration:
+
+- **httpx_timeouts**: Connection, read, write, pool timeouts
+- **models**: Model definitions with provider, API keys, capabilities
+- **capabilities**: Tools, streaming, vision, audio, JSON mode support
+- **context_window**: Token limits (1 - 2,000,000)
+
+### Main Config Schema (`mcp-config.schema.json`)
+
+Validates main system configuration:
+
+- **name, version, description**: System metadata
+- **includes**: Config file includes
+- **context**: Auto-datetime, timezone, location
+- **network**: SSL, host, port, cache settings
+- **default_agent**: Default agent name
+- **auth**: Authentication, CORS, rate limiting, admin user
+- **logging**: Log levels, file paths, cancellation settings
 
 ## Validation
 

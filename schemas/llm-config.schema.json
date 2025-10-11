@@ -1,0 +1,191 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/yourusername/AgentSystem/schemas/llm-config.schema.json",
+  "title": "LLM Configuration Schema",
+  "description": "JSON Schema for AgentSystem LLM configuration (config/llm.yaml)",
+  "type": "object",
+  "required": ["llm_system"],
+  "properties": {
+    "llm_system": {
+      "type": "object",
+      "description": "LLM system configuration with models and timeouts",
+      "properties": {
+        "httpx_timeouts": {
+          "type": "object",
+          "description": "Default HTTPX timeout configuration for all models",
+          "properties": {
+            "connect": {
+              "type": "number",
+              "description": "Connection establishment timeout (seconds)",
+              "minimum": 0,
+              "default": 10.0
+            },
+            "read": {
+              "type": "number",
+              "description": "Read timeout - waiting for response data (seconds)",
+              "minimum": 0,
+              "default": 180.0
+            },
+            "write": {
+              "type": "number",
+              "description": "Write timeout - sending request data (seconds)",
+              "minimum": 0,
+              "default": 10.0
+            },
+            "pool": {
+              "type": "number",
+              "description": "Pool timeout - getting connection from pool (seconds)",
+              "minimum": 0,
+              "default": 5.0
+            }
+          }
+        },
+        "models": {
+          "type": "object",
+          "description": "LLM model definitions",
+          "patternProperties": {
+            "^[a-zA-Z0-9_-]+$": {
+              "type": "object",
+              "required": ["provider", "model"],
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "LLM provider name",
+                  "enum": ["openai", "openai_httpx", "anthropic", "deepseek", "custom"]
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model identifier (e.g., gpt-4, claude-3-opus)"
+                },
+                "openai_api_key": {
+                  "type": "string",
+                  "description": "OpenAI API key (can use env var)"
+                },
+                "anthropic_api_key": {
+                  "type": "string",
+                  "description": "Anthropic API key (can use env var)"
+                },
+                "deepseek_api_key": {
+                  "type": "string",
+                  "description": "DeepSeek API key (can use env var)"
+                },
+                "context_window": {
+                  "type": "integer",
+                  "description": "Maximum context window size in tokens",
+                  "minimum": 1,
+                  "maximum": 2000000
+                },
+                "request_timeout": {
+                  "type": "number",
+                  "description": "Request timeout in seconds",
+                  "minimum": 0
+                },
+                "httpx_timeouts": {
+                  "type": "object",
+                  "description": "Per-model HTTPX timeout overrides",
+                  "properties": {
+                    "connect": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "read": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "write": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "pool": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "capabilities": {
+                  "type": "object",
+                  "description": "Model capabilities",
+                  "properties": {
+                    "tools": {
+                      "type": "boolean",
+                      "description": "Supports tool/function calling"
+                    },
+                    "function_calling": {
+                      "type": "boolean",
+                      "description": "Supports function calling"
+                    },
+                    "image_input": {
+                      "type": "boolean",
+                      "description": "Supports image input (vision)"
+                    },
+                    "audio_input": {
+                      "type": "boolean",
+                      "description": "Supports audio input"
+                    },
+                    "video_input": {
+                      "type": "boolean",
+                      "description": "Supports video input"
+                    },
+                    "streaming": {
+                      "type": "boolean",
+                      "description": "Supports streaming responses"
+                    },
+                    "json_mode": {
+                      "type": "boolean",
+                      "description": "Supports structured JSON output"
+                    },
+                    "max_image_size": {
+                      "type": "integer",
+                      "description": "Maximum image size in bytes",
+                      "minimum": 0
+                    },
+                    "supported_image_formats": {
+                      "type": "array",
+                      "description": "Supported image MIME types or formats",
+                      "items": {
+                        "type": "string",
+                        "enum": ["jpeg", "jpg", "png", "gif", "webp", "bmp", "svg"]
+                      }
+                    },
+                    "image_detail_control": {
+                      "type": "boolean",
+                      "description": "Supports image detail level control (low/high/auto)"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "llm_system": {
+        "httpx_timeouts": {
+          "connect": 10.0,
+          "read": 180.0,
+          "write": 10.0,
+          "pool": 5.0
+        },
+        "models": {
+          "gpt-4": {
+            "provider": "openai_httpx",
+            "model": "gpt-4",
+            "openai_api_key": "${OPENAI_API_KEY}",
+            "context_window": 128000,
+            "request_timeout": 60,
+            "capabilities": {
+              "tools": true,
+              "function_calling": true,
+              "image_input": true,
+              "streaming": true,
+              "json_mode": true
+            }
+          }
+        }
+      }
+    }
+  ]
+}

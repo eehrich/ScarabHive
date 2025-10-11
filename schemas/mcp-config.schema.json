@@ -1,0 +1,264 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/yourusername/AgentSystem/schemas/mcp-config.schema.json",
+  "title": "AgentSystem Main Configuration Schema",
+  "description": "JSON Schema for AgentSystem main configuration (config/config.yaml)",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "System name"
+    },
+    "version": {
+      "type": "string",
+      "description": "System version",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.-]+)?$"
+    },
+    "description": {
+      "type": "string",
+      "description": "System description"
+    },
+    "includes": {
+      "type": "array",
+      "description": "List of configuration files to include",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_/-]+\\.ya?ml$"
+      }
+    },
+    "context": {
+      "type": "object",
+      "description": "Context information automatically added to prompts",
+      "properties": {
+        "auto_datetime": {
+          "type": "boolean",
+          "description": "Automatically add current date/time to context",
+          "default": true
+        },
+        "timezone": {
+          "type": "string",
+          "description": "Timezone for datetime context (e.g., 'Europe/Berlin', 'UTC')",
+          "default": "UTC"
+        },
+        "location": {
+          "type": "string",
+          "description": "User location for context"
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "description": "Network configuration",
+      "properties": {
+        "ssl_verify": {
+          "type": "boolean",
+          "description": "Verify SSL certificates",
+          "default": true
+        },
+        "host": {
+          "type": "string",
+          "description": "API server host",
+          "default": "127.0.0.1"
+        },
+        "port": {
+          "type": "integer",
+          "description": "API server port",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8000
+        },
+        "disable_cache": {
+          "type": "boolean",
+          "description": "Disable HTTP caching",
+          "default": false
+        }
+      }
+    },
+    "default_agent": {
+      "type": "string",
+      "description": "Default agent to start if none specified",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "auth": {
+      "type": "object",
+      "description": "Authentication and authorization configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable multi-user authentication",
+          "default": false
+        },
+        "secret_key": {
+          "type": "string",
+          "description": "JWT secret key (CHANGE IN PRODUCTION!)",
+          "minLength": 32
+        },
+        "algorithm": {
+          "type": "string",
+          "description": "JWT signing algorithm",
+          "enum": ["HS256", "HS384", "HS512", "RS256"],
+          "default": "HS256"
+        },
+        "access_token_expire_minutes": {
+          "type": "integer",
+          "description": "JWT token expiration time in minutes",
+          "minimum": 1,
+          "default": 30
+        },
+        "database_path": {
+          "type": "string",
+          "description": "Path to user database file",
+          "default": "data/users.db"
+        },
+        "rate_limit_enabled": {
+          "type": "boolean",
+          "description": "Enable API rate limiting",
+          "default": true
+        },
+        "requests_per_minute": {
+          "type": "integer",
+          "description": "Maximum requests per minute per user",
+          "minimum": 1,
+          "default": 60
+        },
+        "security_headers_enabled": {
+          "type": "boolean",
+          "description": "Enable security headers (HSTS, CSP, etc.)",
+          "default": true
+        },
+        "cors_enabled": {
+          "type": "boolean",
+          "description": "Enable CORS",
+          "default": true
+        },
+        "cors_origins": {
+          "type": "array",
+          "description": "Allowed CORS origins",
+          "items": {
+            "type": "string"
+          },
+          "default": ["*"]
+        },
+        "cors_credentials": {
+          "type": "boolean",
+          "description": "Allow credentials in CORS requests",
+          "default": true
+        },
+        "cors_methods": {
+          "type": "array",
+          "description": "Allowed CORS methods",
+          "items": {
+            "type": "string",
+            "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "*"]
+          },
+          "default": ["*"]
+        },
+        "cors_headers": {
+          "type": "array",
+          "description": "Allowed CORS headers",
+          "items": {
+            "type": "string"
+          },
+          "default": ["*"]
+        },
+        "trusted_hosts": {
+          "type": "array",
+          "description": "Trusted host names (optional, for production)",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_admin_username": {
+          "type": "string",
+          "description": "Default admin username (created on first startup)",
+          "default": "admin"
+        },
+        "default_admin_password": {
+          "type": "string",
+          "description": "Default admin password (CHANGE IN PRODUCTION!)",
+          "minLength": 4
+        },
+        "default_admin_email": {
+          "type": "string",
+          "description": "Default admin email",
+          "format": "email"
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "description": "Logging configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable logging",
+          "default": true
+        },
+        "level": {
+          "type": "string",
+          "description": "Log level",
+          "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+          "default": "INFO"
+        },
+        "file": {
+          "type": "string",
+          "description": "Main log file path",
+          "default": "logs/agent.log"
+        },
+        "file_cli": {
+          "type": "string",
+          "description": "CLI log file path",
+          "default": "logs/cli.log"
+        },
+        "file_api": {
+          "type": "string",
+          "description": "API log file path",
+          "default": "logs/api.log"
+        },
+        "cancellation": {
+          "type": "object",
+          "description": "Cancellation system configuration",
+          "properties": {
+            "cleanup_timeout": {
+              "type": "number",
+              "description": "Seconds to wait for graceful cleanup before forcing termination",
+              "minimum": 0,
+              "default": 10.0
+            },
+            "monitor_interval": {
+              "type": "number",
+              "description": "Seconds between timeout checks",
+              "minimum": 0.1,
+              "default": 1.0
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "name": "AgentSystem",
+      "version": "0.2.0",
+      "description": "Flexible AI Agent System using MCP",
+      "includes": ["llm.yaml", "mcp.yaml"],
+      "context": {
+        "auto_datetime": true,
+        "timezone": "Europe/Berlin",
+        "location": "Germany"
+      },
+      "network": {
+        "ssl_verify": false,
+        "host": "127.0.0.1",
+        "port": 8000,
+        "disable_cache": true
+      },
+      "default_agent": "basic_agent",
+      "logging": {
+        "enabled": true,
+        "level": "DEBUG",
+        "file": "logs/agent.log"
+      }
+    }
+  ]
+}

@@ -4,5 +4,16 @@
     "tests"
   ],
   "python.testing.unittestEnabled": false,
-  "terminal.integrated.defaultProfile.windows": "Git Bash"
+  "terminal.integrated.defaultProfile.windows": "Git Bash",
+  "yaml.schemas": {
+    "./schemas/llm-config.schema.json": [
+      "config/llm.yaml"
+    ],
+    "./schemas/mcp-config.schema.json": [
+      "config/config.yaml"
+    ]
+  },
+  "yaml.customTags": [
+    "!include"
+  ]
 }
