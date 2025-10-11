@@ -186,19 +186,26 @@ python -m pytest tests/test_example.py::test_case -q -s --maxfail=1 --pdb
 - If Windows PowerShell blocks activation, prefer Git Bash or CMD to avoid ExecutionPolicy issues.
 
 ## Configuration
-Primary manifest: `config/agent.yaml`. The manifest may include other files (recommended for MCP-specific settings) via `includes:`. The CLI writes only to included managed files (for example `mcp.yaml`) when managing MCP settings.
+Primary manifest: `config/config.yaml`. The manifest includes specialized config files via `includes:` for better organization:
+
+**Config Structure (Epic 0044):**
+- `config/config.yaml` - Main manifest with includes
+- `config/llm.yaml` - LLM provider settings
+- `config/agents.yaml` - Configuration-based agents (Epic 0043)
+- `config/plugins.yaml` - Local MCP plugin servers
+- `config/mcp_servers.yaml` - External MCP servers
+- `config/mcp_server_mode.yaml` - MCP Server Mode settings
 
 Example minimal snippet:
 
 ```yaml
-llm:
-  provider: openai
-  model: gpt-5-mini
-  openai_api_key: ${OPENAI_API_KEY}
-  context_window: 32768
-
+# config/config.yaml - Main manifest
 includes:
-  - mcp.yaml
+  - llm.yaml
+  - agents.yaml
+  - plugins.yaml
+  - mcp_servers.yaml
+  - mcp_server_mode.yaml
 
 network:
   ssl_verify: false
