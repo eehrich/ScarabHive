@@ -81,7 +81,16 @@ window.AgentSystem.Debug = {
   // Update debug info with real data from backend
   updateDebugInfo: async function() {
     try {
-      const response = await fetch('/debug/context');
+      // Get current agent selection if selector module is available
+      let url = '/debug/context';
+      if (window.selectorModule && typeof window.selectorModule.getCurrentAgent === 'function') {
+        const currentAgent = window.selectorModule.getCurrentAgent();
+        if (currentAgent) {
+          url = `/debug/context?agent_name=${encodeURIComponent(currentAgent)}`;
+        }
+      }
+      
+      const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
 

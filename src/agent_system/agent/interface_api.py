@@ -1227,14 +1227,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/debug/context")
-    async def debug_context():
+    async def debug_context(agent_name: str | None = None):
         """Diagnostic endpoint to get current context management state and conversation messages."""
         try:
             # Get the agent from registry if available
             agent = None
             if _app_registry:
-                # Use the configured entry agent name instead of hardcoded "agent"
-                entry_name = config.default_agent or 'agent'
+                # Use provided agent_name, or fall back to configured default
+                entry_name = agent_name or config.default_agent or 'agent'
                 agent = _app_registry.get(entry_name)
 
             if not agent or not hasattr(agent, 'context_manager'):
