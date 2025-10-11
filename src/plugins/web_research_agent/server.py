@@ -153,7 +153,7 @@ class WebResearchAgent(Agent):
     # Custom system prompt hook override
     # ------------------------------------------------------------------
     def get_custom_system_prompt(self, context: Dict[str, Any]):  # type: ignore[override]
-        """Load system_prompt from plugin-local YAML to allow Jinja rendering in base class.
+        """Load system_prompt from plugin-local YAML and render with Jinja2.
 
         Returning None would fall back to generic config logic; instead we read the
         file so that subclass control is explicit while content lives in the template.
@@ -163,10 +163,14 @@ class WebResearchAgent(Agent):
             if prompt_file.exists():
                 # We only need the raw system_prompt block; reuse simple YAML parse
                 import yaml  # Local import to avoid global dependency at import time
+                from jinja2 import Template
+                
                 data = yaml.safe_load(prompt_file.read_text(encoding="utf-8")) or {}
                 raw_prompt = data.get("system_prompt")
                 if isinstance(raw_prompt, str) and raw_prompt.strip():
-                    return raw_prompt
+                    # Render template with context (tools, max_steps, datetime, etc.)
+                    rendered_prompt = Template(raw_prompt).render(**context)
+                    return rendered_prompt
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("Failed loading custom system_prompt YAML: %s", e)
         return None
