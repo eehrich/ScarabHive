@@ -35,6 +35,12 @@ This README is a concise developer and user guide matching this repository layou
 ## Features
 * Modular agent core with MCP integration (consume & expose tool servers)
 * Pluggable plugin system (local + external MCP servers)
+* **Configuration-Based Agents (Epic 0043)**: Create custom agents without writing code
+  - Define agents purely in YAML configuration
+  - Configure prompts, tools, LLM profiles, and context management
+  - CLI commands for listing, validation, and inspection
+  - API endpoints for programmatic access
+  - See [Configuration-Based Agents Guide](docs/config_based_agents.md) for details
 * **MCP Server Mode (Epic 0037)**: Expose AgentSystem as a remote MCP server
   - Activated plugins become MCP tools accessible to remote MCP clients
   - JSON-RPC 2.0 protocol with HTTP Streamable Transport
@@ -313,6 +319,48 @@ Plugin-Management with:
 ```bash
 agent-cli plugins list|info|enable|disable|search|status — manage plugins
 ```
+
+### Configuration-Based Agents CLI Commands
+
+Manage agents defined purely in configuration (no code required):
+
+```bash
+# List all configuration-based agents
+agent-cli config-agents list [--format json|table]
+
+# Show detailed information about a specific agent
+agent-cli config-agents show <agent_name>
+
+# Validate configuration for one or all agents
+agent-cli config-agents validate [agent_name]
+
+# Run a config-based agent
+agent-cli run <agent_name> "Your task or question"
+```
+
+**Quick Example:**
+
+```bash
+# List available config agents
+$ agent-cli config-agents list
+
+Config-Based Agents:
+╭────────────────────┬──────────┬────────┬──────────┬────────────────────────╮
+│ NAME               │ LLM      │ STEPS  │ STATUS   │ DESCRIPTION            │
+├────────────────────┼──────────┼────────┼──────────┼────────────────────────┤
+│ financial_analyst  │ turbo    │ 20     │ Enabled  │ Financial analyst...   │
+│ code_reviewer      │ deepseek │ 15     │ Enabled  │ Code review expert...  │
+╰────────────────────┴──────────┴────────┴──────────┴────────────────────────╯
+
+# Show details
+$ agent-cli config-agents show financial_analyst
+
+# Validate configuration
+$ agent-cli config-agents validate
+✓ All 5 config agents passed validation
+```
+
+See [Configuration-Based Agents Guide](docs/config_based_agents.md) for complete documentation on creating and managing config-based agents.
 
 ## MCP (Model Context Protocol) Integration
 
