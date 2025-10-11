@@ -449,6 +449,63 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "timestamp": datetime.now().isoformat()
         }
 
+    def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
+        """Get agent instance with optional overrides.
+        
+        Args:
+            agent_name: Name of agent to use (None = use default global agent)
+            llm_profile: LLM profile to use (None = use agent's configured profile)
+            
+        Returns:
+            Tuple of (agent_instance, llm_override, llm_profile_info)
+            - agent_instance: The selected agent
+            - llm_override: LLM client to pass to run_events (None if using agent's default)
+            - llm_profile_info: Profile info string for status display (None if no override)
+        """
+        selected_agent = agent
+        llm_override = None
+        llm_profile_info = None
+        
+        # Override agent if specified
+        if agent_name and agent_name != selected_agent.name:
+            try:
+                selected_agent = _app_registry.get(agent_name)  # type: ignore[attr-defined]
+                from ..servers.agent.server import Agent as _Agent
+                if not isinstance(selected_agent, _Agent):
+                    raise HTTPException(status_code=400, detail=f"'{agent_name}' is not an agent")
+            except KeyError:
+                raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
+        
+        # Create LLM override if profile specified
+        if llm_profile and config.llm_system and config.llm_system.profiles:
+            if llm_profile not in config.llm_system.profiles:
+                raise HTTPException(status_code=400, detail=f"LLM profile '{llm_profile}' not found")
+            
+            try:
+                # Resolve profile to model config using the factory
+                from ..llm.factory import resolve_llm_config_for_agent
+                from ..config.models import AgentConfig
+                
+                # Create temporary agent config with override profile
+                temp_agent_config = AgentConfig(llm_profile=llm_profile)
+                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
+                
+                # Create new LLM with resolved config
+                from ..llm.clients import make_llm
+                llm_override = make_llm(**llm_kwargs)
+                
+                # Build profile info string for status display (matching agent's format)
+                model = llm_kwargs.get('model', 'unknown')
+                provider = llm_kwargs.get('provider', 'unknown')
+                llm_profile_info = f"{llm_profile}:{provider}/{model}"
+            except Exception as e:
+                logger.error(f"Failed to create LLM override: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Failed to apply LLM profile: {str(e)}")
+        
+        return selected_agent, llm_override, llm_profile_info
+
     @app.get("/config")
     def get_config():
         return config.model_dump()
@@ -470,6 +527,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
         return {"agents": agents}
+
+    @app.get("/llm/profiles")
+    def list_llm_profiles():
+        """List available LLM profiles with their descriptions."""
+        profiles = []
+        default_profile = None
+        try:
+            if config.llm_system and config.llm_system.profiles:
+                for profile_name, profile_config in config.llm_system.profiles.items():
+                    profiles.append({
+                        "name": profile_name,
+                        "model_ref": profile_config.model_ref,
+                        "description": profile_config.description or profile_name,
+                        "max_steps": profile_config.max_steps
+                    })
+                default_profile = config.llm_system.default_profile
+        except Exception as e:
+            logger.debug(f"Failed to list LLM profiles: {e}")
+        return {
+            "profiles": profiles,
+            "default": default_profile or "normal"
+        }
 
     @app.get("/agents/{agent_name}/allowed-tools")
     async def get_agent_allowed_tools(agent_name: str):
@@ -545,7 +624,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return {"error": str(e), "agent": agent_name}
 
     @app.post("/run")
-    async def run(request: Request, traceparent: Optional[str] = Header(default=None)):
+    async def run(
+        request: Request, 
+        traceparent: Optional[str] = Header(default=None),
+        agent_name: Optional[str] = Query(default=None),
+        llm_profile: Optional[str] = Query(default=None)
+    ):
         """Run agent with optional multimodal input (text + images).
 
         This handler accepts either:
@@ -553,6 +637,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - application/json with {"task": "..."}, or
         - query param ?task=... (fallback used by some clients)
 
+        Query parameters:
+        - agent_name: Optional agent to use instead of default
+        - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
         """
         logger = logging.getLogger(__name__)
         request_id = short_id()
@@ -563,11 +650,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         content_type = request.headers.get('content-type', '')
         logger.debug("/run content-type: %s", content_type)
 
-        # JSON body: {"task": "..."}
+        # JSON body: {"task": "...", "agent_name": "...", "llm_profile": "..."}
         if content_type.startswith('application/json'):
             body = await request.json()
             logger.debug("/run parsed JSON body: %s", body)
-            task = body.get('task') if isinstance(body, dict) else None
+            if isinstance(body, dict):
+                task = body.get('task')
+                # Allow overrides from JSON body
+                if not agent_name and 'agent_name' in body:
+                    agent_name = body.get('agent_name')
+                if not llm_profile and 'llm_profile' in body:
+                    llm_profile = body.get('llm_profile')
 
         # multipart/form-data: parse form and files
         elif content_type.startswith('multipart/form-data'):
@@ -579,6 +672,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Extract task field
             if 'task' in form:
                 task = form['task']
+            # Allow overrides from form data
+            if not agent_name and 'agent_name' in form:
+                agent_name = form.get('agent_name')
+            if not llm_profile and 'llm_profile' in form:
+                llm_profile = form.get('llm_profile')
             # Collect UploadFile instances - use getlist() for repeated fields
             if hasattr(form, 'getlist'):
                 files_list = form.getlist('files')
@@ -596,7 +694,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if query_task:
                 task = query_task
 
-        logger.info("/run invoked, task=%s, files=%d, request_id=%s", task, len(upload_files), request_id)
+        logger.info("/run invoked, task=%s, files=%d, request_id=%s, agent=%s, llm_profile=%s", 
+                   task, len(upload_files), request_id, agent_name or "default", llm_profile or "default")
+
+        # Get agent with LLM override
+        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
         from agent_system.servers.agent.result_utils import collect_final_result
 
@@ -604,7 +706,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not upload_files:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
-            return await collect_final_result(agent, task, request_id=request_id)
+            # Pass LLM override to collect_final_result
+            return await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
 
         # Process uploaded files for multimodal input
         from ..llm.capabilities import get_model_capabilities
@@ -613,7 +716,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from pathlib import Path
 
         # Validate model supports images
-        model_name = agent.llm.model if hasattr(agent.llm, 'model') else None
+        model_name = selected_agent.llm.model if hasattr(selected_agent.llm, 'model') else None
         if model_name:
             caps = get_model_capabilities(model_name)
             if not caps.image_input:
@@ -649,7 +752,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             async def event_stream():
                 yield ":ok\n\n"
                 try:
-                    async for event in agent.run_events(multimodal_msg, request_id=request_id):
+                    async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
                         yield f"event: {event_type}\n"
                         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -682,15 +785,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/events")
-    async def events(task: str, session_id: Optional[str] = Query(default=None)):
+    async def events(
+        task: str, 
+        session_id: Optional[str] = Query(default=None),
+        agent_name: Optional[str] = Query(default=None),
+        llm_profile: Optional[str] = Query(default=None)
+    ):
+        """Stream agent events for a task.
+        
+        Query parameters:
+        - task: The task to execute
+        - session_id: Optional session ID for conversation continuity
+        - agent_name: Optional agent to use instead of default
+        - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        """
         logger = logging.getLogger(__name__)
         request_id = short_id()
-        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s", task, request_id, session_id)
+        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s", 
+                   task, request_id, session_id, agent_name or "default", llm_profile or "default")
+
+        # Get agent with LLM override
+        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
         async def event_stream():
             # Initial keep-alive line
             yield ":ok\n\n"
-            async for ev in agent.run_events(task, request_id, session_id):
+            async for ev in selected_agent.run_events(task, request_id, session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 logger.debug("SSE event: %s", ev.get("type"))
                 try:
                     # Ensure proper JSON serialization of any potential enum values

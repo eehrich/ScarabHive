@@ -727,7 +727,9 @@ class Agent(MCPServer):
         self, 
         task: Union[str, ChatMessage], 
         request_id: Optional[str] = None, 
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        llm_override: Optional[object] = None,
+        llm_profile_info_override: Optional[str] = None
     ):
         """Run the agent and yield structured events for UI streaming.
         
@@ -735,6 +737,8 @@ class Agent(MCPServer):
             task: Either a string task description or a ChatMessage with multimodal content
             request_id: Optional request ID for tracking
             session_id: Optional session ID for conversation history
+            llm_override: Optional LLM client to use instead of self.llm (for per-request profile overrides)
+            llm_profile_info_override: Optional profile info string for status display (e.g., "turbo:openai_httpx/gpt-5-nano")
         """
 
         # Generate request ID if not provided
@@ -778,7 +782,9 @@ class Agent(MCPServer):
                 session_id=session_id, 
                 status_coordinator=status_coordinator, 
                 status_worker=status_worker,
-                initial_message=initial_message
+                initial_message=initial_message,
+                llm_override=llm_override,
+                llm_profile_info_override=llm_profile_info_override
             ):
                 yield event
 
@@ -789,7 +795,9 @@ class Agent(MCPServer):
         session_id: str, 
         status_coordinator: StatusScope, 
         status_worker: StatusScope,
-        initial_message: Optional[ChatMessage] = None
+        initial_message: Optional[ChatMessage] = None,
+        llm_override: Optional[object] = None,
+        llm_profile_info_override: Optional[str] = None
     ):
         """Internal implementation of run_events with optional multimodal message.
         
@@ -800,7 +808,12 @@ class Agent(MCPServer):
             status_coordinator: Status scope for coordinator
             status_worker: Status scope for worker
             initial_message: Optional ChatMessage with multimodal content to use instead of task
+            llm_override: Optional LLM client to use instead of self.llm
+            llm_profile_info_override: Optional profile info string for status display
         """
+        # Determine which LLM to use for this request
+        active_llm = llm_override if llm_override is not None else self.llm
+        
         # Initialize step counter at function level so it's accessible in finally blocks and cleanup
         step = 0
         
@@ -849,7 +862,7 @@ class Agent(MCPServer):
                     yield event
 
             # If no LLM is configured, emit an immediate error event and end the stream
-            if self.llm is None:
+            if active_llm is None:
                 yield {"type": "error", "message": "No LLM available; agent requires an LLM to run", "request_id": request_id}
                 yield {"type": "end"}
                 return
@@ -998,7 +1011,11 @@ class Agent(MCPServer):
                 yield {"type": "thinking", "step": step + 1}
 
                 # Signal LLM call using status_worker with profile info
-                llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else "unkown LLM"
+                # Use profile info override if provided (from API-level LLM override)
+                if llm_profile_info_override:
+                    llm_display = f" ({llm_profile_info_override})"
+                else:
+                    llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
                 await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
                 # Validate messages before LLM call to ensure API compliance
@@ -1007,7 +1024,7 @@ class Agent(MCPServer):
 
                 # Get LLM response - handle context length exceeded errors
                 try:
-                    llm_out = await self.llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
+                    llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
                 except asyncio.CancelledError:  # pragma: no cover - explicit cancellation path
                     # Treat as graceful cancellation (user cancel or upstream timeout cancellation)
                     logger.info("Request %s received asyncio.CancelledError during LLM call at step %d", request_id, step + 1)
@@ -1086,7 +1103,7 @@ class Agent(MCPServer):
                             
                             # Try the LLM call again with reduced context
                             try:
-                                llm_out = await self.llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
+                                llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
                                 logger.info("LLM call successful after emergency context management")
                             except Exception as retry_e:
                                 # Check if this is a cancellation exception in the retry
@@ -1339,7 +1356,7 @@ class Agent(MCPServer):
                     from agent_system.llm.message_validator import validate_messages_before_llm
                     messages = validate_messages_before_llm(messages, context="agent_server_final")
                     
-                    final_llm_out = await self.llm.chat_tools(messages, [], cancellation_token=main_token)
+                    final_llm_out = await active_llm.chat_tools(messages, [], cancellation_token=main_token)
                     final_assistant = final_llm_out.get("assistant", {})
                     final_content = final_assistant.get("content")
                     if final_content:

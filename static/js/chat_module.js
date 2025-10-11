@@ -831,6 +831,17 @@
           formData.append('files', file);
         });
 
+        // Add agent and LLM profile selections if available
+        const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
+        const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
+        
+        if (selectedAgent) {
+          formData.append('agent_name', selectedAgent);
+        }
+        if (selectedLLMProfile) {
+          formData.append('llm_profile', selectedLLMProfile);
+        }
+
         try {
           showSection(blk.t);
           blk.t.innerHTML = '<div class="response-text">Processing images...</div>';
@@ -944,9 +955,23 @@
 
       // Text-only SSE-based request
       let sseOk = false;
-      const eventUrl = currentSessionId 
-        ? `/events?task=${encodeURIComponent(task)}&session_id=${encodeURIComponent(currentSessionId)}`
-        : `/events?task=${encodeURIComponent(task)}`;
+      
+      // Get current agent and LLM profile selections
+      const selectedAgent = window.selectorModule && window.selectorModule.getCurrentAgent ? window.selectorModule.getCurrentAgent() : null;
+      const selectedLLMProfile = window.selectorModule && window.selectorModule.getCurrentLLMProfile ? window.selectorModule.getCurrentLLMProfile() : null;
+      
+      // Build event URL with agent and profile parameters
+      let eventUrl = `/events?task=${encodeURIComponent(task)}`;
+      if (currentSessionId) {
+        eventUrl += `&session_id=${encodeURIComponent(currentSessionId)}`;
+      }
+      if (selectedAgent) {
+        eventUrl += `&agent_name=${encodeURIComponent(selectedAgent)}`;
+      }
+      if (selectedLLMProfile) {
+        eventUrl += `&llm_profile=${encodeURIComponent(selectedLLMProfile)}`;
+      }
+      
       const es = new EventSource(eventUrl);
       currentEventSource = es; // Track current event source
       

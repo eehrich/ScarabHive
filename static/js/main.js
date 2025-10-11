@@ -9,12 +9,23 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Check if all required modules are loaded
-  const requiredModules = ['PanelManager', 'PluginManager', 'MCP', 'Status', 'Debug', 'ContextDebug'];
+  const requiredModules = ['PanelManager', 'PluginManager', 'MCP', 'Status', 'Debug', 'ContextDebug', 'Selectors'];
   const missingModules = requiredModules.filter(module => !window.AgentSystem[module]);
   
   if (missingModules.length > 0) {
     console.error('Missing modules:', missingModules);
     return;
+  }
+
+  // Initialize selector module for agent and LLM profile selection
+  if (window.AgentSystem.Selectors && typeof window.AgentSystem.Selectors.init === 'function') {
+    try {
+      window.AgentSystem.Selectors.init();
+    } catch (err) {
+      console.error('Selectors.init() failed', err);
+    }
+  } else {
+    console.warn('Selectors module not available');
   }
   
   // Initialize button event listeners

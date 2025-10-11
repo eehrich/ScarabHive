@@ -9,7 +9,9 @@ from ...llm.models import ChatMessage
 async def collect_final_result(
     agent: Agent, 
     task: Union[str, ChatMessage], 
-    request_id: Optional[str] = None
+    request_id: Optional[str] = None,
+    llm_override: Optional[object] = None,
+    llm_profile_info_override: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Collect final result from agent.run_events() into a structured result dict.
@@ -21,6 +23,8 @@ async def collect_final_result(
         agent: The agent instance to execute
         task: The task to execute (string or ChatMessage with multimodal content)
         request_id: Optional request ID for correlation
+        llm_override: Optional LLM client to use instead of agent's default
+        llm_profile_info_override: Optional profile info string for status display
         
     Returns:
         Dict containing task, calls, summary, and optionally errors
@@ -43,7 +47,7 @@ async def collect_final_result(
     
     result = {"task": task_text, "calls": []}
     
-    async for event in agent.run_events(task, request_id=request_id):
+    async for event in agent.run_events(task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
         event_type = event.get("type")
         
         # Collect MCP calls for the result
