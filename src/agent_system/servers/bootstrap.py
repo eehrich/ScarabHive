@@ -12,6 +12,7 @@ from ..config.models import AgentSystemConfig
 from ..config.settings import get_mcp_config_by_name
 from ..mcp.base import MCPRegistry
 from ..plugins import discover_all_plugins
+from ..plugins.config_agent_discovery import discover_config_agents
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,23 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
         dirs.append(src_plugins)
 
     plugins = discover_all_plugins(dirs=dirs if dirs else None)
+
+    # Discover configuration-based agents (Epic 0043)
+    config_agents = discover_config_agents(config.mcp_system)
+    
+    # Merge config agents into plugins dict (config agents override if name conflicts)
+    if config_agents:
+        logger.info(
+            f"Discovered {len(config_agents)} configuration-based agents: "
+            f"{', '.join(sorted(config_agents.keys()))}"
+        )
+        # Config agents take precedence over plugin-based agents with same name
+        for name, factory in config_agents.items():
+            if name in plugins:
+                logger.warning(
+                    f"Config agent '{name}' overrides plugin-based agent with same name"
+                )
+            plugins[name] = factory
 
     # Log discovered plugins
     if plugins:
