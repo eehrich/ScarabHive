@@ -5,6 +5,7 @@ This document explains how to create plugins (MCP servers) for AgentSystem. It w
 ## Table of Contents
 
 - [What is a Plugin?](#what-is-a-plugin)
+  - [Alternative: Configuration-Based Agents](#alternative-configuration-based-agents)
 - [Quick Start: Your First Plugin](#quick-start-your-first-plugin)
 - [Plugin Structure and Layout](#plugin-structure-and-layout)
 - [Defining Schema (`schema.yaml`)](#defining-schema-schemayaml)
@@ -41,6 +42,49 @@ A plugin in AgentSystem is an MCP (Model Context Protocol) server that provides 
 - **Reliable execution** with error handling and cancellation
 - **Good UX** through status updates and progress reporting
 - **Simple configuration** and clear documentation
+
+### Alternative: Configuration-Based Agents
+
+**Before writing a plugin, consider if you need one at all.**
+
+AgentSystem now supports **configuration-based agents** that can be defined purely in YAML without writing any Python code. These are ideal for:
+
+- **Specialized assistants** with unique prompts (e.g., financial analyst, code reviewer, research assistant)
+- **Prompt variations** for different use cases (formal vs casual tone, domain-specific language)
+- **Tool subset configurations** (restrict agent to specific MCP servers/tools)
+- **Quick prototyping** of agent behaviors before building custom plugins
+
+**Use configuration-based agents when:**
+- You need an agent with a specialized prompt or persona
+- You want to restrict/allow specific tools without code
+- You want to test different LLM profiles/strategies
+- You don't need custom tool implementations
+
+**Use plugin-based agents when:**
+- You need custom tool implementations with complex logic
+- You require state management or background tasks
+- You need web endpoints or CLI commands
+- You want to package reusable tools for distribution
+
+**Example Configuration-Based Agent:**
+```yaml
+# In config/mcp.yaml under mcp_system.config_agents:
+financial_analyst:
+  base_type: generic
+  description: "Financial analysis and market research agent"
+  system_template: prompts/financial_analyst.md
+  llm_profile: deepseek-chat
+  tools:
+    allowed:
+      - "mcp_*"  # All MCP tools
+      - "browser_*"  # Browser tools
+    blocked:
+      - "filesystem_*"  # Block file operations
+```
+
+See [Configuration-Based Agents Guide](config_based_agents.md) for complete documentation.
+
+---
 
 ## Quick Start: Your First Plugin
 

@@ -372,6 +372,7 @@ $ pytest tests/test_tool_service.py tests/test_agent_service.py -v --tb=short
 
 - **Architecture Review**: `docs/architecture_review_refactoring.md`
 - **Progress Tracking**: `docs/service_layer_progress.md`
+- **Configuration-Based Agents**: `docs/config_based_agents.md` (new feature)
 - **Developer Rules**: `.prompts/developer_rules.md`
 - **Project Objectives**: `.prompts/project_objectives.md`
 
