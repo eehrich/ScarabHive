@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 import yaml
@@ -1025,39 +1024,10 @@ def main() -> None:
 
     # Handle MCP external server management subcommand
     if args.subcommand == "mcp":
-        # Load MCP configuration and create integration
-        # Prefer reading the included managed `config/mcp.yaml` so external_servers
-        # entries are preserved and visible to MCPIntegration (AgentConfig.mcp_system
-        # may be a pydantic model that doesn't keep the raw 'external_servers' block).
-        config_path = getattr(config.mcp_system, 'config_file', None) or "config/mcp.yaml"
+        # Use config loaded via settings.py - no direct YAML access
+        # All config mutations removed - users should edit config files directly
 
         async def handle_mcp_command():
-            # Read the managed MCP file directly if present, otherwise fall back
-            # to the pydantic model dump. This ensures `external_servers` is
-            # available to MCPIntegration.load_config which expects an
-            # `mcp.external_servers` mapping.
-            try:
-                if isinstance(config_path, str):
-                    mcp_file = Path(config_path)
-                else:
-                    mcp_file = Path(str(config_path))
-                if not mcp_file.is_absolute():
-                    # Keep the relative path as-is, don't modify it
-                    # This allows the CLI to find config/mcp.yaml relative to current working directory
-                    pass
-                if mcp_file.exists():
-                    try:
-                        raw = yaml.safe_load(mcp_file.read_text(encoding="utf-8")) or {}
-                        mcp_block = raw.get("mcp", raw)
-                    except Exception as e:
-                        logger.warning(f"Failed to load MCP config from {mcp_file}: {e}", exc_info=True)
-                        mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
-                else:
-                    mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
-            except Exception as e:
-                logger.warning(f"Failed to determine MCP config source: {e}", exc_info=True)
-                mcp_block = (config.mcp_system.model_dump() if hasattr(config.mcp_system, "model_dump") else getattr(config.mcp_system, "__dict__", {}))
-
             # Use direct AgentConfig approach for consistency with main CLI bootstrapping
             mcp_integration = MCPIntegration(config=config)
             # Ensure MCPIntegration sets up external clients and plugins
@@ -1078,78 +1048,21 @@ def main() -> None:
                     result = await _mcp_list_servers(mcp_service, args)
                     return
                 elif action in ("enable", "disable"):
-                    if not server_name:
-                        print(json.dumps({"error": "server name required for enable/disable action"}, ensure_ascii=False))
-                        return
-                    # Find the managed mcp file path same way earlier: try to resolve config.mcp_system.config_file if present
-                    cfg_path = Path(config.mcp_system.config_file) if getattr(config.mcp_system, 'config_file', None) else Path("config/mcp.yaml")
-                    if not cfg_path.is_absolute():
-                        cfg_path = Path("config") / cfg_path.name
-
-                    managed_data = {}
-                    if cfg_path.exists():
-                        try:
-                            managed_data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                        except Exception:
-                            managed_data = {}
-
-                    mcp_block = managed_data.get("mcp", {}) or {}
-                    external = mcp_block.get("external_servers", {}) or {}
-                    if server_name not in external:
-                        print(json.dumps({"error": f"Server {server_name} not found in managed config"}, ensure_ascii=False))
-                        return
-
-                    intended = action
-
-                    # perform update (always persist)
-                    external[server_name] = dict(external[server_name])
-                    external[server_name]["enabled"] = True if intended == "enable" else False
-                    mcp_block["external_servers"] = external
-                    managed_data["mcp"] = mcp_block
-
-                    # atomic write to cfg_path
-                    try:
-                        with tempfile.NamedTemporaryFile("w", delete=False, dir=str(cfg_path.parent), encoding="utf-8") as tf:
-                            yaml.safe_dump(managed_data, tf, allow_unicode=True, sort_keys=False)
-                            tmp_name = tf.name
-                        os.replace(tmp_name, str(cfg_path))
-                    except Exception as e:
-                        print(json.dumps({"error": "failed to write managed config", "reason": str(e)}, ensure_ascii=False))
-                        try:
-                            if 'tmp_name' in locals() and os.path.exists(tmp_name):
-                                os.remove(tmp_name)
-                        except Exception as e2:
-                            logger.debug(f"Failed to cleanup temp file during config write: {e2}")
-                        return
-
-                    print(json.dumps({"result": "ok", "server": server_name, "enabled": external[server_name]["enabled"]}, ensure_ascii=False))
-                    result = None
+                    # Config mutation removed - edit config files directly
+                    print(json.dumps({
+                        "error": "enable/disable commands removed",
+                        "message": "Please edit config files directly (config/mcp_servers.yaml)",
+                        "info": "Set 'enabled: true/false' for the specific server in mcp_servers.yaml"
+                    }, ensure_ascii=False))
                     return
                 elif action == "feature":
-                    # key is subaction 'list' or 'set'; if key is 'list', show capabilities
+                    # Config mutation removed - edit config files directly
                     sub = getattr(args, "key", None)
                     if not server_name:
                         print(json.dumps({"error": "server name required for feature action"}, ensure_ascii=False))
                         return
 
-                    # Read managed config file
-                    cfg_path = Path(config.mcp_system.config_file) if getattr(config.mcp_system, 'config_file', None) else Path("config/mcp.yaml")
-                    if not cfg_path.is_absolute():
-                        cfg_path = Path("config") / cfg_path.name
-                    managed_data = {}
-                    if cfg_path.exists():
-                        try:
-                            managed_data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                        except Exception:
-                            managed_data = {}
-
-                    mcp_block = managed_data.get("mcp", {}) or {}
-                    external = mcp_block.get("external_servers", {}) or {}
-                    if server_name not in external:
-                        print(json.dumps({"error": f"Server {server_name} not found in managed config"}, ensure_ascii=False))
-                        return
-
-                    # LIST features: query server capabilities via client if connected; otherwise show config features
+                    # LIST features: query server capabilities via client if connected
                     if sub == "list" or sub is None:
                         # Try client if available to get actual capabilities
                         # honor --no-probe: skip live query if requested
@@ -1176,7 +1089,13 @@ def main() -> None:
                                 logger.debug(f"Failed to get capabilities for {server_name}: {e}")
                                 capabilities = None
 
-                        conf_features = external[server_name].get('features', {})
+                        # Get configured features from config object (read-only)
+                        mcp_servers_cfg = config.mcp_servers if config.mcp_servers else (config.mcp_system.external_servers if config.mcp_system else None)
+                        conf_features = {}
+                        if mcp_servers_cfg and hasattr(mcp_servers_cfg, 'remote_servers'):
+                            server_cfg = mcp_servers_cfg.remote_servers.get(server_name, {})
+                            conf_features = server_cfg.get('features', {}) if isinstance(server_cfg, dict) else {}
+                        
                         out = {
                             'server': server_name,
                             'configured_features': conf_features,
@@ -1186,38 +1105,12 @@ def main() -> None:
                         result = None
                         return
 
-                    # SET feature: args.key is feature name, args.value is on/off
-                    feature_name = sub
-                    feature_val = getattr(args, 'value', None)
-                    if not feature_name or feature_val not in ("on", "off"):
-                        print(json.dumps({"error": "Usage: agent-cli mcp feature <server> <feature> <on|off>"}, ensure_ascii=False))
-                        return
-
-                    enabled_val = True if feature_val == "on" else False
-                    # Persist to managed config
-                    external[server_name] = dict(external[server_name])
-                    features = dict(external[server_name].get('features', {}) or {})
-                    features[feature_name] = enabled_val
-                    external[server_name]['features'] = features
-                    mcp_block['external_servers'] = external
-                    managed_data['mcp'] = mcp_block
-
-                    try:
-                        with tempfile.NamedTemporaryFile("w", delete=False, dir=str(cfg_path.parent), encoding="utf-8") as tf:
-                            yaml.safe_dump(managed_data, tf, allow_unicode=True, sort_keys=False)
-                            tmp_name = tf.name
-                        os.replace(tmp_name, str(cfg_path))
-                    except Exception as e:
-                        print(json.dumps({"error": "failed to write managed config", "reason": str(e)}, ensure_ascii=False))
-                        try:
-                            if 'tmp_name' in locals() and os.path.exists(tmp_name):
-                                os.remove(tmp_name)
-                        except Exception as e2:
-                            logger.debug(f"Failed to cleanup temp file during feature config write: {e2}")
-                        return
-
-                    print(json.dumps({"result": "ok", "server": server_name, "feature": feature_name, "enabled": enabled_val}, ensure_ascii=False))
-                    result = None
+                    # SET feature: Config mutation removed
+                    print(json.dumps({
+                        "error": "feature set command removed",
+                        "message": "Please edit config files directly (config/mcp_servers.yaml)",
+                        "info": "Update 'features' section for the specific server in mcp_servers.yaml"
+                    }, ensure_ascii=False))
                     return
                 elif action == "connect":
                     if not server_name:
