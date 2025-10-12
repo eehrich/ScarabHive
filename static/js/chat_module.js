@@ -1103,6 +1103,19 @@
   // Cleanup on page unload
   window.addEventListener('beforeunload', cleanup);
   
+  // Listen for new conversation events
+  window.addEventListener('session:new', () => {
+    console.log('New conversation event received - clearing session');
+    // Clear current session ID
+    currentSessionId = null;
+    try { global.currentSessionId = null; } catch (e) {}
+    
+    // Update header to clear session ID display
+    if (typeof updateHeaderSessionId === 'function') {
+      updateHeaderSessionId();
+    }
+  });
+  
   // Listen for session load events
   window.addEventListener('session:loaded', (event) => {
     const { session } = event.detail;
