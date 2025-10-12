@@ -129,10 +129,13 @@ API endpoints (FastAPI):
 - `GET /events?task=...` — SSE stream of MCP events
 - `POST /cancel/{request_id}` — cancel a running request
 - `POST /events/{request_id}/append` — append message to an existing conversation
-- `POST /sessions` — create a new conversation session
-- `POST /sessions/{session_id}/append` — append message to a session
-- `POST /sessions/{session_id}/force_optimize` — force context optimization for a session
-- `POST /sessions/force_optimize` — force context optimization for all sessions
+- **Session Management Endpoints**:
+  - `POST /api/sessions` — create a new conversation session
+  - `GET /api/sessions` — list all sessions for current user (or anonymous)
+  - `GET /api/sessions/{id}` — get session details with full message history
+  - `PATCH /api/sessions/{id}` — update session metadata (rename, tags)
+  - `DELETE /api/sessions/{id}` — delete a session (with optional backup)
+  - `POST /api/sessions/{id}/restore` — load session into active conversation
 - `GET /status/stream` — SSE stream of status events
 - `GET /status/meta` — status stream metadata and statistics
 - `POST /status/publish-test` — publish a test status event
@@ -665,8 +668,20 @@ When `auth.enabled: true`:
 - Authentication required for most endpoints
 - Admin-only endpoints restricted to ADMIN role
 - Rate limiting and security headers automatically activated
+- Per-user session isolation (each user has their own conversations)
+- Anonymous users can also create and manage sessions (stored under "anonymous" user_id)
 
-**Note:** Full session isolation (per-user sessions) is planned for a future update. Current implementation provides authentication, user management, and access controls, but sessions are not yet isolated by user.
+## Session Management
+
+AgentSystem provides persistent, multi-user session management:
+
+- **Session Storage**: Sessions stored as JSON files in `data/sessions/{user_id}/{session_id}.json`
+- **User Isolation**: Sessions are scoped per user (authenticated users by username, anonymous as "anonymous")
+- **Auto-save**: Every message automatically saves to session file
+- **Web UI**: Sidebar with session list, create/rename/delete operations, session restore on page reload
+- **CLI Support**: `agent-cli` and `agent-run` support `--session`, `--list-sessions`, `--session-user` options
+
+See `docs/session_management.md` for detailed documentation.
 
 ## MCP Server Mode
 
