@@ -176,6 +176,76 @@ export class SessionManager {
     document.addEventListener('keydown', escHandler);
   }
 
+  openDeleteModal(sessionId, sessionTitle) {
+    // Close any existing modal
+    const existingModal = document.querySelector('#sessionDeleteModal');
+    if (existingModal) {
+      existingModal.remove();
+    }
+    
+    // Create modal using exact same structure as Rename modal
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'sessionDeleteModal';
+    modal.style.display = 'block';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Delete Conversation</h2>
+          <span class="close">&times;</span>
+        </div>
+        <div class="delete-modal-body">
+          <p>Are you sure you want to delete this conversation?</p>
+          <div class="session-title-preview">
+            <strong>"${this.escapeHtml(sessionTitle)}"</strong>
+          </div>
+          <p class="warning-text">⚠️ This action cannot be undone.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+          <button type="button" class="btn btn-danger modal-confirm-delete">Delete</button>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    const closeBtn = modal.querySelector('.close');
+    const cancelBtn = modal.querySelector('.modal-cancel');
+    const deleteBtn = modal.querySelector('.modal-confirm-delete');
+    
+    // Focus cancel button (safer default)
+    setTimeout(() => {
+      cancelBtn.focus();
+    }, 100);
+    
+    // Close handlers
+    const closeModal = () => {
+      modal.remove();
+    };
+    
+    closeBtn.addEventListener('click', closeModal);
+    cancelBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+    
+    // Delete handler
+    deleteBtn.addEventListener('click', async () => {
+      closeModal();
+      await this.deleteSession(sessionId);
+    });
+    
+    // ESC key
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        closeModal();
+        document.removeEventListener('keydown', escHandler);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+  }
+
   setupEventListeners() {
     // Toggle sidebar
     document.getElementById('sessionsToggleBtn')?.addEventListener('click', () => {
@@ -275,7 +345,8 @@ export class SessionManager {
     listEl.querySelectorAll('.session-delete-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.deleteSession(btn.dataset.sessionId);
+        const sessionTitle = btn.dataset.sessionTitle || 'Untitled';
+        this.openDeleteModal(btn.dataset.sessionId, sessionTitle);
       });
     });
   }
@@ -302,6 +373,7 @@ export class SessionManager {
             </button>
             <button class="session-item-btn session-delete-btn" 
                     data-session-id="${session.session_id}"
+                    data-session-title="${this.escapeHtml(session.title)}"
                     title="Delete">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
                 <path d="M3 4h10M5 4V3h6v1M6 7v5M10 7v5M4 4l1 10h6l1-10" stroke-width="1.5"/>
@@ -417,10 +489,6 @@ export class SessionManager {
   }
 
   async deleteSession(sessionId) {
-    if (!confirm('Delete this conversation? This cannot be undone.')) {
-      return;
-    }
-    
     try {
       const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'DELETE',

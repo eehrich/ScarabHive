@@ -254,3 +254,63 @@
 .sessions-list::-webkit-scrollbar-thumb:hover {
   background: var(--bg-hover, #444);
 }
+
+/* Delete Modal Specific Styles */
+#sessionDeleteModal .delete-modal-body {
+  padding: 30px;
+  text-align: center;
+}
+
+#sessionDeleteModal .delete-modal-body p {
+  margin: 0.75rem 0;
+  color: var(--text-primary, #f0f6fc);
+  font-size: 15px;
+}
+
+#sessionDeleteModal .session-title-preview {
+  margin: 1.25rem auto;
+  padding: 1rem 1.25rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  max-width: 80%;
+}
+
+#sessionDeleteModal .session-title-preview strong {
+  color: #58a6ff;
+  font-size: 16px;
+}
+
+#sessionDeleteModal .warning-text {
+  color: #f85149;
+  font-size: 14px;
+  font-weight: 500;
+  margin-top: 1.25rem;
+}
+
+#sessionDeleteModal .modal-footer {
+  padding: 20px 30px 30px 30px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 0;
+}
+
+.btn-danger {
+  background: #da3633;
+  color: white;
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-danger:hover {
+  background: #c93632;
+  border-color: rgba(240, 246, 252, 0.15);
+}
+
+.btn-danger:active {
+  background: #b92f2c;
+}
