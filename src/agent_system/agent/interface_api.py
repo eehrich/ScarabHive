@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Callable, Any
 
 import uvicorn
-from fastapi import FastAPI, Request, Query, Header, HTTPException, Depends
+from fastapi import FastAPI, Request, Query, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
@@ -710,6 +710,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def run(
         request: Request, 
         traceparent: Optional[str] = Header(default=None),
+        session_id: Optional[str] = Query(default=None),
         agent_name: Optional[str] = Query(default=None),
         llm_profile: Optional[str] = Query(default=None)
     ):
@@ -721,6 +722,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - query param ?task=... (fallback used by some clients)
 
         Query parameters:
+        - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
         """
@@ -733,13 +735,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         content_type = request.headers.get('content-type', '')
         logger.debug("/run content-type: %s", content_type)
 
-        # JSON body: {"task": "...", "agent_name": "...", "llm_profile": "..."}
+        # JSON body: {"task": "...", "session_id": "...", "agent_name": "...", "llm_profile": "..."}
         if content_type.startswith('application/json'):
             body = await request.json()
             logger.debug("/run parsed JSON body: %s", body)
             if isinstance(body, dict):
                 task = body.get('task')
                 # Allow overrides from JSON body
+                if not session_id and 'session_id' in body:
+                    session_id = body.get('session_id')
                 if not agent_name and 'agent_name' in body:
                     agent_name = body.get('agent_name')
                 if not llm_profile and 'llm_profile' in body:
@@ -756,6 +760,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if 'task' in form:
                 task = form['task']
             # Allow overrides from form data
+            if not session_id and 'session_id' in form:
+                session_id = form.get('session_id')
             if not agent_name and 'agent_name' in form:
                 agent_name = form.get('agent_name')
             if not llm_profile and 'llm_profile' in form:
@@ -777,11 +783,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if query_task:
                 task = query_task
 
-        logger.info("/run invoked, task=%s, files=%d, request_id=%s, agent=%s, llm_profile=%s", 
-                   task, len(upload_files), request_id, agent_name or "default", llm_profile or "default")
+        logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s", 
+                   task, len(upload_files), request_id, session_id, agent_name or "default", llm_profile or "default")
+
+        # Get current user (optional authentication)
+        current_user = await _get_current_user_optional(request)
+        
+        # Determine user_id for session management
+        user_id = current_user.username if current_user else "anonymous"
 
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+        
+        # Track if session exists (for auto-save logic later)
+        session_exists = False
+        
+        # Load existing session if session_id provided
+        if session_id and _session_manager:
+            try:
+                session_data = await _session_manager.load_session(user_id, session_id)
+                # Restore conversation history to agent
+                if session_data.get("messages"):
+                    selected_agent._sessions[session_id] = session_data["messages"]
+                session_exists = True
+                logger.info(f"[SESSION_SAVE] Loaded existing session {session_id} with {len(session_data.get('messages', []))} messages")
+            except Exception as e:
+                logger.info(f"[SESSION_SAVE] Session {session_id} not found, will create new: {e}")
 
         from agent_system.servers.agent.result_utils import collect_final_result
 
@@ -833,20 +860,102 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             # Stream events for multimodal message (same as /events endpoint)
             async def event_stream():
+                # Initial keep-alive line
                 yield ":ok\n\n"
+                
+                # Track if this is a new session
+                was_new_session = (session_id is None) or (not session_exists)
+                actual_session_id = session_id
+                
                 try:
-                    async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+                    async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
+                        
+                        # Capture session_id from start event (created on first call)
+                        if event_type == "start" and event.get("session_id"):
+                            old_session_id = actual_session_id
+                            actual_session_id = event["session_id"]
+                            logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
+                        
+                        # Ensure proper JSON serialization
+                        if hasattr(event, 'to_dict'):
+                            payload = event.to_dict()
+                        else:
+                            payload = event
+                        
                         yield f"event: {event_type}\n"
-                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+                        
                         if event_type == "end":
                             break
+                            
                 except Exception as e:
                     logger.exception("Error streaming multimodal events: %s", e)
                     error_event = {"type": "error", "message": str(e)}
                     yield "event: error\n"
                     yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
                 finally:
+                    # Save session after completion
+                    try:
+                        if _session_manager and actual_session_id and selected_agent._sessions.get(actual_session_id):
+                            messages_list = selected_agent._sessions[actual_session_id]
+                            logger.debug(f"[SESSION_SAVE] Attempting to save session {actual_session_id}, messages count: {len(messages_list)}")
+                            
+                            # Convert ChatMessage to dicts
+                            messages_dicts = []
+                            for msg in messages_list:
+                                if hasattr(msg, 'model_dump'):
+                                    messages_dicts.append(msg.model_dump())
+                                elif hasattr(msg, 'dict'):
+                                    messages_dicts.append(msg.dict())
+                                else:
+                                    messages_dicts.append(dict(msg))
+                            
+                            # Determine title from first user message or use default
+                            title = None
+                            for msg_dict in messages_dicts:
+                                if msg_dict.get("role") == "user":
+                                    content = msg_dict.get("content", "")
+                                    if isinstance(content, str):
+                                        title = content[:50]
+                                    elif isinstance(content, list) and len(content) > 0:
+                                        # Multimodal message - find first text part
+                                        for part in content:
+                                            if isinstance(part, dict) and part.get("type") == "text":
+                                                title = part.get("text", "")[:50]
+                                                break
+                                    break
+                            
+                            if not title:
+                                title = "Multimodal conversation"
+                            
+                            # Get agent name used
+                            agent_name_used = agent_name or "default"
+                            llm_profile_used = llm_profile or "normal"
+                            
+                            # Save or update session
+                            if was_new_session:
+                                logger.debug(f"[SESSION_SAVE] Creating new session {actual_session_id}")
+                                await _session_manager.create_session(
+                                    session_id=actual_session_id,
+                                    user_id=user_id,
+                                    title=title,
+                                    agent_name=agent_name_used,
+                                    llm_profile=llm_profile_used,
+                                    messages=messages_dicts
+                                )
+                            else:
+                                logger.debug(f"[SESSION_SAVE] Updating existing session {actual_session_id}")
+                                await _session_manager.update_session(
+                                    user_id=user_id,
+                                    session_id=actual_session_id,
+                                    messages=messages_dicts,
+                                    title=title
+                                )
+                            logger.info(f"[SESSION_SAVE] Session {actual_session_id} saved with {len(messages_dicts)} messages")
+                    except Exception as save_err:
+                        logger.error(f"[SESSION_SAVE] Failed to save session {actual_session_id}: {save_err}", exc_info=True)
+                    
                     # Cleanup temp files after streaming completes
                     for temp_file in temp_files:
                         try:

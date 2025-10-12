@@ -33,14 +33,9 @@ export class SessionManager {
       
       // Restore last session from localStorage
       const lastSessionId = localStorage.getItem('lastSessionId');
-      if (lastSessionId) {
-        this.currentSessionId = lastSessionId;
-        this.updateSessionDisplay(lastSessionId);
-        
-        // Dispatch event to notify other modules
-        window.dispatchEvent(new CustomEvent('session:restored', {
-          detail: { sessionId: lastSessionId }
-        }));
+      if (lastSessionId && this.sessions.find(s => s.session_id === lastSessionId)) {
+        // Load the session messages into the chat
+        await this.loadSession(lastSessionId);
       }
     }
     

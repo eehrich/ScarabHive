@@ -846,6 +846,11 @@
         if (selectedLLMProfile) {
           formData.append('llm_profile', selectedLLMProfile);
         }
+        
+        // Add current session ID if exists (to continue existing session)
+        if (currentSessionId) {
+          formData.append('session_id', currentSessionId);
+        }
 
         try {
           showSection(blk.t);
@@ -1092,5 +1097,66 @@
   
   // Cleanup on page unload
   window.addEventListener('beforeunload', cleanup);
+  
+  // Listen for session load events
+  window.addEventListener('session:loaded', (event) => {
+    const { session } = event.detail;
+    if (session && session.messages) {
+      // Clear current chat
+      const chatEl = document.getElementById('chat');
+      if (chatEl) {
+        chatEl.innerHTML = '';
+      }
+      
+      // Restore messages
+      session.messages.forEach(msg => {
+        // Skip system messages and tool-related messages
+        if (msg.role === 'system' || msg.role === 'tool') {
+          return;
+        }
+        
+        // Skip assistant messages with tool_calls (they're intermediate steps)
+        if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+          return;
+        }
+        
+        if (msg.role === 'user') {
+          // Add user message
+          const row = document.createElement('div');
+          row.className = 'row';
+          const msgDiv = document.createElement('div');
+          msgDiv.className = 'msg user';
+          const textSpan = document.createElement('div');
+          textSpan.innerHTML = escapeHtml(msg.content || '');
+          msgDiv.appendChild(textSpan);
+          row.appendChild(msgDiv);
+          chatEl.appendChild(row);
+        } else if (msg.role === 'assistant' && msg.content) {
+          // Add assistant message (only if it has content)
+          const blk = addAssistantBlock(chatEl);
+          // Show response section and add content with markdown formatting
+          showSection(blk.t);
+          blk.t.innerHTML = `<div class="response-text">${markdownToHtml(msg.content)}</div>`;
+        }
+      });
+      
+      // Scroll to bottom
+      scrollBottom();
+      
+      // Restore agent and LLM profile selectors
+      if (session.agent_name && window.selectorModule) {
+        window.selectorModule.setAgent(session.agent_name);
+      }
+      if (session.llm_profile && window.selectorModule) {
+        window.selectorModule.setLLMProfile(session.llm_profile);
+      }
+      
+      // Update session ID in header
+      if (typeof updateHeaderSessionId === 'function') {
+        updateHeaderSessionId(session.session_id);
+      }
+    }
+  });
 
 })(window);
+
