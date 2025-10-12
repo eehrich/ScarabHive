@@ -38,14 +38,14 @@ class TestNotesFormattingFixes:
         task = epic.tasks[0]
         
         # Should have 3 notes, no empty strings
-        # Note: '- ' prefix is now preserved to maintain list formatting
+        # Note: '- ' prefix is now stripped during parsing to prevent double-prefix on round-trip
         assert len(epic.notes) == 3
-        assert epic.notes == ["- First note", "- Second note", "- Third note"]
+        assert epic.notes == ["First note", "Second note", "Third note"]
         assert "" not in epic.notes
         
         # Task should have 2 notes, no empty strings
         assert len(task.notes) == 2
-        assert task.notes == ["- Task note one", "- Task note two"]
+        assert task.notes == ["Task note one", "Task note two"]
         assert "" not in task.notes
 
     def test_builder_skips_empty_notes_entries(self):
@@ -159,11 +159,12 @@ class TestNotesFormattingFixes:
         backlog = parse(content)
         epic = backlog.epics_open[0]
         
-        # Notes should preserve '- ' prefix to maintain list formatting
+        # Notes should have '- ' prefix stripped during parsing
+        # The builder will add it back when serializing
         expected_notes = [
-            "- First item with -- dashes inside",
-            "- Second item with -o option style", 
-            "- Third normal item"
+            "First item with -- dashes inside",
+            "Second item with -o option style", 
+            "Third normal item"
         ]
         assert epic.notes == expected_notes
 
@@ -233,11 +234,11 @@ class TestNotesFormattingFixes:
         backlog = parse(content)
         epic = backlog.epics_open[0]
         
-        # Notes preserve '- ' prefix for consistent list formatting
+        # Notes have '- ' prefix stripped during parsing
         expected_notes = [
-            "- Note with `code blocks` and **bold**",
-            "- Note with: colons and semicolons;",
-            "- Note with [links](http://example.com)"
+            "Note with `code blocks` and **bold**",
+            "Note with: colons and semicolons;",
+            "Note with [links](http://example.com)"
         ]
         assert epic.notes == expected_notes
 

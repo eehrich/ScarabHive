@@ -169,9 +169,14 @@ def parse(backlog_lines: List[str]) -> Backlog:
 
                         if indent > col_indent:
                             text = ln.strip()
-                            # Preserve content as-is, don't remove '- ' prefix
-                            # Users may want bullet lists in their description/notes
+                            # Strip the list marker prefix '- ' from NOTES only.
+                            # The builder adds '- ' prefix when serializing notes, so we strip it here
+                            # to prevent double '- - ' prefixes on round-trip edits.
+                            # Description content preserves '- ' as it's user content (bullet lists).
                             content = text
+                            if name == "notes" and content.startswith('- ') and not content.startswith('--'):
+                                # Remove the leading '- ' but preserve content after it
+                                content = content[2:]
 
                             if target == "task" and current_task is not None:
                                 if name == "notes":
