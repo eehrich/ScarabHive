@@ -543,6 +543,10 @@
   // Event source tracking (shared across init calls and cleanup)
   let currentEventSource = null;
   let currentStatusEventSource = null;
+  
+  // Session and request tracking (shared across init and event listeners)
+  let currentRequestId = null;
+  let currentSessionId = null;
 
   // Public init function that wires the chat form behavior
   chatModule.init = function (opts) {
@@ -551,10 +555,6 @@
     const runBtn = document.getElementById('runBtn');
     const stopBtn = document.getElementById('stopBtn');
     const chatContainer = document.getElementById('chat');
-
-    // Track current request and session
-    let currentRequestId = null;
-    let currentSessionId = null;
     
     // Helper functions to update UI displays
     function updateHeaderSessionId() {
