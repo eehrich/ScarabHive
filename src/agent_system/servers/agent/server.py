@@ -663,6 +663,35 @@ class Agent(MCPServer):
             logger.debug("Agent %s tools.allowed patterns with no matches: %s", self.name, unmatched)
         return matched
 
+    def _apply_custom_tool_descriptions(self, tools_schema: List[Dict]) -> None:
+        """Apply custom tool descriptions from agent configuration.
+        
+        Allows config-based agents to override tool descriptions inherited from base_type.
+        For example, a sysadmin_agent based on basic_agent can customize the description
+        of sysadmin_agent_execute_task to better reflect its SSH capabilities.
+        
+        Args:
+            tools_schema: List of tool schemas to modify in-place
+        """
+        if not self.agent_config or not hasattr(self.agent_config, 'tool_descriptions'):
+            return
+        
+        tool_descriptions = getattr(self.agent_config, 'tool_descriptions', None)
+        if not tool_descriptions:
+            return
+        
+        for tool_schema in tools_schema:
+            if tool_schema.get("type") == "function" and "function" in tool_schema:
+                tool_name = tool_schema["function"].get("name")
+                if tool_name and tool_name in tool_descriptions:
+                    old_desc = tool_schema["function"].get("description", "")
+                    new_desc = tool_descriptions[tool_name]
+                    tool_schema["function"]["description"] = new_desc
+                    logger.debug(
+                        f"Agent '{self.name}': Overriding tool description for '{tool_name}': "
+                        f"'{old_desc[:50]}...' -> '{new_desc[:50]}...'"
+                    )
+
     async def list_allowed_tool_servers(self) -> list[str]:
         """Collect all available tool server names (plugins + external + registry) applying per-agent allow list.
 
@@ -1049,6 +1078,9 @@ class Agent(MCPServer):
             
             # Add individual tool names to available_tools for multi-tool servers
             available_tools.extend(internal_tools_to_add)
+
+            # Apply custom tool descriptions if configured
+            self._apply_custom_tool_descriptions(tools_schema)
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}
