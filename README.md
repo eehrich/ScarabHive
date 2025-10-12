@@ -667,10 +667,10 @@ If your VS Code uses Git Bash, the task runner will execute commands like:
 
 If you prefer a different terminal, adjust the `options.shell.executable` in `.vscode/tasks.json`.
 
-## Documentation
+## Comprehensive guides are available in the `docs/` directory:
 
-Comprehensive guides are available in the `docs/` directory:
-
+- **[CLI Command Reference](docs/cli_reference.md)** — Complete guide to all agent-cli commands and options
+- **[Configuration-Based Agents](docs/config_based_agents.md)** — Create agents without writing code
 - **[Vision Support](docs/vision_support.md)** — Complete guide to multimodal image input via WebUI and API
 - **[MCP Configuration](docs/mcp_configuration.md)** — External MCP server setup and configuration
 - **[HTTP Streaming Transport](docs/http_streaming_transport.md)** — SSE-based MCP communication details
@@ -680,6 +680,7 @@ Comprehensive guides are available in the `docs/` directory:
 - **[Context Management](docs/context_management.md)** — Token budget and context window strategies
 - **[Status Design](docs/status_design.md)** — Real-time status streaming architecture
 - **[Backlog Tool](docs/backlog_tool.md)** — Backlog management CLI reference
+- **[Multi-User Authentication](docs/multi_user_authentication.md)** — Security and user management
 
 ## Maintenance notes
 

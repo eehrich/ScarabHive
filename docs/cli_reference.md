@@ -1,0 +1,701 @@
+# Agent CLI Reference
+
+Complete command-line interface reference for AgentSystem.
+
+## Installation
+
+After installing the package (`pip install -e .`), the `agent-cli` command is available globally:
+
+```bash
+agent-cli --help
+```
+
+## Global Options
+
+Available for all commands:
+
+```bash
+agent-cli [OPTIONS] COMMAND [ARGS]...
+
+Options:
+  --config PATH              Path to config file (default: config/config.yaml)
+  -v, --verbose             Enable verbose logging
+  --color {auto,always,never}  Color output mode (default: auto)
+  --no-color                Disable colored output
+  --show-mcp                Show MCP communication details
+  --no-status               Disable status event output
+  --raw                     Output raw JSON (machine-readable)
+  -h, --help                Show help message
+```
+
+## Commands Overview
+
+| Command | Description |
+|---------|-------------|
+| `run` | Execute an agent task (default command) |
+| `plugins` | Manage plugin servers |
+| `mcp` | Manage external MCP servers |
+| `users` | User management (requires auth) |
+| `config-agents` | Manage configuration-based agents |
+
+---
+
+## `agent-cli run` - Execute Agent Tasks
+
+Run an agent with a given prompt.
+
+### Usage
+
+```bash
+agent-cli run [OPTIONS] [AGENT] PROMPT
+
+# Default agent (from config)
+agent-cli run "What is the weather in Berlin?"
+
+# Specify agent by name
+agent-cli run sysadmin_agent "Check system status"
+
+# Use config-based agent
+agent-cli run financial_analyst "Analyze AAPL stock"
+
+# Override LLM profile
+agent-cli run --llm turbo "Fast question about Python"
+
+# Multimodal with image
+agent-cli run --image screenshot.png "What's in this image?"
+```
+
+### Options
+
+```bash
+--agent TEXT               Agent name to use (plugin or config-based)
+--llm TEXT                LLM profile to use (overrides agent's default)
+--image PATH              Path to image file for vision models
+--max-steps INTEGER       Maximum reasoning steps (overrides agent config)
+--no-status               Disable status event streaming
+--raw                     Output raw JSON instead of human-readable
+```
+
+### Examples
+
+```bash
+# Quick query with default agent
+agent-cli run "What time is it in Tokyo?"
+
+# Use specialized config agent
+agent-cli run code_reviewer "Review this PR: https://github.com/..."
+
+# Override settings for specific task
+agent-cli run --agent web_research_agent --llm think --max-steps 30 \
+  "Research the latest AI developments in 2025"
+
+# Vision task with image
+agent-cli run --image diagram.png "Explain this architecture diagram"
+
+# Machine-readable output for scripting
+agent-cli run --raw "List top 3 tech stocks" | jq '.result'
+```
+
+---
+
+## `agent-cli config-agents` - Configuration-Based Agents
+
+Manage agents defined in `config/agents.yaml`.
+
+### Subcommands
+
+#### `list` - List All Config Agents
+
+```bash
+agent-cli config-agents list [--format {table,json}]
+
+# Pretty table (default)
+agent-cli config-agents list
+
+# JSON output
+agent-cli config-agents list --format json
+```
+
+**Example Output:**
+
+```
+Config-Based Agents:
+╭────────────────────┬──────────┬────────┬──────────┬────────────────────────╮
+│ NAME               │ LLM      │ STEPS  │ STATUS   │ DESCRIPTION            │
+├────────────────────┼──────────┼────────┼──────────┼────────────────────────┤
+│ financial_analyst  │ turbo    │ 20     │ Enabled  │ Financial analyst...   │
+│ code_reviewer      │ deepseek │ 15     │ Enabled  │ Code review expert...  │
+│ research_assistant │ think    │ 25     │ Disabled │ Research specialist... │
+╰────────────────────┴──────────┴────────┴──────────┴────────────────────────╯
+```
+
+#### `show` - Display Agent Details
+
+```bash
+agent-cli config-agents show AGENT_NAME [--format {table,json}]
+
+# View specific agent configuration
+agent-cli config-agents show financial_analyst
+```
+
+**Example Output:**
+
+```
+Agent: financial_analyst
+Status: Enabled
+Description: Professional financial analyst for market analysis
+
+Configuration:
+  LLM Profile:    turbo
+  Max Steps:      20
+  System Prompt:  config/prompts/financial_analyst_prompt.yaml
+
+Tools:
+  Allowed:
+    - yahoo_finance/*
+    - web_scraper/*
+    - duckduckgo_search/*
+  Blocked:
+    - ssh_control/*
+    - script_interpreter/*
+
+Context Management:
+  Enabled:   true
+  Strategy:  SUMMARIZE_OLDEST
+  Preserve:  8 recent messages
+
+Metadata:
+  Author:   YourName
+  Version:  1.0.0
+  Tags:     finance, analysis
+```
+
+#### `validate` - Validate Agent Configuration
+
+```bash
+agent-cli config-agents validate [AGENT_NAME]
+
+# Validate all agents
+agent-cli config-agents validate
+
+# Validate specific agent
+agent-cli config-agents validate financial_analyst
+```
+
+**Example Output:**
+
+```
+Validating config agents...
+✓ financial_analyst - OK
+✓ code_reviewer - OK
+✗ research_assistant - ERROR: Missing required field 'llm_profile'
+
+Summary: 2 valid, 1 invalid
+```
+
+#### `enabled` - List Only Enabled Agents
+
+```bash
+agent-cli config-agents enabled
+
+# JSON format
+agent-cli config-agents enabled --format json
+```
+
+---
+
+## `agent-cli plugins` - Plugin Management
+
+Manage local plugin servers.
+
+### Subcommands
+
+#### `list` - List Available Plugins
+
+```bash
+agent-cli plugins list [--format {table,json}]
+
+# Table view (default)
+agent-cli plugins list
+
+# JSON for scripting
+agent-cli plugins list --format json | jq '.[] | select(.enabled)'
+```
+
+**Example Output:**
+
+```
+╭─────────────────────┬─────────┬─────────┬────────────────────────────╮
+│ NAME                │ VERSION │ STATUS  │ DESCRIPTION                │
+├─────────────────────┼─────────┼─────────┼────────────────────────────┤
+│ llm_router          │ 1.0.0   │ Enabled │ Multi-provider LLM router  │
+│ web_scraper         │ 1.2.0   │ Enabled │ Web content extraction     │
+│ weather             │ 1.0.0   │ Enabled │ Weather information        │
+│ ssh_control         │ 2.0.0   │ Disabled│ SSH machine management     │
+╰─────────────────────┴─────────┴─────────┴────────────────────────────╯
+```
+
+#### `info` - Show Plugin Details
+
+```bash
+agent-cli plugins info PLUGIN_NAME [--raw]
+
+# Human-readable info
+agent-cli plugins info llm_router
+
+# Raw metadata
+agent-cli plugins info llm_router --raw
+```
+
+#### `enable` / `disable` - Manage Plugin Status
+
+```bash
+# Enable a plugin
+agent-cli plugins enable PLUGIN_NAME [--yes]
+
+# Disable a plugin
+agent-cli plugins disable PLUGIN_NAME [--yes]
+
+# Without --yes, prompts for confirmation
+agent-cli plugins enable ssh_control
+```
+
+**Note:** Enable/disable functionality requires updating `config/plugins.yaml`.
+
+---
+
+## `agent-cli mcp` - External MCP Server Management
+
+Manage connections to external MCP servers.
+
+### Subcommands
+
+#### `list` - List Configured MCP Servers
+
+```bash
+agent-cli mcp list [--format {table,json}]
+
+# Show all configured servers
+agent-cli mcp list
+```
+
+**Example Output:**
+
+```
+╭──────────────┬─────────────────────────┬──────────┬────────────╮
+│ NAME         │ URL                     │ STATUS   │ TOOLS      │
+├──────────────┼─────────────────────────┼──────────┼────────────┤
+│ remote_ai    │ http://ai-server:3000   │ Connected│ 12 tools   │
+│ data_service │ http://data.api.com     │ Offline  │ -          │
+╰──────────────┴─────────────────────────┴──────────┴────────────╯
+```
+
+#### `connect` - Connect to Server
+
+```bash
+agent-cli mcp connect SERVER_NAME
+
+# Establish connection
+agent-cli mcp connect remote_ai
+```
+
+#### `disconnect` - Disconnect from Server
+
+```bash
+agent-cli mcp disconnect SERVER_NAME
+
+# Close connection
+agent-cli mcp disconnect remote_ai
+```
+
+#### `status` - Check Server Status
+
+```bash
+agent-cli mcp status [SERVER_NAME]
+
+# All servers
+agent-cli mcp status
+
+# Specific server with details
+agent-cli mcp status remote_ai
+```
+
+#### `test` - Test Server Connection
+
+```bash
+agent-cli mcp test SERVER_NAME
+
+# Verify connectivity and list available tools
+agent-cli mcp test remote_ai
+```
+
+**Example Output:**
+
+```
+Testing MCP server: remote_ai
+✓ Connection successful
+✓ Server version: 1.2.0
+✓ Available tools: 12
+  - analyze_sentiment
+  - summarize_text
+  - translate
+  ...
+```
+
+---
+
+## `agent-cli users` - User Management
+
+Manage user accounts and authentication (requires `auth.enabled: true`).
+
+### Subcommands
+
+#### `list` - List All Users
+
+```bash
+agent-cli users list
+
+# Requires admin privileges
+```
+
+**Example Output:**
+
+```
+╭────┬──────────┬───────────────────────┬────────┬────────╮
+│ ID │ USERNAME │ EMAIL                 │ ROLE   │ ACTIVE │
+├────┼──────────┼───────────────────────┼────────┼────────┤
+│ 1  │ admin    │ admin@example.com     │ ADMIN  │ Yes    │
+│ 2  │ john     │ john@example.com      │ USER   │ Yes    │
+│ 3  │ guest    │ guest@example.com     │ GUEST  │ No     │
+╰────┴──────────┴───────────────────────┴────────┴────────╯
+```
+
+#### `create` - Create New User
+
+```bash
+agent-cli users create USERNAME EMAIL [--role {ADMIN,USER,GUEST}]
+
+# Interactive password prompt
+agent-cli users create alice alice@example.com --role USER
+
+# Programmatic (not recommended for security)
+agent-cli users create alice alice@example.com --password secret123
+```
+
+#### `update` - Update User Details
+
+```bash
+agent-cli users update USER_ID [OPTIONS]
+
+# Update email
+agent-cli users update 2 --email newemail@example.com
+
+# Change role
+agent-cli users update 2 --role ADMIN
+
+# Update multiple fields
+agent-cli users update 2 --email new@example.com --role ADMIN
+```
+
+#### `delete` - Delete User
+
+```bash
+agent-cli users delete USER_ID [--yes]
+
+# Prompts for confirmation
+agent-cli users delete 3
+
+# Skip confirmation
+agent-cli users delete 3 --yes
+```
+
+#### `activate` / `deactivate` - Toggle User Status
+
+```bash
+# Activate inactive user
+agent-cli users activate USER_ID
+
+# Deactivate user (prevents login)
+agent-cli users deactivate USER_ID
+```
+
+#### `generate-api-key` - Create API Key
+
+```bash
+agent-cli users generate-api-key USER_ID
+
+# Generate long-lived API key for a user
+agent-cli users generate-api-key 2
+```
+
+**Example Output:**
+
+```
+API Key generated for user 'john':
+  Key: ak_1234567890abcdef1234567890abcdef
+  
+⚠ WARNING: Save this key securely. It cannot be retrieved again.
+```
+
+---
+
+## Environment Variables
+
+AgentSystem respects the following environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AGENT_CONFIG_PATH` | Path to config file | `config/config.yaml` |
+| `AGENT_LOG_LEVEL` | Logging level | `INFO` |
+| `OPENAI_API_KEY` | OpenAI API key | - |
+| `ANTHROPIC_API_KEY` | Anthropic API key | - |
+| `DEEPSEEK_API_KEY` | DeepSeek API key | - |
+| `NO_COLOR` | Disable color output | - |
+
+---
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error (configuration, runtime) |
+| 2 | Command-line argument error |
+| 3 | Authentication/authorization error |
+| 130 | Interrupted by user (Ctrl+C) |
+
+---
+
+## Configuration Files
+
+CLI behavior can be customized through configuration files:
+
+### Main Configuration
+
+**File:** `config/config.yaml`
+
+```yaml
+# Entry agent (used when no --agent specified)
+entry_agent: "default_agent"
+
+# Default LLM profile
+default_llm_profile: "normal"
+
+# Logging
+logging:
+  level: INFO
+  file_cli: logs/cli.log
+
+# Network
+network:
+  host: 127.0.0.1
+  port: 8000
+```
+
+### Config-Based Agents
+
+**File:** `config/agents.yaml`
+
+```yaml
+agents:
+  my_agent:
+    enabled: true
+    description: "My custom agent"
+    base_type: "agent"
+    agent_config:
+      llm_profile: "turbo"
+      max_steps: 20
+      system_template: "config/prompts/my_agent.yaml"
+      tools:
+        allowed: ["*"]
+```
+
+See [Configuration-Based Agents Guide](config_based_agents.md) for complete reference.
+
+### Plugin Configuration
+
+**File:** `config/plugins.yaml`
+
+```yaml
+plugins:
+  plugin_dirs:
+    - "src/plugins"
+  
+  servers:
+    llm_router:
+      type: llm_router
+      enabled: true
+    
+    web_scraper:
+      type: web_scraper
+      enabled: true
+```
+
+---
+
+## Tips and Best Practices
+
+### 1. Use Config Agents for Specialization
+
+Instead of creating multiple prompt variations, use config-based agents:
+
+```bash
+# Bad: manual prompting
+agent-cli run "Act as a financial analyst and analyze..."
+
+# Good: dedicated config agent
+agent-cli run financial_analyst "Analyze AAPL stock"
+```
+
+### 2. Override Settings Per Task
+
+Use command-line options to adjust behavior without changing config:
+
+```bash
+# Quick task with faster model
+agent-cli run --llm turbo "Quick summary of..."
+
+# Complex task with more steps
+agent-cli run --max-steps 50 "Comprehensive research on..."
+```
+
+### 3. Script with JSON Output
+
+Use `--raw` for machine-readable output:
+
+```bash
+# Process results with jq
+agent-cli run --raw "Top 5 tech stocks" | \
+  jq -r '.result.summary' | \
+  mail -s "Daily Report" user@example.com
+```
+
+### 4. Check Agent Capabilities
+
+Before running a task, verify what tools an agent has access to:
+
+```bash
+# View agent configuration
+agent-cli config-agents show financial_analyst
+
+# List available plugins
+agent-cli plugins list
+```
+
+### 5. Test MCP Connectivity
+
+Before relying on external MCP servers, test them:
+
+```bash
+# Verify server is reachable
+agent-cli mcp test remote_ai
+
+# Check current status
+agent-cli mcp status
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+#### 1. "Agent not found"
+
+```bash
+agent-cli run unknown_agent "task"
+# Error: Agent 'unknown_agent' not found
+```
+
+**Solution:** List available agents:
+
+```bash
+# Check plugins
+agent-cli plugins list
+
+# Check config agents
+agent-cli config-agents list
+```
+
+#### 2. "Configuration file not found"
+
+```bash
+agent-cli run "task"
+# Error: Could not load config from config/config.yaml
+```
+
+**Solution:** Specify config path or create default:
+
+```bash
+# Use custom config
+agent-cli --config /path/to/config.yaml run "task"
+
+# Or create default config
+cp config/config.yaml.example config/config.yaml
+```
+
+#### 3. "Permission denied" for user management
+
+```bash
+agent-cli users list
+# Error: Insufficient permissions
+```
+
+**Solution:** Ensure you're logged in as admin or auth is disabled.
+
+#### 4. Color output issues in scripts
+
+If you're piping output and see ANSI codes:
+
+```bash
+# Disable colors explicitly
+agent-cli --no-color run "task" > output.txt
+
+# Or use environment variable
+NO_COLOR=1 agent-cli run "task"
+```
+
+---
+
+## Further Reading
+
+- [Configuration-Based Agents](config_based_agents.md) - Deep dive into agent definitions
+- [MCP Configuration](mcp_configuration.md) - External server setup
+- [Plugin Authoring](plugin_authoring.md) - Create custom plugins
+- [Authentication Guide](multi_user_authentication.md) - Security and user management
+- [Context Management](context_management.md) - Token budget strategies
+
+---
+
+## Quick Reference Card
+
+```bash
+# Core Operations
+agent-cli run "prompt"                          # Execute with default agent
+agent-cli run agent_name "prompt"               # Execute with specific agent
+agent-cli run --llm profile "prompt"            # Override LLM
+
+# Config Agents
+agent-cli config-agents list                    # List all config agents
+agent-cli config-agents show NAME               # View details
+agent-cli config-agents validate                # Check configuration
+
+# Plugins
+agent-cli plugins list                          # List plugins
+agent-cli plugins info NAME                     # Plugin details
+
+# MCP Servers
+agent-cli mcp list                              # List MCP servers
+agent-cli mcp test NAME                         # Test connection
+agent-cli mcp status                            # Check all statuses
+
+# Users (requires auth)
+agent-cli users list                            # List users
+agent-cli users create USER EMAIL               # Create user
+agent-cli users generate-api-key ID             # Generate API key
+
+# Debugging
+agent-cli --verbose run "prompt"                # Detailed logs
+agent-cli --show-mcp run "prompt"               # Show MCP communication
+agent-cli --raw run "prompt"                    # JSON output
+```
