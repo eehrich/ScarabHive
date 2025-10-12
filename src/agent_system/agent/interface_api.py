@@ -804,9 +804,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 session_data = await _session_manager.load_session(user_id, session_id)
                 # Restore conversation history to agent
                 if session_data.get("messages"):
-                    selected_agent._sessions[session_id] = session_data["messages"]
-                session_exists = True
-                logger.info(f"[SESSION_SAVE] Loaded existing session {session_id} with {len(session_data.get('messages', []))} messages")
+                    # Convert dict messages to ChatMessage objects
+                    from agent_system.llm.models import ChatMessage
+                    messages_objects = []
+                    for msg_dict in session_data["messages"]:
+                        try:
+                            # ChatMessage can be constructed from dict
+                            chat_msg = ChatMessage(**msg_dict)
+                            messages_objects.append(chat_msg)
+                        except Exception as e:
+                            logger.warning(f"Failed to convert message to ChatMessage: {e}, skipping")
+                    
+                    selected_agent._sessions[session_id] = messages_objects
+                    session_exists = True
+                    logger.info(f"[SESSION_SAVE] Loaded existing session {session_id} with {len(messages_objects)} messages")
+                else:
+                    logger.info(f"[SESSION_SAVE] Session {session_id} found but has no messages")
             except Exception as e:
                 logger.info(f"[SESSION_SAVE] Session {session_id} not found, will create new: {e}")
 
@@ -1020,11 +1033,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 session_data = await _session_manager.load_session(user_id, session_id)
                 # Restore conversation history to agent
                 if session_data.get("messages"):
-                    selected_agent._sessions[session_id] = session_data["messages"]
-                session_exists = True
-                logger.info(f"Loaded existing session {session_id} with {len(session_data.get('messages', []))} messages")
+                    # Convert dict messages to ChatMessage objects
+                    from agent_system.llm.models import ChatMessage
+                    messages_objects = []
+                    for msg_dict in session_data["messages"]:
+                        try:
+                            # ChatMessage can be constructed from dict
+                            chat_msg = ChatMessage(**msg_dict)
+                            messages_objects.append(chat_msg)
+                        except Exception as e:
+                            logger.warning(f"Failed to convert message to ChatMessage: {e}, skipping")
+                    
+                    selected_agent._sessions[session_id] = messages_objects
+                    session_exists = True
+                    logger.info(f"[SESSION_SAVE] Loaded existing session {session_id} with {len(messages_objects)} messages")
+                else:
+                    logger.info(f"[SESSION_SAVE] Session {session_id} found but has no messages")
             except Exception as e:
-                logger.info(f"Session {session_id} not found, will create new: {e}")
+                logger.info(f"[SESSION_SAVE] Session {session_id} not found, will create new: {e}")
 
         async def event_stream():
             # Initial keep-alive line
