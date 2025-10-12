@@ -150,6 +150,10 @@ llm_system:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks"
       max_steps: 100
+    local:
+      model_ref: ollama-gpt-oss-20b
+      description: "Local hosted model for privacy and offline usage, powerful but slow."
+      max_steps: 100
 
   default_profile: normal
 

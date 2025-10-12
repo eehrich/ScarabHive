@@ -200,10 +200,10 @@ agents:
 
       tools:
         allowed:
+          - "weather/*"        
           - "web_research_agent/*"
           - "web_scraper/*"
           - "duckduckgo_search/*"
-          - "weather/*"
       context_management:
         enabled: false
     

@@ -23,10 +23,26 @@ class OllamaNativeAsyncClient(LLMClient):
         self.verify = verify if verify is not None else True
 
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        import json
         out: list[dict[str, Any]] = []
         for m in messages:
             # Use model_dump() to properly serialize nested Pydantic models
             d = m.model_dump(exclude_none=True)
+            
+            # Ollama expects tool_calls.function.arguments to be an object, not a string
+            # Convert string arguments to dict if needed
+            if "tool_calls" in d and d["tool_calls"]:
+                for tc in d["tool_calls"]:
+                    if "function" in tc and "arguments" in tc["function"]:
+                        args = tc["function"]["arguments"]
+                        if isinstance(args, str):
+                            try:
+                                # Parse JSON string to dict
+                                tc["function"]["arguments"] = json.loads(args)
+                            except (json.JSONDecodeError, TypeError):
+                                # If parsing fails, leave as-is or use empty dict
+                                tc["function"]["arguments"] = {}
+            
             out.append(d)
         return out
 
@@ -72,9 +88,10 @@ class OllamaNativeAsyncClient(LLMClient):
         body: dict[str, Any] = {
             "model": self.model,
             "messages": self._map_messages(messages),
-            "tools": tools,
             "stream": False,
         }
+        if tools:
+            body["tools"] = tools
         if self._options:
             body["options"] = self._options
 
@@ -100,6 +117,7 @@ class OllamaNativeAsyncClient(LLMClient):
                 resp = await http_task
             else:
                 resp = await client.post(url, json=body)
+            
             resp.raise_for_status()
             data = resp.json()
         message = (data or {}).get("message") or {}
