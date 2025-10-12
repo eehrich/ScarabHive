@@ -2,9 +2,53 @@
 # Configuration-Based Agents
 # ================================
 # Define agents purely through YAML configuration without plugin code.
-# Epic 0043: Configuration-Based Agents (Zero-Code Agent Definition)
+#
 
 agents:
+  # Meta Agent
+  meta_agent:
+    enabled: true
+    description: "Meta Agent for orchestrating other agents and managing complex tasks"
+    base_type: basic_agent
+          
+    agent_config:
+      llm_profile: turbo
+      max_steps: 10
+      
+      tools:
+        allowed:
+          #- "financial_analyst_agent/*"
+          #- "code_reviewer_agent/*"
+          - "sysadmin_agent/*"
+          - "meta_web_research_agent/*"
+          - "basic_agent/*"
+
+      system_prompt: |
+        You are a helpful AI assistant to delegate tasks to specialized agents and manage complex workflows.
+        
+        Guidelines:
+        - Provide accurate, concise answers
+        - If you don't know something, say so honestly
+        - Avoid speculation without clear indication
+        - Use examples when helpful
+        - Be friendly and professional
+        
+        Operational Context:
+        - Planning budget: {{ max_steps }} steps
+        - Current date: {{ current_date | default('n/a') }}
+
+      context_management:
+        enabled: true
+        strategy: "SUMMARIZE_OLDEST"
+        preserve_recent_messages: 5
+    
+    metadata:
+      author: "AgentSystem"
+      version: "1.0.0"
+      tags: ["meta", "orchestration", "management"]
+      category: "meta"
+      visibility: "ui"
+
   # Financial Analyst Agent
   financial_analyst_agent:
     enabled: true

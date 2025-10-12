@@ -28,7 +28,7 @@ network: # type NetworkConfig
 
 
 # define the agent which will be startet by default if no other agent is specified
-default_agent: basic_agent
+default_agent: meta_agent
 
 # Multi-user authentication and authorization (optional)
 auth: # type AuthConfig
