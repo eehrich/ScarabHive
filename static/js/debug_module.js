@@ -2,12 +2,20 @@
 window.AgentSystem = window.AgentSystem || {};
 
 window.AgentSystem.Debug = {
+  autoRefresh: true,
+  updateInterval: null,
   
   showPanel: function() {
     console.log('Debug panel requested');
     
-    // Create header content with refresh button
+    // Create header content with auto-refresh toggle and refresh button
     const headerContent = `
+      <button id="debugAutoRefreshBtn" class="icon-btn active" title="Auto-refresh: ON" aria-label="Toggle auto-refresh" aria-pressed="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="10" stroke="#9ab" stroke-width="1.4" />
+          <path id="debugAutoToggleIcon" d="M9 8h2v8H9V8zm4 0h2v8h-2V8z" fill="#9ab" />
+        </svg>
+      </button>
       <button id="debugRefreshBtn" class="icon-btn" title="Refresh debug info" aria-label="Refresh debug info">
         <svg class="mcp-refresh-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M21 12a9 9 0 10-2.6 6.1" stroke="#9ab" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -25,6 +33,14 @@ window.AgentSystem.Debug = {
       headerContent
     );
     
+    // Add auto-refresh toggle button listener
+    const autoRefreshBtn = panel.querySelector('#debugAutoRefreshBtn');
+    if (autoRefreshBtn) {
+      autoRefreshBtn.addEventListener('click', () => {
+        this.toggleAutoRefresh();
+      });
+    }
+    
     // Add refresh button listener
     const refreshBtn = panel.querySelector('#debugRefreshBtn');
     if (refreshBtn) {
@@ -36,15 +52,53 @@ window.AgentSystem.Debug = {
     // Load initial debug data
     this.updateDebugInfo();
     
-    // Start updating debug info
-    this.startDebugUpdates(panel);
+    // Start updating debug info if auto-refresh is enabled
+    if (this.autoRefresh) {
+      this.startDebugUpdates(panel);
+    }
+  },
+  
+  toggleAutoRefresh: function() {
+    this.autoRefresh = !this.autoRefresh;
+    const autoRefreshBtn = document.querySelector('#debugAutoRefreshBtn');
+    const iconPath = document.querySelector('#debugAutoToggleIcon');
+    
+    if (autoRefreshBtn) {
+      autoRefreshBtn.classList.toggle('active', this.autoRefresh);
+      autoRefreshBtn.title = this.autoRefresh ? 'Auto-refresh: ON' : 'Auto-refresh: OFF';
+      autoRefreshBtn.setAttribute('aria-pressed', this.autoRefresh ? 'true' : 'false');
+    }
+    
+    if (iconPath) {
+      // Pause icon (two bars) when enabled, Play icon (triangle) when disabled
+      iconPath.setAttribute('d', this.autoRefresh ? 'M9 8h2v8H9V8zm4 0h2v8h-2V8z' : 'M10 8v8l6-4-6-4z');
+    }
+    
+    if (this.autoRefresh) {
+      const panel = document.getElementById('floatingDebugPanel');
+      if (panel) {
+        this.startDebugUpdates(panel);
+      }
+    } else {
+      this.stopDebugUpdates();
+    }
+  },
+  
+  stopDebugUpdates: function() {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+      this.updateInterval = null;
+    }
   },
   
   startDebugUpdates: function(panel) {
+    // Clear any existing interval
+    this.stopDebugUpdates();
+    
     // Update debug info every 5 seconds
-    const updateInterval = setInterval(() => {
+    this.updateInterval = setInterval(() => {
       if (!document.getElementById('floatingDebugPanel')) {
-        clearInterval(updateInterval);
+        this.stopDebugUpdates();
         return;
       }
       

@@ -14,11 +14,11 @@ window.AgentSystem.ContextDebug = {
     // Create header with refresh controls
     const headerContent = `
       <div style="display:inline-flex; align-items:center; gap:8px;">
-        <button id="contextAutoRefreshToggle" class="icon-btn" title="Toggle auto-refresh" aria-pressed="true" style="padding:6px;">
+        <button id="contextAutoRefreshToggle" class="icon-btn active" title="Auto-refresh: ON" aria-pressed="true" style="padding:6px;">
           <!-- New icon: a play/pause circle to indicate on/off -->
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" stroke="#9ab" stroke-width="1.4" />
-            <path id="autoToggleIcon" d="M10 8v8l6-4-6-4z" fill="#9ab" />
+            <path id="autoToggleIcon" d="M9 8h2v8H9V8zm4 0h2v8h-2V8z" fill="#9ab" />
           </svg>
         </button>
         <input type="checkbox" id="contextAutoRefresh" checked style="display:none;" />
@@ -126,6 +126,7 @@ window.AgentSystem.ContextDebug = {
         if (autoToggleBtn) {
           autoToggleBtn.classList.toggle('active', enabled);
           autoToggleBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+          autoToggleBtn.title = enabled ? 'Auto-refresh: ON' : 'Auto-refresh: OFF';
           // swap the icon to a pause (two bars) when enabled
           const iconPath = this.panel.querySelector('#autoToggleIcon');
           if (iconPath) {
