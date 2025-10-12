@@ -136,10 +136,58 @@
     return currentLLMProfile;
   }
 
+  /**
+   * Set current agent selection programmatically
+   */
+  function setAgent(agentName) {
+    const agentSelector = document.getElementById('agentSelector');
+    if (!agentSelector) {
+      console.warn('Agent selector not found');
+      return false;
+    }
+    
+    // Check if the agent exists in the dropdown
+    const option = Array.from(agentSelector.options).find(opt => opt.value === agentName);
+    if (option) {
+      agentSelector.value = agentName;
+      currentAgent = agentName;
+      console.log('Agent set to:', agentName);
+      return true;
+    } else {
+      console.warn('Agent not found in dropdown:', agentName);
+      return false;
+    }
+  }
+
+  /**
+   * Set current LLM profile selection programmatically
+   */
+  function setLLMProfile(profileName) {
+    const modelSelector = document.getElementById('modelSelector');
+    if (!modelSelector) {
+      console.warn('LLM profile selector not found');
+      return false;
+    }
+    
+    // Check if the profile exists in the dropdown
+    const option = Array.from(modelSelector.options).find(opt => opt.value === profileName);
+    if (option) {
+      modelSelector.value = profileName;
+      currentLLMProfile = profileName;
+      console.log('LLM profile set to:', profileName);
+      return true;
+    } else {
+      console.warn('LLM profile not found in dropdown:', profileName);
+      return false;
+    }
+  }
+
   // Expose public API
   SelectorModule.init = init;
   SelectorModule.getCurrentAgent = getCurrentAgent;
   SelectorModule.getCurrentLLMProfile = getCurrentLLMProfile;
+  SelectorModule.setAgent = setAgent;
+  SelectorModule.setLLMProfile = setLLMProfile;
 
   // Register in global namespace
   if (!global.AgentSystem) {

@@ -753,6 +753,11 @@
             try { global.currentSessionId = currentSessionId; } catch (e) {}
             console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
             
+            // Notify session manager about new/updated session
+            if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
+              window.sessionManager.onSessionUpdated(currentSessionId);
+            }
+            
             // Update header session ID display
             updateHeaderSessionId();
             
@@ -1142,6 +1147,9 @@
       
       // Scroll to bottom
       scrollBottom();
+      
+      // Set current session ID for continuation
+      currentSessionId = session.session_id;
       
       // Restore agent and LLM profile selectors
       if (session.agent_name && window.selectorModule) {

@@ -9,7 +9,7 @@
   background: var(--bg-secondary, #2a2a2a);
   border-right: 1px solid var(--border-color, #444);
   transition: left 0.3s ease;
-  z-index: 1000;
+  z-index: 5000;  /* Above panels (1000) but below modals (10000) */
   display: flex;
   flex-direction: column;
   box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);

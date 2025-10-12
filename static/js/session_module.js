@@ -32,11 +32,14 @@ export class SessionManager {
       await this.loadSessions();
       
       // Restore last session from localStorage
-      const lastSessionId = localStorage.getItem('lastSessionId');
-      if (lastSessionId && this.sessions.find(s => s.session_id === lastSessionId)) {
-        // Load the session messages into the chat
-        await this.loadSession(lastSessionId);
-      }
+      // Delay slightly to ensure chat_module event listeners are registered
+      setTimeout(async () => {
+        const lastSessionId = localStorage.getItem('lastSessionId');
+        if (lastSessionId && this.sessions.find(s => s.session_id === lastSessionId)) {
+          // Load the session messages into the chat
+          await this.loadSession(lastSessionId);
+        }
+      }, 100);
     }
     
     // Set up event listeners
@@ -370,6 +373,9 @@ export class SessionManager {
       
       const session = await response.json();
       this.currentSessionId = sessionId;
+      
+      // Save to localStorage for page reload restoration
+      localStorage.setItem('lastSessionId', sessionId);
       
       // Update UI
       this.updateSessionDisplay(sessionId);
