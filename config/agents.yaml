@@ -22,6 +22,11 @@ agents:
           - "sysadmin_agent/*"
           - "meta_web_research_agent/*"
           - "basic_agent/*"
+      
+      # Custom descriptions for this agent's own tools
+      tool_descriptions:
+        meta_agent_execute_task: "Delegate tasks to specialized agents (sysadmin, web research) and orchestrate complex multi-agent workflows"
+        meta_agent_list_tools: "List all available specialized agents and tools for task delegation"
 
       system_prompt: |
         You are a helpful AI assistant to delegate tasks to specialized agents and manage complex workflows.
@@ -70,6 +75,11 @@ agents:
           - "ssh_control/*"
           - "script_interpreter/*"
       
+      # Custom descriptions for this agent's own tools
+      tool_descriptions:
+        financial_analyst_agent_execute_task: "Analyze stocks, market data, and financial fundamentals using Yahoo Finance, web scraping, and search capabilities"
+        financial_analyst_agent_list_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
+      
       context_management:
         enabled: true
         strategy: "SUMMARIZE_OLDEST"
@@ -101,6 +111,11 @@ agents:
         blocked:
           - "ssh_control/*"
           - "yahoo_finance/*"
+      
+      # Custom descriptions for this agent's own tools
+      tool_descriptions:
+        code_reviewer_agent_execute_task: "Review code quality, security, and best practices using script execution, log analysis, and web research"
+        code_reviewer_agent_list_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
       
       context_management:
         enabled: true
@@ -145,6 +160,11 @@ agents:
       tools:
         allowed: []
         blocked: []
+      
+      # Custom descriptions for this agent's own tools
+      tool_descriptions:
+        simple_qa_agent_execute_task: "Answer general knowledge questions using LLM knowledge only (no external tools or real-time data)"
+        simple_qa_agent_list_tools: "List available tools (none - pure LLM-based Q&A)"
       
       context_management:
         enabled: false
@@ -209,6 +229,14 @@ agents:
           - "web_research_agent/*"
           - "web_scraper/*"
           - "duckduckgo_search/*"
+      
+      # Custom descriptions for this agent's own tools (inherited from web_research_agent)
+      tool_descriptions:
+        meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
+        meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
+        meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
+        meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
+      
       context_management:
         enabled: false
     

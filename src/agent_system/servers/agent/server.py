@@ -680,17 +680,41 @@ class Agent(MCPServer):
         if not tool_descriptions:
             return
         
+        # Build set of available tool names for validation
+        available_tool_names = set()
         for tool_schema in tools_schema:
             if tool_schema.get("type") == "function" and "function" in tool_schema:
                 tool_name = tool_schema["function"].get("name")
-                if tool_name and tool_name in tool_descriptions:
-                    old_desc = tool_schema["function"].get("description", "")
-                    new_desc = tool_descriptions[tool_name]
-                    tool_schema["function"]["description"] = new_desc
-                    logger.debug(
-                        f"Agent '{self.name}': Overriding tool description for '{tool_name}': "
-                        f"'{old_desc[:50]}...' -> '{new_desc[:50]}...'"
-                    )
+                if tool_name:
+                    available_tool_names.add(tool_name)
+        
+        # Apply custom descriptions and warn about non-existent tools
+        applied_count = 0
+        for tool_name, new_desc in tool_descriptions.items():
+            if tool_name not in available_tool_names:
+                logger.warning(
+                    f"Agent '{self.name}': tool_descriptions contains non-existent tool '{tool_name}'. "
+                    f"Available tools: {sorted(available_tool_names)}"
+                )
+                continue
+            
+            # Find and update the tool schema
+            for tool_schema in tools_schema:
+                if tool_schema.get("type") == "function" and "function" in tool_schema:
+                    if tool_schema["function"].get("name") == tool_name:
+                        old_desc = tool_schema["function"].get("description", "")
+                        tool_schema["function"]["description"] = new_desc
+                        applied_count += 1
+                        logger.debug(
+                            f"Agent '{self.name}': Overriding tool description for '{tool_name}': "
+                            f"'{old_desc[:50]}...' -> '{new_desc[:50]}...'"
+                        )
+                        break
+        
+        if applied_count > 0:
+            logger.info(
+                f"Agent '{self.name}': Applied {applied_count} custom tool description(s)"
+            )
 
     async def list_allowed_tool_servers(self) -> list[str]:
         """Collect all available tool server names (plugins + external + registry) applying per-agent allow list.

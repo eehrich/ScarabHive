@@ -89,6 +89,25 @@
               },
               "additionalProperties": false
             },
+            "tool_descriptions": {
+              "type": "object",
+              "description": "Custom descriptions for this agent's own tools (inherited from base_type). Allows overriding generic descriptions with context-specific ones.",
+              "patternProperties": {
+                "^[a-z][a-z0-9_]*$": {
+                  "type": "string",
+                  "description": "Custom description for the tool",
+                  "minLength": 10,
+                  "maxLength": 500
+                }
+              },
+              "examples": [
+                {
+                  "sysadmin_agent_execute_task": "Execute system administration tasks with SSH access to production and development servers",
+                  "sysadmin_agent_list_tools": "List all SSH and system administration tools"
+                }
+              ],
+              "additionalProperties": false
+            },
             "context_management": {
               "type": "object",
               "description": "Context window management configuration",
