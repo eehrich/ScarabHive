@@ -53,6 +53,7 @@ _mcp_service: Optional[MCPService] = None
 _tool_service: Optional[ToolService] = None
 _agent_service: Optional[AgentService] = None
 _session_manager: Optional[SessionManager] = None
+_session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
 
 
 @asynccontextmanager
@@ -119,7 +120,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Initialize MCP integration
     async def _init_mcp_for_app(app: FastAPI):
-        global _mcp_integration, _mcp_service, _tool_service, _agent_service, _session_manager
+        global _mcp_integration, _mcp_service, _tool_service, _agent_service, _session_manager, _session_service
         logger = logging.getLogger(__name__)
         logger.info("Starting MCP integration initialization...")
         try:
@@ -135,6 +136,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             storage_path = Path(__file__).parents[3] / "data" / "sessions"
             _session_manager = SessionManager(storage_path=str(storage_path))
             logger.info(f"SessionManager initialized with storage_path={storage_path}")
+            
+            # Initialize SessionService (session loading/saving logic)
+            from agent_system.services.session_service import SessionService
+            _session_service = SessionService(_session_manager)
+            logger.info("SessionService initialized")
             
             # Inject session manager into session endpoints NOW (after initialization)
             from api.session_endpoints import set_session_manager
@@ -795,33 +801,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
         
-        # Track if session exists (for auto-save logic later)
-        session_exists = False
-        
         # Load existing session if session_id provided
-        if session_id and _session_manager:
-            try:
-                session_data = await _session_manager.load_session(user_id, session_id)
-                # Restore conversation history to agent
-                if session_data.get("messages"):
-                    # Convert dict messages to ChatMessage objects
-                    from agent_system.llm.models import ChatMessage
-                    messages_objects = []
-                    for msg_dict in session_data["messages"]:
-                        try:
-                            # ChatMessage can be constructed from dict
-                            chat_msg = ChatMessage(**msg_dict)
-                            messages_objects.append(chat_msg)
-                        except Exception as e:
-                            logger.warning(f"Failed to convert message to ChatMessage: {e}, skipping")
-                    
-                    selected_agent._sessions[session_id] = messages_objects
-                    session_exists = True
-                    logger.info(f"[SESSION_SAVE] Loaded existing session {session_id} with {len(messages_objects)} messages")
-                else:
-                    logger.info(f"[SESSION_SAVE] Session {session_id} found but has no messages")
-            except Exception as e:
-                logger.info(f"[SESSION_SAVE] Session {session_id} not found, will create new: {e}")
+        session_exists = False
+        if session_id and _session_service:
+            session_exists, msg_count = await _session_service.load_and_restore_session(
+                selected_agent, user_id, session_id
+            )
 
         from agent_system.servers.agent.result_utils import collect_final_result
 
@@ -909,65 +894,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
                 finally:
                     # Save session after completion
-                    try:
-                        if _session_manager and actual_session_id and selected_agent._sessions.get(actual_session_id):
-                            messages_list = selected_agent._sessions[actual_session_id]
-                            logger.debug(f"[SESSION_SAVE] Attempting to save session {actual_session_id}, messages count: {len(messages_list)}")
-                            
-                            # Convert ChatMessage to dicts
-                            messages_dicts = []
-                            for msg in messages_list:
-                                if hasattr(msg, 'model_dump'):
-                                    messages_dicts.append(msg.model_dump())
-                                elif hasattr(msg, 'dict'):
-                                    messages_dicts.append(msg.dict())
-                                else:
-                                    messages_dicts.append(dict(msg))
-                            
-                            # Determine title from first user message or use default
-                            title = None
-                            for msg_dict in messages_dicts:
-                                if msg_dict.get("role") == "user":
-                                    content = msg_dict.get("content", "")
-                                    if isinstance(content, str):
-                                        title = content[:50]
-                                    elif isinstance(content, list) and len(content) > 0:
-                                        # Multimodal message - find first text part
-                                        for part in content:
-                                            if isinstance(part, dict) and part.get("type") == "text":
-                                                title = part.get("text", "")[:50]
-                                                break
-                                    break
-                            
-                            if not title:
-                                title = "Multimodal conversation"
-                            
-                            # Get agent name used
-                            agent_name_used = agent_name or "default"
-                            llm_profile_used = llm_profile or "normal"
-                            
-                            # Save or update session
-                            if was_new_session:
-                                logger.debug(f"[SESSION_SAVE] Creating new session {actual_session_id}")
-                                await _session_manager.create_session(
-                                    session_id=actual_session_id,
-                                    user_id=user_id,
-                                    title=title,
-                                    agent_name=agent_name_used,
-                                    llm_profile=llm_profile_used,
-                                    messages=messages_dicts
-                                )
-                            else:
-                                logger.debug(f"[SESSION_SAVE] Updating existing session {actual_session_id}")
-                                await _session_manager.update_session(
-                                    user_id=user_id,
-                                    session_id=actual_session_id,
-                                    messages=messages_dicts,
-                                    title=title
-                                )
-                            logger.info(f"[SESSION_SAVE] Session {actual_session_id} saved with {len(messages_dicts)} messages")
-                    except Exception as save_err:
-                        logger.error(f"[SESSION_SAVE] Failed to save session {actual_session_id}: {save_err}", exc_info=True)
+                    if _session_service and actual_session_id:
+                        agent_name_used = agent_name or "default"
+                        llm_profile_used = llm_profile or "normal"
+                        await _session_service.save_session(
+                            selected_agent,
+                            user_id,
+                            actual_session_id,
+                            agent_name_used,
+                            llm_profile_used,
+                            was_new_session
+                        )
                     
                     # Cleanup temp files after streaming completes
                     for temp_file in temp_files:
@@ -1024,33 +961,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
         
-        # Track if session exists (for auto-save logic later)
-        session_exists = False
-        
         # Load existing session if session_id provided
-        if session_id and _session_manager:
-            try:
-                session_data = await _session_manager.load_session(user_id, session_id)
-                # Restore conversation history to agent
-                if session_data.get("messages"):
-                    # Convert dict messages to ChatMessage objects
-                    from agent_system.llm.models import ChatMessage
-                    messages_objects = []
-                    for msg_dict in session_data["messages"]:
-                        try:
-                            # ChatMessage can be constructed from dict
-                            chat_msg = ChatMessage(**msg_dict)
-                            messages_objects.append(chat_msg)
-                        except Exception as e:
-                            logger.warning(f"Failed to convert message to ChatMessage: {e}, skipping")
-                    
-                    selected_agent._sessions[session_id] = messages_objects
-                    session_exists = True
-                    logger.info(f"[SESSION_SAVE] Loaded existing session {session_id} with {len(messages_objects)} messages")
-                else:
-                    logger.info(f"[SESSION_SAVE] Session {session_id} found but has no messages")
-            except Exception as e:
-                logger.info(f"[SESSION_SAVE] Session {session_id} not found, will create new: {e}")
+        session_exists = False
+        if session_id and _session_service:
+            session_exists, msg_count = await _session_service.load_and_restore_session(
+                selected_agent, user_id, session_id
+            )
 
         async def event_stream():
             # Initial keep-alive line
@@ -1086,61 +1002,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             finally:
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
-                if actual_session_id and _session_manager:
-                    try:
-                        # Get conversation history from agent
-                        messages_raw = selected_agent._sessions.get(actual_session_id, [])
-                        logger.debug(f"[SESSION_SAVE] Retrieved {len(messages_raw)} raw messages from agent session {actual_session_id}")
-                        logger.debug(f"[SESSION_SAVE] Message types: {[type(m).__name__ for m in messages_raw[:3]]}")  # First 3 for brevity
-                        
-                        # Convert ChatMessage objects to dicts for storage
-                        messages = []
-                        for i, msg in enumerate(messages_raw):
-                            if hasattr(msg, 'model_dump'):
-                                # Pydantic v2
-                                msg_dict = msg.model_dump()
-                                messages.append(msg_dict)
-                                logger.debug(f"[SESSION_SAVE] Message {i}: Converted via model_dump() - role={msg_dict.get('role')}")
-                            elif hasattr(msg, 'dict'):
-                                # Pydantic v1
-                                msg_dict = msg.dict()
-                                messages.append(msg_dict)
-                                logger.debug(f"[SESSION_SAVE] Message {i}: Converted via dict() - role={msg_dict.get('role')}")
-                            elif isinstance(msg, dict):
-                                # Already a dict
-                                messages.append(msg)
-                                logger.debug(f"[SESSION_SAVE] Message {i}: Already dict - role={msg.get('role')}")
-                            else:
-                                logger.warning(f"[SESSION_SAVE] Message {i}: Unexpected type {type(msg)}, converting to dict")
-                                messages.append({"role": str(getattr(msg, 'role', 'unknown')), 
-                                               "content": str(getattr(msg, 'content', ''))})
-                        
-                        logger.info(f"[SESSION_SAVE] Converted {len(messages)} messages for session {actual_session_id}")
-                        
-                        if was_new_session:
-                            # Create new session
-                            session_data = await _session_manager.create_session(
-                                user_id=user_id,
-                                session_id=actual_session_id,
-                                title=task[:100] if task else "New Conversation",  # Use first 100 chars of task
-                                agent_name=agent_name or "default",
-                                llm_profile=llm_profile or "default"
-                            )
-                            logger.debug(f"[SESSION_SAVE] Created new session {actual_session_id}, now adding {len(messages)} messages")
-                            session_data["messages"] = messages
-                            await _session_manager.save_session(session_data)
-                            logger.info(f"[SESSION_SAVE] ✅ Created and saved new session {actual_session_id} for user {user_id} with {len(messages)} messages")
-                        else:
-                            # Update existing session
-                            logger.debug(f"[SESSION_SAVE] Loading existing session {actual_session_id} to update")
-                            session_data = await _session_manager.load_session(user_id, actual_session_id)
-                            logger.debug(f"[SESSION_SAVE] Loaded session has {len(session_data.get('messages', []))} messages, replacing with {len(messages)}")
-                            session_data["messages"] = messages
-                            await _session_manager.save_session(session_data)
-                            logger.info(f"[SESSION_SAVE] ✅ Updated session {actual_session_id} for user {user_id} with {len(messages)} messages")
-                            
-                    except Exception as e:
-                        logger.error(f"[SESSION_SAVE] ❌ Failed to persist session {actual_session_id}: {e}", exc_info=True)
+                if actual_session_id and _session_service:
+                    agent_name_used = agent_name or "default"
+                    llm_profile_used = llm_profile or "normal"
+                    await _session_service.save_session(
+                        selected_agent,
+                        user_id,
+                        actual_session_id,
+                        agent_name_used,
+                        llm_profile_used,
+                        was_new_session
+                    )
 
         return StreamingResponse(
             event_stream(),
