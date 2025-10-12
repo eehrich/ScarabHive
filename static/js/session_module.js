@@ -27,20 +27,18 @@ export class SessionManager {
     this.createToggleButton();
     this.createRenameModal();
     
-    // Load sessions if authenticated
-    if (this.isAuthenticated) {
-      await this.loadSessions();
-      
-      // Restore last session from localStorage
-      // Delay slightly to ensure chat_module event listeners are registered
-      setTimeout(async () => {
-        const lastSessionId = localStorage.getItem('lastSessionId');
-        if (lastSessionId && this.sessions.find(s => s.session_id === lastSessionId)) {
-          // Load the session messages into the chat
-          await this.loadSession(lastSessionId);
-        }
-      }, 100);
-    }
+    // Load sessions (works for both authenticated and anonymous users)
+    await this.loadSessions();
+    
+    // Restore last session from localStorage
+    // Delay slightly to ensure chat_module event listeners are registered
+    setTimeout(async () => {
+      const lastSessionId = localStorage.getItem('lastSessionId');
+      if (lastSessionId && this.sessions.find(s => s.session_id === lastSessionId)) {
+        // Load the session messages into the chat
+        await this.loadSession(lastSessionId);
+      }
+    }, 100);
     
     // Set up event listeners
     this.setupEventListeners();
