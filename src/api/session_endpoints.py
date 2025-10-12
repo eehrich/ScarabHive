@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from agent_system.auth.models import User
-from agent_system.auth.dependencies import get_current_active_user
+from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +90,20 @@ async def create_session(
 
 @session_router.get("", response_model=List[SessionResponse])
 async def list_sessions(
-    current_user: User = Depends(get_current_active_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """List all sessions for the current user."""
+    """List all sessions for the current user (or anonymous if not authenticated)."""
     if not _session_manager:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Session manager not initialized"
         )
     
+    # Determine user_id: use username if authenticated, otherwise "anonymous"
+    user_id = current_user.username if current_user else "anonymous"
+    
     try:
-        sessions = await _session_manager.list_sessions(current_user.username)
+        sessions = await _session_manager.list_sessions(user_id)
         
         # Transform to response models
         return [
@@ -127,19 +130,22 @@ async def list_sessions(
 @session_router.get("/{session_id}")
 async def get_session(
     session_id: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Get a specific session with full conversation history."""
+    """Get a specific session with full conversation history (authenticated or anonymous)."""
     if not _session_manager:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Session manager not initialized"
         )
     
+    # Determine user_id: use username if authenticated, otherwise "anonymous"
+    user_id = current_user.username if current_user else "anonymous"
+    
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
         
-        session = await _session_manager.load_session(current_user.username, session_id)
+        session = await _session_manager.load_session(user_id, session_id)
         return session
     
     except SessionNotFoundError:
@@ -155,14 +161,17 @@ async def get_session(
 async def update_session(
     session_id: str,
     request: UpdateSessionRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Update session metadata (title, tags, etc.)."""
+    """Update session metadata (title, tags, etc.) - works for authenticated and anonymous users."""
     if not _session_manager:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Session manager not initialized"
         )
+    
+    # Determine user_id: use username if authenticated, otherwise "anonymous"
+    user_id = current_user.username if current_user else "anonymous"
     
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
@@ -170,7 +179,7 @@ async def update_session(
         # Update title if provided
         if request.title is not None:
             await _session_manager.rename_session(
-                current_user.username,
+                user_id,
                 session_id,
                 request.title
             )
@@ -184,7 +193,7 @@ async def update_session(
         
         if metadata_updates:
             await _session_manager.update_session_metadata(
-                current_user.username,
+                user_id,
                 session_id,
                 **metadata_updates
             )

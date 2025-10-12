@@ -146,6 +146,7 @@ async def require_admin(
 
 
 async def get_optional_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     x_api_key: Optional[str] = Header(None),
     db: UserDatabase = Depends(get_db),
@@ -160,6 +161,6 @@ async def get_optional_user(
         User if authenticated, None otherwise
     """
     try:
-        return await get_current_user(credentials, x_api_key, db)
+        return await get_current_user(request, credentials, x_api_key, db)
     except HTTPException:
         return None
