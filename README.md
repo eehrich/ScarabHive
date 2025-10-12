@@ -138,7 +138,7 @@ API endpoints (FastAPI):
 - `POST /status/publish-test` — publish a test status event
 - `GET /` — web UI home page
 - `GET /status` — web UI status page
-- **MCP Server Mode Endpoints** (when `mcp_system.server_mode.enabled: true`):
+- **MCP Server Mode Endpoints** (when `server_mode.enabled: true` in `config/mcp_server_mode.yaml`):
   - `POST /mcp` — Main MCP JSON-RPC 2.0 endpoint for remote MCP clients
   - `GET /mcp/sse` — SSE stream for server-initiated messages (future)
   - `GET /mcp/server-info` — MCP server information and statistics
@@ -189,49 +189,122 @@ python -m pytest tests/test_example.py::test_case -q -s --maxfail=1 --pdb
 Primary manifest: `config/config.yaml`. The manifest includes specialized config files via `includes:` for better organization:
 
 **Config Structure (Epic 0044):**
-- `config/config.yaml` - Main manifest with includes
-- `config/llm.yaml` - LLM provider settings
-- `config/agents.yaml` - Configuration-based agents (Epic 0043)
-- `config/plugins.yaml` - Local MCP plugin servers
-- `config/mcp_servers.yaml` - External MCP servers
-- `config/mcp_server_mode.yaml` - MCP Server Mode settings
+- `config/config.yaml` - Main manifest with includes, network, auth, logging settings
+- `config/llm.yaml` - LLM provider settings and profiles
+- `config/agents.yaml` - Configuration-based agents (Epic 0043) - define custom agents without code
+- `config/plugins.yaml` - Local MCP plugin servers configuration
+- `config/mcp_servers.yaml` - External MCP servers (remote tool providers)
+- `config/mcp_server_mode.yaml` - MCP Server Mode settings (expose AgentSystem as MCP server)
 
-Example minimal snippet:
+**Key Configuration Sections:**
+
+### Main Configuration (`config/config.yaml`)
 
 ```yaml
-# config/config.yaml - Main manifest
+# Main manifest with includes
 includes:
-  - llm.yaml
-  - agents.yaml
-  - plugins.yaml
-  - mcp_servers.yaml
-  - mcp_server_mode.yaml
+  - llm.yaml           # LLM providers and profiles
+  - agents.yaml        # Config-based agents (no code required!)
+  - plugins.yaml       # Local plugin servers
+  - mcp_servers.yaml   # External MCP servers
+  - mcp_server_mode.yaml  # Server mode settings
 
+# Network settings
 network:
   ssl_verify: false
   host: 127.0.0.1
   port: 8000
 
+# Default agent for CLI and API
+default_agent: basic_agent
+
+# Multi-user authentication (optional)
+auth:
+  enabled: false  # Set to true to enable authentication
+  secret_key: "your-secret-key-min-32-chars"
+  access_token_expire_minutes: 30
+
+# Logging configuration
 logging:
   enabled: true
-  level: DEBUG
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
   file: logs/agent.log
   file_cli: logs/cli.log
   file_api: logs/api.log
-  as_json: false
+```
 
-prompts:
-  system_template: config/prompts/system_prompt.yaml
+### Configuration-Based Agents (`config/agents.yaml`)
 
-max_steps: 50
+Define custom agents without writing code - see [Configuration-Based Agents Guide](docs/config_based_agents.md):
 
-# Context window management (optional)
-context_management:
-  context_window: 128000
-  summarization_threshold: 102400
-  strategy: "SUMMARIZE_OLDEST"
-  max_summary_words: 500
-  tool_result_preview_chars: 200
+```yaml
+agents:
+  financial_analyst:
+    enabled: true
+    description: "Financial data analyst with market research tools"
+    base_type: basic_agent
+    agent_config:
+      llm_profile: turbo
+      max_steps: 20
+      system_prompt: "You are a financial analyst..."
+      tools:
+        allowed:
+          - "yahoo_finance/*"
+          - "web_scraper/*"
+```
+
+### Plugin Configuration (`config/plugins.yaml`)
+
+```yaml
+plugins:
+  # Plugin discovery
+  plugin_dirs:
+    - src/plugins
+  
+  # Individual plugin servers
+  servers:
+    datetime:
+      type: datetime
+      enabled: true
+      description: "Date and time operations"
+    
+    web_scraper:
+      type: web_scraper
+      enabled: true
+      config:
+        max_content_length: 100000
+```
+
+### External MCP Servers (`config/mcp_servers.yaml`)
+
+```yaml
+external_servers:
+  remote_servers:
+    weather_api:
+      url: "https://api.example.com/mcp"
+      transport_type: "http"
+      enabled: true
+      auth:
+        type: "api_key"
+        api_key: "${WEATHER_API_KEY}"
+```
+
+### MCP Server Mode (`config/mcp_server_mode.yaml`)
+
+Expose AgentSystem as an MCP server:
+
+```yaml
+server_mode:
+  enabled: true
+  endpoint: "/mcp"
+  expose_plugins:
+    - "*"  # All plugins, or list specific ones
+  authentication:
+    required: true
+    methods: [jwt, api_key]
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
 ```
 
 ### Context Window Management
@@ -249,70 +322,128 @@ For detailed configuration options, strategy explanations, and tuning guidance, 
 
 ### Include Pattern and Managed Files
 
-The `includes:` field allows you to split your configuration across multiple YAML files. This is useful for separating sensitive or frequently changing settings from the main manifest.
+The `includes:` field allows you to split your configuration across multiple YAML files for better organization and maintainability.
 
-- The primary `config/agent.yaml` should contain core settings and list included files.
-- CLI commands that modify configuration (e.g., enabling/disabling plugins) write changes only to the included files, preserving the master manifest.
-- Example: `includes: - mcp.yaml` means MCP-related settings are in `config/mcp.yaml`.
+**Config File Organization:**
+- **`config.yaml`** - Main manifest, includes other configs, network/auth/logging settings
+- **`llm.yaml`** - LLM provider API keys, model configurations, and named profiles
+- **`agents.yaml`** - Configuration-based agent definitions (no code required!)
+- **`plugins.yaml`** - Local MCP plugin servers (plugin_dirs, server configs)
+- **`mcp_servers.yaml`** - External MCP servers (remote tool providers)
+- **`mcp_server_mode.yaml`** - MCP server mode settings (expose AgentSystem as MCP server)
+
+**How Includes Work:**
+- Files listed in `includes:` are loaded and merged into the main configuration
+- Settings in included files can reference environment variables: `${ENV_VAR}`
+- CLI commands that modify configuration write changes to the appropriate included file
+- The main `config.yaml` remains clean and focused on core settings
+
+**Example Structure:**
+```yaml
+# config/config.yaml
+includes:
+  - llm.yaml
+  - agents.yaml
+  - plugins.yaml
+  - mcp_servers.yaml
+  - mcp_server_mode.yaml
+
+# Settings here apply to core system behavior
+network:
+  host: 127.0.0.1
+  port: 8000
+```
 
 ### Plugin Directory Overrides
 
-Plugin discovery can be customized via environment variables:
+Plugin discovery can be customized via configuration or environment variables:
 
-- `AGENT_PLUGIN_DIR`: Single directory to search for plugins (overrides config).
-- `AGENT_PLUGIN_DIRS`: Comma-separated list of directories (overrides config).
-- If not set, falls back to `mcp.plugin_dirs` in config, then repository `plugins/` directory.
+**Configuration (Recommended):**
+```yaml
+# config/plugins.yaml
+plugins:
+  plugin_dirs:
+    - src/plugins
+    - /path/to/custom/plugins
+```
+
+**Environment Variables:**
+- `AGENT_PLUGIN_DIR`: Single directory to search for plugins (overrides config)
+- `AGENT_PLUGIN_DIRS`: Comma-separated list of directories (overrides config)
+- If not set, uses `plugins.plugin_dirs` from config, defaulting to `src/plugins/`
+
+**Discovery Order:**
+1. `AGENT_PLUGIN_DIRS` environment variable (if set)
+2. `AGENT_PLUGIN_DIR` environment variable (if set)
+3. `plugins.plugin_dirs` in config
+4. Default: `src/plugins/`
 
 ### Selecting the Entry Agent (Dynamic)
 
-You can choose which agent instance acts as the primary entry point for `/run` and `/events` by setting `entry_agent` in the top-level config (e.g. `config/agent.yaml`):
+You can choose which agent acts as the default entry point for CLI and API by setting `default_agent` in the main config:
 
 ```yaml
-entry_agent: basic_agent
+# config/config.yaml
+default_agent: basic_agent
 ```
 
-Behavior:
-* The named agent server must either be defined under `servers:` (plugin / custom) or will be instantiated as a core `Agent`.
-* An alias `agent` is automatically registered for backward compatibility.
-* Legacy `MainAgent` has been deprecated and replaced by this mechanism.
-* Legacy `cli_agent` alias has been removed. Scripts that previously targeted `cli_agent` should now target the configured `entry_agent` (e.g. `basic_agent`). Remove any profile overrides keyed by `cli_agent` / `cli_agent_summarizer` from `agent_llm_profiles`.
+**Behavior:**
+* The named agent must be defined in `config/agents.yaml` or available as a plugin
+* Used as default for `agent-cli run "task"` when no `--agent` specified
+* Used as default for API `/run` endpoint when no agent parameter provided
+* Replaces legacy `MainAgent` and `cli_agent` concepts
 
 ### Per-Agent Tool Allow / Deny Lists
 
-Each agent has zero tool access unless explicitly granted through `tools.allowed` patterns. (Secure by default — no silent broad access.)
+Each agent has **zero tool access by default** unless explicitly granted through `tools.allowed` patterns. This secure-by-default approach prevents unauthorized tool access.
 
-Example:
+**Configuration Example:**
 
 ```yaml
-servers:
-  basic_agent:
-    type: basic_agent
+# config/agents.yaml
+agents:
+  research_agent:
+    enabled: true
     agent_config:
       tools:
         allowed:
-          - "web_scraper/*"      # all tools from web_scraper plugin/server
-          - "datetime.*"         # any datetime.* tool
+          - "web_scraper/*"      # All tools from web_scraper plugin
+          - "duckduckgo_search/*" # All search tools
+          - "datetime.get_*"     # Only datetime.get_* tools
         blocked:
-          - "datetime.legacy_*"  # remove deprecated subset
+          - "web_scraper.admin_*" # Block admin tools
+
+# Or in config/plugins.yaml for plugin-based agents
+plugins:
+  servers:
+    basic_agent:
+      type: basic_agent
+      agent_config:
+        tools:
+          allowed:
+            - "datetime/*"
+            - "basic_operations/*"
 ```
 
-Pattern rules:
-* `plugin` or `plugin/*` — all tools from that plugin/server
-* `plugin.function` — a single tool function
-* `external_server/*` — all tools from an external MCP server
-* `*` — allow everything (only for experimentation; tighten later)
-* `tools.blocked` is applied after allow filtering to subtract matches
+**Pattern Matching Rules:**
+* `plugin_name` or `plugin_name/*` — All tools from that plugin/server
+* `plugin_name.function_name` — A single specific tool function
+* `plugin_name.prefix_*` — All tools matching the prefix pattern
+* `external_server/*` — All tools from an external MCP server
+* `*` — Allow everything (⚠️ only for testing; tighten in production)
+* `tools.blocked` is applied **after** `tools.allowed` to subtract specific matches
 
-Diagnostics:
-* `GET /agents` — list registered agents
-* `GET /agents/{name}/allowed-tools` — effective allowed list (may be empty if deny-all)
-* `GET /agents/{name}/allowed-tools/debug` — includes which patterns matched or were skipped
+**Diagnostics Endpoints:**
+* `GET /agents` — List all registered agents
+* `GET /agents/{name}/allowed-tools` — Show effective allowed tools (may be empty if deny-all)
+* `GET /agents/{name}/allowed-tools/debug` — Detailed pattern matching diagnostics
 
-Migration tips:
-1. Start with `tools.allowed: ["*"]` while auditing actual tool usage.
-2. Narrow to specific plugins / functions.
-3. Add `tools.blocked` for carve-outs (experimental / unsafe tools).
-4. Use the `/debug` endpoint to validate pattern intent.
+**Migration Strategy:**
+1. Start with `tools.allowed: ["*"]` while auditing actual tool usage
+2. Review logs to see which tools are actually called
+3. Narrow to specific plugins/functions: `["web_scraper/*", "datetime/*"]`
+4. Add `tools.blocked` for carve-outs (experimental/unsafe tools)
+5. Use `/allowed-tools/debug` endpoint to validate pattern behavior
 
 ## Plugins
 Plugins live under `plugins/<name>/` and should expose a package-style layout with `plugin.py` and optional `plugin.yaml` for metadata. The loader also supports legacy single-file plugins.
@@ -413,23 +544,26 @@ Transport types supported:
 
 ### Configuration
 
-MCP settings are configured in `config/mcp.yaml`. See `docs/mcp_configuration.md` for detailed configuration options including:
+MCP settings are configured in separate YAML files within the `config/` directory. See `docs/mcp_configuration.md` for detailed configuration options including:
 
-- External server definitions
+**Configuration Files:**
+- `config/mcp_servers.yaml` - External MCP server definitions
+- `config/mcp_server_mode.yaml` - MCP Server Mode settings (expose AgentSystem as MCP server)
+- `config/plugins.yaml` - Local plugin servers that can be exposed via MCP
+
+**Configuration Options:**
+- External server definitions (URL, transport, authentication)
 - Authentication methods (API key, Bearer token, Basic auth)
 - Transport settings and timeouts
 - Feature filtering and security options
 - SSL verification and retry policies
 
-Example configuration:
+Example external server configuration:
 
 ```yaml
-mcp:
-  enabled: true
-  expose_local_server: true
-  local_server_port: 8000
-
-  servers:
+# config/mcp_servers.yaml
+external_servers:
+  remote_servers:
     weather_service:
       url: "https://api.weather.com/mcp"
       transport_type: "http"
@@ -540,26 +674,33 @@ AgentSystem can operate as an MCP server, exposing activated plugins as remote t
 
 ### Enabling MCP Server Mode
 
-Edit `config/mcp.yaml`:
+Edit `config/mcp_server_mode.yaml`:
 
 ```yaml
-mcp_system:
-  server_mode:
+server_mode:
+  enabled: true
+  endpoint: "/mcp"
+  
+  # Plugin exposure
+  expose_plugins:
+    - "*"  # Expose all enabled plugins, or list specific ones: ["datetime", "web_scraper"]
+  
+  # Authentication
+  authentication:
+    required: true
+    methods:
+      - jwt
+      - api_key
+  
+  # Rate limiting
+  rate_limit:
     enabled: true
-    endpoint: "/mcp"
-    expose_plugins:
-      - "*"  # Expose all plugins, or specify: ["plugin_name_1", "plugin_name_2"]
-    authentication:
-      required: true  # Require JWT or API key authentication
-      methods:
-        - jwt
-        - api_key
-    rate_limit:
-      enabled: true
-      requests_per_minute: 60
-      requests_per_hour: 1000
-      burst_size: 10
-    session_ttl_seconds: 3600  # Session timeout (1 hour)
+    requests_per_minute: 60
+    requests_per_hour: 1000
+    burst_size: 10
+  
+  # Session management
+  session_ttl: 3600  # Session timeout in seconds (1 hour)
 ```
 
 ### Using MCP Server Mode
