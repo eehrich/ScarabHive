@@ -556,6 +556,21 @@ window.handleLogout = async function() {
       chatElement.innerHTML = '';
     }
     
+    // Close and clear sessions sidebar
+    if (window.sessionManager) {
+      const sidebar = document.getElementById('sessionsSidebar');
+      if (sidebar) {
+        sidebar.classList.remove('open');
+        // Clear session list
+        const sessionList = document.getElementById('sessionsList');
+        if (sessionList) {
+          sessionList.innerHTML = '';
+        }
+      }
+      // Reset session manager state
+      window.sessionManager.sidebarOpen = false;
+    }
+    
   } catch (error) {
     console.error('Logout failed:', error);
     // Force reload as fallback
