@@ -50,7 +50,7 @@ export class SessionManager {
 
   async checkAuth() {
     try {
-      const response = await fetch('/api/auth/me', {
+      const response = await fetch('/auth/me', {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
         },
@@ -102,22 +102,80 @@ export class SessionManager {
   }
 
   createRenameModal() {
-    const modal = document.createElement('div');
-    modal.className = 'session-rename-modal';
-    modal.id = 'sessionRenameModal';
+    // Modal will be created dynamically when needed using the standard modal system
+    // No need to create and append to DOM here
+  }
+
+  openRenameModal(sessionId, currentTitle) {
+    this.renameSessionId = sessionId;
     
+    // Create modal using exact User Management structure
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'sessionRenameModal';
+    modal.style.display = 'block';  // Use 'block' not 'flex'!
     modal.innerHTML = `
-      <div class="session-rename-content">
-        <h3>Rename Conversation</h3>
-        <input type="text" id="sessionRenameInput" placeholder="Enter new title..." />
-        <div class="session-rename-actions">
-          <button class="session-rename-cancel" id="sessionRenameCancelBtn">Cancel</button>
-          <button class="session-rename-save" id="sessionRenameSaveBtn">Save</button>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Rename Conversation</h2>
+          <span class="close">&times;</span>
         </div>
+        <form id="sessionRenameForm">
+          <div class="form-group">
+            <label for="sessionRenameInput">New Title</label>
+            <input type="text" id="sessionRenameInput" name="title" value="${this.escapeHtml(currentTitle)}" required autofocus>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>
       </div>
     `;
     
     document.body.appendChild(modal);
+    
+    const input = modal.querySelector('#sessionRenameInput');
+    const closeBtn = modal.querySelector('.close');
+    const cancelBtn = modal.querySelector('.modal-cancel');
+    const form = modal.querySelector('#sessionRenameForm');
+    
+    // Focus and select input
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 100);
+    
+    // Close handlers
+    const closeModal = () => {
+      modal.remove();
+      this.renameSessionId = null;
+    };
+    
+    closeBtn.addEventListener('click', closeModal);
+    cancelBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+    
+    // Save handler via form submit
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const newTitle = input.value.trim();
+      if (newTitle && newTitle !== currentTitle) {
+        await this.renameSession(sessionId, newTitle);
+      }
+      closeModal();
+    });
+    
+    // ESC key
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        closeModal();
+        document.removeEventListener('keydown', escHandler);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
   }
 
   setupEventListeners() {
@@ -135,27 +193,7 @@ export class SessionManager {
       this.newConversation();
     });
     
-    // Rename modal
-    document.getElementById('sessionRenameCancelBtn')?.addEventListener('click', () => {
-      this.closeRenameModal();
-    });
-    
-    document.getElementById('sessionRenameSaveBtn')?.addEventListener('click', () => {
-      this.saveRename();
-    });
-    
-    document.getElementById('sessionRenameInput')?.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        this.saveRename();
-      }
-    });
-    
-    // Close modal on background click
-    document.getElementById('sessionRenameModal')?.addEventListener('click', (e) => {
-      if (e.target.id === 'sessionRenameModal') {
-        this.closeRenameModal();
-      }
-    });
+    // Note: Rename modal event listeners are now created dynamically in openRenameModal()
   }
 
   toggleSidebar() {
@@ -180,7 +218,9 @@ export class SessionManager {
 
   async loadSessions() {
     const listEl = document.getElementById('sessionsList');
-    if (!listEl) return;
+    if (!listEl) {
+      return;
+    }
     
     listEl.innerHTML = '<div class="sessions-loading">Loading...</div>';
     
@@ -192,13 +232,14 @@ export class SessionManager {
       });
       
       if (!response.ok) {
+        const errorText = await response.text();
         throw new Error('Failed to load sessions');
       }
       
       this.sessions = await response.json();
       this.renderSessions();
     } catch (error) {
-      console.error('Failed to load sessions:', error);
+      console.error('Error loading sessions:', error);
       listEl.innerHTML = `<div class="sessions-error">Failed to load conversations</div>`;
     }
   }
@@ -351,35 +392,9 @@ export class SessionManager {
     }
   }
 
-  openRenameModal(sessionId, currentTitle) {
-    this.renameSessionId = sessionId;
-    const modal = document.getElementById('sessionRenameModal');
-    const input = document.getElementById('sessionRenameInput');
-    
-    if (modal && input) {
-      input.value = currentTitle;
-      modal.classList.add('active');
-      input.focus();
-      input.select();
-    }
-  }
-
-  closeRenameModal() {
-    const modal = document.getElementById('sessionRenameModal');
-    modal?.classList.remove('active');
-    this.renameSessionId = null;
-  }
-
-  async saveRename() {
-    const input = document.getElementById('sessionRenameInput');
-    const newTitle = input?.value.trim();
-    
-    if (!newTitle || !this.renameSessionId) {
-      return;
-    }
-    
+  async renameSession(sessionId, newTitle) {
     try {
-      const response = await fetch(`/api/sessions/${this.renameSessionId}`, {
+      const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -392,9 +407,8 @@ export class SessionManager {
         throw new Error('Failed to rename session');
       }
       
-      // Reload sessions
+      // Reload sessions to reflect the change
       await this.loadSessions();
-      this.closeRenameModal();
     } catch (error) {
       console.error('Failed to rename session:', error);
       alert('Failed to rename conversation');

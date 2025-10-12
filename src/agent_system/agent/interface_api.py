@@ -136,6 +136,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             _session_manager = SessionManager(storage_path=str(storage_path))
             logger.info(f"SessionManager initialized with storage_path={storage_path}")
             
+            # Inject session manager into session endpoints NOW (after initialization)
+            from api.session_endpoints import set_session_manager
+            set_session_manager(_session_manager)
+            logger.info("SessionManager injected into session endpoints")
+            
             # Agent will be initialized later when needed
             # (requires agent instance from bootstrap_servers)
             
@@ -177,7 +182,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     
     # Helper function for optional user authentication
     async def _get_current_user_optional(request: Request) -> Optional[Any]:
-        """Get current user if authenticated, None otherwise."""
+        """Get current user if authenticated, None otherwise.
+        
+        Checks multiple auth methods in order (via get_current_user dependency):
+        1. Bearer token in Authorization header
+        2. JWT token in access_token cookie (for EventSource/browser)
+        3. X-API-Key header (for programmatic access)
+        """
         try:
             from ..auth.dependencies import get_current_user as get_user_dep
             from ..auth.database import get_db
@@ -187,26 +198,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             credentials = await bearer_scheme(request)
             x_api_key = request.headers.get("X-API-Key")
             
-            # Get database dependency
-            db_gen = get_db()
-            db = await anext(db_gen)
+            # Debug: Check what auth methods are available
+            has_bearer = credentials is not None
+            has_cookie = request.cookies.get("access_token") is not None
+            has_api_key = x_api_key is not None
+            logger.debug(f"[AUTH_DEBUG] Auth methods - Bearer: {has_bearer}, Cookie: {has_cookie}, API-Key: {has_api_key}")
             
-            try:
-                user = await get_user_dep(
-                    request=request,
-                    credentials=credentials,
-                    x_api_key=x_api_key,
-                    db=db
-                )
-                return user
-            finally:
-                # Cleanup database connection
-                try:
-                    await db_gen.aclose()
-                except StopAsyncIteration:
-                    pass
-        except Exception:
+            # Get database instance (NOT a generator!)
+            db = get_db()
+            
+            # Call get_current_user with the database instance
+            user = await get_user_dep(
+                request=request,
+                credentials=credentials,
+                x_api_key=x_api_key,
+                db=db
+            )
+            if user:
+                logger.debug(f"[AUTH_DEBUG] ✅ Authenticated user: {user.username}, role: {user.role}")
+            else:
+                logger.debug("[AUTH_DEBUG] ⚠️ get_current_user returned None")
+            return user
+        except Exception as e:
             # User not authenticated
+            logger.debug(f"[AUTH_DEBUG] ❌ Authentication failed: {e}")
             return None
 
     # Mount static files
@@ -469,15 +484,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from api.auth_endpoints import router as auth_router
         from api.admin_endpoints import router as admin_router
         from api.menu_endpoints import menu_router
-        from api.session_endpoints import session_router, set_session_manager
+        from api.session_endpoints import session_router
         
         app.include_router(auth_router)
         app.include_router(admin_router)
         app.include_router(menu_router)
         app.include_router(session_router)
         
-        # Inject session manager into session endpoints
-        set_session_manager(_session_manager)
+        # Note: set_session_manager() is called later in async lifespan startup
+        # after SessionManager is actually initialized
         
         logger.info("Authentication system initialized successfully")
     else:
@@ -858,8 +873,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         task: str, 
         session_id: Optional[str] = Query(default=None),
         agent_name: Optional[str] = Query(default=None),
-        llm_profile: Optional[str] = Query(default=None),
-        current_user: Optional[Any] = Depends(lambda r: _get_current_user_optional(r))
+        llm_profile: Optional[str] = Query(default=None)
     ):
         """Stream agent events for a task.
         
@@ -876,6 +890,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger = logging.getLogger(__name__)
         request_id = short_id()
         
+        # Get current user (optional authentication)
+        current_user = await _get_current_user_optional(request)
+        
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"
         
@@ -885,6 +902,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
         
+        # Track if session exists (for auto-save logic later)
+        session_exists = False
+        
         # Load existing session if session_id provided
         if session_id and _session_manager:
             try:
@@ -892,65 +912,100 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Restore conversation history to agent
                 if session_data.get("messages"):
                     selected_agent._sessions[session_id] = session_data["messages"]
-                logger.info(f"Loaded session {session_id} with {len(session_data.get('messages', []))} messages")
+                session_exists = True
+                logger.info(f"Loaded existing session {session_id} with {len(session_data.get('messages', []))} messages")
             except Exception as e:
-                logger.warning(f"Failed to load session {session_id}: {e}")
+                logger.info(f"Session {session_id} not found, will create new: {e}")
 
         async def event_stream():
             # Initial keep-alive line
             yield ":ok\n\n"
             
             # Track if this is a new session
-            was_new_session = session_id is None
+            # If session_id is None OR session doesn't exist → new session
+            was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
             
-            async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
-                logger.debug("SSE event: %s", ev.get("type"))
-                
-                # Capture session_id from done event if it was created
-                if ev.get("type") == "done" and ev.get("session_id"):
-                    actual_session_id = ev["session_id"]
-                
-                try:
-                    # Ensure proper JSON serialization of any potential enum values
-                    if hasattr(ev, 'to_dict'):
-                        payload = ev.to_dict()
-                    else:
-                        payload = ev
-                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                except (TypeError, ValueError) as e:
-                    logger.error("Failed to serialize event %s: %s", ev, e)
-                    # Send an error event instead
-                    error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
-                    yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
-            
-            # After streaming completes, persist session if we have a session_id
-            if actual_session_id and _session_manager:
-                try:
-                    # Get conversation history from agent
-                    messages = selected_agent._sessions.get(actual_session_id, [])
+            try:
+                async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+                    logger.debug("SSE event: %s", ev.get("type"))
                     
-                    if was_new_session:
-                        # Create new session
-                        session_data = await _session_manager.create_session(
-                            user_id=user_id,
-                            session_id=actual_session_id,
-                            title=task[:100] if task else "New Conversation",  # Use first 100 chars of task
-                            agent_name=agent_name or "default",
-                            llm_profile=llm_profile or "default"
-                        )
-                        session_data["messages"] = messages
-                        await _session_manager.save_session(session_data)
-                        logger.info(f"Created and saved new session {actual_session_id} for user {user_id}")
-                    else:
-                        # Update existing session
-                        session_data = await _session_manager.load_session(user_id, actual_session_id)
-                        session_data["messages"] = messages
-                        await _session_manager.save_session(session_data)
-                        logger.info(f"Updated session {actual_session_id} for user {user_id}")
+                    # Capture session_id from start event (created on first call)
+                    if ev.get("type") == "start" and ev.get("session_id"):
+                        old_session_id = actual_session_id
+                        actual_session_id = ev["session_id"]
+                        logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
+                    
+                    try:
+                        # Ensure proper JSON serialization of any potential enum values
+                        if hasattr(ev, 'to_dict'):
+                            payload = ev.to_dict()
+                        else:
+                            payload = ev
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    except (TypeError, ValueError) as e:
+                        logger.error("Failed to serialize event %s: %s", ev, e)
+                        # Send an error event instead
+                        error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
+                        yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+            finally:
+                # ALWAYS persist session after streaming, even if client disconnects
+                logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
+                if actual_session_id and _session_manager:
+                    try:
+                        # Get conversation history from agent
+                        messages_raw = selected_agent._sessions.get(actual_session_id, [])
+                        logger.debug(f"[SESSION_SAVE] Retrieved {len(messages_raw)} raw messages from agent session {actual_session_id}")
+                        logger.debug(f"[SESSION_SAVE] Message types: {[type(m).__name__ for m in messages_raw[:3]]}")  # First 3 for brevity
                         
-                except Exception as e:
-                    logger.error(f"Failed to persist session {actual_session_id}: {e}")
+                        # Convert ChatMessage objects to dicts for storage
+                        messages = []
+                        for i, msg in enumerate(messages_raw):
+                            if hasattr(msg, 'model_dump'):
+                                # Pydantic v2
+                                msg_dict = msg.model_dump()
+                                messages.append(msg_dict)
+                                logger.debug(f"[SESSION_SAVE] Message {i}: Converted via model_dump() - role={msg_dict.get('role')}")
+                            elif hasattr(msg, 'dict'):
+                                # Pydantic v1
+                                msg_dict = msg.dict()
+                                messages.append(msg_dict)
+                                logger.debug(f"[SESSION_SAVE] Message {i}: Converted via dict() - role={msg_dict.get('role')}")
+                            elif isinstance(msg, dict):
+                                # Already a dict
+                                messages.append(msg)
+                                logger.debug(f"[SESSION_SAVE] Message {i}: Already dict - role={msg.get('role')}")
+                            else:
+                                logger.warning(f"[SESSION_SAVE] Message {i}: Unexpected type {type(msg)}, converting to dict")
+                                messages.append({"role": str(getattr(msg, 'role', 'unknown')), 
+                                               "content": str(getattr(msg, 'content', ''))})
+                        
+                        logger.info(f"[SESSION_SAVE] Converted {len(messages)} messages for session {actual_session_id}")
+                        
+                        if was_new_session:
+                            # Create new session
+                            session_data = await _session_manager.create_session(
+                                user_id=user_id,
+                                session_id=actual_session_id,
+                                title=task[:100] if task else "New Conversation",  # Use first 100 chars of task
+                                agent_name=agent_name or "default",
+                                llm_profile=llm_profile or "default"
+                            )
+                            logger.debug(f"[SESSION_SAVE] Created new session {actual_session_id}, now adding {len(messages)} messages")
+                            session_data["messages"] = messages
+                            await _session_manager.save_session(session_data)
+                            logger.info(f"[SESSION_SAVE] ✅ Created and saved new session {actual_session_id} for user {user_id} with {len(messages)} messages")
+                        else:
+                            # Update existing session
+                            logger.debug(f"[SESSION_SAVE] Loading existing session {actual_session_id} to update")
+                            session_data = await _session_manager.load_session(user_id, actual_session_id)
+                            logger.debug(f"[SESSION_SAVE] Loaded session has {len(session_data.get('messages', []))} messages, replacing with {len(messages)}")
+                            session_data["messages"] = messages
+                            await _session_manager.save_session(session_data)
+                            logger.info(f"[SESSION_SAVE] ✅ Updated session {actual_session_id} for user {user_id} with {len(messages)} messages")
+                            
+                    except Exception as e:
+                        logger.error(f"[SESSION_SAVE] ❌ Failed to persist session {actual_session_id}: {e}", exc_info=True)
 
         return StreamingResponse(
             event_stream(),

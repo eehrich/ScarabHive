@@ -479,7 +479,7 @@ form {
   display: none;
 }
 
-input[type="text"] {
+.inputBar input[type="text"] {
   display: none; /* Hide old input, using textarea now */
 }
 

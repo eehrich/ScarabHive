@@ -954,10 +954,6 @@ class Agent(MCPServer):
                 yield {"type": "end"}
                 return
 
-            # Initialize MCP integration tracking
-            mcp_integration = None
-            mcp_initialized_locally = False
-
             # Initialize MCP integration
             await self._mcp_integration_manager.setup_mcp_integration()
 
@@ -978,7 +974,12 @@ class Agent(MCPServer):
                 messages.append(ChatMessage(role="system", content=tools_msg))
             # include persisted session messages
             if session_msgs:
-                messages.extend(session_msgs)
+                # Convert dicts to ChatMessage objects if needed
+                for msg in session_msgs:
+                    if isinstance(msg, dict):
+                        messages.append(ChatMessage(**msg))
+                    else:
+                        messages.append(msg)
             # add the new user input as last message
             # Use initial_message if provided (for multimodal input), otherwise create from task
             if initial_message:

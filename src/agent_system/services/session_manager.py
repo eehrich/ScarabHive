@@ -412,13 +412,15 @@ class SessionManager:
                 # Return metadata only (not full message history)
                 sessions.append({
                     "session_id": session_data["session_id"],
+                    "user_id": session_data["user_id"],  # Added for API compatibility
                     "title": session_data["title"],
                     "created_at": session_data["created_at"],
                     "updated_at": session_data["updated_at"],
                     "agent_name": session_data["agent_name"],
                     "llm_profile": session_data["llm_profile"],
                     "message_count": session_data["metadata"].get("message_count", 0),
-                    "last_agent_response": session_data["metadata"].get("last_agent_response", "")
+                    "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
+                    "tags": session_data["metadata"].get("tags", [])  # Added for API compatibility
                 })
             except Exception as e:
                 logger.warning("Failed to load session %s: %s", session_file, e)

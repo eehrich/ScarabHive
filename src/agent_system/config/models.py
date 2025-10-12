@@ -80,6 +80,7 @@ class LLMSystemConfig(BaseModel):
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # Default HTTPX timeouts for all models
     models: Dict[str, LLMModelConfig] = {}
     profiles: Dict[str, LLMProfile] = {}
+    default_profile: Optional[str] = "normal"  # Default LLM profile to use
 
 
 # ===========================

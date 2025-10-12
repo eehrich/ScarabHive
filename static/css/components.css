@@ -667,6 +667,33 @@ h1 {
   overflow-y: auto;
 }
 
+/* Modal Footer */
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* Rename Input */
+.rename-input {
+  width: 100%;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #f0f6fc;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.rename-input:focus {
+  outline: none;
+  border-color: #1f6feb;
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* User Profile Content */
 .user-profile-content {
   display: flex;
@@ -855,4 +882,148 @@ h1 {
 .btn-secondary:hover {
   background: rgba(255, 255, 255, 0.12);
 }
+
+/* ============================================================================
+   SIMPLE MODAL SYSTEM (User Management Style)
+   ============================================================================ */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 10000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.3s;
+}
+
+.modal-content {
+  background-color: #1a2129;
+  margin: 5% auto;
+  padding: 0;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 500px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+  animation: slideDown 0.3s;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.modal-header {
+  padding: 20px 30px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1e242d;
+}
+
+.modal .modal-header h2 {
+  margin: 0;
+  font-size: 24px;
+  color: #e6edf3;
+  font-weight: 600;
+}
+
+.modal .close {
+  color: #8b949e;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: color 0.3s;
+  line-height: 1;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.modal .close:hover {
+  color: #e6edf3;
+}
+
+.modal-content form {
+  padding: 30px;
+  padding-bottom: 0; /* Footer handles bottom padding */
+}
+
+.modal-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 20px 30px 30px 30px; /* Own padding instead of relying on form */
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 20px -30px 0 -30px; /* Negative margin to counter form padding */
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: #e6edf3;
+  font-size: 14px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="email"],
+.form-group input[type="password"],
+.form-group select {
+  width: 100%;
+  padding: 10px 15px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  font-size: 14px;
+  transition: all 0.3s;
+  background: #1e242d;
+  color: #e6edf3;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: #58a6ff;
+  background: #1a2129;
+}
+
+.form-group input[readonly] {
+  background: #313845 !important;
+  cursor: not-allowed;
+  color: #8b949e;
+}
+
+/* Legacy form-control class for compatibility */
+.form-control {
+  width: 100%;
+  padding: 10px 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.form-control:focus {
+  outline: none;
+  border-color: #1f6feb;
+  background: #161b22;
+}
+
 

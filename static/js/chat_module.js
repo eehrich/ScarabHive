@@ -798,6 +798,11 @@
             stopBtn.setAttribute('aria-label', 'Stop');
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            
+            // Reload sessions after conversation completes
+            if (window.sessionManager && typeof window.sessionManager.loadSessions === 'function') {
+              window.sessionManager.loadSessions();
+            }
             break;
           case 'error':
             showSection(blk.t);
