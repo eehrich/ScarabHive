@@ -662,6 +662,10 @@ def main() -> None:
     run_parser.add_argument("--images", "--attach", dest="images", nargs="+", metavar="PATH", help="Path(s) to image file(s) to attach to the task")
     run_parser.add_argument("--agent", dest="agent_override", help="Override the default agent (use agent name from config)")
     run_parser.add_argument("--llm", dest="llm_profile_override", help="Override the LLM profile (use profile name from llm.yaml)")
+    run_parser.add_argument("--session", dest="session_id", help="Continue an existing session by ID")
+    run_parser.add_argument("--session-user", dest="session_user", default="cli_user", help="User ID for session storage (default: cli_user)")
+    run_parser.add_argument("--list-sessions", dest="list_sessions", action="store_true", help="List all sessions for the current user")
+    run_parser.add_argument("--session-title", dest="session_title", help="Title for the new session (auto-generated from task if not provided)")
 
 
 
@@ -1474,9 +1478,96 @@ def main() -> None:
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
     
+    # Initialize session management
+    session_id = getattr(args, "session_id", None)
+    session_user = getattr(args, "session_user", "cli_user")
+    list_sessions = getattr(args, "list_sessions", False)
+    
+    # Generate or use provided session ID
+    from .utils.id import short_id
+    actual_session_id = session_id or short_id()
+    was_new_session = (session_id is None)
+    
+    # Initialize SessionManager and SessionService
+    from pathlib import Path as PathLib
+    from .services.session_manager import SessionManager
+    from .services.session_service import SessionService
+    
+    storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
+    session_manager = SessionManager(storage_path=str(storage_path))
+    session_service = SessionService(session_manager)
+    
+    # Helper async function for session operations
+    async def handle_session_operations():
+        nonlocal actual_session_id, was_new_session
+        
+        # Handle --list-sessions flag
+        if list_sessions:
+            vprint(f"[cli] listing sessions for user: {session_user}")
+            try:
+                sessions = await session_manager.list_sessions(session_user)
+                
+                if not sessions:
+                    print(f"No sessions found for user '{session_user}'")
+                    return False  # Signal to exit
+                
+                print(f"\nSessions for user '{session_user}':")
+                print("-" * 80)
+                for sess in sessions:
+                    sess_id = sess.get("session_id", "unknown")
+                    title = sess.get("title", "Untitled")
+                    agent_name = sess.get("agent_name", "unknown")
+                    llm_profile = sess.get("llm_profile", "unknown")
+                    created = sess.get("created_at", "unknown")
+                    msg_count = sess.get("message_count", len(sess.get("messages", [])))  # Use message_count from metadata
+                    
+                    print(f"ID: {sess_id}")
+                    print(f"  Title: {title}")
+                    print(f"  Agent: {agent_name}, LLM: {llm_profile}")
+                    print(f"  Messages: {msg_count}, Created: {created}")
+                    print()
+                return False  # Signal to exit
+            except Exception as e:
+                logger.error(f"Failed to list sessions: {e}", exc_info=True)
+                print(f"Error listing sessions: {e}", file=sys.stderr)
+                return False  # Signal to exit
+        
+        # Load existing session if --session provided
+        session_exists = False
+        if session_id:
+            vprint(f"[cli] loading session: {session_id}")
+            try:
+                session_exists, msg_count = await session_service.load_and_restore_session(
+                    agent, session_user, session_id
+                )
+                if session_exists:
+                    vprint(f"[cli] loaded session with {msg_count} messages")
+                    logger.info(f"Loaded session {session_id} with {msg_count} messages")
+                else:
+                    print(f"Warning: Session '{session_id}' not found, creating new session", file=sys.stderr)
+                    logger.warning(f"Session {session_id} not found")
+                    # Initialize empty session for new session ID
+                    agent._sessions[actual_session_id] = []
+            except Exception as e:
+                logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
+                print(f"Error loading session: {e}", file=sys.stderr)
+                return False  # Signal to exit
+        else:
+            # For new sessions, initialize empty session list
+            logger.debug(f"Creating new session: {actual_session_id}")
+            agent._sessions[actual_session_id] = []
+        
+        return True  # Continue with task execution
+    
+    # Run session operations
+    should_continue = asyncio.run(handle_session_operations())
+    if not should_continue:
+        return
+    
     async def _stream_and_run_with_status(
         agent: Agent, 
-        task: Union[str, ChatMessage], 
+        task: Union[str, ChatMessage],
+        session_id: str,  # Add session_id parameter
         show_mcp: bool = False, 
         show_status: bool = True,
         llm_override=None,
@@ -1598,7 +1689,7 @@ def main() -> None:
                 logger.warning(f"Failed to create SSE subscriber task: {e}", exc_info=True)
                 sse_task = None
         try:
-            async for ev in agent.run_events(task, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+            async for ev in agent.run_events(task, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 t = ev.get("type")
                 if t == "mcp_call" and show_mcp:
                     srv = ev.get("server")
@@ -1752,11 +1843,45 @@ def main() -> None:
             # Raw mode: use run_events with result collection
             from .servers.agent.result_utils import collect_final_result
             
-            result = asyncio.run(collect_final_result(agent, task_input, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
+            result = asyncio.run(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
         else:
-            result = asyncio.run(_stream_and_run_with_status(agent, task_input, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+            result = asyncio.run(_stream_and_run_with_status(agent, task_input, actual_session_id, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
         vprint("[cli] done")
         logger.info("Task completed")
+        
+        # Save session after successful task execution
+        async def save_session_after_task():
+            try:
+                # Determine agent name and LLM profile
+                agent_name_used = agent.agent_name if hasattr(agent, 'agent_name') else "default"
+                llm_profile_used = getattr(args, "llm_profile_override", None) or "normal"
+                
+                # Save the session
+                success = await session_service.save_session(
+                    agent=agent,
+                    user_id=session_user,
+                    session_id=actual_session_id,
+                    agent_name=agent_name_used,
+                    llm_profile=llm_profile_used,
+                    was_new_session=was_new_session
+                )
+                
+                if success:
+                    if session_id:
+                        vprint(f"[cli] updated session: {session_id}")
+                        logger.info(f"Updated session {session_id}")
+                    else:
+                        vprint(f"[cli] created new session: {actual_session_id}")
+                        logger.info(f"Created new session {actual_session_id}")
+                        print(f"\nSession saved: {actual_session_id}")
+                else:
+                    logger.warning("Session save returned False")
+            except Exception as e:
+                logger.error(f"Failed to save session: {e}", exc_info=True)
+                print(f"Warning: Failed to save session: {e}", file=sys.stderr)
+        
+        asyncio.run(save_session_after_task())
+        
     finally:
         # Ensure MCP integration is properly shut down to close aiohttp sessions
         try:

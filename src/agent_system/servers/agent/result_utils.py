@@ -10,6 +10,7 @@ async def collect_final_result(
     agent: Agent, 
     task: Union[str, ChatMessage], 
     request_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     llm_override: Optional[object] = None,
     llm_profile_info_override: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -23,6 +24,7 @@ async def collect_final_result(
         agent: The agent instance to execute
         task: The task to execute (string or ChatMessage with multimodal content)
         request_id: Optional request ID for correlation
+        session_id: Optional session ID for conversation history
         llm_override: Optional LLM client to use instead of agent's default
         llm_profile_info_override: Optional profile info string for status display
         
@@ -47,7 +49,7 @@ async def collect_final_result(
     
     result = {"task": task_text, "calls": []}
     
-    async for event in agent.run_events(task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
+    async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
         event_type = event.get("type")
         
         # Collect MCP calls for the result

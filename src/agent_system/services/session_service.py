@@ -127,22 +127,27 @@ class SessionService:
             # Save or update session
             if was_new_session:
                 logger.debug(f"[SESSION] Creating new session {session_id}")
-                await self.session_manager.create_session(
+                # Step 1: Create empty session
+                session_data = await self.session_manager.create_session(
                     session_id=session_id,
                     user_id=user_id,
                     title=title,
                     agent_name=agent_name,
-                    llm_profile=llm_profile,
-                    messages=messages_dicts
+                    llm_profile=llm_profile
                 )
+                # Step 2: Add messages
+                session_data["messages"] = messages_dicts
+                # Step 3: Save back
+                await self.session_manager.save_session(session_data)
             else:
                 logger.debug(f"[SESSION] Updating existing session {session_id}")
-                await self.session_manager.update_session(
-                    user_id=user_id,
-                    session_id=session_id,
-                    messages=messages_dicts,
-                    title=title
-                )
+                # Load existing session
+                session_data = await self.session_manager.load_session(user_id, session_id)
+                # Update messages and title
+                session_data["messages"] = messages_dicts
+                session_data["title"] = title
+                # Save back
+                await self.session_manager.save_session(session_data)
             
             logger.info(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
             return True

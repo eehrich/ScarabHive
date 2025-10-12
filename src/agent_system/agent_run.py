@@ -76,12 +76,13 @@ async def create_agent(config, registry, agent_name: str):
     return await create_and_register_agent(config, registry, agent_name)
 
 
-async def run_agent_request(agent: Agent, request: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
+async def run_agent_request(agent: Agent, request: str, session_id: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
     """Execute a request with the agent and return the result.
     
     Args:
         agent: The agent instance to execute the request with
         request: The user's request/question
+        session_id: Session ID for conversation history
         llm_override: Optional LLM client to override agent's default
         llm_profile_info: Optional profile info string for status display
     """
@@ -92,7 +93,8 @@ async def run_agent_request(agent: Agent, request: str, llm_override=None, llm_p
         from .servers.agent.result_utils import collect_final_result
         result = await collect_final_result(
             agent, 
-            request, 
+            request,
+            session_id=session_id,  # Pass session_id for conversation history
             llm_override=llm_override,
             llm_profile_info_override=llm_profile_info
         )
@@ -104,21 +106,56 @@ async def run_agent_request(agent: Agent, request: str, llm_override=None, llm_p
         raise
 
 
-async def main_async(
-    request: str, 
-    agent_name: str | None = None, 
-    llm_profile: str | None = None,
-    show_status: bool = True
-) -> None:
-    """Main async function to execute the agent request.
+async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True, 
+                     session_id: str | None = None, session_user: str = "cli_user", 
+                     list_sessions: bool = False, session_title: str | None = None) -> None:
+    """Async main function to run agent request with session support.
     
     Args:
-        request: The user's request/question
-        agent_name: Optional agent name to use (defaults to config.default_agent)
-        llm_profile: Optional LLM profile to override agent's default
-        show_status: Whether to display status messages (default: True)
+        request: The request to send to the agent
+        agent_name: Override default agent (optional)
+        llm_profile: Override LLM profile (optional)
+        show_status: Whether to display status messages
+        session_id: Session ID to continue (optional)
+        session_user: User ID for session storage
+        list_sessions: List all sessions for user
+        session_title: Title for new session (optional)
     """
     try:
+        # Initialize session management
+        from pathlib import Path as PathLib
+        from .services.session_manager import SessionManager
+        from .services.session_service import SessionService
+        
+        storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
+        session_manager = SessionManager(storage_path=str(storage_path))
+        session_service = SessionService(session_manager)
+        
+        # Handle --list-sessions flag
+        if list_sessions:
+            sessions = await session_manager.list_sessions(session_user)
+            
+            if not sessions:
+                print(f"No sessions found for user '{session_user}'")
+                return
+            
+            print(f"\nSessions for user '{session_user}':")
+            print("-" * 80)
+            for sess in sessions:
+                sess_id = sess.get("session_id", "unknown")
+                title = sess.get("title", "Untitled")
+                agent = sess.get("agent_name", "unknown")
+                llm = sess.get("llm_profile", "unknown")
+                created = sess.get("created_at", "unknown")
+                msg_count = sess.get("message_count", len(sess.get("messages", [])))  # Use message_count from metadata
+                
+                print(f"ID: {sess_id}")
+                print(f"  Title: {title}")
+                print(f"  Agent: {agent}, LLM: {llm}")
+                print(f"  Messages: {msg_count}, Created: {created}")
+                print()
+            return
+        
         # Load configuration
         logger.info("Loading configuration...")
         config = load_settings()
@@ -136,6 +173,36 @@ async def main_async(
         # Create and initialize agent
         logger.info("Creating agent...")
         agent = await create_agent(config, registry, agent_name)
+        
+        # Generate or use provided session ID
+        from .utils.id import short_id
+        actual_session_id = session_id or short_id()
+        was_new_session = (session_id is None)
+        
+        # Load existing session if --session provided, otherwise initialize empty
+        session_exists = False
+        if session_id:
+            logger.info(f"Loading session: {session_id}")
+            try:
+                session_exists, msg_count = await session_service.load_and_restore_session(
+                    agent, session_user, session_id
+                )
+                if session_exists:
+                    logger.info(f"Loaded session {session_id} with {msg_count} messages")
+                    print(f"Continuing session '{session_id}' ({msg_count} messages)")
+                else:
+                    print(f"Warning: Session '{session_id}' not found, creating new session", file=sys.stderr)
+                    logger.warning(f"Session {session_id} not found")
+                    # Initialize empty session for new session ID
+                    agent._sessions[actual_session_id] = []
+            except Exception as e:
+                logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
+                print(f"Error loading session: {e}", file=sys.stderr)
+                return
+        else:
+            # For new sessions, initialize empty session list
+            logger.debug(f"Creating new session: {actual_session_id}")
+            agent._sessions[actual_session_id] = []
         
         # Create LLM override if profile specified
         llm_override = None
@@ -181,7 +248,7 @@ async def main_async(
         # Execute the request
         logger.info("Executing request...")
         try:
-            result = await run_agent_request(agent, request, llm_override, llm_profile_info)
+            result = await run_agent_request(agent, request, actual_session_id, llm_override, llm_profile_info)
         finally:
             # Cancel status subscriber
             if status_task:
@@ -192,6 +259,34 @@ async def main_async(
                     pass
             if status_queue:
                 status_bus.unsubscribe(status_queue)  # Not async!
+        
+        # Save session after successful request execution
+        try:
+            # Determine agent name and LLM profile
+            agent_name_used = agent.agent_name if hasattr(agent, 'agent_name') else (config.default_agent or "default")
+            llm_profile_used = llm_profile or "normal"
+            
+            # Save the session
+            success = await session_service.save_session(
+                agent=agent,
+                user_id=session_user,
+                session_id=actual_session_id,
+                agent_name=agent_name_used,
+                llm_profile=llm_profile_used,
+                was_new_session=was_new_session
+            )
+            
+            if success:
+                if session_id:
+                    logger.info(f"Updated session {session_id}")
+                else:
+                    logger.info(f"Created new session {actual_session_id}")
+                    print(f"\nSession saved: {actual_session_id}")
+            else:
+                logger.warning("Session save returned False")
+        except Exception as e:
+            logger.error(f"Failed to save session: {e}", exc_info=True)
+            print(f"Warning: Failed to save session: {e}", file=sys.stderr)
         
         # Print the result
         print(format_result_output(result))
@@ -227,6 +322,7 @@ Examples:
     
     parser.add_argument(
         "request",
+        nargs="?",  # Make request optional
         help="The request/question to send to the agent"
     )
     
@@ -266,7 +362,37 @@ Examples:
         help="Disable status messages during execution"
     )
     
+    parser.add_argument(
+        "--session",
+        dest="session_id",
+        help="Continue an existing session by ID"
+    )
+    
+    parser.add_argument(
+        "--session-user",
+        dest="session_user",
+        default="cli_user",
+        help="User ID for session storage (default: cli_user)"
+    )
+    
+    parser.add_argument(
+        "--list-sessions",
+        dest="list_sessions",
+        action="store_true",
+        help="List all sessions for the current user"
+    )
+    
+    parser.add_argument(
+        "--session-title",
+        dest="session_title",
+        help="Title for the new session (auto-generated from request if not provided)"
+    )
+    
     args = parser.parse_args()
+    
+    # Validate that either --list-sessions or request is provided
+    if not args.list_sessions and not args.request:
+        parser.error("Either 'request' or --list-sessions must be provided")
     
     # Set color mode globally
     if args.no_color:
@@ -290,7 +416,16 @@ Examples:
     
     # Run the async main function
     try:
-        asyncio.run(main_async(args.request, args.agent, args.llm_profile, show_status))
+        asyncio.run(main_async(
+            request=args.request, 
+            agent_name=args.agent, 
+            llm_profile=args.llm_profile, 
+            show_status=show_status,
+            session_id=getattr(args, "session_id", None),
+            session_user=getattr(args, "session_user", "cli_user"),
+            list_sessions=getattr(args, "list_sessions", False),
+            session_title=getattr(args, "session_title", None)
+        ))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(130)
