@@ -153,8 +153,49 @@ def parse(backlog_lines: List[str]) -> Backlog:
                     logger.warning(f"Orphaned task at line {line_num}: {ln.strip()}")
                     continue
 
-                # fields under task or epic
+                # Calculate indent before any processing
                 indent = len(ln) - len(ln.lstrip(' '))
+
+                # Handle multiline field collection FIRST (before checking RE_FIELD_LINE)
+                # This prevents lines like "- api_key: value" from being parsed as fields
+                # when they are actually content in description/notes
+                if current_collect is not None:
+                    try:
+                        name, col_indent, target = current_collect
+
+                        if ln.strip() == "":
+                            # Skip empty lines in multiline collection - don't add empty strings
+                            continue
+
+                        if indent > col_indent:
+                            text = ln.strip()
+                            # Preserve content as-is, don't remove '- ' prefix
+                            # Users may want bullet lists in their description/notes
+                            content = text
+
+                            if target == "task" and current_task is not None:
+                                if name == "notes":
+                                    current_task.notes.append(content)
+                                else:
+                                    current_task.description.append(content)
+                                continue
+                            if target == "epic" and current_epic is not None:
+                                if name == "notes":
+                                    current_epic.notes.append(content)
+                                else:
+                                    current_epic.description.append(content)
+                                continue
+                        else:
+                            # ended collection - indent is back to field level or less
+                            current_collect = None
+                            # Fall through to process this line as a potential field
+                    except Exception as e:
+                        parse_errors.append(f"Failed to collect multiline field at line {line_num}: {e}")
+                        logger.error(f"Multiline collection error at line {line_num}: {e}")
+                        current_collect = None
+                        # Fall through to try parsing as field
+
+                # Now check for fields (only if not handled by multiline collection above)
                 m3 = RE_FIELD_LINE.match(ln.strip())
                 if m3:
                     try:
@@ -217,44 +258,6 @@ def parse(backlog_lines: List[str]) -> Backlog:
                     except (ValueError, IndexError) as e:
                         parse_errors.append(f"Failed to parse field at line {line_num}: {e}")
                         logger.error(f"Field parsing error at line {line_num}: {e}")
-                        continue
-
-                # Handle multiline field collection
-                if current_collect is not None:
-                    try:
-                        name, col_indent, target = current_collect
-
-                        if ln.strip() == "":
-                            # Skip empty lines in multiline collection - don't add empty strings
-                            continue
-
-                        if indent > col_indent:
-                            text = ln.strip()
-                            # Only remove the first '- ' if it's a list marker, not '--' or other patterns
-                            if name == "notes" and text.startswith("- ") and not text.startswith("--"):
-                                content = text[2:].strip()
-                            else:
-                                content = text
-
-                            if target == "task" and current_task is not None:
-                                if name == "notes":
-                                    current_task.notes.append(content)
-                                else:
-                                    current_task.description.append(content)
-                                continue
-                            if target == "epic" and current_epic is not None:
-                                if name == "notes":
-                                    current_epic.notes.append(content)
-                                else:
-                                    current_epic.description.append(content)
-                                continue
-                        else:
-                            # ended collection
-                            current_collect = None
-                    except Exception as e:
-                        parse_errors.append(f"Failed to collect multiline field at line {line_num}: {e}")
-                        logger.error(f"Multiline collection error at line {line_num}: {e}")
-                        current_collect = None
                         continue
 
                 # fallback: preserve in raw_lines or header/footer
