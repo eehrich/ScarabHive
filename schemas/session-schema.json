@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentsystem.io/schemas/session.json",
+  "title": "AgentSystem Session",
+  "description": "Schema for persistent agent conversation sessions",
+  "type": "object",
+  "required": ["session_id", "user_id", "created_at", "updated_at", "title", "agent_name", "llm_profile", "messages"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "Unique session identifier (UUID or short ID)",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "user_id": {
+      "type": "string",
+      "description": "User identifier (from JWT auth)",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Session creation timestamp (ISO 8601)"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp (ISO 8601)"
+    },
+    "title": {
+      "type": "string",
+      "description": "User-defined session title",
+      "minLength": 1,
+      "maxLength": 500,
+      "default": "New Conversation"
+    },
+    "agent_name": {
+      "type": "string",
+      "description": "Agent used in this session",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "llm_profile": {
+      "type": "string",
+      "description": "LLM profile/model used",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "messages": {
+      "type": "array",
+      "description": "Conversation message history",
+      "items": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["user", "assistant", "system", "tool"],
+            "description": "Message role"
+          },
+          "content": {
+            "description": "Message content (string or multimodal array)",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional name for tool messages"
+          },
+          "tool_call_id": {
+            "type": "string",
+            "description": "Tool call identifier"
+          },
+          "tool_calls": {
+            "type": "array",
+            "description": "Tool calls made by assistant",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional session metadata",
+      "properties": {
+        "message_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of messages"
+        },
+        "token_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Approximate total token count"
+        },
+        "last_agent_response": {
+          "type": "string",
+          "description": "Preview of last agent response"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "User-defined tags"
+        }
+      }
+    }
+  }
+}

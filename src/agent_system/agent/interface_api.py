@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Callable, Any
 
 import uvicorn
-from fastapi import FastAPI, Request, Query, Header, HTTPException
+from fastapi import FastAPI, Request, Query, Header, HTTPException, Depends
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +38,7 @@ from ..context.agent_tracker import record_agent_summarization
 
 # Import services
 from ..services import ConfigService, MCPService, ToolService, AgentService
+from ..services.session_manager import SessionManager
 
 
 # Global registry for MCP endpoints access
@@ -51,6 +52,7 @@ _config_service: Optional[ConfigService] = None
 _mcp_service: Optional[MCPService] = None
 _tool_service: Optional[ToolService] = None
 _agent_service: Optional[AgentService] = None
+_session_manager: Optional[SessionManager] = None
 
 
 @asynccontextmanager
@@ -117,7 +119,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Initialize MCP integration
     async def _init_mcp_for_app(app: FastAPI):
-        global _mcp_integration, _mcp_service, _tool_service, _agent_service
+        global _mcp_integration, _mcp_service, _tool_service, _agent_service, _session_manager
         logger = logging.getLogger(__name__)
         logger.info("Starting MCP integration initialization...")
         try:
@@ -127,6 +129,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Initialize services
             _mcp_service = MCPService(mcp_integration, config)
             _tool_service = ToolService(mcp_integration, config)
+            
+            # Initialize SessionManager (persistent session storage)
+            from pathlib import Path
+            storage_path = Path(__file__).parents[3] / "data" / "sessions"
+            _session_manager = SessionManager(storage_path=str(storage_path))
+            logger.info(f"SessionManager initialized with storage_path={storage_path}")
             
             # Agent will be initialized later when needed
             # (requires agent instance from bootstrap_servers)
@@ -166,6 +174,40 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Create FastAPI app
     app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
+    
+    # Helper function for optional user authentication
+    async def _get_current_user_optional(request: Request) -> Optional[Any]:
+        """Get current user if authenticated, None otherwise."""
+        try:
+            from ..auth.dependencies import get_current_user as get_user_dep
+            from ..auth.database import get_db
+            from fastapi.security import HTTPBearer
+            
+            bearer_scheme = HTTPBearer(auto_error=False)
+            credentials = await bearer_scheme(request)
+            x_api_key = request.headers.get("X-API-Key")
+            
+            # Get database dependency
+            db_gen = get_db()
+            db = await anext(db_gen)
+            
+            try:
+                user = await get_user_dep(
+                    request=request,
+                    credentials=credentials,
+                    x_api_key=x_api_key,
+                    db=db
+                )
+                return user
+            finally:
+                # Cleanup database connection
+                try:
+                    await db_gen.aclose()
+                except StopAsyncIteration:
+                    pass
+        except Exception:
+            # User not authenticated
+            return None
 
     # Mount static files
     if static_path.exists():
@@ -427,10 +469,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from api.auth_endpoints import router as auth_router
         from api.admin_endpoints import router as admin_router
         from api.menu_endpoints import menu_router
+        from api.session_endpoints import session_router, set_session_manager
         
         app.include_router(auth_router)
         app.include_router(admin_router)
         app.include_router(menu_router)
+        app.include_router(session_router)
+        
+        # Inject session manager into session endpoints
+        set_session_manager(_session_manager)
         
         logger.info("Authentication system initialized successfully")
     else:
@@ -807,10 +854,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/events")
     async def events(
+        request: Request,
         task: str, 
         session_id: Optional[str] = Query(default=None),
         agent_name: Optional[str] = Query(default=None),
-        llm_profile: Optional[str] = Query(default=None)
+        llm_profile: Optional[str] = Query(default=None),
+        current_user: Optional[Any] = Depends(lambda r: _get_current_user_optional(r))
     ):
         """Stream agent events for a task.
         
@@ -819,20 +868,49 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        
+        Authentication:
+        - If user is authenticated (JWT token or API key), sessions are saved to their account
+        - If not authenticated, sessions use "anonymous" user_id
         """
         logger = logging.getLogger(__name__)
         request_id = short_id()
-        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s", 
-                   task, request_id, session_id, agent_name or "default", llm_profile or "default")
+        
+        # Determine user_id for session management
+        user_id = current_user.username if current_user else "anonymous"
+        
+        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s", 
+                   task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id)
 
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+        
+        # Load existing session if session_id provided
+        if session_id and _session_manager:
+            try:
+                session_data = await _session_manager.load_session(user_id, session_id)
+                # Restore conversation history to agent
+                if session_data.get("messages"):
+                    selected_agent._sessions[session_id] = session_data["messages"]
+                logger.info(f"Loaded session {session_id} with {len(session_data.get('messages', []))} messages")
+            except Exception as e:
+                logger.warning(f"Failed to load session {session_id}: {e}")
 
         async def event_stream():
             # Initial keep-alive line
             yield ":ok\n\n"
-            async for ev in selected_agent.run_events(task, request_id, session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+            
+            # Track if this is a new session
+            was_new_session = session_id is None
+            actual_session_id = session_id
+            
+            async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                 logger.debug("SSE event: %s", ev.get("type"))
+                
+                # Capture session_id from done event if it was created
+                if ev.get("type") == "done" and ev.get("session_id"):
+                    actual_session_id = ev["session_id"]
+                
                 try:
                     # Ensure proper JSON serialization of any potential enum values
                     if hasattr(ev, 'to_dict'):
@@ -845,6 +923,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Send an error event instead
                     error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                     yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+            
+            # After streaming completes, persist session if we have a session_id
+            if actual_session_id and _session_manager:
+                try:
+                    # Get conversation history from agent
+                    messages = selected_agent._sessions.get(actual_session_id, [])
+                    
+                    if was_new_session:
+                        # Create new session
+                        session_data = await _session_manager.create_session(
+                            user_id=user_id,
+                            session_id=actual_session_id,
+                            title=task[:100] if task else "New Conversation",  # Use first 100 chars of task
+                            agent_name=agent_name or "default",
+                            llm_profile=llm_profile or "default"
+                        )
+                        session_data["messages"] = messages
+                        await _session_manager.save_session(session_data)
+                        logger.info(f"Created and saved new session {actual_session_id} for user {user_id}")
+                    else:
+                        # Update existing session
+                        session_data = await _session_manager.load_session(user_id, actual_session_id)
+                        session_data["messages"] = messages
+                        await _session_manager.save_session(session_data)
+                        logger.info(f"Updated session {actual_session_id} for user {user_id}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to persist session {actual_session_id}: {e}")
 
         return StreamingResponse(
             event_stream(),
