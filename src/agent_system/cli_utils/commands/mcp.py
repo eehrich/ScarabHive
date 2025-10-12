@@ -10,7 +10,8 @@ from typing import Any
 import yaml
 
 from agent_system.mcp.integration import MCPIntegration
-from agent_system.cli.utils import _atomic_write_text, _supports_color, _colorize
+from agent_system.cli_utils.common import supports_color as _supports_color, colorize as _colorize
+from agent_system.cli_utils.utils import _atomic_write_text
 
 try:
     from tabulate import tabulate  # optional dependency for pretty tables

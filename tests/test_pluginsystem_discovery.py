@@ -3,7 +3,10 @@ import textwrap
 from agent_system.plugins import discover_plugins
 from agent_system.mcp.base import MCPRegistry, MCPServer
 from agent_system.servers.bootstrap import bootstrap_servers
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig
+from agent_system.config.models import (
+    AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig,
+    LLMSystemConfig, LLMModelConfig
+)
 
 
 def test_plugins_discovery_and_bootstrap(tmp_path, monkeypatch):
@@ -33,7 +36,6 @@ def test_plugins_discovery_and_bootstrap(tmp_path, monkeypatch):
     assert "fake_plugin" in plugins
 
     # Bootstrap with a config that enables the plugin
-    from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig
     cfg = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={"test-model": LLMModelConfig(provider="openai", model="test-model")},
@@ -41,6 +43,7 @@ def test_plugins_discovery_and_bootstrap(tmp_path, monkeypatch):
             profiles={"normal": {"model_ref": "test-model"}}
         ),
         plugins=PluginsConfig(
+            plugin_dirs=[str(plugins_dir)],  # Explicitly specify the plugin directory
             servers={"fake_plugin": MCPConfig(type="fake_plugin", enabled=True)}
         )
     )

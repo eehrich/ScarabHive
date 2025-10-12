@@ -45,16 +45,17 @@ async def test_plugin_call():
     server = factory("test_web_research", system_config, mcp_config)
 
     # Test error handling for missing parameters
-    result = await server.call("web_research_agent", {})
+    # Tool names are prefixed with server name: {name}_web_research
+    result = await server.call("test_web_research_web_research", {})
     assert result["status"] == "error"
     assert "Missing required parameter" in result["error"]
 
     # Test fact_check error handling
-    result = await server.call("fact_check_agent", {})
+    result = await server.call("test_web_research_fact_check", {})
     assert result["status"] == "error"
     assert "Missing required parameter" in result["error"]
 
     # Test compare_sources error handling
-    result = await server.call("source_analysis_agent", {})
+    result = await server.call("test_web_research_source_analysis", {})
     assert result["status"] == "error"
     assert "Missing required parameter" in result["error"]

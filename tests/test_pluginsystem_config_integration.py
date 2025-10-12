@@ -352,9 +352,10 @@ class TestPluginConfigIntegration:
 
         assert fake_integration.initialize.called, "MCP integration should have been initialized"
         assert mcp_init_called_with is not None, "Initialization should have received a config"
-        # Ensure the passed config includes our servers mapping
-        assert hasattr(mcp_init_called_with, 'mcp_system') and getattr(mcp_init_called_with.plugins, 'servers', None) is not None
-        assert 'basic_operations' in mcp_init_called_with.plugins.servers
+        # Ensure the passed config is AgentSystemConfig with plugins.servers
+        assert isinstance(mcp_init_called_with, AgentSystemConfig), "Should pass AgentSystemConfig to initialize"
+        assert hasattr(mcp_init_called_with, 'plugins') and mcp_init_called_with.plugins is not None
+        assert hasattr(mcp_init_called_with.plugins, 'servers') and 'basic_operations' in mcp_init_called_with.plugins.servers
 
     @pytest.mark.asyncio
     async def test_centralized_mcp_config_merge(self, sample_config):
@@ -432,4 +433,5 @@ class TestPluginConfigIntegration:
 
         assert fake_integration.initialize.called
         assert captured is not None
-        assert hasattr(captured, 'mcp_system') and 'basic_operations' in captured.plugins.servers
+        assert isinstance(captured, AgentSystemConfig), "Should pass AgentSystemConfig to initialize"
+        assert hasattr(captured, 'plugins') and 'basic_operations' in captured.plugins.servers

@@ -29,6 +29,11 @@ from .servers.agent.server import Agent
 
 # Import services
 from .services import MCPService, ToolService
+from .cli_utils.common import (
+    supports_color as _supports_color,
+    colorize as _colorize,
+    set_color_mode
+)
 
 
 def _get_plugins_config(config: AgentSystemConfig):
@@ -44,10 +49,6 @@ def _get_server_mode_config(config: AgentSystemConfig):
 def _get_agents_dict(config: AgentSystemConfig):
     """Get agents configuration dict."""
     return config.agents if config.agents else {}
-
-
-# Global color mode: tests may monkeypatch this variable
-color_mode: str = "auto"
 
 logger = logging.getLogger(__name__)
 
@@ -522,30 +523,6 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 logger.debug(f"Error shutting down MCPIntegration in finally: {e}")
 
 
-def _supports_color() -> bool:
-    """Return whether ANSI color sequences should be used.
-
-    Honors the global `color_mode` which tests may set to 'auto',
-    'always' or 'never'. In 'auto' mode this checks stdout.isatty().
-    """
-    if color_mode == "never":
-        return False
-    if color_mode == "always":
-        return True
-    # auto
-    try:
-        return sys.stdout.isatty()
-    except Exception:
-        return False
-
-
-def _colorize(text: str, color_code: str) -> str:
-    """Wrap text in ANSI color codes when supported."""
-    if not _supports_color():
-        return text
-    return f"\x1b[{color_code}m{text}\x1b[0m"
-
-
 def _register_config_agents_commands(subparsers: Any) -> None:
     """Register config-agents CLI commands (Epic 0043) - inline implementation."""
     # Main config-agents command group
@@ -624,15 +601,15 @@ def main() -> None:
     ns, rest = prelim.parse_known_args(orig_args)
 
     # decide color mode early so helpers behave predictably
-    global color_mode
     if getattr(ns, "no_color", False):
-        color_mode = "never"
+        set_color_mode("never")
     else:
-        color_mode = getattr(ns, "color", "auto")
+        set_color_mode(getattr(ns, "color", "auto"))
 
     # Initialize colorama on interactive TTYs so ANSI renders on Windows
     try:
-        if color_mode != "never" and sys.stdout.isatty():
+        mode = "never" if getattr(ns, "no_color", False) else getattr(ns, "color", "auto")
+        if mode != "never" and sys.stdout.isatty():
             import colorama
             colorama.init()
     except Exception:

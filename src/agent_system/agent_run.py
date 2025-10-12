@@ -24,37 +24,13 @@ from .config.settings import load_settings
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .servers.agent.server import Agent
+from .cli_utils.common import (
+    set_color_mode,
+    status_subscriber, format_result_output, format_error
+)
 
 
 logger = logging.getLogger(__name__)
-
-# Global color mode
-color_mode: str = "auto"
-
-
-def _supports_color() -> bool:
-    """Return whether ANSI color sequences should be used.
-
-    Honors the global `color_mode` which can be set to 'auto',
-    'always' or 'never'. In 'auto' mode this checks stdout.isatty().
-    """
-    if color_mode == "never":
-        return False
-    if color_mode == "always":
-        return True
-    # auto
-    try:
-        return sys.stdout.isatty()
-    except Exception as e:
-        logger.debug(f"Failed to check if stdout is a TTY: {e}")
-        return False
-
-
-def _colorize(text: str, color_code: str) -> str:
-    """Wrap text in ANSI color codes when supported."""
-    if not _supports_color():
-        return text
-    return f"\x1b[{color_code}m{text}\x1b[0m"
 
 
 def setup_basic_logging(verbose: bool = False) -> None:
@@ -93,10 +69,10 @@ async def initialize_system(config):
 async def create_agent(config, registry, agent_name: str):
     """Create and initialize the specified agent.
     
-    This function is a wrapper around the shared agent_runner.create_and_register_agent
+    This function is a wrapper around the shared cli_utils.agent_runner.create_and_register_agent
     to maintain backward compatibility with existing code.
     """
-    from .agent_runner import create_and_register_agent
+    from .cli_utils.agent_runner import create_and_register_agent
     return await create_and_register_agent(config, registry, agent_name)
 
 
@@ -200,42 +176,7 @@ async def main_async(
         status_task = None
         if show_status:
             status_queue = await status_bus.subscribe()
-            
-            async def _status_subscriber():
-                """Subscribe to local status events and display them"""
-                if not status_queue:
-                    return
-                try:
-                    while True:
-                        event = await status_queue.get()
-                        # Display status event in a clean format using StatusEvent format
-                        phase = event.phase.value if hasattr(event.phase, 'value') else str(event.phase)
-                        phase_disp = phase
-                        if _supports_color():
-                            phase_color_map = {
-                                "start": "36",      # cyan
-                                "progress": "34",   # blue
-                                "end": "32",        # green
-                                "error": "31",      # red
-                            }
-                            c = phase_color_map.get(phase, "34")
-                            phase_disp = _colorize(phase, c)
-
-                        server_col = event.server
-                        txt = event.message
-                        status_line = f"[{phase_disp}] {server_col}: {txt}"
-
-                        # Error phase should be red
-                        if phase == "error" and _supports_color():
-                            status_line = _colorize(status_line, "31")
-                        print(status_line, file=sys.stderr)  # Status to stderr
-                except asyncio.CancelledError:
-                    return
-                except Exception as e:
-                    logger.debug(f"Status subscriber loop error: {e}")
-                    return
-            
-            status_task = asyncio.create_task(_status_subscriber())
+            status_task = asyncio.create_task(status_subscriber(status_queue))
         
         # Execute the request
         logger.info("Executing request...")
@@ -253,32 +194,11 @@ async def main_async(
                 status_bus.unsubscribe(status_queue)  # Not async!
         
         # Print the result
-        print("\n" + "="*50)
-        print("AGENT RESPONSE:")
-        print("="*50)
-        
-        # Extract summary or response from result
-        if isinstance(result, dict):
-            summary = result.get("summary", "")
-            if summary:
-                print(summary)
-            else:
-                # Print the whole result if no summary
-                import json
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-        else:
-            print(str(result))
-            
-        print("="*50)
+        print(format_result_output(result))
         
     except ValueError as e:
         # User-friendly error for common issues (agent not found, etc.)
-        error_msg = str(e)
-        if _supports_color():
-            error_msg = _colorize(f"ERROR: {error_msg}", "31")  # Red
-        else:
-            error_msg = f"ERROR: {error_msg}"
-        print(error_msg, file=sys.stderr)
+        print(format_error(str(e)), file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         logger.error(f"Agent execution failed: {e}", exc_info=True)
@@ -349,15 +269,14 @@ Examples:
     args = parser.parse_args()
     
     # Set color mode globally
-    global color_mode
     if args.no_color:
-        color_mode = "never"
+        set_color_mode("never")
     else:
-        color_mode = args.color
+        set_color_mode(args.color)
     
     # Initialize colorama on Windows for ANSI color support
     try:
-        if color_mode != "never" and sys.stdout.isatty():
+        if args.color != "never" and sys.stdout.isatty():
             import colorama
             colorama.init()
     except Exception as e:

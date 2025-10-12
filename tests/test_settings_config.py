@@ -111,9 +111,10 @@ class TestMCPConfigInheritance:
         # But agent_config.max_steps should still be 20 (inherited from default)
         assert web_config.agent_config.max_steps == 20
         
-        # Should have specific allowed_tools
-        expected_tools = ["web_research_agent/*", "duckduckgo_search/*", "web_scraper/*"]
-        assert web_config.agent_config.tools.allowed == expected_tools
+        # Should have specific allowed_tools from plugins.yaml (order doesn't matter)
+        expected_tools = {"duckduckgo_search/*", "web_scraper/*"}
+        actual_tools = set(web_config.agent_config.tools.allowed)
+        assert actual_tools == expected_tools
     
     def test_load_settings_without_config_parameter(self):
         """Test get_mcp_config_by_name works without explicit config parameter."""

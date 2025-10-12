@@ -12,10 +12,10 @@ from __future__ import annotations
 import logging
 from typing import Optional, Any, Tuple
 
-from .config.settings import AgentSystemConfig, get_mcp_config_by_name
-from .config.models import MCPConfig, AgentConfig
-from .mcp.base import MCPRegistry
-from .servers.agent.server import Agent
+from ..config.settings import AgentSystemConfig, get_mcp_config_by_name
+from ..config.models import MCPConfig, AgentConfig
+from ..mcp.base import MCPRegistry
+from ..servers.agent.server import Agent
 
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def get_agent_with_llm_override(
         
         # Get config-based agents
         if config.agents:
-            from .plugins.config_agent_discovery import discover_config_agents
+            from ..plugins.config_agent_discovery import discover_config_agents
             config_agents = discover_config_agents(config.agents)
             available_agents.extend(config_agents.keys())
         
@@ -96,8 +96,8 @@ def get_agent_with_llm_override(
         
         try:
             # Resolve profile to model config using the factory
-            from .llm.factory import resolve_llm_config_for_agent
-            from .llm.clients import make_llm
+            from ..llm.factory import resolve_llm_config_for_agent
+            from ..llm.clients import make_llm
             
             # Create temporary agent config with override profile
             temp_agent_config = AgentConfig(llm_profile=llm_profile)
@@ -149,7 +149,7 @@ async def create_and_register_agent(
     except KeyError:
         pass  # Agent doesn't exist, need to create it
     
-    from .plugins.config_agent_discovery import discover_config_agents
+    from ..plugins.config_agent_discovery import discover_config_agents
     
     # Try to get MCP config from plugins.servers first
     mcp_config = get_mcp_config_by_name(agent_name, config)

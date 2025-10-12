@@ -197,17 +197,15 @@ class TestBlockTool:
         # Create temporary config file
         config_file = tmp_path / "mcp.yaml"
         config_data = {
-            "mcp": {
-                "external_servers": {
-                    "remote_servers": {
-                        "test_server": {
-                            "enabled": True,
-                            "transport": "http",
-                            "url": "http://localhost:8000",
-                            "tools": {
-                                "allowed": ["tool1", "tool2"],
-                                "blocked": []
-                            }
+            "external_servers": {
+                "remote_servers": {
+                    "test_server": {
+                        "enabled": True,
+                        "transport": "http",
+                        "url": "http://localhost:8000",
+                        "tools": {
+                            "allowed": ["tool1", "tool2"],
+                            "blocked": []
                         }
                     }
                 }
@@ -222,7 +220,7 @@ class TestBlockTool:
         
         # Verify file was updated
         updated = yaml.safe_load(config_file.read_text())
-        server_tools = updated["mcp"]["external_servers"]["remote_servers"]["test_server"]["tools"]
+        server_tools = updated["external_servers"]["remote_servers"]["test_server"]["tools"]
         assert "tool1" in server_tools["blocked"]
         assert "tool1" not in server_tools["allowed"]
 
@@ -231,13 +229,11 @@ class TestBlockTool:
         """Test blocking tool that's already blocked."""
         config_file = tmp_path / "mcp.yaml"
         config_data = {
-            "mcp": {
-                "external_servers": {
-                    "remote_servers": {
-                        "test_server": {
-                            "tools": {
-                                "blocked": ["tool1"]
-                            }
+            "external_servers": {
+                "remote_servers": {
+                    "test_server": {
+                        "tools": {
+                            "blocked": ["tool1"]
                         }
                     }
                 }
@@ -267,17 +263,15 @@ class TestAllowTool:
         """Test successful tool allowing."""
         config_file = tmp_path / "mcp.yaml"
         config_data = {
-            "mcp": {
-                "external_servers": {
-                    "remote_servers": {
-                        "test_server": {
-                            "enabled": True,
-                            "transport": "http",
-                            "url": "http://localhost:8000",
-                            "tools": {
-                                "allowed": [],
-                                "blocked": ["tool1"]
-                            }
+            "external_servers": {
+                "remote_servers": {
+                    "test_server": {
+                        "enabled": True,
+                        "transport": "http",
+                        "url": "http://localhost:8000",
+                        "tools": {
+                            "allowed": [],
+                            "blocked": ["tool1"]
                         }
                     }
                 }
@@ -292,7 +286,7 @@ class TestAllowTool:
         
         # Verify file was updated
         updated = yaml.safe_load(config_file.read_text())
-        server_tools = updated["mcp"]["external_servers"]["remote_servers"]["test_server"]["tools"]
+        server_tools = updated["external_servers"]["remote_servers"]["test_server"]["tools"]
         assert "tool1" in server_tools["allowed"]
         assert "tool1" not in server_tools["blocked"]
 
@@ -301,13 +295,11 @@ class TestAllowTool:
         """Test allowing tool that's already allowed."""
         config_file = tmp_path / "mcp.yaml"
         config_data = {
-            "mcp": {
-                "external_servers": {
-                    "remote_servers": {
-                        "test_server": {
-                            "tools": {
-                                "allowed": ["tool1"]
-                            }
+            "external_servers": {
+                "remote_servers": {
+                    "test_server": {
+                        "tools": {
+                            "allowed": ["tool1"]
                         }
                     }
                 }
@@ -325,12 +317,10 @@ class TestAllowTool:
         """Test allowing tool when tools section doesn't exist."""
         config_file = tmp_path / "mcp.yaml"
         config_data = {
-            "mcp": {
-                "external_servers": {
-                    "remote_servers": {
-                        "test_server": {
-                            "enabled": True
-                        }
+            "external_servers": {
+                "remote_servers": {
+                    "test_server": {
+                        "enabled": True
                     }
                 }
             }
@@ -343,7 +333,7 @@ class TestAllowTool:
         
         # Verify tools section was created
         updated = yaml.safe_load(config_file.read_text())
-        assert "tools" in updated["mcp"]["external_servers"]["remote_servers"]["test_server"]
+        assert "tools" in updated["external_servers"]["remote_servers"]["test_server"]
 
 
 class TestGetToolStatus:
