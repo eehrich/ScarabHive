@@ -61,18 +61,21 @@ def set_session_manager(manager):
 @session_router.post("", response_model=Dict[str, str], status_code=status.HTTP_201_CREATED)
 async def create_session(
     request: CreateSessionRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Create a new conversation session."""
+    """Create a new conversation session (authenticated or anonymous)."""
     if not _session_manager:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Session manager not initialized"
         )
     
+    # Determine user_id: use username if authenticated, otherwise "anonymous"
+    user_id = current_user.username if current_user else "anonymous"
+    
     try:
         session = await _session_manager.create_session(
-            user_id=current_user.username,
+            user_id=user_id,
             title=request.title,
             agent_name=request.agent_name,
             llm_profile=request.llm_profile,
@@ -212,21 +215,24 @@ async def update_session(
 @session_router.delete("/{session_id}")
 async def delete_session(
     session_id: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: Optional[User] = Depends(get_optional_user),
     create_backup: bool = True
 ):
-    """Delete a session (with optional backup)."""
+    """Delete a session (with optional backup) - works for authenticated and anonymous users."""
     if not _session_manager:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Session manager not initialized"
         )
     
+    # Determine user_id: use username if authenticated, otherwise "anonymous"
+    user_id = current_user.username if current_user else "anonymous"
+    
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
         
         await _session_manager.delete_session(
-            current_user.username,
+            user_id,
             session_id,
             create_backup=create_backup
         )
