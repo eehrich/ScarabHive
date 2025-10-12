@@ -4,7 +4,7 @@ import json
 import pytest
 from unittest.mock import patch, AsyncMock
 
-from agent_system.cli import main
+from agent_system.agent_cli import main
 from agent_system.mcp.integration import MCPIntegration
 from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPServersConfig, MCPConfig, RemoteMCPConfig
 
@@ -65,8 +65,8 @@ def mock_mcp_integration():
 class TestCLIMCP:
     """Test CLI MCP external server management commands."""
 
-    @patch('agent_system.cli.load_settings')
-    @patch('agent_system.cli.MCPIntegration')
+    @patch('agent_system.agent_cli.load_settings')
+    @patch('agent_system.agent_cli.MCPIntegration')
     @patch('builtins.print')
     def test_mcp_list_no_servers(self, mock_print, mock_integration_class, mock_load_settings, mock_config):
         """Test mcp list command when no servers are configured."""
@@ -87,8 +87,8 @@ class TestCLIMCP:
         printed_args = [call.args[0] for call in mock_print.call_args_list]
         assert any("No external MCP servers configured" in arg for arg in printed_args)
 
-    @patch('agent_system.cli.load_settings')
-    @patch('agent_system.cli.MCPIntegration')
+    @patch('agent_system.agent_cli.load_settings')
+    @patch('agent_system.agent_cli.MCPIntegration')
     @patch('builtins.print')
     def test_mcp_list_json_format(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration):
         """Test mcp list command with JSON format."""
@@ -96,7 +96,7 @@ class TestCLIMCP:
         mock_integration_class.return_value = mock_mcp_integration
         
         # Call the _mcp_list_servers helper directly to avoid full CLI bootstrapping
-        from agent_system.cli import _mcp_list_servers
+        from agent_system.agent_cli import _mcp_list_servers
         args_obj = type('Args', (), {'out_format': 'json', 'no_probe': True})()
         import asyncio
         asyncio.run(_mcp_list_servers(mock_mcp_integration, args_obj))
@@ -117,8 +117,8 @@ class TestCLIMCP:
         assert json_output[0]['name'] == 'test_server'
         assert not json_output[0]['connected']
 
-    @patch('agent_system.cli.load_settings')
-    @patch('agent_system.cli.MCPIntegration')
+    @patch('agent_system.agent_cli.load_settings')
+    @patch('agent_system.agent_cli.MCPIntegration')
     @patch('builtins.print')
     def test_mcp_connect_server_not_found(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration):
         """Test mcp connect command with nonexistent server."""
@@ -144,8 +144,8 @@ class TestCLIMCP:
         assert 'error' in error_output
         assert 'not found in configuration' in error_output['error']
 
-    @patch('agent_system.cli.load_settings')
-    @patch('agent_system.cli.MCPIntegration')
+    @patch('agent_system.agent_cli.load_settings')
+    @patch('agent_system.agent_cli.MCPIntegration')
     @patch('builtins.print')
     def test_mcp_connect_missing_server_name(self, mock_print, mock_integration_class, mock_load_settings, mock_config):
         """Test mcp connect command without server name."""
@@ -171,8 +171,8 @@ class TestCLIMCP:
         assert 'error' in error_output
         assert 'server name required' in error_output['error']
 
-    @patch('agent_system.cli.load_settings')  
-    @patch('agent_system.cli.MCPIntegration')
+    @patch('agent_system.agent_cli.load_settings')  
+    @patch('agent_system.agent_cli.MCPIntegration')
     @patch('builtins.print')
     def test_mcp_status_specific_server(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration):
         """Test mcp status command for specific server."""
@@ -199,8 +199,8 @@ class TestCLIMCP:
         assert not status_output['connected']
         assert 'url' in status_output
 
-    @patch('agent_system.cli.load_settings')
-    @patch('agent_system.cli.MCPIntegration')
+    @patch('agent_system.agent_cli.load_settings')
+    @patch('agent_system.agent_cli.MCPIntegration')
     @patch('builtins.print')
     def test_mcp_test_server_disabled(self, mock_print, mock_integration_class, mock_load_settings, mock_config, mock_mcp_integration):
         """Test mcp test command with disabled server."""

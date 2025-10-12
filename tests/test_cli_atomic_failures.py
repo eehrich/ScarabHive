@@ -5,7 +5,7 @@ from pathlib import Path
 import builtins
 import pytest
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 def _make_cfg_file(tmp_path: Path):

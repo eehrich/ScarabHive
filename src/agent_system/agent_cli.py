@@ -1310,10 +1310,10 @@ def main() -> None:
         
         # Dynamically import users module from cli/ directory
         users_module_path = Path(__file__).parent / "cli" / "users.py"
-        spec = importlib.util.spec_from_file_location("agent_system.cli.users", users_module_path)
+        spec = importlib.util.spec_from_file_location("agent_system.agent_cli.users", users_module_path)
         if spec and spec.loader:
             users_module = importlib.util.module_from_spec(spec)
-            sys.modules["agent_system.cli.users"] = users_module
+            sys.modules["agent_system.agent_cli.users"] = users_module
             spec.loader.exec_module(users_module)
             users_app = users_module.app
         else:

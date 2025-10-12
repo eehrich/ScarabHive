@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 class DummyAgent:

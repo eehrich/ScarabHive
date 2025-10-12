@@ -5,7 +5,7 @@ from importlib import reload
 
 import pytest
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 def test_cli_no_args_prints_help(monkeypatch, capsys):

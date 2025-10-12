@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 def test_cli_plugins_table_pretty(monkeypatch, tmp_path, capsys):

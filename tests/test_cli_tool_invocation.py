@@ -13,7 +13,7 @@ def run_cli(prompt: str):
     # doesn't observe leaked handles from the CLI process. Use cwd=None so
     # the caller's monkeypatch can change working directory as needed.
     import subprocess as _subproc
-    args = [sys.executable, "-m", "agent_system.cli", "--no-status", "--color", "never", prompt]
+    args = [sys.executable, "-m", "agent_system.agent_cli", "--no-status", "--color", "never", prompt]
     try:
         proc = _subproc.run(args, cwd=None, capture_output=True, text=True, timeout=30)
         rc = proc.returncode

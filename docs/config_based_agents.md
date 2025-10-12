@@ -83,16 +83,16 @@ system_prompt: |
 
 ```bash
 # Validate your configuration
-python -m agent_system.cli config-agents validate my_financial_analyst
+python -m agent_system.agent_cli config-agents validate my_financial_analyst
 
 # List all config agents
-python -m agent_system.cli config-agents list
+python -m agent_system.agent_cli config-agents list
 
 # View detailed information
-python -m agent_system.cli config-agents show my_financial_analyst
+python -m agent_system.agent_cli config-agents show my_financial_analyst
 
 # Use your agent
-python -m agent_system.cli run my_financial_analyst "Analyze AAPL stock performance"
+python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock performance"
 ```
 
 ## Configuration Reference
@@ -306,7 +306,7 @@ config_agents:
 ### List All Config Agents
 
 ```bash
-python -m agent_system.cli config-agents list
+python -m agent_system.agent_cli config-agents list
 ```
 
 **Output:**
@@ -323,13 +323,13 @@ Config-Based Agents:
 
 **JSON Output:**
 ```bash
-python -m agent_system.cli config-agents list --format json
+python -m agent_system.agent_cli config-agents list --format json
 ```
 
 ### Show Agent Details
 
 ```bash
-python -m agent_system.cli config-agents show financial_analyst
+python -m agent_system.agent_cli config-agents show financial_analyst
 ```
 
 **Output:**
@@ -365,10 +365,10 @@ Metadata:
 
 ```bash
 # Validate all config agents
-python -m agent_system.cli config-agents validate
+python -m agent_system.agent_cli config-agents validate
 
 # Validate specific agent
-python -m agent_system.cli config-agents validate financial_analyst
+python -m agent_system.agent_cli config-agents validate financial_analyst
 ```
 
 **Output:**
@@ -515,13 +515,13 @@ metadata:
 ### 8. **Test Before Deploying**
 ```bash
 # Validate configuration
-python -m agent_system.cli config-agents validate my_agent
+python -m agent_system.agent_cli config-agents validate my_agent
 
 # Test with simple query
-python -m agent_system.cli run my_agent "Test query"
+python -m agent_system.agent_cli run my_agent "Test query"
 
 # Check tool access
-python -m agent_system.cli config-agents show my_agent
+python -m agent_system.agent_cli config-agents show my_agent
 ```
 
 ## Troubleshooting
@@ -532,7 +532,7 @@ python -m agent_system.cli config-agents show my_agent
 
 **Solutions:**
 1. Check `enabled: true` in config
-2. Validate YAML syntax: `python -m agent_system.cli config-agents validate`
+2. Validate YAML syntax: `python -m agent_system.agent_cli config-agents validate`
 3. Restart application to reload config
 4. Check for duplicate names
 
@@ -564,7 +564,7 @@ python -m agent_system.cli config-agents show my_agent
 **Solutions:**
 1. Check `tools.allowed` includes needed plugins/tools
 2. Verify `tools.blocked` doesn't prevent access
-3. Confirm tools are actually available: `python -m agent_system.cli plugins list`
+3. Confirm tools are actually available: `python -m agent_system.agent_cli plugins list`
 4. Test with wildcards: `plugin_name/*` allows all tools from plugin
 
 ### Prompt Template Not Loading
@@ -653,8 +653,8 @@ Keep plugin if your agent:
 
 3. **Test thoroughly:**
    ```bash
-   python -m agent_system.cli config-agents validate my_agent
-   python -m agent_system.cli run my_agent "Test query"
+   python -m agent_system.agent_cli config-agents validate my_agent
+   python -m agent_system.agent_cli run my_agent "Test query"
    ```
 
 4. **Remove plugin code** once validated

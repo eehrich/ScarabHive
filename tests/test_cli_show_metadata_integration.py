@@ -2,7 +2,7 @@ import json
 import io
 import sys
 from contextlib import redirect_stdout, redirect_stderr
-import agent_system.cli as cli
+import agent_system.agent_cli as cli
 
 
 def test_cli_plugins_list_show_metadata(tmp_path, monkeypatch):

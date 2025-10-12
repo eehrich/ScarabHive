@@ -47,7 +47,7 @@ Homepage = "http://127.0.0.1:8000"
 
 [project.scripts]
 backlog = "scripts.backlog:main"
-agent-cli = "agent_system.cli:main"
+agent-cli = "agent_system.agent_cli:main"
 agent-run = "agent_system.agent_run:main"
 agent-api = "agent_system.agent.interface_api:run"
 mcp-duckduckgo-search = "plugins.duckduckgo_search.__main__:cli_main"

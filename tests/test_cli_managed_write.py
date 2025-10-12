@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import sys
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 def test_enable_writes_managed_file(monkeypatch, tmp_path, capsys):

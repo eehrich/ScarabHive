@@ -127,11 +127,11 @@ def run_cli_command(workspace_path: Path, command: List[str], env: Dict[str, str
     # run it in-process to avoid subprocess fragility and ensure config
     # files in the workspace are used.
     try:
-        if command[0] == "python" and len(command) >= 3 and command[1] == "-m" and command[2] == "agent_system.cli":
+        if command[0] == "python" and len(command) >= 3 and command[1] == "-m" and command[2] == "agent_system.agent_cli":
             # In-process invocation
             import io
             from contextlib import redirect_stdout, redirect_stderr
-            import agent_system.cli as cli
+            import agent_system.agent_cli as cli
 
             argv_backup = sys.argv[:]
             out_buf = io.StringIO()
@@ -224,7 +224,7 @@ class TestAgentCliPlugins:
         config_path = temp_workspace / "config" / "config.yaml"
         result = run_cli_command(
             temp_workspace,
-            ["python", "-m", "agent_system.cli", "--config", str(config_path), "plugins", "list"]
+            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "list"]
         )
 
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
@@ -236,7 +236,7 @@ class TestAgentCliPlugins:
         config_path = temp_workspace / "config" / "config.yaml"
         result = run_cli_command(
             temp_workspace,
-            ["python", "-m", "agent_system.cli", "--config", str(config_path), "plugins", "list", "--format", "json"]
+            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "list", "--format", "json"]
         )
 
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
@@ -259,7 +259,7 @@ class TestAgentCliPlugins:
         config_path = temp_workspace / "config" / "config.yaml"
         result = run_cli_command(
             temp_workspace,
-            ["python", "-m", "agent_system.cli", "--config", str(config_path), "plugins", "info", "llm_router"]
+            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "info", "llm_router"]
         )
 
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
@@ -278,7 +278,7 @@ class TestAgentCliPlugins:
         # First disable a plugin that's currently enabled
         result = run_cli_command(
             temp_workspace,
-            ["python", "-m", "agent_system.cli", "--config", str(config_path), "plugins", "disable", "web_scraper", "--yes"]
+            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "disable", "web_scraper", "--yes"]
         )
 
         assert result.returncode == 0, f"Disable command failed: {result.stderr}"
@@ -308,7 +308,7 @@ class TestAgentCliPlugins:
         # Re-enable the plugin
         result = run_cli_command(
             temp_workspace,
-            ["python", "-m", "agent_system.cli", "--config", str(config_path), "plugins", "enable", "web_scraper", "--yes"]
+            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "enable", "web_scraper", "--yes"]
         )
 
         assert result.returncode == 0, f"Enable command failed: {result.stderr}"
@@ -417,7 +417,7 @@ class TestPluginConfigurationIntegration:
         # Test that the CLI reflects the config changes using in-process invocation
         result = run_cli_command(
             temp_workspace,
-            ["python", "-m", "agent_system.cli", "--config", str(config_path), "plugins", "list", "--format", "json"]
+            ["python", "-m", "agent_system.agent_cli", "--config", str(config_path), "plugins", "list", "--format", "json"]
         )
 
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
@@ -467,7 +467,7 @@ class TestPluginConfigurationIntegration:
         # Test that plugins are still discovered
         result = run_cli_command(
             temp_workspace,
-            ["python", "-m", "agent_system.cli", "--config", "config/config.yaml", "plugins", "list", "--format", "json"]
+            ["python", "-m", "agent_system.agent_cli", "--config", "config/config.yaml", "plugins", "list", "--format", "json"]
         )
 
         out = result.stdout or ""

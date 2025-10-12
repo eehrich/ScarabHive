@@ -2148,7 +2148,7 @@ PLUGIN_FACTORY = MyPluginServer
 **Plugin not discovered:**
 - Check `plugin.yaml` exists and has correct `entrypoint`
 - Verify `PLUGIN_FACTORY` is defined in your server module
-- Use `python -m agent_system.cli plugins` to list discovered plugins
+- Use `python -m agent_system.agent_cli plugins` to list discovered plugins
 
 **Tools not working:**
 - Validate `schema.yaml` syntax (use online YAML validator)
@@ -2188,7 +2188,7 @@ print(result)
 
 **Check plugin discovery:**
 ```bash
-python -m agent_system.cli plugins list --format json
+python -m agent_system.agent_cli plugins list --format json
 ```
 
 **Validate schema:**
@@ -2205,7 +2205,7 @@ print(schema)
 - Check existing plugins in `src/plugins/` for examples
 - Read the MCP specification for protocol details  
 - Check logs in `logs/` directory for error details
-- Use `python -m agent_system.cli plugins --help` for CLI options
+- Use `python -m agent_system.agent_cli plugins --help` for CLI options
 
 ---
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 def test_cli_plugins_list(monkeypatch, tmp_path, capsys):

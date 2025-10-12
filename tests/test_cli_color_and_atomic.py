@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 import sys
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 def test_no_color_and_always_color(monkeypatch, capsys):

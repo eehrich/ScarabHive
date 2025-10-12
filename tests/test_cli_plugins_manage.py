@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from agent_system import cli
+from agent_system import agent_cli as cli
 
 
 def _write_cfg(tmp_path: Path, data: dict):

@@ -5,7 +5,7 @@ import yaml
 
 
 def run_cli(args):
-    cmd = [sys.executable, "-m", "agent_system.cli"] + args
+    cmd = [sys.executable, "-m", "agent_system.agent_cli"] + args
     proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -67,7 +67,7 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     # call the CLI helper directly with a mock MCPIntegration so we can control
     # configured_external_servers and run the async helper to update the file.
     import asyncio
-    from agent_system.cli import _allow_server_tool, _block_server_tool
+    from agent_system.agent_cli import _allow_server_tool, _block_server_tool
     from agent_system.services import ToolService
 
     class DummyIntegration:
