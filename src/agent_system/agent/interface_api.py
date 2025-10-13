@@ -312,19 +312,40 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                     overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
                     if isinstance(overrides, dict) and overrides:
-                        needs_copy = any(k in overrides for k in ('allowed_tools', 'blocked_tools')) or 'max_steps' in server_cfg
+                        # Check if we need to update tools config
+                        tools_cfg = overrides.get('tools', {})
+                        needs_copy = (
+                            ('allowed' in tools_cfg or 'blocked' in tools_cfg) or 
+                            'max_steps' in server_cfg
+                        )
                         if needs_copy:
                             updates = {}
-                            if overrides.get('allowed_tools') is not None and getattr(selected_agent.agent_config, 'allowed_tools', None) is None:
-                                try:
-                                    updates['allowed_tools'] = list(overrides.get('allowed_tools') or [])
-                                except Exception as e:
-                                    logger.debug(f"Failed to apply allowed_tools override: {e}")
-                            if overrides.get('blocked_tools') is not None and getattr(selected_agent.agent_config, 'blocked_tools', None) is None:
-                                try:
-                                    updates['blocked_tools'] = list(overrides.get('blocked_tools') or [])
-                                except Exception as e:
-                                    logger.debug(f"Failed to apply blocked_tools override: {e}")
+                            # Update tools.allowed if specified and agent doesn't have it set
+                            if 'allowed' in tools_cfg:
+                                agent_tools = selected_agent.agent_config.tools if selected_agent.agent_config.tools else None
+                                if agent_tools is None or not agent_tools.allowed:
+                                    try:
+                                        from ..config.models import ToolConfig
+                                        new_tools = ToolConfig(
+                                            allowed=tools_cfg.get('allowed', []),
+                                            blocked=agent_tools.blocked if agent_tools else []
+                                        )
+                                        updates['tools'] = new_tools
+                                    except Exception as e:
+                                        logger.debug(f"Failed to apply tools.allowed override: {e}")
+                            # Update tools.blocked if specified and agent doesn't have it set
+                            if 'blocked' in tools_cfg and 'tools' not in updates:
+                                agent_tools = selected_agent.agent_config.tools if selected_agent.agent_config.tools else None
+                                if agent_tools is None or not agent_tools.blocked:
+                                    try:
+                                        from ..config.models import ToolConfig
+                                        new_tools = ToolConfig(
+                                            allowed=agent_tools.allowed if agent_tools else [],
+                                            blocked=tools_cfg.get('blocked', [])
+                                        )
+                                        updates['tools'] = new_tools
+                                    except Exception as e:
+                                        logger.debug(f"Failed to apply tools.blocked override: {e}")
                             if 'max_steps' in server_cfg and isinstance(server_cfg.get('max_steps'), int):
                                 try:
                                     updates['max_steps'] = int(server_cfg.get('max_steps'))
@@ -356,25 +377,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logging.getLogger(__name__).warning(
                     "No server configuration found for agent '%s', using defaults", entry_name
                 )
-                
-            # Apply agent-specific overrides from server config
-            server_agent_cfg = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
-            if isinstance(server_agent_cfg, dict):
-                updates = {}
-                if server_agent_cfg.get('allowed_tools') and not config.allowed_tools:
-                    try:
-                        updates['allowed_tools'] = list(server_agent_cfg.get('allowed_tools'))
-                    except Exception as e:
-                        logger.debug(f"Failed to apply allowed_tools from server config: {e}")
-                if server_agent_cfg.get('blocked_tools') and not config.blocked_tools:
-                    try:
-                        updates['blocked_tools'] = list(server_agent_cfg.get('blocked_tools'))
-                    except Exception as e:
-                        logger.debug(f"Failed to apply blocked_tools from server config: {e}")
-                if updates:
-                    config = config.model_copy(update=updates)
         except Exception as e:
-            logger.debug(f"Failed to apply server config overrides: {e}")
+            logger.debug(f"Failed to load server config: {e}")
         
         # Build MCPConfig for agent - use ConfigService
         from agent_system.config.models import MCPConfig, AgentConfig, ToolConfig

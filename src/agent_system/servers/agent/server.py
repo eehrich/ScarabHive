@@ -772,7 +772,7 @@ class Agent(MCPServer):
 
         # Apply allow-list (guaranteed non-empty here)
         try:
-            blocked_patterns = getattr(self.agent_config, 'blocked_tools', None)
+            blocked_patterns = self.agent_config.tools.blocked if self.agent_config.tools else None
         except Exception as e:
             logger.warning(f"Failed to get blocked_patterns from agent config: {e}", exc_info=True)
             blocked_patterns = None
