@@ -24,9 +24,9 @@ agents:
           - "basic_agent/*"
       
       # Custom descriptions for this agent's own tools
-      tool_descriptions:
-        meta_agent_execute_task: "Delegate tasks to specialized agents (sysadmin, web research) and orchestrate complex multi-agent workflows"
-        meta_agent_list_tools: "List all available specialized agents and tools for task delegation"
+      #tool_descriptions:
+      #  meta_agent_execute_task: "Delegate tasks to specialized agents (sysadmin, web research) and orchestrate complex multi-agent workflows"
+      #  meta_agent_list_tools: "List all available specialized agents and tools for task delegation"
 
       system_prompt: |
         You are a helpful AI assistant to delegate tasks to specialized agents and manage complex workflows.
