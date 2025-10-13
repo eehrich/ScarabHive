@@ -301,14 +301,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent = candidate
                 # Apply server-level configuration overrides
                 try:
-                    # Try to get server config from ConfigService
-                    server_mcp = _config_service.get_mcp_server_config(entry_name, config)
-                    server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
-                    
-                    if not server_cfg:
-                        # Try agent config
-                        agent_cfg = _config_service.get_agent_config(entry_name, config)
-                        server_cfg = agent_cfg or {}
+                    # Check if this is a config-based agent first, then fallback to MCP server config
+                    agent_cfg = _config_service.get_agent_config(entry_name, config)
+                    if agent_cfg:
+                        server_cfg = agent_cfg
+                    else:
+                        # Not a config-based agent, try MCP server config
+                        server_mcp = _config_service.get_mcp_server_config(entry_name, config)
+                        server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
 
                     overrides = server_cfg.get('agent_config', {}) if isinstance(server_cfg, dict) else {}
                     if isinstance(overrides, dict) and overrides:
@@ -343,14 +343,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     if selected_agent is None:
         from ..servers.agent.server import Agent as CoreAgent
         try:
-            # Try to get server config from ConfigService
-            server_mcp = _config_service.get_mcp_server_config(entry_name, config)
-            server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
-            
-            if not server_cfg:
-                # Try agent config
-                agent_cfg = _config_service.get_agent_config(entry_name, config)
-                server_cfg = agent_cfg or {}
+            # Check if this is a config-based agent first, then fallback to MCP server config
+            agent_cfg = _config_service.get_agent_config(entry_name, config)
+            if agent_cfg:
+                server_cfg = agent_cfg
+            else:
+                # Not a config-based agent, try MCP server config
+                server_mcp = _config_service.get_mcp_server_config(entry_name, config)
+                server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
             
             if not server_cfg:
                 logging.getLogger(__name__).warning(
