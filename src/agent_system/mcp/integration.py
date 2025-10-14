@@ -101,6 +101,38 @@ class MCPIntegration:
             if server:
                 self.http_server.register_server(server_name, server)
 
+        # Register hooks from plugins
+        from ..plugins.discovery import register_plugin_hooks
+        from ..hooks import load_hooks_config
+        
+        hooks_config = load_hooks_config()
+        
+        for server_name in self.plugin_registry.list_servers():
+            server = self.plugin_registry.get_server(server_name)
+            
+            if server and hasattr(server, 'plugin_schema') and server.plugin_schema:
+                plugin_schema = server.plugin_schema
+                
+                if 'hooks' in plugin_schema:
+                    # Get the actual plugin instance (unwrap PluginMCPAdapter)
+                    plugin_instance = server.plugin_server if hasattr(server, 'plugin_server') else server
+                    
+                    # For hybrid plugins, get the hooks_plugin attribute
+                    if hasattr(plugin_instance, 'hooks_plugin'):
+                        plugin_instance = plugin_instance.hooks_plugin
+                    
+                    try:
+                        registered_hooks = await register_plugin_hooks(
+                            plugin_name=server_name,
+                            plugin_instance=plugin_instance,
+                            metadata=plugin_schema,
+                            hooks_config=hooks_config
+                        )
+                        if registered_hooks:
+                            logger.info(f"Registered {len(registered_hooks)} hook(s) for plugin '{server_name}': {registered_hooks}")
+                    except Exception as e:
+                        logger.error(f"Failed to register hooks for plugin '{server_name}': {e}", exc_info=True)
+
         # Connect to external MCP servers from new config format
         if config.external_servers and config.external_servers.remote_servers:
             remote_servers = config.external_servers.remote_servers

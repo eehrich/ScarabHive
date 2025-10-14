@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Check if all required modules are loaded
-  const requiredModules = ['PanelManager', 'PluginManager', 'MCP', 'Status', 'Debug', 'ContextDebug', 'Selectors'];
+  const requiredModules = ['PanelManager', 'PluginManager', 'MCP', 'Status', 'Debug', 'Selectors'];
   const missingModules = requiredModules.filter(module => !window.AgentSystem[module]);
   
   if (missingModules.length > 0) {
@@ -32,7 +32,6 @@ document.addEventListener('DOMContentLoaded', function() {
   const statusBtn = document.getElementById('statusToggleBtn');
   const mcpBtn = document.getElementById('mcpToggleBtn');
   const debugBtn = document.getElementById('debugToggleBtn');
-  const contextDebugBtn = document.getElementById('contextDebugToggleBtn');
   
   if (statusBtn) {
     statusBtn.addEventListener('click', function() {
@@ -49,12 +48,6 @@ document.addEventListener('DOMContentLoaded', function() {
   if (debugBtn) {
     debugBtn.addEventListener('click', function() {
       window.AgentSystem.PanelManager.togglePanel('floatingDebugPanel', () => window.AgentSystem.Debug.showPanel());
-    });
-  }
-  
-  if (contextDebugBtn) {
-    contextDebugBtn.addEventListener('click', function() {
-      window.AgentSystem.PanelManager.togglePanel('floatingContextDebugPanel', () => window.AgentSystem.ContextDebug.showPanel());
     });
   }
   

@@ -11,9 +11,15 @@ from plugins.context_summarizer.plugin import PLUGIN_FACTORY
 @pytest.fixture
 def summarizer_plugin():
     """Create context summarizer plugin instance."""
-    # PLUGIN_FACTORY returns tuple (hooks_plugin, web_factory) for hybrid plugin
-    hooks_plugin, _web_factory = PLUGIN_FACTORY()
-    return hooks_plugin
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    
+    # Create minimal configs
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig()
+    
+    # PLUGIN_FACTORY is now a class
+    plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
+    return plugin.hooks_plugin  # Return the hooks component
 
 
 @pytest.fixture

@@ -16,8 +16,6 @@ from ...llm.models import ChatMessage
 from ...utils.prompt_renderer import render_prompts, get_datetime_context
 from jinja2 import Template
 from ...llm.text_sanitizer import sanitize_for_llm
-# Context management is now handled by hook plugins (context_optimizer, context_summarizer)
-from ...context.agent_tracker import register_agent_for_tracking
 from ...mcp.status import (
     status_scope,
     StatusScope,
@@ -27,7 +25,6 @@ from ...mcp.status import (
 from .components.mcp_integration import MCPIntegrationManager
 from .components.tool_execution import ToolExecutionManager
 from .components.status_forwarding import StatusEventForwarder
-# ContextManagementHandler removed - context management now handled by hook plugins
 
 
 logger = logging.getLogger(__name__)
@@ -149,11 +146,6 @@ class Agent(MCPServer):
         # Centralized internal tool-call counter (used to generate per-tool suffixes)
         self._internal_tool_counter = 0
         self._internal_tool_counter_lock = asyncio.Lock()
-
-        # Register agent with context tracker
-        # Context window is now managed by LLM instance, not ContextManager
-        context_window = self.llm.context_window if self.llm and hasattr(self.llm, "context_window") else 128000
-        register_agent_for_tracking(name, name, context_window)
 
         # Track current conversation messages for debugging
         self._current_messages: List[ChatMessage] = []
@@ -1142,28 +1134,20 @@ class Agent(MCPServer):
                     yield {"type": "end"}
                     return
                 except Exception as e:
-                    # Check if this is a context length exceeded error
-                    from agent_system.context.exceptions import ContextLengthExceededError
-                    if isinstance(e, ContextLengthExceededError):
-                        logger.warning("Context length exceeded - context management is handled by hook plugins (context_optimizer, context_summarizer)")
-                        # Return empty response to trigger agent stop (hooks should prevent this)
-                        llm_out = {"assistant": {"role": "assistant", "content": ""}}
-                    else:
-                        # Check if this is a cancellation exception
-                        error_str = str(e).lower()
-                        if "cancelled" in error_str or "timeout" in error_str:
-                            logger.info(f"Request {request_id} cancelled during LLM call: {e}")
-                            # Signal cancellation using status contexts
-                            await status_worker.error(f"cancelled during LLM call: {e}", 
-                                                    meta={"step": step + 1, "reason": "cancelled"})
-                            await status_coordinator.error("cancelled during LLM call", 
-                                                         meta={"step": step + 1, "reason": "cancelled"})
-                            yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
-                            yield {"type": "end"}
-                            return
-                        
-                        # Re-raise other exceptions
-                        raise
+                    error_str = str(e).lower()
+                    if "cancelled" in error_str or "timeout" in error_str:
+                        logger.info(f"Request {request_id} cancelled during LLM call: {e}")
+                        # Signal cancellation using status contexts
+                        await status_worker.error(f"cancelled during LLM call: {e}", 
+                                                meta={"step": step + 1, "reason": "cancelled"})
+                        await status_coordinator.error("cancelled during LLM call", 
+                                                     meta={"step": step + 1, "reason": "cancelled"})
+                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
+                        yield {"type": "end"}
+                        return
+                    
+                    # Re-raise other exceptions
+                    raise
                 
                 # Drain any messages that arrived during LLM call
                 messages = await self._drain_appended_messages(request_id, messages)

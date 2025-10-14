@@ -124,6 +124,22 @@ plugins:
     user_management:
       type: user_management
       enabled: true
+    
+    context_summarizer:
+      type: context_summarizer
+      enabled: true
+    
+    context_optimizer:
+      type: context_optimizer
+      enabled: true
+    
+    context_usage_tracker:
+      type: context_usage_tracker
+      enabled: true
+    
+    request_logger:
+      type: request_logger
+      enabled: true
 
 # ================================
 # Hook Configuration

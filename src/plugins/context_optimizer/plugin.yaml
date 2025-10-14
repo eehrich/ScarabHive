@@ -5,7 +5,7 @@ description: >
   truncating long messages, and ensuring context stays within token limits.
 author: AgentSystem Team
 enabled: true
-type: hybrid
+type: hooks
 entrypoint: plugin:PLUGIN_FACTORY
 category: hooks
 

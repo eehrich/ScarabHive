@@ -28,21 +28,49 @@ class ContextSummarizerWebFactory:
             summarization_history: Shared list for tracking summarization events
         """
         self.summarization_history = summarization_history
-        self.router = APIRouter()
+        self.router = APIRouter(prefix="/plugins/context_summarizer")
         
-        # Register routes
+        # Register API routes
         self.router.add_api_route(
-            "/api/summarization/history",
+            "/history",
             self.get_history,
             methods=["GET"],
             response_model=None
         )
         self.router.add_api_route(
-            "/api/summarization/stats",
+            "/stats",
             self.get_stats,
             methods=["GET"],
             response_model=None
         )
+        # Register panel route
+        self.router.add_api_route(
+            "/panel",
+            self.render_panel,
+            methods=["GET"],
+            response_class=HTMLResponse
+        )
+    
+    def get_web_router(self) -> APIRouter:
+        """Return FastAPI router for web UI."""
+        return self.router
+    
+    def get_static_assets(self) -> str | None:
+        """Return path to static assets directory, if any."""
+        # No static assets for context summarizer
+        return None
+    
+    def get_panels(self) -> List[Dict[str, Any]]:
+        """Return UI panel definitions."""
+        return [
+            {
+                "id": "context_summary",
+                "title": "Context Summary",
+                "icon": "📝",
+                "endpoint": "/plugins/context_summarizer/panel",
+                "category": "monitoring"
+            }
+        ]
     
     async def get_history(self, limit: int = 100) -> Dict[str, Any]:
         """Get recent summarization events.
@@ -103,6 +131,32 @@ class ContextSummarizerWebFactory:
                 'success': False,
                 'error': str(e)
             }
+    
+    async def render_panel(self, request: Request) -> HTMLResponse:
+        """Render the summarization history panel.
+        
+        Args:
+            request: FastAPI request object
+            
+        Returns:
+            HTML response with rendered panel
+        """
+        from pathlib import Path
+        
+        # Load template
+        template_path = Path(__file__).parent / "templates" / "panel.html"
+        
+        if not template_path.exists():
+            return HTMLResponse(
+                content=f"<html><body><h1>Error</h1><p>Template not found: {template_path}</p></body></html>",
+                status_code=500
+            )
+        
+        # Read and return template (simple version without Jinja2 for now)
+        with open(template_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        return HTMLResponse(content=html_content)
     
     def create_panel(self, templates: Jinja2Templates) -> tuple[str, callable]:
         """Create web UI panel for plugin manager.

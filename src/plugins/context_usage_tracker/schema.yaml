@@ -1,0 +1,37 @@
+# Hook definitions for context_usage_tracker plugin
+hooks:
+  - name: track_usage
+    type: post_llm_call
+    enabled: true
+    timeout: 5.0
+    description: "Records context usage statistics after each LLM call"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
+web_ui:
+  button:
+    enabled: true
+    icon: "📊"
+    label: "Context Usage"
+    tooltip: "View context and token usage statistics"
+    
+  panel:
+    enabled: true
+    title: "Context Usage Debug"
+    type: "iframe"
+    default_height: 600
+    
+  endpoints:
+    - path: "/plugins/context_usage_tracker/panel"
+      method: "GET"
+      description: "Context usage debug panel"
+    - path: "/plugins/context_usage_tracker/usage"
+      method: "GET"
+      description: "Get current usage statistics"
+    - path: "/plugins/context_usage_tracker/history"
+      method: "GET"
+      description: "Get usage history"
+    - path: "/plugins/context_usage_tracker/clear"
+      method: "POST"
+      description: "Clear usage history"

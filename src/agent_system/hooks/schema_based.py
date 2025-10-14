@@ -147,7 +147,7 @@ class SchemaBasedPluginHook(PluginHook):
         
         if not hook_def:
             logger.warning(f"Hook '{hook_name}' not found in schema for {self.__class__.__name__}")
-            return HookResult(modified_context=context)
+            return HookResult(success=True, modified=False, context=context)
         
         # Convention: method name = hook name
         handler = getattr(self, hook_name, None)
@@ -162,94 +162,88 @@ class SchemaBasedPluginHook(PluginHook):
                 f"Handler '{hook_name}' on {self.__class__.__name__} is not callable"
             )
         
-        # Execute handler
         return await handler(context)
     
-    # Lifecycle hook methods that dispatch to schema-defined handlers
-    
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
-        """Pre-LLM hook - dispatches to handlers for PRE_LLM_CALL hooks."""
-        # Find all PRE_LLM_CALL hooks and execute their handlers
         results = []
         for hook in self._hooks:
-            if hook.get("type") == "PRE_LLM_CALL" and hook.get("enabled", True):
+            hook_type = hook.get("type", "").upper()
+            if hook_type == "PRE_LLM_CALL" and hook.get("enabled", True):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
-                # Chain context modifications
-                if result.modified_context:
-                    context = result.modified_context
+                if result.modified and result.context:
+                    context = result.context
         
-        # Return last result (with accumulated modifications)
-        return results[-1] if results else HookResult(modified_context=context)
+        return results[-1] if results else HookResult(success=True, modified=False, context=context)
     
     async def on_post_llm_call(self, context: HookContext) -> HookResult:
-        """Post-LLM hook - dispatches to handlers for POST_LLM_CALL hooks."""
         results = []
         for hook in self._hooks:
-            if hook.get("type") == "POST_LLM_CALL" and hook.get("enabled", True):
+            hook_type = hook.get("type", "").upper()
+            if hook_type == "POST_LLM_CALL" and hook.get("enabled", True):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
-                if result.modified_context:
-                    context = result.modified_context
+                if result.modified and result.context:
+                    context = result.context
         
-        return results[-1] if results else HookResult(modified_context=context)
+        return results[-1] if results else HookResult(success=True, modified=False, context=context)
     
     async def on_pre_tool_call(self, context: HookContext) -> HookResult:
-        """Pre-tool hook - dispatches to handlers for PRE_TOOL_CALL hooks."""
         results = []
         for hook in self._hooks:
-            if hook.get("type") == "PRE_TOOL_CALL" and hook.get("enabled", True):
+            hook_type = hook.get("type", "").upper()
+            if hook_type == "PRE_TOOL_CALL" and hook.get("enabled", True):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
-                if result.modified_context:
-                    context = result.modified_context
+                if result.modified and result.context:
+                    context = result.context
         
-        return results[-1] if results else HookResult(modified_context=context)
+        return results[-1] if results else HookResult(success=True, modified=False, context=context)
     
     async def on_post_tool_call(self, context: HookContext) -> HookResult:
-        """Post-tool hook - dispatches to handlers for POST_TOOL_CALL hooks."""
         results = []
         for hook in self._hooks:
-            if hook.get("type") == "POST_TOOL_CALL" and hook.get("enabled", True):
+            hook_type = hook.get("type", "").upper()
+            if hook_type == "POST_TOOL_CALL" and hook.get("enabled", True):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
-                if result.modified_context:
-                    context = result.modified_context
+                if result.modified and result.context:
+                    context = result.context
         
-        return results[-1] if results else HookResult(modified_context=context)
+        return results[-1] if results else HookResult(success=True, modified=False, context=context)
     
     async def on_format_output(self, context: HookContext) -> HookResult:
-        """Format output hook - dispatches to handlers for FORMAT_OUTPUT hooks."""
         results = []
         for hook in self._hooks:
-            if hook.get("type") == "FORMAT_OUTPUT" and hook.get("enabled", True):
+            hook_type = hook.get("type", "").upper()
+            if hook_type == "FORMAT_OUTPUT" and hook.get("enabled", True):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
-                if result.modified_context:
-                    context = result.modified_context
+                if result.modified and result.context:
+                    context = result.context
         
-        return results[-1] if results else HookResult(modified_context=context)
+        return results[-1] if results else HookResult(success=True, modified=False, context=context)
     
     async def on_session_start(self, context: HookContext) -> HookResult:
-        """Session start hook - dispatches to handlers for SESSION_START hooks."""
         results = []
         for hook in self._hooks:
-            if hook.get("type") == "SESSION_START" and hook.get("enabled", True):
+            hook_type = hook.get("type", "").upper()
+            if hook_type == "SESSION_START" and hook.get("enabled", True):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
-                if result.modified_context:
-                    context = result.modified_context
+                if result.modified and result.context:
+                    context = result.context
         
-        return results[-1] if results else HookResult(modified_context=context)
+        return results[-1] if results else HookResult(success=True, modified=False, context=context)
     
     async def on_session_end(self, context: HookContext) -> HookResult:
-        """Session end hook - dispatches to handlers for SESSION_END hooks."""
         results = []
         for hook in self._hooks:
-            if hook.get("type") == "SESSION_END" and hook.get("enabled", True):
+            hook_type = hook.get("type", "").upper()
+            if hook_type == "SESSION_END" and hook.get("enabled", True):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
-                if result.modified_context:
-                    context = result.modified_context
+                if result.modified and result.context:
+                    context = result.context
         
-        return results[-1] if results else HookResult(modified_context=context)
+        return results[-1] if results else HookResult(success=True, modified=False, context=context)

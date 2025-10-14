@@ -154,20 +154,6 @@ async def get_context_stats():
         logger.error(f"Error getting context stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/api/agents/stats")
-async def get_agent_stats():
-    """Get per-agent context tracking statistics."""
-    try:
-        from agent_system.context.agent_tracker import get_all_agent_stats
-        stats = get_all_agent_stats()
-        return {
-            "agent_count": len(stats),
-            "agents": stats
-        }
-    except Exception as e:
-        logger.error(f"Error getting agent stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @router.get("/api/health")
 async def health_check():
     """Health check endpoint."""

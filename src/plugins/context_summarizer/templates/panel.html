@@ -347,10 +347,10 @@
 
         async function refreshHistory() {
             try {
-                // Fetch history and stats
+                // Simple relative URLs work fine in iframe
                 const [historyResponse, statsResponse] = await Promise.all([
-                    fetch('/api/plugins/context_summarizer/api/summarization/history?limit=100'),
-                    fetch('/api/plugins/context_summarizer/api/summarization/stats')
+                    fetch('/plugins/context_summarizer/history?limit=100'),
+                    fetch('/plugins/context_summarizer/stats')
                 ]);
 
                 const historyData = await historyResponse.json();
@@ -368,7 +368,7 @@
                 updateLastUpdated();
             } catch (error) {
                 console.error('Error fetching history:', error);
-                showError('Failed to load summarization history');
+                showError('Failed to load summarization history: ' + error.message);
             }
         }
 

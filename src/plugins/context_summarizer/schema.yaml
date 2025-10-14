@@ -87,16 +87,16 @@ web_ui:
     enabled: true
     title: "Context Summarization History"
     endpoint: "/plugins/context_summarizer/panel"
-    type: "fetch"
+    type: "iframe"
     description: "View summarization events with before/after message counts and token savings"
   
   endpoints:
-    - path: "/api/summarization/history"
+    - path: "/plugins/context_summarizer/history"
       method: "GET"
       description: "Get summarization event history with timestamps and statistics"
-    - path: "/api/summarization/stats"
+    - path: "/plugins/context_summarizer/stats"
       method: "GET"
       description: "Get aggregated summarization statistics"
-    - path: "/panel.html"
+    - path: "/plugins/context_summarizer/panel"
       method: "GET"
       description: "Main context summarizer UI panel"

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Context Usage Debug</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #4ec9b0;
+        }
+        
+        .agent-section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .agent-section h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #ce9178;
+        }
+        
+        .agent-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .agent-item {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            padding: 12px;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: 15px;
+        }
+        
+        .agent-name {
+            font-weight: 500;
+            color: #569cd6;
+        }
+        
+        .agent-stat {
+            font-size: 14px;
+        }
+        
+        .agent-stat-label {
+            font-size: 11px;
+            color: #858585;
+        }
+        
+        .history-section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+        }
+        
+        .history-section h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #dcdcaa;
+        }
+        
+        .history-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .history-item {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+        
+        .history-time {
+            color: #858585;
+            font-size: 11px;
+        }
+        
+        .controls {
+            margin-bottom: 20px;
+        }
+        
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background: #1177bb;
+        }
+        
+        .error {
+            color: #f48771;
+            padding: 10px;
+            background: #3e1e1e;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        
+        .no-data {
+            color: #858585;
+            text-align: center;
+            padding: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Context Usage Debug</h1>
+        
+        <div class="controls">
+            <button onclick="refreshData()">🔄 Refresh</button>
+            <button onclick="clearHistory()">🗑️ Clear History</button>
+        </div>
+        
+        <div id="error-container"></div>
+        
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Current Tokens</div>
+                <div class="stat-value" id="current-tokens">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Usage %</div>
+                <div class="stat-value" id="usage-percent">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Messages</div>
+                <div class="stat-value" id="message-count">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Calls</div>
+                <div class="stat-value" id="total-calls">-</div>
+            </div>
+        </div>
+        
+        <div class="agent-section">
+            <h2>🤖 Agents</h2>
+            <div class="agent-list" id="agent-list">
+                <div class="no-data">No agent data available</div>
+            </div>
+        </div>
+        
+        <div class="history-section">
+            <h2>📝 Recent History</h2>
+            <div class="history-list" id="history-list">
+                <div class="no-data">No history available</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        async function refreshData() {
+            try {
+                // Fetch current usage
+                const usageResp = await fetch('/plugins/context_usage_tracker/usage');
+                const usageData = await usageResp.json();
+                
+                // Update stats
+                const latest = usageData.latest || {};
+                document.getElementById('current-tokens').textContent = 
+                    latest.total_tokens?.toLocaleString() || '0';
+                document.getElementById('usage-percent').textContent = 
+                    latest.usage_percentage ? latest.usage_percentage.toFixed(1) + '%' : '0%';
+                document.getElementById('message-count').textContent = 
+                    latest.message_count || '0';
+                
+                // Count total calls from agents
+                const agents = usageData.agents || {};
+                const totalCalls = Object.values(agents).reduce((sum, agent) => 
+                    sum + (agent.total_calls || 0), 0);
+                document.getElementById('total-calls').textContent = totalCalls;
+                
+                // Update agent list
+                const agentList = document.getElementById('agent-list');
+                if (Object.keys(agents).length > 0) {
+                    agentList.innerHTML = Object.values(agents).map(agent => `
+                        <div class="agent-item">
+                            <div>
+                                <div class="agent-name">${agent.agent_name}</div>
+                                <div class="agent-stat-label">${agent.agent_id}</div>
+                            </div>
+                            <div>
+                                <div class="agent-stat">${agent.total_calls}</div>
+                                <div class="agent-stat-label">Calls</div>
+                            </div>
+                            <div>
+                                <div class="agent-stat">${agent.total_tokens?.toLocaleString()}</div>
+                                <div class="agent-stat-label">Total Tokens</div>
+                            </div>
+                            <div>
+                                <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div>
+                                <div class="agent-stat-label">Peak Tokens</div>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    agentList.innerHTML = '<div class="no-data">No agent data available</div>';
+                }
+                
+                // Fetch history
+                const historyResp = await fetch('/plugins/context_usage_tracker/history?last_n=50');
+                const historyData = await historyResp.json();
+                
+                // Update history list
+                const historyList = document.getElementById('history-list');
+                if (historyData.history && historyData.history.length > 0) {
+                    historyList.innerHTML = historyData.history.reverse().map(item => {
+                        const date = new Date(item.timestamp * 1000);
+                        return `
+                            <div class="history-item">
+                                <div class="history-time">${date.toLocaleString()}</div>
+                                <div>
+                                    <strong>${item.agent_name}</strong> - 
+                                    ${item.total_tokens} tokens 
+                                    (${item.usage_percentage.toFixed(1)}%) - 
+                                    ${item.message_count} messages
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    historyList.innerHTML = '<div class="no-data">No history available</div>';
+                }
+                
+                document.getElementById('error-container').innerHTML = '';
+                
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                document.getElementById('error-container').innerHTML = 
+                    `<div class="error">Error loading data: ${error.message}</div>`;
+            }
+        }
+        
+        async function clearHistory() {
+            if (!confirm('Clear all usage history?')) return;
+            
+            try {
+                await fetch('/plugins/context_usage_tracker/clear', { method: 'POST' });
+                await refreshData();
+            } catch (error) {
+                console.error('Error clearing history:', error);
+                alert('Error clearing history: ' + error.message);
+            }
+        }
+        
+        // Initial load
+        refreshData();
+        
+        // Auto-refresh every 5 seconds
+        setInterval(refreshData, 5000);
+    </script>
+</body>
+</html>
