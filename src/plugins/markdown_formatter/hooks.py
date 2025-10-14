@@ -61,7 +61,6 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
         # Initialize markdown converter
         try:
             import markdown
-            from markdown.extensions import tables, fenced_code, codehilite
             
             extensions = []
             if self.enable_tables:

@@ -85,8 +85,6 @@ class HooksConfig:
         Returns:
             Updated metadata with global overrides applied
         """
-        config = self.get_hook_config(hook_name)
-        
         # Create a copy to avoid modifying original
         updated = metadata.copy()
         
