@@ -216,6 +216,9 @@
             <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
                 ⏱️
             </button>
+            <button class="icon-only active" id="session-filter-btn" onclick="toggleSessionFilter()" title="Showing: Current Session">
+                🎯
+            </button>
         </div>
         
         <div id="error-container"></div>
@@ -266,6 +269,52 @@
     <script>
         let autoRefreshInterval = null;
         let tokenChart = null;
+        let currentSessionOnly = true; // Filter by current session by default
+        
+        function getCurrentSessionId() {
+            // Method 1: Try to get from parent window's sessionManager
+            try {
+                if (window.parent && window.parent !== window && window.parent.sessionManager) {
+                    const sessionId = window.parent.sessionManager.getCurrentSessionId();
+                    if (sessionId) return sessionId;
+                }
+            } catch (e) {
+                console.log('[Context Tracker] Cannot access parent sessionManager:', e.message);
+            }
+            
+            // Method 2: Try to get from parent window's chat module
+            try {
+                if (window.parent && window.parent !== window && window.parent.chatModule) {
+                    const sessionId = window.parent.chatModule.getCurrentSessionId?.();
+                    if (sessionId) return sessionId;
+                }
+            } catch (e) {
+                console.log('[Context Tracker] Cannot access parent chatModule:', e.message);
+            }
+            
+            // Method 3: Parse from parent's DOM
+            try {
+                if (window.parent && window.parent !== window) {
+                    const headerEl = window.parent.document.getElementById('headerSessionId');
+                    if (headerEl && headerEl.textContent && headerEl.textContent !== '--') {
+                        return headerEl.textContent;
+                    }
+                }
+            } catch (e) {
+                console.log('[Context Tracker] Cannot access parent DOM:', e.message);
+            }
+            
+            // Method 4: URL parameter
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlSessionId = urlParams.get('session_id');
+            if (urlSessionId) return urlSessionId;
+            
+            // Method 5: LocalStorage fallback
+            const storedSessionId = localStorage.getItem('currentSessionId');
+            if (storedSessionId) return storedSessionId;
+            
+            return null;
+        }
         
         function initChart() {
             const ctx = document.getElementById('token-chart').getContext('2d');
@@ -341,6 +390,9 @@
         
         async function refreshData() {
             try {
+                const currentSessionId = getCurrentSessionId();
+                console.log('[Context Tracker] Session ID:', currentSessionId, '| Filter:', currentSessionOnly ? 'Current Session' : 'All Sessions');
+                
                 const usageResp = await fetch('/plugins/context_usage_tracker/usage');
                 const usageData = await usageResp.json();
                 
@@ -353,18 +405,63 @@
                     latest.message_count || '0';
                 
                 const agents = usageData.agents || {};
-                const totalCalls = Object.values(agents).reduce((sum, agent) => 
-                    sum + (agent.total_calls || 0), 0);
-                document.getElementById('total-calls').textContent = totalCalls;
                 
-                const accumulatedTokens = Object.values(agents).reduce((sum, agent) => 
-                    sum + (agent.total_tokens || 0), 0);
+                // Get history data first for filtering
+                const historyResp = await fetch('/plugins/context_usage_tracker/history?last_n=1000');
+                const historyData = await historyResp.json();
+                let history = historyData.history || [];
+                
+                // Filter history by session if needed
+                if (currentSessionOnly && currentSessionId) {
+                    const beforeFilter = history.length;
+                    history = history.filter(item => item.session_id === currentSessionId);
+                    console.log('[Context Tracker] Filtered:', beforeFilter, '→', history.length, 'items');
+                }
+                
+                // Calculate stats based on filtered history
+                let totalCalls = 0;
+                let accumulatedTokens = 0;
+                let filteredAgents = {};
+                
+                if (currentSessionOnly && currentSessionId && history.length > 0) {
+                    // Calculate from filtered history
+                    history.forEach(item => {
+                        totalCalls++;
+                        accumulatedTokens += item.total_tokens || 0;
+                        
+                        if (!filteredAgents[item.agent_id]) {
+                            filteredAgents[item.agent_id] = {
+                                agent_id: item.agent_id,
+                                agent_name: item.agent_name,
+                                total_calls: 0,
+                                total_tokens: 0,
+                                peak_tokens: 0
+                            };
+                        }
+                        
+                        filteredAgents[item.agent_id].total_calls++;
+                        filteredAgents[item.agent_id].total_tokens += item.total_tokens || 0;
+                        filteredAgents[item.agent_id].peak_tokens = Math.max(
+                            filteredAgents[item.agent_id].peak_tokens,
+                            item.total_tokens || 0
+                        );
+                    });
+                } else {
+                    // Use global stats
+                    totalCalls = Object.values(agents).reduce((sum, agent) => 
+                        sum + (agent.total_calls || 0), 0);
+                    accumulatedTokens = Object.values(agents).reduce((sum, agent) => 
+                        sum + (agent.total_tokens || 0), 0);
+                    filteredAgents = agents;
+                }
+                
+                document.getElementById('total-calls').textContent = totalCalls;
                 document.getElementById('accumulated-tokens').textContent = 
                     accumulatedTokens.toLocaleString();
                 
                 const agentList = document.getElementById('agent-list');
-                if (Object.keys(agents).length > 0) {
-                    agentList.innerHTML = Object.values(agents).map(agent => `
+                if (Object.keys(filteredAgents).length > 0) {
+                    agentList.innerHTML = Object.values(filteredAgents).map(agent => `
                         <div class="agent-item">
                             <div>
                                 <div class="agent-name">${agent.agent_name}</div>
@@ -388,14 +485,12 @@
                     agentList.innerHTML = '<div class="no-data">No agent data available</div>';
                 }
                 
-                const historyResp = await fetch('/plugins/context_usage_tracker/history?last_n=50');
-                const historyData = await historyResp.json();
-                
-                if (historyData.history && historyData.history.length > 0) {
-                    updateChart(historyData.history);
+                // Update chart and history list with filtered data
+                if (history && history.length > 0) {
+                    updateChart(history);
                     
                     const historyList = document.getElementById('history-list');
-                    historyList.innerHTML = historyData.history.slice().reverse().map(item => {
+                    historyList.innerHTML = history.slice().reverse().slice(0, 50).map(item => {
                         const date = new Date(item.timestamp * 1000);
                         return `
                             <div class="history-item">
@@ -451,6 +546,21 @@
                 btn.title = 'Auto-Refresh (5s) - Active';
                 autoRefreshInterval = setInterval(refreshData, 5000);
             }
+        }
+        
+        function toggleSessionFilter() {
+            const btn = document.getElementById('session-filter-btn');
+            currentSessionOnly = !currentSessionOnly;
+            
+            if (currentSessionOnly) {
+                btn.classList.add('active');
+                btn.title = 'Showing: Current Session';
+            } else {
+                btn.classList.remove('active');
+                btn.title = 'Showing: All Sessions';
+            }
+            
+            refreshData();
         }
         
         initChart();
