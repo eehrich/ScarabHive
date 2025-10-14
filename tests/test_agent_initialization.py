@@ -123,97 +123,16 @@ def test_agent_initialization_with_full_config():
     assert agent.agent_config.context_management.token_optimization.enable_compression is False
 
 
-def test_agent_context_manager_initialization():
-    """Agent initializes ContextManager correctly with Agent instance."""
-    system_config = AgentSystemConfig()
-    agent_config = AgentConfig()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
-    mock_llm = MagicMock()
-    
-    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
-    
-    # Context manager should be initialized
-    assert agent.context_manager is not None
-    assert agent.context_manager.agent == agent
-    assert agent.context_manager.agent_id == "test_agent"
-    
-    # Config should be accessible via context_manager.config
-    assert agent.context_manager.config == agent.mcp_config.agent_config.context_management
+# Test removed: context_manager is now handled by hook plugins (context_optimizer, context_summarizer)
 
 
-def test_agent_context_window_from_llm():
-    """Agent retrieves context_window dynamically from LLM config."""
-    # Create LLM config with specific context window
-    llm_model = LLMModelConfig(
-        provider="openai",
-        model="gpt-4",
-        context_window=200000  # Large context window
-    )
-    llm_profile = LLMProfile(model_ref="gpt4")
-    llm_system = LLMSystemConfig(
-        models={"gpt4": llm_model},
-        profiles={"default": llm_profile},
-        default_profile="default"
-    )
-    
-    system_config = AgentSystemConfig(
-        llm_system=llm_system,
-        agent_llm_profiles={"test_agent": "default"}
-    )
-    
-    agent_config = AgentConfig()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
-    mock_llm = MagicMock()
-    mock_llm.context_window = 200000
-    
-    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
-    
-    # Context manager should get context_window from LLM config
-    assert agent.context_manager.context_window == 200000
+# Test removed: context_manager is now handled by hook plugins (context_optimizer, context_summarizer)
 
 
-def test_agent_token_optimizer_enabled():
-    """Token optimizer is initialized when compression is enabled."""
-    token_opt = TokenOptimizationConfig(
-        enable_compression=True,
-        compress_tool_results=True
-    )
-    context_mgmt = ContextManagementConfig(
-        token_optimization=token_opt
-    )
-    agent_config = AgentConfig(context_management=context_mgmt)
-    
-    system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
-    mock_llm = MagicMock()
-    
-    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
-    
-    assert agent.token_optimizer is not None
+# Test removed: token_optimizer is now handled by context_optimizer hook plugin
 
 
-def test_agent_token_optimizer_disabled():
-    """Token optimizer is None when compression is disabled."""
-    token_opt = TokenOptimizationConfig(
-        enable_compression=False,
-        compress_tool_results=False
-    )
-    context_mgmt = ContextManagementConfig(
-        token_optimization=token_opt
-    )
-    agent_config = AgentConfig(context_management=context_mgmt)
-    
-    system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-    registry = MCPRegistry()
-    mock_llm = MagicMock()
-    
-    agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
-    
-    assert agent.token_optimizer is None
+# Test removed: token_optimizer is now handled by context_optimizer hook plugin
 
 
 def test_agent_description_property():
@@ -287,8 +206,7 @@ def test_agent_no_legacy_context_config_storage():
     
     agent = Agent("test_agent", system_config, mcp_config, registry, llm=mock_llm)
     
-    # Should not have context_config attribute
+    # Should not have context_config attribute (now in hook plugins)
     assert not hasattr(agent, 'context_config')
-    
-    # Config is accessible via context_manager
-    assert agent.context_manager.config is not None
+    # Should also not have context_manager attribute (removed)
+    assert not hasattr(agent, 'context_manager')

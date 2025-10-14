@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.token_utils import estimate_token_count
+from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         
         # Load config
         config = self.get_config()
-        self.trigger_tokens = config.get('summarization_trigger_tokens', {}).get('default', 50000)
+        self.trigger_percentage = config.get('summarization_trigger_percentage', {}).get('default', 0.60)
         self.chunk_size = config.get('summarization_chunk_size', {}).get('default', 10)
         self.preserve_recent = config.get('preserve_recent_count', {}).get('default', 10)
         self.preserve_system = config.get('preserve_system_messages', {}).get('default', True)
@@ -46,7 +48,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                                         '[Summary of {count} messages from {start_time} to {end_time}]')
         
         logger.info(
-            f"ContextSummarizerPlugin initialized: trigger={self.trigger_tokens} tokens, "
+            f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
             f"chunk_size={self.chunk_size}, preserve_recent={self.preserve_recent}, "
             f"llm_profile={self.llm_profile}"
         )
@@ -55,6 +57,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         """Summarize older messages when context exceeds token limit.
         
         Handler for 'summarize_context' hook defined in schema.yaml.
+        Uses percentage-based threshold relative to LLM context window.
         
         Args:
             context: Hook context with messages and metadata
@@ -73,10 +76,24 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     metadata={'reason': 'no_messages'}
                 )
             
+            # Get LLM context window size
+            context_window = self._get_context_window(context)
+            if not context_window:
+                logger.warning("[ContextSummarizer] No LLM context window available, skipping summarization")
+                return HookResult(
+                    success=True,
+                    modified=False,
+                    context=context,
+                    metadata={'reason': 'no_context_window'}
+                )
+            
+            # Calculate trigger threshold from percentage
+            trigger_tokens = int(context_window * self.trigger_percentage)
+            
             # Estimate token count (rough: 1 token ≈ 4 chars)
             total_tokens = self._estimate_tokens(messages)
             
-            if total_tokens < self.trigger_tokens:
+            if total_tokens < trigger_tokens:
                 return HookResult(
                     success=True,
                     modified=False,
@@ -84,13 +101,15 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     metadata={
                         'reason': 'below_threshold',
                         'total_tokens': total_tokens,
-                        'threshold': self.trigger_tokens
+                        'threshold': trigger_tokens,
+                        'threshold_percentage': self.trigger_percentage,
+                        'context_window': context_window
                     }
                 )
             
             logger.info(
-                f"[ContextSummarizer] Context exceeds threshold: {total_tokens} > {self.trigger_tokens} tokens. "
-                f"Starting summarization for session {context.session_id}"
+                f"[ContextSummarizer] Context exceeds threshold: {total_tokens} > {trigger_tokens} tokens "
+                f"({self.trigger_percentage:.0%} of {context_window}). Starting summarization for session {context.session_id}"
             )
             
             # Separate messages into categories
@@ -190,10 +209,33 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 error=str(e)
             )
     
-    def _estimate_tokens(self, messages: List[Dict]) -> int:
-        """Estimate token count for messages.
+    def _get_context_window(self, context: HookContext) -> int | None:
+        """Extract context window size from LLM in HookContext.
         
-        Uses rough estimation: 1 token ≈ 4 characters.
+        Args:
+            context: Hook context containing LLM instance
+            
+        Returns:
+            Context window size in tokens, or None if not available
+        """
+        if not context.llm:
+            return None
+        
+        # Try to get context_window from LLM instance
+        if hasattr(context.llm, 'context_window'):
+            return context.llm.context_window
+        
+        # Fallback: check if agent has config
+        if context.agent and hasattr(context.agent, 'agent_config'):
+            if hasattr(context.agent.agent_config, 'llm'):
+                if hasattr(context.agent.agent_config.llm, 'context_window'):
+                    return context.agent.agent_config.llm.context_window
+        
+        logger.warning("[ContextSummarizer] Could not determine context window size")
+        return None
+    
+    def _estimate_tokens(self, messages: List[Dict]) -> int:
+        """Estimate token count for messages using agent system's token estimation.
         
         Args:
             messages: List of message dictionaries
@@ -201,18 +243,17 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         Returns:
             Estimated token count
         """
-        total_chars = 0
+        # Convert dict messages to ChatMessage for proper token estimation
+        chat_messages = []
         for msg in messages:
-            content = msg.get('content', '')
-            if isinstance(content, str):
-                total_chars += len(content)
-            elif isinstance(content, list):
-                # Multimodal content
-                for item in content:
-                    if isinstance(item, dict) and item.get('type') == 'text':
-                        total_chars += len(item.get('text', ''))
+            try:
+                chat_messages.append(ChatMessage(**msg) if isinstance(msg, dict) else msg)
+            except Exception as e:
+                logger.debug(f"[ContextSummarizer] Could not convert message to ChatMessage: {e}")
+                # Fallback: skip this message in estimation
+                continue
         
-        return total_chars // 4
+        return estimate_token_count(chat_messages)
     
     def _categorize_messages(
         self,

@@ -27,6 +27,8 @@ from agent_system.hooks import (
     HookContext,
     HookResult,
 )
+from agent_system.llm.token_utils import estimate_token_count
+from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,8 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         2. Truncates overly long messages
         3. Estimates token usage and removes oldest non-system messages if needed
         4. Preserves system messages and recent messages
+        
+        Uses percentage-based thresholds relative to LLM context window.
         """
         try:
             messages = context.messages or []
@@ -70,13 +74,31 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                     metadata={'optimization': 'no_messages'}
                 )
             
+            # Get LLM context window size
+            context_window = self._get_context_window(context)
+            if not context_window:
+                logger.warning("[ContextOptimizer] No LLM context window available, skipping optimization")
+                return HookResult(
+                    success=True,
+                    modified=False,
+                    context=context,
+                    metadata={'reason': 'no_context_window'}
+                )
+            
             # Get config values
             config = self.get_config()
-            max_total_tokens = config.get('max_total_tokens', 100000)
-            max_message_length = config.get('max_message_length', 50000)
-            preserve_system = config.get('preserve_system_messages', True)
-            preserve_last_n = config.get('preserve_last_n_messages', 5)
-            remove_dupes = config.get('remove_duplicates', True)
+            max_context_pct = config.get('max_context_percentage', {}).get('default', 0.80)
+            max_message_length = config.get('max_message_length_chars', {}).get('default', 50000)
+            preserve_system = config.get('preserve_system_messages', {}).get('default', True)
+            preserve_last_n = config.get('preserve_last_n_messages', {}).get('default', 5)
+            remove_dupes = config.get('remove_duplicates', {}).get('default', True)
+            
+            # Calculate absolute token limit from percentage
+            max_total_tokens = int(context_window * max_context_pct)
+            
+            logger.debug(
+                f"[ContextOptimizer] Using {max_context_pct:.0%} of {context_window} tokens = {max_total_tokens} max tokens"
+            )
             
             # Statistics
             original_count = len(messages)
@@ -107,7 +129,8 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             
             if modified:
                 logger.info(
-                    f"Context optimized: {len(messages)} -> {len(optimized_messages)} messages"
+                    f"[ContextOptimizer] Context optimized: {len(messages)} -> {len(optimized_messages)} messages "
+                    f"(max {max_total_tokens} tokens = {max_context_pct:.0%} of {context_window})"
                 )
             
             return HookResult(
@@ -117,7 +140,10 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                 metadata={
                     'original_count': original_count,
                     'optimized_count': len(optimized_messages),
-                    'removed_count': original_count - len(optimized_messages)
+                    'removed_count': original_count - len(optimized_messages),
+                    'context_window': context_window,
+                    'max_tokens': max_total_tokens,
+                    'max_percentage': max_context_pct
                 }
             )
             
@@ -129,6 +155,31 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                 context=context,
                 error=str(e)
             )
+    
+    def _get_context_window(self, context: HookContext) -> int | None:
+        """Extract context window size from LLM in HookContext.
+        
+        Args:
+            context: Hook context containing LLM instance
+            
+        Returns:
+            Context window size in tokens, or None if not available
+        """
+        if not context.llm:
+            return None
+        
+        # Try to get context_window from LLM instance
+        if hasattr(context.llm, 'context_window'):
+            return context.llm.context_window
+        
+        # Fallback: check if agent has config
+        if context.agent and hasattr(context.agent, 'agent_config'):
+            if hasattr(context.agent.agent_config, 'llm'):
+                if hasattr(context.agent.agent_config.llm, 'context_window'):
+                    return context.agent.agent_config.llm.context_window
+        
+        logger.warning("[ContextOptimizer] Could not determine context window size")
+        return None
     
     # Handler for optional stats logging hook
     async def log_context_stats(self, context: HookContext) -> HookResult:
@@ -192,8 +243,9 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         preserve_last_n: int
     ) -> list[dict[str, Any]]:
         """Ensure context stays within token limits."""
-        # Simple char-based approximation (1 token ≈ 4 chars)
-        estimated_tokens = sum(len(str(msg.get('content', ''))) for msg in messages) // 4
+        # Convert dict messages to ChatMessage for proper token estimation
+        chat_messages = [ChatMessage(**msg) if isinstance(msg, dict) else msg for msg in messages]
+        estimated_tokens = estimate_token_count(chat_messages)
         
         if estimated_tokens <= max_tokens:
             return messages
@@ -210,7 +262,8 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         result = (system_msgs if preserve_system else []) + removable + preserved
         
         while len(result) > preserve_last_n:
-            estimated_tokens = sum(len(str(msg.get('content', ''))) for msg in result) // 4
+            chat_result = [ChatMessage(**msg) if isinstance(msg, dict) else msg for msg in result]
+            estimated_tokens = estimate_token_count(chat_result)
             if estimated_tokens <= max_tokens:
                 break
             

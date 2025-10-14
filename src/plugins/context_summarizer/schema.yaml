@@ -12,12 +12,12 @@ hooks:
 
 # Configuration schema for this plugin
 config:
-  summarization_trigger_tokens:
-    type: integer
-    default: 50000
-    description: "Start summarization when context exceeds this many tokens"
-    minimum: 10000
-    maximum: 500000
+  summarization_trigger_percentage:
+    type: number
+    default: 0.60
+    description: "Start summarization when context exceeds this percentage of LLM context window (0.0-1.0)"
+    minimum: 0.1
+    maximum: 0.95
   
   summarization_chunk_size:
     type: integer

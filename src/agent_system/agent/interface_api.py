@@ -34,7 +34,6 @@ from ..mcp.status import (
     get_status_metrics,
 )
 from ..mcp.integration import initialize_mcp, shutdown_mcp
-from ..context.agent_tracker import record_agent_summarization
 
 # Import services
 from ..services import ConfigService, MCPService, ToolService, AgentService
@@ -1149,29 +1148,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 except Exception as e:
                     logger.exception("Failed to run token optimizer for session %s: %s", session_id, e)
 
-            if getattr(agent, 'context_manager', None):
-                try:
-                    async with agent._request_lock:
-                        msgs = list(agent._sessions.get(session_id, []))
-                    cm = agent.context_manager
-                    # If a dedicated summarizer is available, run a forced summarization
-                    if getattr(cm, '_summarizer', None):
-                        new_msgs = await cm._summarize_conversation(msgs)
-                        # Record summarization in agent tracking
-                        try:
-                            agent_name = getattr(agent, 'name', 'unknown_agent')
-                            record_agent_summarization(agent_name)
-                        except Exception as e:
-                            logger.debug("Failed to record summarization: %s", e)
-                    else:
-                        # No dedicated summarizer; fall back to normal management which may or may not summarize
-                        new_msgs = await cm.manage_context(msgs)
-
-                    async with agent._request_lock:
-                        agent._sessions[session_id] = new_msgs
-                    actions['summarizer'] = True
-                except Exception as e:
-                    logger.exception("Failed to run summarizer for session %s: %s", session_id, e)
+            # Context management and summarization are now handled by hook plugins
+            # (context_optimizer and context_summarizer) automatically during LLM calls
+            # No manual summarization endpoint needed
+            actions['summarizer'] = False  # Not applicable with hook-based management
 
             return {"status": "ok", "session_id": session_id, "actions": actions}
         except Exception as e:
@@ -1201,23 +1181,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug("Optimizer failed for session %s: %s", sid, e)
 
                 try:
-                    if getattr(agent, 'context_manager', None):
-                        cm = agent.context_manager
-                        msgs = list(agent._sessions.get(sid, []))
-                        if getattr(cm, '_summarizer', None):
-                            new_msgs = await cm._summarize_conversation(msgs)
-                            # Track summarization for UI display
-                            try:
-                                agent_name = getattr(agent, 'name', 'unknown_agent')
-                                record_agent_summarization(agent_name)
-                            except Exception as track_e:
-                                logger.debug("Failed to track summarization for %s: %s", agent_name, track_e)
-                        else:
-                            new_msgs = await cm.manage_context(msgs)
-
-                        async with agent._request_lock:
-                            agent._sessions[sid] = new_msgs
-                        actions['summarizer'] = True
+                    # Context management and summarization are now handled by hook plugins automatically
+                    # No manual summarization needed
+                    actions['summarizer'] = False
                 except Exception as e:
                     logger.debug("Summarizer failed for session %s: %s", sid, e)
 
@@ -1440,13 +1406,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "messages": []
                 }
 
-            # Get context manager usage stats
-            usage_stats = agent.context_manager.get_usage_stats() if hasattr(agent.context_manager, 'get_usage_stats') else {}
+            # Context management is now handled by hook plugins (no centralized stats available)
 
             # Get current conversation messages if available
             messages = []
             if hasattr(agent, '_current_messages') and agent._current_messages:
                 # Estimate tokens for each message and prepare for display
+                from ..llm.token_utils import estimate_token_count
                 for i, msg in enumerate(agent._current_messages):
                     # Make sure msg is a ChatMessage object before estimating tokens
                     if not isinstance(msg, ChatMessage):
@@ -1457,8 +1423,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             # Skip if conversion fails
                             continue
 
-                    # Use context manager's estimate_token_count method
-                    estimated_tokens = agent.context_manager.estimate_token_count([msg])
+                    # Use token_utils for estimation
+                    estimated_tokens = estimate_token_count([msg])
                     messages.append({
                         "role": msg.role,
                         "content": msg.content,
@@ -1467,13 +1433,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     })
 
             return {
-                "context_window": usage_stats.get("context_window", "N/A"),
-                "prediction_threshold": usage_stats.get("prediction_threshold", 0),
-                "summarization_threshold": usage_stats.get("summarization_threshold", "N/A"),
-                "actual_usage": usage_stats.get("actual_usage", {"total_tokens": 0, "last_call_tokens": 0}),
-                "warning_levels": usage_stats.get("warning_levels", {}),
+                "context_window": agent.llm.context_window if hasattr(agent, 'llm') else "N/A",
+                "prediction_threshold": 0,  # No longer tracked centrally
+                "summarization_threshold": "N/A",  # Now in hook plugin config
+                "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},  # No longer tracked centrally
+                "warning_levels": {},  # No longer tracked centrally
                 "messages": messages,
-                "message_count": len(messages)
+                "message_count": len(messages),
+                "note": "Context management migrated to hook plugins"
             }
         except Exception as e:
             logger = logging.getLogger(__name__)

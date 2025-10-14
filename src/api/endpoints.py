@@ -123,14 +123,9 @@ async def get_debug_messages():
                 for msg in agent.conversation
             ]
 
-        # Get context usage stats
+        # Context management stats are now handled by hook plugins
+        # No centralized context_manager attribute anymore
         usage_stats = {}
-        if hasattr(agent, 'context_manager') and agent.context_manager:
-            usage_stats = agent.context_manager.get_usage_stats()
-            # Add predicted tokens for current conversation
-            if agent.conversation:
-                predicted_tokens = agent.context_manager.estimate_token_count(agent.conversation)
-                usage_stats['predicted_tokens'] = predicted_tokens
 
         return {
             "messages": messages,
@@ -143,31 +138,18 @@ async def get_debug_messages():
 
 @router.get("/api/debug/context-stats")
 async def get_context_stats():
-    """Get context management statistics."""
+    """Get context management statistics (deprecated - now handled by hook plugins)."""
     try:
-        agent = get_agent()
-        if not agent:
-            logger.warning("No agent available for context stats")
-            return {
-                "context_window": None,
-                "prediction_threshold": None,
-                "summarization_threshold": None,
-                "actual_usage": None,
-                "warning_levels": None
-            }
-
-        # Get context stats from agent's context manager
-        if hasattr(agent, 'context_manager') and agent.context_manager:
-            stats = agent.context_manager.get_usage_stats()
-            return stats
-        else:
-            return {
-                "context_window": None,
-                "prediction_threshold": None,
-                "summarization_threshold": None,
-                "actual_usage": None,
-                "warning_levels": None
-            }
+        # Context management is now handled by hook plugins
+        # No centralized context_manager attribute anymore
+        return {
+            "context_window": None,
+            "prediction_threshold": None,
+            "summarization_threshold": None,
+            "actual_usage": None,
+            "warning_levels": None,
+            "note": "Context management migrated to hook plugins (context_optimizer, context_summarizer)"
+        }
     except Exception as e:
         logger.error(f"Error getting context stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))

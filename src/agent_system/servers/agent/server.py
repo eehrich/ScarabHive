@@ -16,7 +16,7 @@ from ...llm.models import ChatMessage
 from ...utils.prompt_renderer import render_prompts, get_datetime_context
 from jinja2 import Template
 from ...llm.text_sanitizer import sanitize_for_llm
-from ...context import ContextManager, ConversationSummarizer, TokenOptimizer
+# Context management is now handled by hook plugins (context_optimizer, context_summarizer)
 from ...context.agent_tracker import register_agent_for_tracking
 from ...mcp.status import (
     status_scope,
@@ -27,7 +27,7 @@ from ...mcp.status import (
 from .components.mcp_integration import MCPIntegrationManager
 from .components.tool_execution import ToolExecutionManager
 from .components.status_forwarding import StatusEventForwarder
-from .components.context_management import ContextManagementHandler
+# ContextManagementHandler removed - context management now handled by hook plugins
 
 
 logger = logging.getLogger(__name__)
@@ -135,8 +135,7 @@ class Agent(MCPServer):
                         logger.warning("LLM initialization failed: %s", msg)
                     self.llm = None
 
-        # Initialize context management system
-        self._init_context_management()
+        # Context management now handled by hook plugins (context_optimizer, context_summarizer)
 
         # Configure cancellation system with agent config values
         if hasattr(system_config, 'cancellation') and system_config.cancellation:
@@ -151,9 +150,10 @@ class Agent(MCPServer):
         self._internal_tool_counter = 0
         self._internal_tool_counter_lock = asyncio.Lock()
 
-        # Register agent with context tracker (use context_window from context_manager)
-        if self.context_manager:
-            register_agent_for_tracking(name, name, self.context_manager.context_window)
+        # Register agent with context tracker
+        # Context window is now managed by LLM instance, not ContextManager
+        context_window = self.llm.context_window if self.llm and hasattr(self.llm, "context_window") else 128000
+        register_agent_for_tracking(name, name, context_window)
 
         # Track current conversation messages for debugging
         self._current_messages: List[ChatMessage] = []
@@ -171,13 +171,8 @@ class Agent(MCPServer):
         self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
         self._tool_execution_manager = ToolExecutionManager(self.registry, self)
         self._status_event_forwarder = StatusEventForwarder()
-                    
-        self._context_management_handler = ContextManagementHandler(
-            self.context_manager, 
-            self.token_optimizer, 
-            self,
-            self.agent_config.context_management.token_optimization
-        )
+        
+        # Context management now handled by hook plugins via HookIntegrationManager
         
         # Initialize hook integration manager
         from .components.hook_integration import HookIntegrationManager
@@ -227,65 +222,6 @@ class Agent(MCPServer):
         async with self._internal_tool_counter_lock:
             self._internal_tool_counter += 1
             return f"{base_request_id}_{self._internal_tool_counter:03d}"
-
-    def _init_context_management(self):
-        """Initialize the context management system using new config system."""
-        try:
-            # Initialize context manager with Agent instance (no config passing)
-            self.context_manager = ContextManager(self)
-
-            # Initialize and set summarizer with dedicated LLM client
-            summarizer_llm = None
-            if self.llm:
-                try:
-                    # Use profile-based resolution for summarizer LLM
-                    from ...llm.factory import resolve_llm_config_for_agent
-                    from ...llm.clients import make_llm
-                    from ...config.models import AgentConfig
-                    
-                    # Create agent config for summarizer using summarizer_llm_profile from context config
-                    summarizer_profile = self.agent_config.context_management.summarizer_llm_profile
-                    summarizer_agent_config = AgentConfig(llm_profile=summarizer_profile)
-                    summarizer_kwargs = resolve_llm_config_for_agent(self.system_config, summarizer_agent_config)
-                    
-                    summarizer_llm = make_llm(
-                        summarizer_kwargs["provider"],
-                        summarizer_kwargs["model"],
-                        summarizer_kwargs["openai_api_key"],
-                        summarizer_kwargs["ollama_url"],
-                        summarizer_kwargs["context_window"],
-                        summarizer_kwargs["ollama_mode"],
-                        summarizer_kwargs["request_timeout"],
-                        ssl_verify=self.system_config.network.ssl_verify if self.system_config.network else None,
-                        httpx_timeouts=summarizer_kwargs.get("httpx_timeouts"),
-                    )
-                    
-                    # Store profile info for summarizer
-                    self.summarizer_profile_info = f"{summarizer_profile}:{summarizer_kwargs.get('provider')}/{summarizer_kwargs.get('model')}"
-                    
-                except Exception as e:
-                    logger.warning("Failed to create dedicated summarizer LLM client: %s", e)
-                    summarizer_llm = None
-
-            # Pass profile info to summarizer for status display
-            summarizer_profile = getattr(self, 'summarizer_profile_info', None)
-            summarizer = ConversationSummarizer(summarizer_llm, profile_info=summarizer_profile)
-            self.context_manager.set_summarizer(summarizer)
-
-            # Initialize optimizer only when compression/optimization is enabled
-            if self.mcp_config.agent_config.context_management.token_optimization.enable_compression:
-                self.token_optimizer = TokenOptimizer()
-            else:
-                self.token_optimizer = None
-
-            logger.info("Context management initialized - window: %d, strategy: %s",
-                      self.context_manager.context_window,
-                      self.mcp_config.agent_config.context_management.strategy)
-
-        except Exception as e:
-            logger.warning("Context management initialization failed: %s", e)
-            self.context_manager = None
-            self.token_optimizer = None
 
     # ------------------------------------------------------------------
     # Unified Server Resolution (Central Method)
@@ -1133,9 +1069,7 @@ class Agent(MCPServer):
                 # Drain any appended user messages before each step
                 messages = await self._drain_appended_messages(request_id, messages)
                 
-                # Reset context manager step state to prevent duplicate management
-                if self.context_manager:
-                    self.context_manager.reset_step_state()
+                # Context management is now handled by hook plugins
                 
                 # Check for cancellation at the start of each step
                 if self._is_cancelled(request_id):
@@ -1172,7 +1106,8 @@ class Agent(MCPServer):
                     yield status_event
 
                 # Enhanced context management and token tracking
-                messages, estimated_tokens = await self._context_management_handler.handle_context_management(messages, step, request_id)
+                # Context management now handled by hook plugins
+                estimated_tokens = sum(len(str(msg.content or "")) for msg in messages) // 4
 
                 logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
 
@@ -1212,94 +1147,9 @@ class Agent(MCPServer):
                     # Check if this is a context length exceeded error
                     from agent_system.context.exceptions import ContextLengthExceededError
                     if isinstance(e, ContextLengthExceededError):
-                        logger.warning("Context length exceeded, triggering emergency context management")
-                        
-                        # Check if we've already tried emergency context management too many times
-                        if self._emergency_context_attempts >= self._max_emergency_attempts:
-                            logger.error(f"Maximum emergency context attempts ({self._max_emergency_attempts}) exceeded, stopping agent")
-                            llm_out = {"assistant": {"role": "assistant", "content": ""}}
-                        elif self._context_management_handler.context_manager:
-                            self._emergency_context_attempts += 1
-                            logger.info(f"Applying emergency context management due to token limit (attempt {self._emergency_attempts}/{self._max_emergency_attempts})")
-                            
-                            try:
-                                # First, try intelligent summarization if available
-                                context_manager = self._context_management_handler.context_manager
-                                
-                                # Force summarization by temporarily changing strategy and lowering thresholds
-                                original_strategy = context_manager.config.strategy
-                                original_window = context_manager.context_window
-                                original_threshold = context_manager.config.summarization_threshold
-                                
-                                # Set emergency summarization parameters
-                                context_manager.config.strategy = "SUMMARIZE_OLDEST"
-                                # Set a very low window to force aggressive summarization
-                                context_manager.context_window = min(50000, original_window // 4)
-                                context_manager.config.summarization_threshold = 1000  # Very low threshold
-                                
-                                logger.info("Attempting emergency summarization to preserve context")
-
-                                
-                                # Apply context management (will use summarization)
-                                # Generate unique request ID for emergency context management
-                                emergency_request_id = f"{request_id}_emergency" if request_id else None
-                                summarized_messages = await context_manager.manage_context(messages, request_id=emergency_request_id)
-                                
-                                # Restore original settings
-                                context_manager.config.strategy = original_strategy
-                                context_manager.context_window = original_window
-                                context_manager.config.summarization_threshold = original_threshold
-                                
-                                if len(summarized_messages) < len(messages):
-                                    messages = summarized_messages
-                                    logger.info(f"Emergency summarization successful: {len(messages)} messages after summarization")
-                                else:
-                                    # Summarization didn't reduce message count enough, fall back to truncation
-                                    logger.warning("Summarization didn't reduce messages enough, falling back to truncation")
-                                    raise ValueError("Summarization insufficient")
-                                    
-                            except Exception as summary_e:
-                                logger.warning(f"Emergency summarization failed ({summary_e}), falling back to truncation")
-                                
-                                # Fallback to aggressive truncation - keep only last 5 messages + system
-                                emergency_messages = []
-                                if messages and getattr(messages[0], 'role', None) == 'system':
-                                    emergency_messages.append(messages[0])
-                                # Keep only the last 5 messages
-                                emergency_messages.extend(messages[-5:])
-                                
-                                # If that's still not enough, keep only the last 3
-                                if len(emergency_messages) > 6:  # system + 5 messages
-                                    emergency_messages = [emergency_messages[0]] + emergency_messages[-3:]
-                                
-                                messages = emergency_messages
-                                logger.info(f"Emergency truncation fallback: now have {len(messages)} messages")
-                            
-                            # Try the LLM call again with reduced context
-                            try:
-                                llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
-                                logger.info("LLM call successful after emergency context management")
-                            except Exception as retry_e:
-                                # Check if this is a cancellation exception in the retry
-                                retry_error_str = str(retry_e).lower()
-                                if "cancelled" in retry_error_str or "timeout" in retry_error_str:
-                                    logger.info(f"Request {request_id} cancelled during retry LLM call: {retry_e}")
-                                    # Signal cancellation using status contexts
-                                    await status_worker.error(f"cancelled during retry LLM call: {retry_e}", 
-                                                            meta={"step": step + 1, "reason": "cancelled"})
-                                    await status_coordinator.error("cancelled during retry LLM call", 
-                                                                 meta={"step": step + 1, "reason": "cancelled"})
-                                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(retry_e)}
-                                    yield {"type": "end"}
-                                    return
-                                
-                                logger.error(f"LLM call failed even after emergency context management: {retry_e}")
-                                # Return empty response to trigger agent stop
-                                llm_out = {"assistant": {"role": "assistant", "content": ""}}
-                        else:
-                            logger.error("No context manager available for emergency context reduction")
-                            # Return empty response to trigger agent stop
-                            llm_out = {"assistant": {"role": "assistant", "content": ""}}
+                        logger.warning("Context length exceeded - context management is handled by hook plugins (context_optimizer, context_summarizer)")
+                        # Return empty response to trigger agent stop (hooks should prevent this)
+                        llm_out = {"assistant": {"role": "assistant", "content": ""}}
                     else:
                         # Check if this is a cancellation exception
                         error_str = str(e).lower()
@@ -1332,7 +1182,6 @@ class Agent(MCPServer):
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
 
                 # Track actual token usage for streamed events if available
-                await self._context_management_handler.update_token_usage(llm_out, estimated_tokens, len(messages))
 
                 # Emit thinking event with LLM response content
                 yield {"type": "thinking", "step": step + 1, "assistant": assistant}
