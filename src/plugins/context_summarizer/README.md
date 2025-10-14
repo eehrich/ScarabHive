@@ -1,12 +1,14 @@
 # Context Summarizer Plugin
 
-**Type:** Schema-based Hook Plugin  
+**Type:** Hybrid Plugin (Schema-based Hooks + Web UI)  
 **Hook Type:** `pre_llm_call`  
-**Pattern:** SchemaBasedPluginHook
+**Pattern:** SchemaBasedPluginHook + Web UI Panel
 
 ## Overview
 
 The Context Summarizer Plugin intelligently reduces conversation context size by using an LLM to create concise summaries of older messages. Unlike simple truncation strategies, this plugin preserves key information, decisions, and context while significantly reducing token usage.
+
+**Web UI Feature:** Includes a beautiful web panel to view summarization history, visualize before/after message comparison, and track token savings statistics.
 
 ## Features
 
@@ -20,6 +22,27 @@ The Context Summarizer Plugin intelligently reduces conversation context size by
 - **Quality Control**: Validates that summaries achieve minimum reduction ratio
 - **Audit Trail**: Optionally stores original messages in metadata
 - **Metadata Tracking**: Detailed statistics on summarization results
+- **Web UI Panel**: Interactive visualization of summarization events with:
+  - Real-time history of summarization events
+  - Before/after message comparison
+  - Token savings and reduction ratio statistics
+  - Session-specific tracking
+  - Auto-refresh capability
+
+## Web UI
+
+Access the summarization history panel at `/plugins` in your browser when the agent system is running.
+
+### Panel Features
+
+- **Event List**: See all recent summarization events with timestamps
+- **Statistics Dashboard**: View total tokens saved, events count, and average reduction ratio
+- **Message Comparison**: Click any event to see before/after messages
+- **Session Tracking**: Each event shows session ID and request ID
+- **Strategy Display**: Shows "LLM Summarization" strategy used
+- **Summary Stats**: View number of summaries created per event
+
+The panel automatically refreshes every 30 seconds and shows the last 100 events.
 
 ## Configuration
 

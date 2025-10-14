@@ -6,6 +6,7 @@ reducing context size while preserving key information and decisions.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -26,13 +27,17 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
     Configuration is loaded from schema.yaml.
     """
     
-    def __init__(self, plugin_dir: Path | str):
+    def __init__(self, plugin_dir: Path | str, summarization_history: List[Dict[str, Any]] | None = None):
         """Initialize the context summarizer plugin.
         
         Args:
             plugin_dir: Directory containing schema.yaml
+            summarization_history: Optional list to track summarization events for web UI
         """
         super().__init__(plugin_dir)
+        
+        # Web UI history tracking
+        self.summarization_history = summarization_history
         
         # Load config
         config = self.get_config()
@@ -180,6 +185,31 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 f"{len(messages)} → {len(new_messages)} messages, "
                 f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
             )
+            
+            # Track summarization event for web UI
+            if self.summarization_history is not None:
+                event = {
+                    'timestamp': datetime.now().isoformat(),
+                    'session_id': context.session_id,
+                    'request_id': context.request_id,
+                    'strategy': 'summarize',  # context_summarizer uses LLM summarization
+                    'original_message_count': len(messages),
+                    'summarized_message_count': len(new_messages),
+                    'messages_summarized': len(old_msgs),
+                    'summary_count': summary_stats['summary_count'],
+                    'original_tokens': original_tokens,
+                    'new_tokens': new_tokens,
+                    'tokens_saved': original_tokens - new_tokens,
+                    'reduction_ratio': reduction_ratio,
+                    'before_messages': [self._serialize_message(m) for m in messages[-10:]],  # Last 10 for preview
+                    'after_messages': [self._serialize_message(m) for m in new_messages[-10:]],
+                    'summary_stats': summary_stats
+                }
+                self.summarization_history.append(event)
+                
+                # Keep only last 1000 events
+                if len(self.summarization_history) > 1000:
+                    self.summarization_history.pop(0)
             
             return HookResult(
                 success=True,
@@ -405,3 +435,34 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             formatted.append(f"{i}. {role.upper()}{ts_str}: {content}")
         
         return '\n\n'.join(formatted)
+    
+    def _serialize_message(self, msg: dict[str, Any] | ChatMessage) -> dict[str, Any]:
+        """Serialize a message for JSON storage in history.
+        
+        Args:
+            msg: Message as dict or ChatMessage
+            
+        Returns:
+            Serialized message dict
+        """
+        if isinstance(msg, ChatMessage):
+            return {
+                'role': msg.role,
+                'content': msg.content[:1000] if msg.content else '',  # Truncate for storage
+                'name': msg.name
+            }
+        else:
+            content = msg.get('content', '')
+            # Handle multimodal content
+            if isinstance(content, list):
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get('type') == 'text':
+                        text_parts.append(item.get('text', ''))
+                content = ' '.join(text_parts)
+            
+            return {
+                'role': msg.get('role', 'unknown'),
+                'content': str(content)[:1000],  # Truncate for storage
+                'name': msg.get('name')
+            }
