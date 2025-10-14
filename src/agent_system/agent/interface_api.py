@@ -1936,6 +1936,90 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # End MCP Server Mode Endpoints
     # ===========================
 
+    # ===========================
+    # Hook Introspection Endpoints
+    # ===========================
+
+    @app.get("/hooks")
+    async def list_hooks(hook_type: str | None = None):
+        """List all registered hooks, optionally filtered by type."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            hooks_dict = registry.list_hooks()
+            
+            if hook_type:
+                # Filter by type
+                return {hook_type: hooks_dict.get(hook_type, [])}
+            
+            return hooks_dict
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to list hooks: %s", e)
+            return {"error": str(e)}
+
+    @app.get("/hooks/{hook_name}")
+    async def get_hook_info(hook_name: str):
+        """Get detailed information about a specific hook."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            info = registry.get_hook_info(hook_name)
+            
+            if not info:
+                return {"error": f"Hook '{hook_name}' not found"}
+            
+            return info
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to get hook info: %s", e)
+            return {"error": str(e)}
+
+    @app.get("/hooks/stats/all")
+    async def get_all_hooks_stats():
+        """Get execution statistics for all hooks."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            hooks_dict = registry.list_hooks()
+            all_stats = {}
+            
+            for hook_type, hook_names in hooks_dict.items():
+                for name in hook_names:
+                    stats = registry.get_stats(name)
+                    if stats:
+                        all_stats[name] = stats
+            
+            return all_stats
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to get hooks stats: %s", e)
+            return {"error": str(e)}
+
+    @app.get("/hooks/stats/{hook_name}")
+    async def get_hook_stats(hook_name: str):
+        """Get execution statistics for a specific hook."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            stats = registry.get_stats(hook_name)
+            
+            if stats is None:
+                info = registry.get_hook_info(hook_name)
+                if not info:
+                    return {"error": f"Hook '{hook_name}' not found"}
+                return {hook_name: {}}
+            
+            return {hook_name: stats}
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to get hook stats: %s", e)
+            return {"error": str(e)}
+
+    # ===========================
+    # End Hook Introspection Endpoints
+    # ===========================
+
     @app.get("/favicon.ico")
     async def favicon():
         favicon_path = Path(__file__).parents[3] / "static" / "favicon.ico"

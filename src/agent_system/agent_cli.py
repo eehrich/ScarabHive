@@ -34,6 +34,7 @@ from .cli_utils.common import (
     colorize as _colorize,
     set_color_mode
 )
+from .cli_utils.commands.hooks import handle_hooks_command
 
 
 def _get_plugins_config(config: AgentSystemConfig):
@@ -616,7 +617,7 @@ def main() -> None:
         pass
 
     # If the first token of the remaining args isn't a known subcommand, insert implicit 'run'
-    known = ("plugins", "mcp", "run", "status", "users", "config-agents", "-h", "--help")
+    known = ("plugins", "mcp", "hooks", "run", "status", "users", "config-agents", "-h", "--help")
     if rest:
         if not rest[0].startswith("-") and rest[0] not in known:
             rest.insert(0, "run")
@@ -760,6 +761,13 @@ def main() -> None:
     server_p.add_argument("server_action", nargs="?", choices=["status", "tools", "config", "sessions"], default="status",
                          help="Server action: status (default), tools (list exposed tools), config (show configuration), sessions (list active sessions)")
     server_p.add_argument("--session-id", dest="session_id", help="Session ID to query (for 'sessions' action)")
+
+    # hooks subcommand for hook introspection
+    hooks_parser = subparsers.add_parser("hooks", help="Hook introspection and debugging")
+    hooks_parser.add_argument("action", choices=["list", "inspect", "stats", "clear-stats"], nargs="?", default="list", help="Action to perform")
+    hooks_parser.add_argument("name", nargs="?", help="Hook name for 'inspect' action")
+    hooks_parser.add_argument("--type", dest="hook_type", help="Filter by hook type (e.g., PRE_LLM_CALL, POST_LLM_CALL)")
+    hooks_parser.add_argument("--format", dest="out_format", choices=["json", "table"], default="table", help="Output format")
 
     # users subcommand for user management
     users_parser = subparsers.add_parser(
@@ -968,6 +976,11 @@ def main() -> None:
             return
 
         print(json.dumps(listing, indent=2, ensure_ascii=False))
+        return
+
+    # Handle hooks introspection subcommand
+    if args.subcommand == "hooks":
+        handle_hooks_command(args)
         return
 
     # Handle MCP external server management subcommand

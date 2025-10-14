@@ -11,9 +11,11 @@ Hook definitions are loaded from schema.yaml, handlers from hooks.py.
 - message_structure_validator: Structure validation hook (pre_llm_call)
 """
 
+from pathlib import Path
 from .hooks import MessageValidatorPlugin
 
 # Plugin factory for discovery
 def PLUGIN_FACTORY() -> MessageValidatorPlugin:
     """Factory function for plugin discovery."""
-    return MessageValidatorPlugin()
+    plugin_dir = Path(__file__).parent
+    return MessageValidatorPlugin(plugin_dir)
