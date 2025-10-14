@@ -145,3 +145,35 @@ plugins:
     user_management:
       type: user_management
       enabled: true
+
+# ================================
+# Hook Configuration
+# ================================
+# Global configuration for plugin hooks
+hooks:
+  # Global hook settings
+  enabled: true  # Master switch for all hooks
+  default_timeout: 30.0  # Default timeout in seconds
+  
+  # Per-hook configuration overrides
+  # Format: hook_name or plugin_name.hook_name
+  overrides:
+    # Example: Override request_logger hooks
+    # request_logger.log_pre_llm:
+    #   enabled: true
+    #   timeout: 5.0
+    
+    # Example: Configure hook ordering
+    # context_optimizer:
+    #   enabled: true
+    #   timeout: 10.0
+    #   order:
+    #     after: ["begin"]
+    #     before: ["message_validator"]
+    #
+    # message_validator:
+    #   enabled: true
+    #   timeout: 5.0
+    #   order:
+    #     after: ["context_optimizer"]
+    #     before: ["end"]

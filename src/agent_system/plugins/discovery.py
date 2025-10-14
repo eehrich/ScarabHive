@@ -299,7 +299,8 @@ async def register_plugin_hooks(
     plugin_name: str,
     plugin_instance: Any,
     metadata: Dict[str, Any] | None = None,
-    registry: Any | None = None
+    registry: Any | None = None,
+    hooks_config: Any | None = None
 ) -> List[str]:
     """Register hooks declared in plugin metadata.
     
@@ -308,6 +309,7 @@ async def register_plugin_hooks(
         plugin_instance: Instantiated plugin server (should implement PluginHook for hook-enabled plugins)
         metadata: Plugin metadata from plugin.yaml (optional, will use _plugin_metadata attribute if not provided)
         registry: Hook registry to use (optional, will use global registry if not provided)
+        hooks_config: Global hooks configuration (optional, will load from config/plugins.yaml if not provided)
     
     Returns:
         List of registered hook names
@@ -316,7 +318,7 @@ async def register_plugin_hooks(
         ValueError: If hook configuration is invalid
         TypeError: If plugin doesn't implement PluginHook interface
     """
-    from ..hooks import get_hook_registry, PluginHook, HookType
+    from ..hooks import get_hook_registry, PluginHook, HookType, load_hooks_config
     
     registered_hooks = []
     
@@ -328,8 +330,12 @@ async def register_plugin_hooks(
         logger.debug(f"Plugin '{plugin_name}' has no metadata, skipping hook registration")
         return registered_hooks
     
-    hooks_config = metadata.get('hooks', [])
-    if not hooks_config:
+    # Load global hooks configuration if not provided
+    if hooks_config is None:
+        hooks_config = load_hooks_config()
+    
+    hooks_list = metadata.get('hooks', [])
+    if not hooks_list:
         logger.debug(f"Plugin '{plugin_name}' declares no hooks in metadata")
         return registered_hooks
     
@@ -344,11 +350,11 @@ async def register_plugin_hooks(
     if registry is None:
         registry = get_hook_registry()
     
-    for hook_config in hooks_config:
+    for hook_metadata in hooks_list:
         try:
             # Validate required fields
-            hook_name = hook_config.get('name')
-            hook_type_str = hook_config.get('type')
+            hook_name = hook_metadata.get('name')
+            hook_type_str = hook_metadata.get('type')
             
             if not hook_name:
                 logger.warning(f"Plugin '{plugin_name}' has hook with missing 'name', skipping")
@@ -368,11 +374,29 @@ async def register_plugin_hooks(
                 )
                 continue
             
-            # Get configuration
-            enabled = hook_config.get('enabled', True)
-            timeout = hook_config.get('timeout', 30.0)
-            description = hook_config.get('description', '')
-            order_spec = hook_config.get('order', {})
+            # Get configuration from plugin metadata
+            enabled = hook_metadata.get('enabled', True)
+            timeout = hook_metadata.get('timeout', 30.0)
+            description = hook_metadata.get('description', '')
+            order_spec = hook_metadata.get('order', {})
+            
+            # Apply global hooks configuration overrides
+            # Build full hook name for lookup (plugin.hook_name)
+            full_hook_name = f"{plugin_name}.{hook_name}"
+            
+            # Global config overrides plugin defaults
+            if full_hook_name in hooks_config.overrides:
+                override = hooks_config.overrides[full_hook_name]
+                if 'enabled' in override:
+                    enabled = override['enabled']
+                if 'timeout' in override:
+                    timeout = override['timeout']
+                if 'order' in override:
+                    order_spec = override['order']
+            
+            # Apply global enabled flag if hooks are globally disabled
+            if not hooks_config.enabled:
+                enabled = False
             
             # Validate order specification
             before_list = order_spec.get('before', [])
@@ -419,7 +443,7 @@ async def register_plugin_hooks(
             
         except Exception as e:
             logger.error(
-                f"Failed to register hook '{hook_config.get('name', 'unknown')}' "
+                f"Failed to register hook '{hook_metadata.get('name', 'unknown')}' "
                 f"from plugin '{plugin_name}': {e}",
                 exc_info=True
             )

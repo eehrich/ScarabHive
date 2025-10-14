@@ -15,6 +15,7 @@ Key features:
 - Async execution with error isolation
 - YAML configuration with enable/disable per hook
 - Request-scoped status message support
+- Global hook configuration via config/plugins.yaml
 """
 
 from .registry import HookRegistry, get_hook_registry
@@ -23,6 +24,11 @@ from .plugin_hook import (
     HookContext,
     HookType,
     HookResult,
+)
+from .config import (
+    HooksConfig,
+    load_hooks_config,
+    validate_hook_references,
 )
 from .exceptions import (
     HookError,
@@ -41,6 +47,10 @@ __all__ = [
     "HookContext",
     "HookType",
     "HookResult",
+    # Configuration
+    "HooksConfig",
+    "load_hooks_config",
+    "validate_hook_references",
     # Exceptions
     "HookError",
     "HookOrderingError",
