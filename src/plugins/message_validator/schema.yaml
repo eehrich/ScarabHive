@@ -1,24 +1,23 @@
 # Hook definitions for message_validator plugin
+# Convention: hook name must match method name exactly
 hooks:
-  - name: message_validator
+  - name: validate_messages
     type: pre_llm_call
-    handler: validate_messages
     enabled: true
     timeout: 10.0
     description: "Validates and sanitizes messages before LLM calls"
     order:
-      after: ["context_optimizer"]
+      after: ["optimize_context"]
       before: ["end"]
   
-  - name: message_structure_validator
+  - name: validate_structure
     type: pre_llm_call
-    handler: validate_structure
     enabled: true
     timeout: 5.0
     description: "Validates message structure and role sequences"
     order:
       after: ["begin"]
-      before: ["message_validator"]
+      before: ["validate_messages"]
 
 # Configuration schema for this plugin
 config:

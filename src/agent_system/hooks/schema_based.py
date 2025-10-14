@@ -70,11 +70,16 @@ class SchemaBasedPluginHook(PluginHook):
         Args:
             plugin_dir: Directory containing schema.yaml
         """
-        super().__init__()
         self.plugin_dir = Path(plugin_dir)
         self._schema = self._load_schema()
         self._config = self._schema.get("config", {})
         self._hooks = self._schema.get("hooks", [])
+        
+        # Extract plugin name from directory
+        plugin_name = self.plugin_dir.name
+        
+        # Initialize PluginHook with name and config
+        super().__init__(name=plugin_name, config=self._config)
     
     def _load_schema(self) -> dict[str, Any]:
         """Load schema.yaml from plugin directory.
@@ -120,8 +125,11 @@ class SchemaBasedPluginHook(PluginHook):
     async def _dispatch_hook(self, hook_name: str, context: HookContext) -> HookResult:
         """Dispatch hook execution to handler method.
         
+        Convention: Method name must match hook name exactly.
+        E.g., hook "validate_messages" calls method "validate_messages(context)"
+        
         Args:
-            hook_name: Name of the hook to execute
+            hook_name: Name of the hook to execute (also the method name)
             context: Hook execution context
             
         Returns:
@@ -130,7 +138,7 @@ class SchemaBasedPluginHook(PluginHook):
         Raises:
             AttributeError: If handler method doesn't exist
         """
-        # Find hook definition in schema
+        # Find hook definition in schema (for validation)
         hook_def = None
         for h in self._hooks:
             if h.get("name") == hook_name:
@@ -141,23 +149,17 @@ class SchemaBasedPluginHook(PluginHook):
             logger.warning(f"Hook '{hook_name}' not found in schema for {self.__class__.__name__}")
             return HookResult(modified_context=context)
         
-        # Get handler method name from schema
-        handler_name = hook_def.get("handler")
-        if not handler_name:
-            logger.warning(f"No handler specified for hook '{hook_name}' in {self.__class__.__name__}")
-            return HookResult(modified_context=context)
-        
-        # Call handler method
-        handler = getattr(self, handler_name, None)
+        # Convention: method name = hook name
+        handler = getattr(self, hook_name, None)
         if not handler:
             raise AttributeError(
-                f"Handler method '{handler_name}' not found on {self.__class__.__name__}. "
-                f"Hook '{hook_name}' references non-existent handler."
+                f"Handler method '{hook_name}' not found on {self.__class__.__name__}. "
+                f"Convention: hook name must match method name exactly."
             )
         
         if not callable(handler):
             raise TypeError(
-                f"Handler '{handler_name}' on {self.__class__.__name__} is not callable"
+                f"Handler '{hook_name}' on {self.__class__.__name__} is not callable"
             )
         
         # Execute handler

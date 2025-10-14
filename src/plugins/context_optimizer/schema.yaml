@@ -1,18 +1,17 @@
 # Hook definitions for context_optimizer plugin
+# Convention: hook name must match method name exactly
 hooks:
-  - name: context_optimizer
+  - name: optimize_context
     type: pre_llm_call
-    handler: optimize_context
     enabled: true
     timeout: 30.0
     description: "Optimizes context before LLM calls by removing duplicates, truncating messages, and enforcing token limits"
     order:
       after: ["begin"]
-      before: ["message_validator"]
+      before: ["validate_messages"]
     
-  - name: context_stats_logger
+  - name: log_context_stats
     type: post_llm_call
-    handler: log_context_stats
     enabled: false
     timeout: 5.0
     description: "Logs context statistics after LLM calls (disabled by default)"

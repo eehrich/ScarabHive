@@ -18,6 +18,7 @@ Hook definitions are loaded from schema.yaml.
 - Adds optimization metadata to hook results
 """
 
+from pathlib import Path
 from typing import Any
 import logging
 
@@ -38,9 +39,13 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
     loaded from schema.yaml with default values.
     """
     
-    def __init__(self):
-        """Initialize the context optimizer plugin."""
-        super().__init__()
+    def __init__(self, plugin_dir: Path | str):
+        """Initialize the context optimizer plugin.
+        
+        Args:
+            plugin_dir: Directory containing schema.yaml
+        """
+        super().__init__(plugin_dir)
         logger.info("ContextOptimizerPlugin initialized with schema-based hooks")
     
     # Handler for 'context_optimizer' hook (referenced in schema.yaml as 'optimize_context')

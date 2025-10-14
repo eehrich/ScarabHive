@@ -18,6 +18,7 @@ Hook definitions are loaded from schema.yaml.
 - Configurable validation strictness
 """
 
+from pathlib import Path
 from typing import Any
 import logging
 import re
@@ -38,9 +39,13 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
     Hook definitions and configuration are loaded from schema.yaml.
     """
     
-    def __init__(self):
-        """Initialize the message validator plugin."""
-        super().__init__()
+    def __init__(self, plugin_dir: Path | str):
+        """Initialize the message validator plugin.
+        
+        Args:
+            plugin_dir: Directory containing schema.yaml
+        """
+        super().__init__(plugin_dir)
         logger.info("MessageValidatorPlugin initialized with schema-based hooks")
     
     # Handler for 'message_validator' hook (referenced in schema.yaml as 'validate_messages')
