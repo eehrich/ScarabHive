@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
 from agent_system.llm.models import ChatMessage
+from agent_system.mcp.status import publish_status, StatusPhase
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,15 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 f"({self.trigger_percentage:.0%} of {context_window}). Starting summarization for session {context.session_id}"
             )
             
+            # Publish START status message
+            await publish_status(
+                server="context_summarizer",
+                message=f"Starting context summarization: {total_tokens} tokens → target reduction {self.min_reduction:.0%}",
+                request_id=context.request_id,
+                phase=StatusPhase.START,
+                level="info"
+            )
+            
             # Separate messages into categories
             system_msgs, recent_msgs, old_msgs = self._categorize_messages(messages)
             
@@ -131,6 +141,15 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'old_message_count': len(old_msgs)
                     }
                 )
+            
+            # Publish progress status
+            await publish_status(
+                server="context_summarizer",
+                message=f"Summarizing {len(old_msgs)} older messages using LLM (preserving {len(recent_msgs)} recent messages)",
+                request_id=context.request_id,
+                phase=StatusPhase.PROGRESS,
+                level="info"
+            )
             
             # Summarize old messages in chunks
             summarized_msgs, summary_stats = await self._summarize_messages(
@@ -184,6 +203,21 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 f"[ContextSummarizer] Summarization complete: "
                 f"{len(messages)} → {len(new_messages)} messages, "
                 f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
+            )
+            
+            # Publish END status message
+            await publish_status(
+                server="context_summarizer",
+                message=f"Summarization complete: {len(messages)} → {len(new_messages)} messages, {original_tokens - new_tokens} tokens saved ({reduction_ratio:.1%} reduction)",
+                request_id=context.request_id,
+                phase=StatusPhase.END,
+                level="info",
+                meta={
+                    'original_messages': len(messages),
+                    'new_messages': len(new_messages),
+                    'tokens_saved': original_tokens - new_tokens,
+                    'reduction_ratio': reduction_ratio
+                }
             )
             
             # Track summarization event for web UI
