@@ -3,14 +3,9 @@ version: 1.0.0
 description: >
   Optimizes conversation context before LLM calls by removing redundant information,
   truncating long messages, and ensuring context stays within token limits.
-  Includes web UI for viewing summarization history and statistics.
 author: AgentSystem Team
 enabled: true
-type: hybrid  # Hooks + Web UI
+type: hybrid
+entrypoint: plugin:PLUGIN_FACTORY
+category: hooks
 
-# Web UI configuration
-web_ui:
-  enabled: true
-  title: "Context Summarization History"
-  description: "View context optimization and summarization events with before/after comparison"
-  icon: "📊"

@@ -72,3 +72,31 @@ config:
     type: string
     default: "[Summary of {count} messages from {start_time} to {end_time}]"
     description: "Format for summary marker. Placeholders: {count}, {start_time}, {end_time}"
+
+# Web UI configuration
+web_ui:
+  # Header button configuration
+  button:
+    enabled: true
+    text: "Context Summary"
+    icon: "📝"
+    tooltip: "View context summarization history and statistics"
+  
+  # Panel configuration
+  panel:
+    enabled: true
+    title: "Context Summarization History"
+    endpoint: "/plugins/context_summarizer/panel"
+    type: "fetch"
+    description: "View summarization events with before/after message counts and token savings"
+  
+  endpoints:
+    - path: "/api/summarization/history"
+      method: "GET"
+      description: "Get summarization event history with timestamps and statistics"
+    - path: "/api/summarization/stats"
+      method: "GET"
+      description: "Get aggregated summarization statistics"
+    - path: "/panel.html"
+      method: "GET"
+      description: "Main context summarizer UI panel"

@@ -4,9 +4,6 @@ version: 1.0.0
 type: hybrid
 author: AgentSystem
 enabled: true
-hooks:
-  - summarize_context
-web_ui:
-  enabled: true
-  panel_title: "Context Summarization History"
-  panel_id: "context_summarizer"
+entrypoint: plugin:PLUGIN_FACTORY
+category: hooks
+
