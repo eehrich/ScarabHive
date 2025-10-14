@@ -216,11 +216,29 @@ class HookRegistry:
                 
                 exec_time = asyncio.get_event_loop().time() - start_time
                 
+                # Validate hook result
+                validation_error = self._validate_hook_result(result, hook_name)
+                if validation_error:
+                    logger.error(
+                        f"Hook '{hook_name}' returned invalid result: {validation_error}",
+                        extra={"hook_name": hook_name, "hook_type": hook_type.value}
+                    )
+                    self._update_stats(hook_name, success=False, exec_time=exec_time)
+                    continue
+                
                 # Update statistics
                 self._update_stats(hook_name, success=result.success, exec_time=exec_time)
                 
                 if result.success:
                     if result.modified and result.context:
+                        # Audit log the modification
+                        self._audit_log_modification(
+                            hook_name,
+                            hook_type,
+                            current_context,
+                            result.context,
+                            result.metadata
+                        )
                         # Use modified context for next hook
                         current_context = result.context
                         logger.debug(f"Hook '{hook_name}' modified context")
@@ -398,6 +416,108 @@ class HookRegistry:
             metadata=copy.deepcopy(context.metadata),
             step=context.step,
             llm=context.llm,  # Reference copy
+        )
+    
+    def _validate_hook_result(self, result: Any, hook_name: str) -> Optional[str]:
+        """
+        Validate hook result conforms to expected schema.
+        
+        Args:
+            result: Result returned by hook
+            hook_name: Name of hook (for error reporting)
+            
+        Returns:
+            Error message if validation fails, None if valid
+        """
+        # Check result is HookResult instance
+        if not isinstance(result, HookResult):
+            return f"Result must be HookResult instance, got {type(result).__name__}"
+        
+        # Check required fields
+        if not hasattr(result, "success"):
+            return "Result missing required 'success' field"
+        
+        if not isinstance(result.success, bool):
+            return f"Result 'success' must be bool, got {type(result.success).__name__}"
+        
+        # If modified=True, context must be provided
+        if getattr(result, "modified", False) and not getattr(result, "context", None):
+            return "Result has modified=True but no context provided"
+        
+        # If context is provided, validate it's a HookContext
+        if hasattr(result, "context") and result.context is not None:
+            if not isinstance(result.context, HookContext):
+                return f"Result context must be HookContext, got {type(result.context).__name__}"
+        
+        # Validate metadata is dict if provided
+        if hasattr(result, "metadata") and result.metadata is not None:
+            if not isinstance(result.metadata, dict):
+                return f"Result metadata must be dict, got {type(result.metadata).__name__}"
+        
+        return None
+    
+    def _audit_log_modification(
+        self,
+        hook_name: str,
+        hook_type: HookType,
+        original_context: HookContext,
+        modified_context: HookContext,
+        metadata: Dict[str, Any]
+    ) -> None:
+        """
+        Log hook modifications for audit trail.
+        
+        Args:
+            hook_name: Name of hook that made modification
+            hook_type: Type of hook
+            original_context: Original context before modification
+            modified_context: Context after modification
+            metadata: Hook result metadata
+        """
+        # Build audit entry
+        audit_entry = {
+            "hook_name": hook_name,
+            "hook_type": hook_type.value,
+            "request_id": original_context.request_id,
+            "session_id": original_context.session_id,
+            "timestamp": asyncio.get_event_loop().time(),
+            "modifications": {},
+            "metadata": metadata
+        }
+        
+        # Detect and log specific modifications
+        if original_context.messages != modified_context.messages:
+            audit_entry["modifications"]["messages"] = {
+                "original_count": len(original_context.messages) if original_context.messages else 0,
+                "modified_count": len(modified_context.messages) if modified_context.messages else 0,
+            }
+        
+        if original_context.llm_response != modified_context.llm_response:
+            audit_entry["modifications"]["llm_response"] = True
+        
+        if original_context.tool_call != modified_context.tool_call:
+            audit_entry["modifications"]["tool_call"] = True
+        
+        if original_context.tool_result != modified_context.tool_result:
+            audit_entry["modifications"]["tool_result"] = True
+        
+        if original_context.output != modified_context.output:
+            audit_entry["modifications"]["output"] = True
+        
+        if original_context.metadata != modified_context.metadata:
+            audit_entry["modifications"]["metadata"] = True
+        
+        # Log at INFO level for audit trail
+        logger.info(
+            f"Hook modification audit: {hook_name}",
+            extra={
+                "audit_type": "hook_modification",
+                "hook_name": hook_name,
+                "hook_type": hook_type.value,
+                "modifications": audit_entry["modifications"],
+                "request_id": original_context.request_id,
+                "session_id": original_context.session_id
+            }
         )
     
     def _update_stats(self, hook_name: str, success: bool, exec_time: float) -> None:
