@@ -29,6 +29,23 @@ The Context Summarizer Plugin intelligently reduces conversation context size by
   - Session-specific tracking
   - Auto-refresh capability
 
+## Status Messages
+
+The plugin publishes real-time status messages during summarization via the status bus:
+
+- **START**: Announces beginning of summarization with token count and target reduction
+- **PROGRESS**: Reports number of messages being summarized and preserved
+- **END**: Shows completion statistics (messages reduced, tokens saved, reduction ratio)
+
+Status messages include detailed metadata and can be monitored via `/status/stream` endpoint.
+
+Example status messages:
+```
+START: Starting context summarization: 85000 tokens → target reduction 30%
+PROGRESS: Summarizing 120 older messages using LLM (preserving 10 recent messages)
+END: Summarization complete: 130 → 20 messages, 62000 tokens saved (73% reduction)
+```
+
 ## Web UI
 
 Access the summarization history panel at `/plugins` in your browser when the agent system is running.
