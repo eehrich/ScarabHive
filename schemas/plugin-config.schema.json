@@ -1,0 +1,193 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/yourusername/AgentSystem/schemas/plugin-config.schema.json",
+  "title": "Agent System Plugin Configuration Schema",
+  "description": "Schema for plugin.yaml files in the Agent System",
+  "type": "object",
+  "required": ["name", "version", "description", "entrypoint"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique plugin identifier (lowercase, alphanumeric, underscores, hyphens)",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version (e.g., 1.0.0)",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-z0-9.-]+)?(\\+[a-z0-9.-]+)?$"
+    },
+    "author": {
+      "type": "string",
+      "description": "Plugin author name or organization"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of plugin functionality"
+    },
+    "entrypoint": {
+      "type": "string",
+      "description": "Python module path to plugin factory (e.g., 'plugin:PLUGIN_FACTORY')",
+      "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*:[a-zA-Z_][a-zA-Z0-9_]*$"
+    },
+    "type": {
+      "type": "string",
+      "description": "Plugin type indicating capabilities",
+      "enum": [
+        "mcp_only",
+        "web_only",
+        "hybrid",
+        "mcp_with_hooks",
+        "web_with_hooks",
+        "hybrid_with_hooks",
+        "hooks_only"
+      ],
+      "default": "mcp_only"
+    },
+    "category": {
+      "type": "string",
+      "description": "Plugin category for organization",
+      "enum": [
+        "tools",
+        "monitoring",
+        "data",
+        "communication",
+        "automation",
+        "security",
+        "development",
+        "hooks",
+        "other"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "description": "Tags for plugin discovery and search",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "Python package dependencies (automatically installed)",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requires": {
+      "type": "object",
+      "description": "Minimum version requirements",
+      "properties": {
+        "python": {
+          "type": "string",
+          "description": "Minimum Python version (e.g., '>=3.8')"
+        },
+        "agent_system": {
+          "type": "string",
+          "description": "Minimum AgentSystem version (e.g., '>=1.0.0')"
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "List of MCP tools provided by this plugin",
+      "items": {
+        "type": "string"
+      }
+    },
+    "web": {
+      "type": "object",
+      "description": "Web endpoint configuration for hybrid plugins",
+      "properties": {
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "URL path for the route (e.g., '/dashboard')"
+              },
+              "template": {
+                "type": "string",
+                "description": "Template file name (e.g., 'dashboard.html')"
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable route description"
+              }
+            }
+          }
+        }
+      }
+    },
+    "hooks": {
+      "type": "array",
+      "description": "Hook declarations for plugin lifecycle integration",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique hook identifier (must be unique across all plugins)",
+            "pattern": "^[a-z0-9_-]+$"
+          },
+          "type": {
+            "type": "string",
+            "description": "Hook lifecycle point",
+            "enum": [
+              "pre_llm_call",
+              "post_llm_call",
+              "pre_tool_call",
+              "post_tool_call",
+              "format_output",
+              "session_start",
+              "session_end"
+            ]
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether hook is enabled by default",
+            "default": true
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable hook description"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Hook execution timeout in seconds",
+            "minimum": 0.1,
+            "maximum": 300.0,
+            "default": 30.0
+          },
+          "order": {
+            "type": "object",
+            "description": "Hook execution ordering specification",
+            "properties": {
+              "before": {
+                "type": "array",
+                "description": "List of hook names this hook should execute before",
+                "items": {
+                  "type": "string",
+                  "pattern": "^([a-z0-9_-]+|begin|end)$"
+                }
+              },
+              "after": {
+                "type": "array",
+                "description": "List of hook names this hook should execute after",
+                "items": {
+                  "type": "string",
+                  "pattern": "^([a-z0-9_-]+|begin|end)$"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

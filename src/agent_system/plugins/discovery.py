@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 import sys
 import types
-from typing import Callable, Dict, Iterable
+from typing import Any, Callable, Dict, Iterable, List
 import yaml
 
 from ..mcp.base import MCPServer
@@ -293,3 +293,130 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
             pass
 
     return plugins
+
+
+async def register_plugin_hooks(
+    plugin_name: str,
+    plugin_instance: Any,
+    metadata: Dict[str, Any] | None = None,
+    registry: Any | None = None
+) -> List[str]:
+    """Register hooks declared in plugin metadata.
+    
+    Args:
+        plugin_name: Name of the plugin
+        plugin_instance: Instantiated plugin server (should implement PluginHook for hook-enabled plugins)
+        metadata: Plugin metadata from plugin.yaml (optional, will use _plugin_metadata attribute if not provided)
+        registry: Hook registry to use (optional, will use global registry if not provided)
+    
+    Returns:
+        List of registered hook names
+    
+    Raises:
+        ValueError: If hook configuration is invalid
+        TypeError: If plugin doesn't implement PluginHook interface
+    """
+    from ..hooks import get_hook_registry, PluginHook, HookType
+    
+    registered_hooks = []
+    
+    # Get metadata from parameter or plugin instance attribute
+    if metadata is None:
+        metadata = getattr(plugin_instance, '_plugin_metadata', None)
+    
+    if not metadata:
+        logger.debug(f"Plugin '{plugin_name}' has no metadata, skipping hook registration")
+        return registered_hooks
+    
+    hooks_config = metadata.get('hooks', [])
+    if not hooks_config:
+        logger.debug(f"Plugin '{plugin_name}' declares no hooks in metadata")
+        return registered_hooks
+    
+    # Verify plugin implements PluginHook interface
+    if not isinstance(plugin_instance, PluginHook):
+        raise TypeError(
+            f"Plugin '{plugin_name}' declares hooks but does not implement PluginHook interface. "
+            "The plugin class must inherit from PluginHook and implement async hook methods."
+        )
+    
+    # Use provided registry or get global one
+    if registry is None:
+        registry = get_hook_registry()
+    
+    for hook_config in hooks_config:
+        try:
+            # Validate required fields
+            hook_name = hook_config.get('name')
+            hook_type_str = hook_config.get('type')
+            
+            if not hook_name:
+                logger.warning(f"Plugin '{plugin_name}' has hook with missing 'name', skipping")
+                continue
+            
+            if not hook_type_str:
+                logger.warning(f"Plugin '{plugin_name}' hook '{hook_name}' missing 'type', skipping")
+                continue
+            
+            # Parse hook type
+            try:
+                hook_type = HookType[hook_type_str.upper()]
+            except KeyError:
+                logger.warning(
+                    f"Plugin '{plugin_name}' hook '{hook_name}' has invalid type '{hook_type_str}'. "
+                    f"Valid types: {[t.name.lower() for t in HookType]}"
+                )
+                continue
+            
+            # Get configuration
+            enabled = hook_config.get('enabled', True)
+            timeout = hook_config.get('timeout', 30.0)
+            description = hook_config.get('description', '')
+            order_spec = hook_config.get('order', {})
+            
+            # Validate order specification
+            before_list = order_spec.get('before', [])
+            after_list = order_spec.get('after', [])
+            
+            if not isinstance(before_list, list):
+                logger.warning(f"Hook '{hook_name}' has invalid 'before' specification (must be list)")
+                before_list = []
+            
+            if not isinstance(after_list, list):
+                logger.warning(f"Hook '{hook_name}' has invalid 'after' specification (must be list)")
+                after_list = []
+            
+            # Check for self-reference
+            if hook_name in before_list or hook_name in after_list:
+                logger.warning(f"Hook '{hook_name}' references itself in ordering, removing self-reference")
+                before_list = [h for h in before_list if h != hook_name]
+                after_list = [h for h in after_list if h != hook_name]
+            
+            order = {
+                'before': before_list,
+                'after': after_list
+            }
+            
+            # Register with HookRegistry (it expects a PluginHook instance)
+            await registry.register_hook(
+                hook_type=hook_type,
+                hook_name=hook_name,
+                hook=plugin_instance,  # Pass the PluginHook instance
+                order_spec=order
+            )
+            
+            registered_hooks.append(hook_name)
+            logger.info(
+                f"Registered hook '{hook_name}' from plugin '{plugin_name}' "
+                f"(type={hook_type.name.lower()}, enabled={enabled}, description='{description}')"
+            )
+            
+        except Exception as e:
+            logger.error(
+                f"Failed to register hook '{hook_config.get('name', 'unknown')}' "
+                f"from plugin '{plugin_name}': {e}",
+                exc_info=True
+            )
+            continue
+    
+    return registered_hooks

@@ -179,6 +179,10 @@ class Agent(MCPServer):
             self.agent_config.context_management.token_optimization
         )
         
+        # Initialize hook integration manager
+        from .components.hook_integration import HookIntegrationManager
+        self._hook_manager = HookIntegrationManager(self)
+        
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
 
@@ -990,6 +994,13 @@ class Agent(MCPServer):
                 if not self._sessions[session_id]:
                     self._emergency_context_attempts = 0
                     logger.debug("Reset emergency context counter for new session")
+            
+            # Execute session start hooks for new sessions
+            is_new_session = not self._sessions.get(session_id)
+            if is_new_session:
+                await self._hook_manager.execute_session_start_hooks(
+                    session_id, request_id, messages=None
+                )
 
             yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
@@ -1176,6 +1187,11 @@ class Agent(MCPServer):
                     llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
                 await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
+                # Execute pre-LLM hooks
+                messages = await self._hook_manager.execute_pre_llm_hooks(
+                    messages, step, request_id, session_id, active_llm
+                )
+
                 # Validate messages before LLM call to ensure API compliance
                 from agent_system.llm.message_validator import validate_messages_before_llm
                 messages = validate_messages_before_llm(messages, context=f"agent_server_step_{step + 1}")
@@ -1303,6 +1319,11 @@ class Agent(MCPServer):
                 
                 # Drain any messages that arrived during LLM call
                 messages = await self._drain_appended_messages(request_id, messages)
+
+                # Execute post-LLM hooks
+                llm_out = await self._hook_manager.execute_post_llm_hooks(
+                    messages, llm_out, step, request_id, session_id, active_llm
+                )
 
                 # Signal LLM call completion using status_worker
                 await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
@@ -1496,7 +1517,13 @@ class Agent(MCPServer):
                         results["summary"] = content
                         # Update tracked messages with final response
                         self._current_messages = messages.copy()
-                        yield {"type": "final", "summary": content}
+                        
+                        # Execute format output hooks before yielding final result
+                        formatted_content = await self._hook_manager.execute_format_output_hooks(
+                            content, request_id, session_id
+                        )
+                        
+                        yield {"type": "final", "summary": formatted_content}
                         break
                 # If we had tool calls, continue to next iteration to let LLM respond to tool results
                 # Don't add extra assistant messages here as it creates invalid conversation flow
@@ -1523,7 +1550,13 @@ class Agent(MCPServer):
                         results["summary"] = final_content
                         # Update tracked messages and emit final event
                         self._current_messages = messages.copy()
-                        yield {"type": "final", "summary": final_content}
+                        
+                        # Execute format output hooks
+                        formatted_final = await self._hook_manager.execute_format_output_hooks(
+                            final_content, request_id, session_id
+                        )
+                        
+                        yield {"type": "final", "summary": formatted_final}
                     else:
                         results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
                         yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
@@ -1549,6 +1582,14 @@ class Agent(MCPServer):
             logger.exception("Agent execution failed with exception:")
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
         finally:
+            # Execute session end hooks
+            try:
+                await self._hook_manager.execute_session_end_hooks(
+                    session_id, request_id, messages=messages if 'messages' in locals() else None
+                )
+            except Exception as e:
+                logger.warning(f"Session end hooks failed: {e}", exc_info=True)
+            
             # Clean up cancellation token
             cancellation_manager = get_cancellation_manager()
             cancellation_manager.unregister_request(request_id)

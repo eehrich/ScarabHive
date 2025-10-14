@@ -1,0 +1,47 @@
+name: request_logger
+version: 1.0.0
+author: "AgentSystem Team"
+description: "Example hook plugin that logs agent requests and responses"
+entrypoint: plugin:PLUGIN_FACTORY
+type: hooks_only
+category: monitoring
+tags:
+  - hooks
+  - logging
+  - monitoring
+  - example
+
+# Hook declarations
+hooks:
+  - name: log_pre_llm
+    type: pre_llm_call
+    enabled: true
+    order:
+      after: ["begin"]
+    description: "Logs incoming LLM requests"
+    timeout: 2.0
+    
+  - name: log_post_llm
+    type: post_llm_call
+    enabled: true
+    order:
+      after: ["log_pre_llm"]
+      before: ["end"]
+    description: "Logs LLM responses with timing"
+    timeout: 2.0
+    
+  - name: log_session_start
+    type: session_start
+    enabled: true
+    order:
+      after: ["begin"]
+    description: "Logs session start events"
+    timeout: 1.0
+    
+  - name: log_session_end
+    type: session_end
+    enabled: true
+    order:
+      before: ["end"]
+    description: "Logs session end events with summary"
+    timeout: 1.0
