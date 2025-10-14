@@ -224,9 +224,10 @@ async def test_hook_timeout(registry, base_context):
 @pytest.mark.asyncio
 async def test_disabled_hook_skipped(registry, base_context):
     """Test that disabled hooks are skipped."""
-    hook = SimpleHook("test_hook", {"enabled": False})
+    hook = SimpleHook("test_hook")
     
-    await registry.register_hook(HookType.PRE_LLM_CALL, "test_hook", hook)
+    # Register hook with enabled=False
+    await registry.register_hook(HookType.PRE_LLM_CALL, "test_hook", hook, enabled=False)
     
     result_context = await registry.execute_hooks(HookType.PRE_LLM_CALL, base_context)
     

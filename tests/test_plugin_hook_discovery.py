@@ -13,7 +13,6 @@ from typing import Dict, Any
 
 from agent_system.plugins.discovery import register_plugin_hooks
 from agent_system.hooks import (
-    get_hook_registry,
     PluginHook,
     HookContext,
     HookResult,
@@ -37,6 +36,9 @@ class MockHookPlugin(MCPServer, PluginHook):
         super().__init__(name, system_config, mcp_config)
         self.pre_llm_calls = 0
         self.post_llm_calls = 0
+        # Hook attributes expected by HookRegistry
+        self.enabled = True
+        self.timeout = 30.0
     
     async def list_tools(self):
         return []
@@ -99,7 +101,8 @@ def clean_registry():
 
 
 
-def test_register_single_hook(clean_registry):
+@pytest.mark.asyncio
+async def test_register_single_hook(clean_registry):
     """Test registering a single hook from plugin metadata."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -114,7 +117,7 @@ def test_register_single_hook(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
     assert 'test_hook' in registered
@@ -125,7 +128,8 @@ def test_register_single_hook(clean_registry):
     assert hook_info['enabled'] is True
 
 
-def test_register_multiple_hooks(clean_registry):
+@pytest.mark.asyncio
+async def test_register_multiple_hooks(clean_registry):
     """Test registering multiple hooks from same plugin."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -144,14 +148,15 @@ def test_register_multiple_hooks(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 2
     assert 'hook_pre' in registered
     assert 'hook_post' in registered
 
 
-def test_plugin_without_plugin_hook_interface(clean_registry):
+@pytest.mark.asyncio
+async def test_plugin_without_plugin_hook_interface(clean_registry):
     """Test error when plugin declares hooks but doesn't implement PluginHook."""
     plugin = MockNonHookPlugin("bad_plugin", {})
     metadata = {
@@ -164,29 +169,32 @@ def test_plugin_without_plugin_hook_interface(clean_registry):
     }
     
     with pytest.raises(TypeError, match="does not implement PluginHook interface"):
-        register_plugin_hooks("bad_plugin", plugin, metadata, clean_registry)
+        await register_plugin_hooks("bad_plugin", plugin, metadata, clean_registry)
 
 
-def test_plugin_without_hooks_metadata(clean_registry):
+@pytest.mark.asyncio
+async def test_plugin_without_hooks_metadata(clean_registry):
     """Test plugin without hooks section in metadata."""
     plugin = MockHookPlugin("no_hooks_plugin", {})
     metadata = {}  # No hooks section
     
-    registered = register_plugin_hooks("no_hooks_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("no_hooks_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 0
 
 
-def test_plugin_without_metadata(clean_registry):
+@pytest.mark.asyncio
+async def test_plugin_without_metadata(clean_registry):
     """Test plugin without any metadata."""
     plugin = MockHookPlugin("no_metadata_plugin", {})
     
-    registered = register_plugin_hooks("no_metadata_plugin", plugin, None, clean_registry)
+    registered = await register_plugin_hooks("no_metadata_plugin", plugin, None, clean_registry)
     
     assert len(registered) == 0
 
 
-def test_hook_with_invalid_type(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_with_invalid_type(clean_registry):
     """Test hook with invalid type is skipped."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -200,12 +208,13 @@ def test_hook_with_invalid_type(clean_registry):
     }
     
     # Should log warning and skip the hook
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 0
 
 
-def test_hook_with_missing_name(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_with_missing_name(clean_registry):
     """Test hook with missing name is skipped."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -218,12 +227,13 @@ def test_hook_with_missing_name(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 0
 
 
-def test_hook_with_missing_type(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_with_missing_type(clean_registry):
     """Test hook with missing type is skipped."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -236,12 +246,13 @@ def test_hook_with_missing_type(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 0
 
 
-def test_hook_with_self_reference(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_with_self_reference(clean_registry):
     """Test hook with self-reference in ordering is cleaned up."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -259,13 +270,14 @@ def test_hook_with_self_reference(clean_registry):
     }
     
     # Should remove self-reference and register successfully
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
     assert 'self_ref_hook' in registered
 
 
-def test_hook_with_custom_timeout(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_with_custom_timeout(clean_registry):
     """Test hook with custom timeout value."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -279,14 +291,15 @@ def test_hook_with_custom_timeout(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
     hook_info = clean_registry.get_hook_info('timeout_hook')
     assert hook_info['timeout'] == 5.0
 
 
-def test_hook_disabled_by_default(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_disabled_by_default(clean_registry):
     """Test hook can be disabled in metadata."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -299,7 +312,7 @@ def test_hook_disabled_by_default(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
     hook_info = clean_registry.get_hook_info('disabled_hook')
@@ -320,7 +333,7 @@ async def test_registered_hook_execution(clean_registry):
         ]
     }
     
-    register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     # Create test context
     context = HookContext(
@@ -340,7 +353,8 @@ async def test_registered_hook_execution(clean_registry):
     assert modified_context is not None
 
 
-def test_hook_metadata_attached(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_metadata_attached(clean_registry):
     """Test that hook metadata is properly attached."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -354,7 +368,7 @@ def test_hook_metadata_attached(clean_registry):
         ]
     }
     
-    register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     hook_info = clean_registry.get_hook_info('meta_hook')
     hook_meta = hook_info['metadata']
@@ -363,7 +377,8 @@ def test_hook_metadata_attached(clean_registry):
     assert hook_meta['source'] == 'plugin_discovery'
 
 
-def test_hook_with_complex_ordering(clean_registry):
+@pytest.mark.asyncio
+async def test_hook_with_complex_ordering(clean_registry):
     """Test hook with both before and after ordering."""
     plugin = MockHookPlugin("test_plugin", {})
     metadata = {
@@ -380,7 +395,7 @@ def test_hook_with_complex_ordering(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
     hook_info = clean_registry.get_hook_info('ordered_hook')
@@ -391,7 +406,8 @@ def test_hook_with_complex_ordering(clean_registry):
     assert 'first_hook' in order['after']
 
 
-def test_multiple_hook_types_same_plugin(clean_registry):
+@pytest.mark.asyncio
+async def test_multiple_hook_types_same_plugin(clean_registry):
     """Test plugin registering hooks for different lifecycle points."""
     plugin = MockHookPlugin("multi_hook_plugin", {})
     metadata = {
@@ -414,7 +430,7 @@ def test_multiple_hook_types_same_plugin(clean_registry):
         ]
     }
     
-    registered = register_plugin_hooks("multi_hook_plugin", plugin, metadata, clean_registry)
+    registered = await register_plugin_hooks("multi_hook_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 3
     assert clean_registry.get_hook_info('pre_hook') is not None

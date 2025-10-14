@@ -402,7 +402,13 @@ async def register_plugin_hooks(
                 hook_type=hook_type,
                 hook_name=hook_name,
                 hook=plugin_instance,  # Pass the PluginHook instance
-                order_spec=order
+                order_spec=order,
+                enabled=enabled,
+                timeout=timeout,
+                description=description,
+                # Additional metadata for tracking
+                plugin=plugin_name,
+                source="plugin_discovery"
             )
             
             registered_hooks.append(hook_name)

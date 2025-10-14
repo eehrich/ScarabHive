@@ -52,8 +52,9 @@ class HookRegistry:
         """
         self.default_timeout = default_timeout
         
-        # Hook storage: hook_type -> list of (hook_name, hook_instance, order_spec)
-        self._hooks: Dict[HookType, List[tuple[str, PluginHook, Dict[str, List[str]]]]] = defaultdict(list)
+        # Hook storage: hook_type -> list of (hook_name, hook_instance, order_spec, metadata)
+        # metadata contains: enabled, timeout, description
+        self._hooks: Dict[HookType, List[tuple[str, PluginHook, Dict[str, List[str]], Dict[str, Any]]]] = defaultdict(list)
         
         # Lock for thread-safe registration
         self._lock = asyncio.Lock()
@@ -72,7 +73,11 @@ class HookRegistry:
         hook_type: HookType,
         hook_name: str,
         hook: PluginHook,
-        order_spec: Optional[Dict[str, List[str]]] = None
+        order_spec: Optional[Dict[str, List[str]]] = None,
+        enabled: bool = True,
+        timeout: Optional[float] = None,
+        description: str = "",
+        **extra_metadata
     ) -> None:
         """
         Register a hook for a specific lifecycle point.
@@ -82,13 +87,17 @@ class HookRegistry:
             hook_name: Unique name for this hook
             hook: PluginHook instance
             order_spec: Optional ordering specification {"before": [...], "after": [...]}
+            enabled: Whether the hook is enabled (default: True)
+            timeout: Hook-specific timeout in seconds (default: use registry default)
+            description: Human-readable description of the hook
+            **extra_metadata: Additional metadata to store with the hook
             
         Raises:
             ValueError: If hook with same name already registered for this type
         """
         async with self._lock:
             # Check for duplicates
-            existing_names = [name for name, _, _ in self._hooks[hook_type]]
+            existing_names = [name for name, _, _, _ in self._hooks[hook_type]]
             if hook_name in existing_names:
                 raise ValueError(f"Hook '{hook_name}' already registered for {hook_type.value}")
             
@@ -102,12 +111,20 @@ class HookRegistry:
             if "after" not in order_spec:
                 order_spec["after"] = []
             
-            # Register the hook
-            self._hooks[hook_type].append((hook_name, hook, order_spec))
+            # Build metadata
+            metadata = {
+                "enabled": enabled,
+                "timeout": timeout if timeout is not None else self.default_timeout,
+                "description": description,
+                **extra_metadata  # Include any additional metadata
+            }
+            
+            # Register the hook with metadata
+            self._hooks[hook_type].append((hook_name, hook, order_spec, metadata))
             
             logger.info(
                 f"Registered hook '{hook_name}' for {hook_type.value} "
-                f"(before={order_spec.get('before', [])}, after={order_spec.get('after', [])})"
+                f"(before={order_spec.get('before', [])}, after={order_spec.get('after', [])}), enabled={enabled}"
             )
     
     async def unregister_hook(self, hook_type: HookType, hook_name: str) -> bool:
@@ -123,7 +140,7 @@ class HookRegistry:
         """
         async with self._lock:
             hooks_list = self._hooks[hook_type]
-            for i, (name, _, _) in enumerate(hooks_list):
+            for i, (name, _, _, _) in enumerate(hooks_list):
                 if name == hook_name:
                     hooks_list.pop(i)
                     logger.info(f"Unregistered hook '{hook_name}' from {hook_type.value}")
@@ -168,19 +185,22 @@ class HookRegistry:
         except CircularDependencyError as e:
             logger.error(f"Circular dependency in hooks for {hook_type.value}: {e}")
             # Continue with original order if we can't resolve dependencies
-            ordered_hooks = [(name, hook) for name, hook, _ in hooks_list]
+            ordered_hooks = [(name, hook, meta) for name, hook, _, meta in hooks_list]
         
         logger.debug(
             f"Executing {len(ordered_hooks)} hooks for {hook_type.value}: "
-            f"{[name for name, _ in ordered_hooks]}"
+            f"{[name for name, _, _ in ordered_hooks]}"
         )
         
         # Execute hooks in order
         current_context = context
-        for hook_name, hook_instance in ordered_hooks:
-            if not hook_instance.enabled:
+        for hook_name, hook_instance, metadata in ordered_hooks:
+            if not metadata.get("enabled", True):
                 logger.debug(f"Skipping disabled hook '{hook_name}'")
                 continue
+            
+            # Use hook-specific timeout if available, otherwise use registry default
+            hook_timeout = metadata.get("timeout", timeout)
             
             try:
                 # Deep copy context for isolation
@@ -191,7 +211,7 @@ class HookRegistry:
                 
                 result = await asyncio.wait_for(
                     self._execute_hook_method(hook_type, hook_instance, hook_context),
-                    timeout=timeout
+                    timeout=hook_timeout
                 )
                 
                 exec_time = asyncio.get_event_loop().time() - start_time
@@ -214,10 +234,10 @@ class HookRegistry:
                 
             except asyncio.TimeoutError:
                 logger.error(
-                    f"Hook '{hook_name}' timed out after {timeout}s",
-                    extra={"hook_name": hook_name, "hook_type": hook_type.value, "timeout": timeout}
+                    f"Hook '{hook_name}' timed out after {hook_timeout}s",
+                    extra={"hook_name": hook_name, "hook_type": hook_type.value, "timeout": hook_timeout}
                 )
-                self._update_stats(hook_name, success=False, exec_time=timeout)
+                self._update_stats(hook_name, success=False, exec_time=hook_timeout)
                 
             except Exception as e:
                 logger.error(
@@ -255,24 +275,25 @@ class HookRegistry:
     
     def _topological_sort(
         self,
-        hooks_list: List[tuple[str, PluginHook, Dict[str, List[str]]]]
-    ) -> List[tuple[str, PluginHook]]:
+        hooks_list: List[tuple[str, PluginHook, Dict[str, List[str]], Dict[str, Any]]]
+    ) -> List[tuple[str, PluginHook, Dict[str, Any]]]:
         """
         Sort hooks by dependency order using topological sort.
         
         Args:
-            hooks_list: List of (name, hook, order_spec) tuples
+            hooks_list: List of (name, hook, order_spec, metadata) tuples
             
         Returns:
-            List of (name, hook) tuples in execution order
+            List of (name, hook, metadata) tuples in execution order
             
         Raises:
             CircularDependencyError: If circular dependencies detected
         """
         # Build dependency graph
         # For each hook, track what it must come before and after
-        hooks_map = {name: hook for name, hook, _ in hooks_list}
-        order_specs = {name: spec for name, _, spec in hooks_list}
+        hooks_map = {name: hook for name, hook, _, _ in hooks_list}
+        order_specs = {name: spec for name, _, spec, _ in hooks_list}
+        metadata_map = {name: meta for name, _, _, meta in hooks_list}
         
         # Build adjacency list (hook -> hooks that must come after it)
         # and track in-degree (number of dependencies)
@@ -353,8 +374,8 @@ class HookRegistry:
                 f"Circular dependency detected in hooks: {sorted(remaining)}"
             )
         
-        # Return sorted hooks
-        return [(name, hooks_map[name]) for name in result]
+        # Return sorted hooks with metadata
+        return [(name, hooks_map[name], metadata_map[name]) for name in result]
     
     def _deep_copy_context(self, context: HookContext) -> HookContext:
         """
@@ -416,10 +437,10 @@ class HookRegistry:
         """
         result = {}
         if hook_type:
-            result[hook_type.value] = [name for name, _, _ in self._hooks[hook_type]]
+            result[hook_type.value] = [name for name, _, _, _ in self._hooks[hook_type]]
         else:
             for htype, hooks_list in self._hooks.items():
-                result[htype.value] = [name for name, _, _ in hooks_list]
+                result[htype.value] = [name for name, _, _, _ in hooks_list]
         return result
     
     def get_hook_info(self, hook_name: str) -> Optional[Dict[str, Any]]:
@@ -433,13 +454,17 @@ class HookRegistry:
             Dictionary with hook information or None if not found
         """
         for hook_type, hooks_list in self._hooks.items():
-            for name, hook, order_spec in hooks_list:
+            for name, hook, order_spec, metadata in hooks_list:
                 if name == hook_name:
                     return {
                         "name": name,
                         "type": hook_type.value,
-                        "enabled": hook.enabled,
-                        "order_spec": order_spec,
+                        "enabled": metadata.get("enabled", True),
+                        "timeout": metadata.get("timeout", self.default_timeout),
+                        "description": metadata.get("description", ""),
+                        "order": order_spec,
+                        "order_spec": order_spec,  # Backward compatibility
+                        "metadata": metadata,
                         "class": hook.__class__.__name__,
                         "module": hook.__class__.__module__,
                         "stats": self.get_stats(hook_name),
