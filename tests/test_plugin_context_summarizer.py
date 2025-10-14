@@ -11,7 +11,9 @@ from plugins.context_summarizer.plugin import PLUGIN_FACTORY
 @pytest.fixture
 def summarizer_plugin():
     """Create context summarizer plugin instance."""
-    return PLUGIN_FACTORY()
+    # PLUGIN_FACTORY returns tuple (hooks_plugin, web_factory) for hybrid plugin
+    hooks_plugin, _web_factory = PLUGIN_FACTORY()
+    return hooks_plugin
 
 
 @pytest.fixture
@@ -111,3 +113,72 @@ async def test_chunked_summarization(summarizer_plugin, mock_llm):
         # Should have processed multiple chunks
         assert summary_stats['total_chunks'] > 1
         assert summary_stats['summary_count'] > 0
+
+
+@pytest.mark.asyncio
+async def test_status_messages_published(summarizer_plugin, mock_llm, monkeypatch):
+    """Test that status messages are published during summarization."""
+    from agent_system.mcp.status import get_status_bus
+    
+    # Track published status messages
+    published_statuses = []
+    
+    async def mock_publish(event):
+        published_statuses.append({
+            'server': event.server,
+            'message': event.message,
+            'phase': event.phase,
+            'request_id': event.request_id
+        })
+    
+    # Patch the status bus
+    status_bus = get_status_bus()
+    original_publish = status_bus.publish
+    monkeypatch.setattr(status_bus, 'publish', mock_publish)
+    
+    try:
+        # Create enough messages to trigger summarization
+        # With context_window=100000 and trigger=60%, we need >60000 tokens
+        # Each message is ~100 chars * 10 = 1000 chars ≈ 250 tokens
+        # Need ~250 messages to exceed threshold
+        messages = create_test_messages(300)
+        
+        # Override trigger to make test faster
+        summarizer_plugin.trigger_percentage = 0.01  # Trigger at 1% = 1000 tokens
+        
+        context = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id='test-status-123',
+            session_id='session-1',
+            messages=messages,
+            llm=mock_llm
+        )
+        
+        result = await summarizer_plugin.summarize_context(context)
+        
+        # If summarization happened, check status messages
+        if result.modified:
+            # Should have START, PROGRESS, and END messages
+            assert len(published_statuses) >= 3, "Should have at least START, PROGRESS, END status messages"
+            
+            # Check for START message
+            start_messages = [s for s in published_statuses if s['phase'].value == 'start']
+            assert len(start_messages) > 0, "Should have START status message"
+            assert start_messages[0]['server'] == 'context_summarizer'
+            assert 'Starting context summarization' in start_messages[0]['message']
+            
+            # Check for PROGRESS message
+            progress_messages = [s for s in published_statuses if s['phase'].value == 'progress']
+            assert len(progress_messages) > 0, "Should have PROGRESS status message"
+            assert 'Summarizing' in progress_messages[0]['message']
+            
+            # Check for END message
+            end_messages = [s for s in published_statuses if s['phase'].value == 'end']
+            assert len(end_messages) > 0, "Should have END status message"
+            assert end_messages[0]['server'] == 'context_summarizer'
+            assert 'Summarization complete' in end_messages[0]['message']
+            assert 'tokens saved' in end_messages[0]['message']
+    
+    finally:
+        # Restore original publish method
+        monkeypatch.setattr(status_bus, 'publish', original_publish)
