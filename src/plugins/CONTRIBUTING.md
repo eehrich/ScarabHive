@@ -5,3 +5,4 @@ Plugin contribution guidelines
 - Include `plugin.yaml` with metadata: `name`, `description`, `version`.
 - Keep plugin dependencies minimal and document them in `plugin.yaml` if needed.
 - Prefer async `call()` implementations to match MCPServer interface.
+- Activate and configure it in `config/plugins.yaml`
