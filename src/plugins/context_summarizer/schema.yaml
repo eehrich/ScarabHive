@@ -1,0 +1,74 @@
+# Hook definitions for context_summarizer plugin
+# Convention: hook name must match method name exactly
+hooks:
+  - name: summarize_context
+    type: pre_llm_call
+    enabled: true
+    timeout: 60.0
+    description: "Intelligently summarizes older messages using LLM to reduce context size while preserving key information"
+    order:
+      after: ["optimize_context"]  # Run after basic context optimization
+      before: ["validate_messages"]
+
+# Configuration schema for this plugin
+config:
+  summarization_trigger_tokens:
+    type: integer
+    default: 50000
+    description: "Start summarization when context exceeds this many tokens"
+    minimum: 10000
+    maximum: 500000
+  
+  summarization_chunk_size:
+    type: integer
+    default: 10
+    description: "Number of older messages to summarize in one batch"
+    minimum: 2
+    maximum: 50
+  
+  preserve_recent_count:
+    type: integer
+    default: 10
+    description: "Always preserve the last N messages without summarization"
+    minimum: 2
+    maximum: 100
+  
+  preserve_system_messages:
+    type: boolean
+    default: true
+    description: "Always preserve system messages during summarization"
+  
+  llm_profile:
+    type: string
+    default: "fast"
+    description: "LLM profile to use for summarization (fast, normal, advanced)"
+    enum: ["fast", "normal", "advanced"]
+  
+  summary_prompt_template:
+    type: string
+    default: |
+      Summarize the following conversation messages concisely while preserving all key information, decisions, and context. 
+      Focus on facts, actions, and important details. Keep the summary clear and structured.
+      
+      Messages to summarize:
+      {messages}
+      
+      Provide a concise summary:
+    description: "Template for the summarization prompt. Use {messages} placeholder for message content."
+  
+  min_summary_reduction:
+    type: number
+    default: 0.3
+    description: "Minimum reduction ratio (0-1) to accept summary. If summary doesn't reduce by at least this much, keep original."
+    minimum: 0.1
+    maximum: 0.9
+  
+  store_original_metadata:
+    type: boolean
+    default: true
+    description: "Store original messages in metadata for audit trail and debugging"
+  
+  summary_marker_format:
+    type: string
+    default: "[Summary of {count} messages from {start_time} to {end_time}]"
+    description: "Format for summary marker. Placeholders: {count}, {start_time}, {end_time}"
