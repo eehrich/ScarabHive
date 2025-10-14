@@ -1122,14 +1122,12 @@ class Agent(MCPServer):
                     llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
                 await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
-                # Execute pre-LLM hooks
+                # Execute pre-LLM hooks (includes message validation via llm_message_validator plugin)
                 messages = await self._hook_manager.execute_pre_llm_hooks(
                     messages, step, request_id, session_id, active_llm
                 )
 
-                # Validate messages before LLM call to ensure API compliance
-                from agent_system.llm.message_validator import validate_messages_before_llm
-                messages = validate_messages_before_llm(messages, context=f"agent_server_step_{step + 1}")
+                # Message validation is now handled by llm_message_validator hook plugin
 
                 # Get LLM response - handle context length exceeded errors
                 try:
@@ -1386,9 +1384,7 @@ class Agent(MCPServer):
             else:
                 # Max steps reached - get final answer
                 try:
-                    # Validate messages before final LLM call
-                    from agent_system.llm.message_validator import validate_messages_before_llm
-                    messages = validate_messages_before_llm(messages, context="agent_server_final")
+                    # Message validation handled by llm_message_validator hook (already applied in pre-LLM hooks)
                     
                     final_llm_out = await active_llm.chat_tools(messages, [], cancellation_token=main_token)
                     final_assistant = final_llm_out.get("assistant", {})

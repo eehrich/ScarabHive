@@ -1,0 +1,59 @@
+hooks:
+  validate_messages:
+    type: pre_llm_call
+    description: >
+      Validates message sequences before LLM calls and auto-repairs common issues.
+      Checks tool call consistency, tool name patterns, content structure, and sequence validity.
+    priority: 50  # Run before context optimization (which is typically 100)
+    
+config:
+  # Repair mode: 'auto' repairs issues automatically, 'strict' raises on errors
+  repair_mode:
+    type: string
+    default: "auto"
+    enum: ["auto", "strict"]
+    description: "How to handle validation issues: auto-repair or strict error"
+    
+  # Logging level for validation issues
+  log_level:
+    type: string
+    default: "warning"
+    enum: ["debug", "info", "warning", "error"]
+    description: "Logging level for validation issues"
+    
+  # Enable/disable specific validation checks
+  enable_tool_call_check:
+    type: boolean
+    default: true
+    description: "Check for orphaned tool calls and missing tool responses"
+    
+  enable_tool_name_check:
+    type: boolean
+    default: true
+    description: "Validate tool names match OpenAI pattern ^[a-zA-Z0-9_-]+$"
+    
+  enable_content_check:
+    type: boolean
+    default: true
+    description: "Check for malformed or problematic content structures"
+    
+  enable_sequence_check:
+    type: boolean
+    default: true
+    description: "Validate proper message role sequences"
+    
+  # Auto-repair settings
+  remove_orphaned_tool_responses:
+    type: boolean
+    default: true
+    description: "Automatically remove orphaned tool responses"
+    
+  fix_tool_name_format:
+    type: boolean
+    default: true
+    description: "Automatically fix invalid tool names by sanitizing"
+    
+  normalize_content:
+    type: boolean
+    default: true
+    description: "Normalize content structures (e.g., convert None to empty string)"

@@ -1,0 +1,10 @@
+name: llm_message_validator
+version: 1.0.0
+description: >
+  Validates and repairs message sequences before LLM calls.
+  Ensures OpenAI API compliance by checking tool call consistency,
+  tool name patterns, content structure, and message sequences.
+  Can auto-repair common issues like orphaned tool calls and malformed content.
+author: AgentSystem Team
+enabled: true
+type: hook
