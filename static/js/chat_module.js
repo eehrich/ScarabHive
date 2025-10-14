@@ -2,84 +2,8 @@
 (function (global) {
   const chatModule = {};
 
-  // Markdown to HTML conversion
-  function markdownToHtml(md) {
-    if (!md) return '';
-    let html = md;
-    html = escapeHtml(html);
-    html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
-    html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');
-    html = html.replace(/^# (.*$)/gm, '<h1>$1</h1>');
-    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
-    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-    html = html.replace(/_(.*?)_/g, '<em>$1</em>');
-    html = html.replace(/```[\s\S]*?```/g, function(match) {
-      const content = match.replace(/```.*?\n/, '').replace(/\n```$/, '');
-      return `<pre><code>${content}</code></pre>`;
-    });
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/^\|(.+)\|$/gm, function(match, content) {
-      const cells = content.split('|').map(cell => cell.trim());
-      const cellTags = cells.map(cell => `<td>${cell}</td>`).join('');
-      return `<tr>${cellTags}</tr>`;
-    });
-    html = html.replace(/(<tr>.*<\/tr>[\n\r]*)+/g, function(match) {
-      const rows = match.trim().split(/[\n\r]+/);
-      let tableContent = '';
-      let inHeader = true;
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        if (row.includes('---') || row.includes('===')) { inHeader = false; continue; }
-        if (inHeader && i === 0) {
-          const headerRow = row.replace(/<td>/g, '<th>').replace(/<\/td>/g, '</th>');
-          tableContent += `<thead>${headerRow}</thead><tbody>`;
-          inHeader = false;
-        } else { tableContent += row; }
-      }
-      if (!tableContent.includes('<tbody>')) tableContent = `<tbody>${tableContent}</tbody>`;
-      else tableContent += '</tbody>';
-      return `<table class="markdown-table">${tableContent}</table>`;
-    });
-    // Process ordered list blocks first (preserve numbering)
-    html = html.replace(/(^|\n)((?:[ \t]*\d+\.\s+.+(?:\n|$))+)/gm, function(_, pre, block) {
-      const lines = block.trim().split(/\r?\n/).filter(Boolean);
-      const items = lines.map(line => {
-        const match = line.match(/^[ \t]*(\d+)\.\s+(.+)$/);
-        if (match) {
-          return { number: parseInt(match[1]), content: match[2].trim() };
-        }
-        return { number: 1, content: line.trim() };
-      });
-      
-      // Use the first item's number as start attribute and preserve individual numbers
-      const startNum = items.length > 0 ? items[0].number : 1;
-      const liElements = items.map(item => `<li value="${item.number}">${item.content}</li>`).join('');
-      return pre + `<ol start="${startNum}">` + liElements + '</ol>';
-    });
-
-    // Then process unordered list blocks
-    html = html.replace(/(^|\n)((?:[ \t]*[-*+]\s+.+(?:\n|$))+)/gm, function(_, pre, block) {
-      const lines = block.trim().split(/\r?\n/).filter(Boolean);
-      const items = lines.map(l => l.replace(/^[ \t]*[-*+]\s+/, '').trim());
-      return pre + '<ul>' + items.map(i => `<li>${i}</li>`).join('') + '</ul>';
-    });
-
-    // Collapse multiple blank lines to paragraph separators and convert remaining newlines to <br>
-    html = html.replace(/\n{2,}/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-
-    // Ensure top-level block wrappers; avoid wrapping lists/tables/pre headers
-    if (!html.match(/^<(h[1-6]|table|ul|ol|pre|div)/)) html = `<p>${html}</p>`;
-
-  // Clean up common unwanted patterns inside lists (e.g., <p> or <br> within <li>)
-  html = html.replace(/<li>\s*<p>(.*?)<\/p>\s*<\/li>/gs, '<li>$1</li>');
-  html = html.replace(/<li>([\s\S]*?)<br>\s*<\/li>/g, '<li>$1</li>');
-  html = html.replace(/<ul>\s*<br>\s*<li>/g, '<ul><li>');
-  html = html.replace(/<li>\s*<br>\s*/g, '<li>');
-  html = html.replace(/<\/li>\s*<br>\s*(<li>|<\/ul>|<\/ol>)/g, '</li>$1');
-    return html;
-  }
+  // Backend now handles all formatting via plugins
+  // Frontend displays content as-is
 
   function escapeHtml(text) {
     const div = document.createElement('div');
@@ -788,7 +712,8 @@
           case 'final':
             const content = data.summary || data.content || '';
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
+            // Use content as-is (backend handles formatting via plugins)
+            blk.t.innerHTML = `<div class="response-text">${content}</div>`;
             break;
           case 'end':
             if (currentEventSource) {
@@ -1032,7 +957,8 @@
             const j = await r.json();
             const content = j.summary || JSON.stringify(j, null, 2);
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text">${markdownToHtml(content)}</div>`;
+            // Use content as-is (backend handles formatting via plugins)
+            blk.t.innerHTML = `<div class="response-text">${content}</div>`;
           } catch (e) {
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(e))}</div>`;
@@ -1152,9 +1078,9 @@
         } else if (msg.role === 'assistant' && msg.content) {
           // Add assistant message (only if it has content)
           const blk = addAssistantBlock(chatEl);
-          // Show response section and add content with markdown formatting
+          // Show response section - use content as-is (backend handles formatting)
           showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text">${markdownToHtml(msg.content)}</div>`;
+          blk.t.innerHTML = `<div class="response-text">${msg.content}</div>`;
         }
       });
       

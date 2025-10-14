@@ -4,7 +4,10 @@ hooks:
     description: >
       Validates message sequences before LLM calls and auto-repairs common issues.
       Checks tool call consistency, tool name patterns, content structure, and sequence validity.
-    priority: 50  # Run before context optimization (which is typically 100)
+    # Run before context optimization to ensure clean messages
+    before:
+      - optimize_context
+      - summarize_context
     
 config:
   # Repair mode: 'auto' repairs issues automatically, 'strict' raises on errors
