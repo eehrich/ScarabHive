@@ -25,6 +25,7 @@ from .plugin_hook import (
     HookType,
     HookResult,
 )
+from .schema_based import SchemaBasedPluginHook
 from .config import (
     HooksConfig,
     load_hooks_config,
@@ -44,6 +45,7 @@ __all__ = [
     "get_hook_registry",
     # Base classes and types
     "PluginHook",
+    "SchemaBasedPluginHook",
     "HookContext",
     "HookType",
     "HookResult",

@@ -1,0 +1,59 @@
+# Hook definitions for message_validator plugin
+hooks:
+  - name: message_validator
+    type: pre_llm_call
+    handler: validate_messages
+    enabled: true
+    timeout: 10.0
+    description: "Validates and sanitizes messages before LLM calls"
+    order:
+      after: ["context_optimizer"]
+      before: ["end"]
+  
+  - name: message_structure_validator
+    type: pre_llm_call
+    handler: validate_structure
+    enabled: true
+    timeout: 5.0
+    description: "Validates message structure and role sequences"
+    order:
+      after: ["begin"]
+      before: ["message_validator"]
+
+# Configuration schema for this plugin
+config:
+  strict_mode:
+    type: boolean
+    default: false
+    description: "Reject invalid messages instead of fixing them"
+  
+  max_message_length:
+    type: integer
+    default: 100000
+    description: "Maximum allowed message length"
+    minimum: 1000
+    maximum: 1000000
+  
+  sanitize_content:
+    type: boolean
+    default: true
+    description: "Sanitize message content (remove dangerous patterns)"
+  
+  enforce_alternating:
+    type: boolean
+    default: true
+    description: "Enforce alternating user/assistant message pattern"
+  
+  allowed_roles:
+    type: array
+    items:
+      type: string
+      enum: ["system", "user", "assistant", "tool"]
+    default: ["system", "user", "assistant", "tool"]
+    description: "List of allowed message roles"
+  
+  validation_level:
+    type: string
+    enum: ["minimal", "standard", "strict"]
+    default: "standard"
+    description: "Validation strictness level"

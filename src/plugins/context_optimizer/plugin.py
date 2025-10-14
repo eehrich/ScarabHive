@@ -1,41 +1,98 @@
-"""
-Context Optimizer Plugin - Reference Hook Plugin Implementation.
+"""""""""
 
-This plugin demonstrates how to implement a hooks-only plugin that modifies
-the conversation context before LLM calls to optimize token usage and improve
-response quality.
+Context Optimizer Plugin - Schema-Based Hook Plugin.
+
+Context Optimizer Plugin - Schema-Based Hook Plugin.Context Optimizer Plugin - Reference Hook Plugin Implementation.
+
+This plugin demonstrates schema-based hook implementation.
+
+Hook definitions are loaded from schema.yaml, handlers from hooks.py.
+
+
+
+**Plugin Type:** Hook-only (inherits from SchemaBasedPluginHook)This plugin demonstrates schema-based hook implementation.This plugin demonstrates how to implement a hooks-only plugin that modifies
+
+
+
+**Hooks Defined in schema.yaml:**Hook definitions are loaded from schema.yaml, handlers from hooks.py.the conversation context before LLM calls to optimize token usage and improve
+
+- context_optimizer: Main optimization hook (pre_llm_call)
+
+- context_stats_logger: Optional stats logging hook (post_llm_call)response quality.
+
+"""
+
+**Plugin Type:** Hook-only (inherits from SchemaBasedPluginHook)
+
+from .hooks import ContextOptimizerPlugin
 
 **Plugin Type:** Hook-only (inherits only from PluginHook, NOT MCPServer)
 
-**Hooks Implemented:**
-- PRE_LLM_CALL: Optimizes message context before sending to LLM
+# Plugin factory for discovery
 
-**Features:**
-- Removes duplicate consecutive messages
-- Truncates overly long messages
-- Ensures context stays within configurable token limits
-- Preserves system messages and recent user messages
-- Adds optimization metadata to hook results
+def PLUGIN_FACTORY() -> ContextOptimizerPlugin:**Hooks Defined in schema.yaml:**
+
+    """Factory function for plugin discovery."""
+
+    return ContextOptimizerPlugin()- context_optimizer: Main optimization hook (pre_llm_call)**Hooks Implemented:**
+
+
+- context_stats_logger: Optional stats logging hook (post_llm_call)- PRE_LLM_CALL: Optimizes message context before sending to LLM
+
 """
 
-from typing import Any
+**Features:**
 
-from agent_system.hooks.plugin_hook import (
-    HookContext,
-    HookResult,
-    PluginHook,
-)
+import logging- Removes duplicate consecutive messages
+
+- Truncates overly long messages
+
+from agent_system.hooks import SchemaBasedPluginHook- Ensures context stays within configurable token limits
+
+- Preserves system messages and recent user messages
+
+logger = logging.getLogger(__name__)- Adds optimization metadata to hook results
+
+"""
 
 
-class ContextOptimizerPlugin(PluginHook):
+
+class ContextOptimizerPlugin(SchemaBasedPluginHook):from typing import Any
+
     """
-    Hook plugin that optimizes conversation context before LLM calls.
+
+    Schema-based hook plugin that optimizes conversation context before LLM calls.from agent_system.hooks.plugin_hook import (
+
+        HookContext,
+
+    Hook definitions are loaded from schema.yaml.    HookResult,
+
+    Handler methods are imported from hooks.py module.    PluginHook,
+
+    """)
+
     
+
+    def __init__(self):
+
+        """Initialize the context optimizer plugin."""class ContextOptimizerPlugin(PluginHook):
+
+        super().__init__()    """
+
+        logger.info("ContextOptimizerPlugin initialized with schema-based hooks")    Hook plugin that optimizes conversation context before LLM calls.
+
+    
+
     This is a **hook-only** plugin - it does NOT inherit from MCPServer
-    because it provides no tools, only lifecycle hooks.
-    
-    Configuration options:
-    - max_total_tokens: Maximum total tokens for context (default: 8000)
+
+# Plugin factory for discovery    because it provides no tools, only lifecycle hooks.
+
+def PLUGIN_FACTORY() -> ContextOptimizerPlugin:    
+
+    """Factory function for plugin discovery."""    Configuration options:
+
+    return ContextOptimizerPlugin()    - max_total_tokens: Maximum total tokens for context (default: 8000)
+
     - max_message_length: Maximum length for individual messages (default: 10000)
     - preserve_system_messages: Always preserve system messages (default: true)
     - preserve_recent_count: Number of recent messages to always preserve (default: 3)

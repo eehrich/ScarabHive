@@ -1,0 +1,59 @@
+# Hook definitions for context_optimizer plugin
+hooks:
+  - name: context_optimizer
+    type: pre_llm_call
+    handler: optimize_context
+    enabled: true
+    timeout: 30.0
+    description: "Optimizes context before LLM calls by removing duplicates, truncating messages, and enforcing token limits"
+    order:
+      after: ["begin"]
+      before: ["message_validator"]
+    
+  - name: context_stats_logger
+    type: post_llm_call
+    handler: log_context_stats
+    enabled: false
+    timeout: 5.0
+    description: "Logs context statistics after LLM calls (disabled by default)"
+    order:
+      after: ["begin"]
+
+# Configuration schema for this plugin
+config:
+  max_total_tokens:
+    type: integer
+    default: 100000
+    description: "Maximum total tokens allowed in context"
+    minimum: 1000
+    maximum: 1000000
+  
+  max_message_length:
+    type: integer
+    default: 50000
+    description: "Maximum length of individual messages"
+    minimum: 100
+    maximum: 100000
+  
+  preserve_system_messages:
+    type: boolean
+    default: true
+    description: "Always preserve system messages during optimization"
+  
+  preserve_last_n_messages:
+    type: integer
+    default: 5
+    description: "Always preserve the last N messages"
+    minimum: 1
+    maximum: 100
+  
+  remove_duplicates:
+    type: boolean
+    default: true
+    description: "Remove duplicate messages during optimization"
+  
+  truncate_mode:
+    type: string
+    enum: ["truncate_oldest", "truncate_middle", "summarize"]
+    default: "truncate_oldest"
+    description: "Strategy for reducing context size"
