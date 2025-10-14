@@ -7,7 +7,7 @@ hooks:
     timeout: 30.0
     description: "Optimizes context before LLM calls by removing duplicates, truncating messages, and enforcing token limits"
     order:
-      after: ["begin"]
+      after: ["context_summarizer"]
       before: ["validate_messages"]
     
   - name: log_context_stats
