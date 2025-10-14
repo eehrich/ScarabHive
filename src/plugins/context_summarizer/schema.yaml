@@ -40,9 +40,9 @@ config:
   
   llm_profile:
     type: string
-    default: "fast"
-    description: "LLM profile to use for summarization (fast, normal, advanced)"
-    enum: ["fast", "normal", "advanced"]
+    default: "turbo"
+    description: "LLM profile to use for summarization (turbo, normal, chat, think)"
+    enum: ["turbo", "normal", "chat", "think"]
   
   summary_prompt_template:
     type: string

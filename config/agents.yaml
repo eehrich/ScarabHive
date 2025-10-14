@@ -41,11 +41,6 @@ agents:
         Operational Context:
         - Planning budget: {{ max_steps }} steps
         - Current date: {{ current_date | default('n/a') }}
-
-      context_management:
-        enabled: true
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 5
       
       # Hook system configuration (optional)
       hooks:
@@ -95,11 +90,6 @@ agents:
       tool_descriptions:
         financial_analyst_agent_execute_task: "Analyze stocks, market data, and financial fundamentals using Yahoo Finance, web scraping, and search capabilities"
         financial_analyst_agent_list_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
-      
-      context_management:
-        enabled: true
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 8
     
     metadata:
       author: "AgentSystem"
@@ -132,11 +122,6 @@ agents:
       tool_descriptions:
         code_reviewer_agent_execute_task: "Review code quality, security, and best practices using script execution, log analysis, and web research"
         code_reviewer_agent_list_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
-      
-      context_management:
-        enabled: true
-        strategy: "SMART_COMPRESSION"
-        preserve_recent_messages: 10
     
     metadata:
       author: "AgentSystem"
@@ -181,9 +166,6 @@ agents:
       tool_descriptions:
         simple_qa_agent_execute_task: "Answer general knowledge questions using LLM knowledge only (no external tools or real-time data)"
         simple_qa_agent_list_tools: "List available tools (none - pure LLM-based Q&A)"
-      
-      context_management:
-        enabled: false
     
     metadata:
       author: "AgentSystem"
@@ -214,12 +196,6 @@ agents:
       tool_descriptions:
         sysadmin_agent_execute_task: "Execute system administration tasks with SSH access to production and development servers. Use this for server management, deployment, monitoring, and troubleshooting."
         sysadmin_agent_list_tools: "List all SSH and system administration tools available to the sysadmin agent"
-      
-      context_management:
-        enabled: true
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 15
-        summarization_threshold: 0.75
     
     metadata:
       author: "AgentSystem"
@@ -252,9 +228,6 @@ agents:
         meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
         meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
         meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
-      
-      context_management:
-        enabled: false
     
     metadata:
       author: "AgentSystem"

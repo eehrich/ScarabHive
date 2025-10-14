@@ -38,7 +38,6 @@ class TestConfigAgentDiscovery:
         from agent_system.config.models import (
             AgentConfig,
             ToolConfig,
-            ContextManagementConfig,
         )
         
         # Create agent configs with inline prompts to avoid file dependencies
@@ -49,11 +48,6 @@ class TestConfigAgentDiscovery:
             tools=ToolConfig(
                 allowed=["basic_operations/*"],
                 blocked=["ssh_control/*"],
-            ),
-            context_management=ContextManagementConfig(
-                enabled=True,
-                strategy="SUMMARIZE_OLDEST",
-                preserve_recent_messages=10,
             ),
         )
         
@@ -151,7 +145,6 @@ class TestConfigAgentValidation:
         from agent_system.config.models import (
             AgentConfig,
             ToolConfig,
-            ContextManagementConfig,
         )
         
         # Create agent configs with inline prompts to avoid file dependencies
@@ -162,11 +155,6 @@ class TestConfigAgentValidation:
             tools=ToolConfig(
                 allowed=["basic_operations/*"],
                 blocked=["ssh_control/*"],
-            ),
-            context_management=ContextManagementConfig(
-                enabled=True,
-                strategy="SUMMARIZE_OLDEST",
-                preserve_recent_messages=10,
             ),
         )
         

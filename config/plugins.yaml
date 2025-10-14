@@ -21,27 +21,6 @@ plugins:
       tools:
         allowed: []
         blocked: []
-      
-      context_management:
-        enabled: true
-        summarizer_llm_profile: turbo
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 10
-        prediction_threshold: 0.95
-        summarization_threshold: 0.70
-        max_summary_words: 5000
-        tool_result_preview_chars: 500
-        warning_levels:
-          yellow: 0.70
-          orange: 0.85
-          red: 0.95
-        token_optimization:
-          enable_compression: true
-          compress_tool_results: true
-          optimize_json: true
-          remove_verbose_patterns: false
-          cooldown_seconds: 10.0
-          min_token_increase: 1000
   
   # Plugin server configurations
   servers:

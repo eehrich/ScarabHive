@@ -161,26 +161,8 @@ def validate_config_agent(
         if not isinstance(tools.blocked, list):
             errors.append("tools.blocked must be a list of tool patterns")
     
-    # Context management validation
-    if agent_cfg.context_management:
-        ctx = agent_cfg.context_management
-        
-        if ctx.enabled:
-            valid_strategies = ["TRUNCATE_OLDEST", "SUMMARIZE_OLDEST", "SLIDING_WINDOW", "SMART_COMPRESSION"]
-            if ctx.strategy and ctx.strategy not in valid_strategies:
-                errors.append(
-                    f"Unknown context_management.strategy '{ctx.strategy}'. "
-                    f"Valid options: {', '.join(valid_strategies)}"
-                )
-            
-            if ctx.preserve_recent_messages is not None:
-                if ctx.preserve_recent_messages < 0:
-                    errors.append("context_management.preserve_recent_messages must be non-negative")
-                elif ctx.preserve_recent_messages > 50:
-                    errors.append(
-                        f"context_management.preserve_recent_messages ({ctx.preserve_recent_messages}) is very high. "
-                        f"Consider lower value (typical: 5-20)."
-                    )
+    # Context management is now handled by hook plugins (context_optimizer, context_summarizer)
+    # No validation needed here
     
     # Metadata validation
     if definition.metadata:

@@ -19,8 +19,9 @@ Hook definitions are loaded from schema.yaml.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Dict
 import logging
+from datetime import datetime
 
 from agent_system.hooks import (
     SchemaBasedPluginHook,
@@ -41,13 +42,15 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
     loaded from schema.yaml with default values.
     """
     
-    def __init__(self, plugin_dir: Path | str):
+    def __init__(self, plugin_dir: Path | str, summarization_history: List[Dict[str, Any]] | None = None):
         """Initialize the context optimizer plugin.
         
         Args:
             plugin_dir: Directory containing schema.yaml
+            summarization_history: Shared list to store summarization events for web UI
         """
         super().__init__(plugin_dir)
+        self.summarization_history = summarization_history if summarization_history is not None else []
         logger.info("ContextOptimizerPlugin initialized with schema-based hooks")
     
     # Handler for 'context_optimizer' hook (referenced in schema.yaml as 'optimize_context')
@@ -126,6 +129,32 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             modified_context.messages = optimized_messages
             
             modified = len(optimized_messages) != len(messages)
+            
+            # Track summarization event for web UI
+            if modified and self.summarization_history is not None:
+                original_tokens = sum(estimate_token_count([ChatMessage(**m) if isinstance(m, dict) else m]) for m in messages)
+                optimized_tokens = sum(estimate_token_count([ChatMessage(**m) if isinstance(m, dict) else m]) for m in optimized_messages)
+                
+                event = {
+                    'timestamp': datetime.now().isoformat(),
+                    'session_id': context.session_id,
+                    'request_id': context.request_id,
+                    'strategy': 'truncate',  # context_optimizer uses truncation
+                    'original_message_count': len(messages),
+                    'summarized_message_count': len(optimized_messages),
+                    'messages_summarized': original_count - len(optimized_messages),
+                    'original_tokens': original_tokens,
+                    'new_tokens': optimized_tokens,
+                    'tokens_saved': original_tokens - optimized_tokens,
+                    'reduction_ratio': 1 - (optimized_tokens / max(original_tokens, 1)),
+                    'before_messages': [self._serialize_message(m) for m in messages[-10:]],  # Last 10 for preview
+                    'after_messages': [self._serialize_message(m) for m in optimized_messages[-10:]]
+                }
+                self.summarization_history.append(event)
+                
+                # Keep only last 1000 events
+                if len(self.summarization_history) > 1000:
+                    self.summarization_history.pop(0)
             
             if modified:
                 logger.info(
@@ -276,3 +305,25 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                 break  # No more removable messages
         
         return result
+
+    def _serialize_message(self, msg: dict[str, Any] | ChatMessage) -> dict[str, Any]:
+        """Serialize a message for JSON storage in history.
+        
+        Args:
+            msg: Message as dict or ChatMessage
+            
+        Returns:
+            Serialized message dict
+        """
+        if isinstance(msg, ChatMessage):
+            return {
+                'role': msg.role,
+                'content': msg.content[:1000] if msg.content else '',  # Truncate for storage
+                'name': msg.name
+            }
+        else:
+            return {
+                'role': msg.get('role', 'unknown'),
+                'content': str(msg.get('content', ''))[:1000],  # Truncate for storage
+                'name': msg.get('name')
+            }

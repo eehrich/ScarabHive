@@ -8,8 +8,6 @@ from agent_system.config.models import (
     MCPConfig,
     AgentConfig,
     ToolConfig,
-    ContextManagementConfig,
-    TokenOptimizationConfig,
     LLMSystemConfig,
     LLMModelConfig,
     LLMProfile,
@@ -65,33 +63,12 @@ def test_agent_initialization_with_full_config():
         context_window=128000
     )
     llm_profile = LLMProfile(
-        model_ref="gpt4",
-        temperature=0.7,
-        max_tokens=4000
+        model_ref="gpt4"
     )
     llm_system = LLMSystemConfig(
         models={"gpt4": llm_model},
         profiles={"default": llm_profile},
         default_profile="default"
-    )
-    
-    # Create context management config
-    token_opt = TokenOptimizationConfig(
-        enable_compression=False,
-        compress_tool_results=False,
-        optimize_json=True,
-        remove_verbose_patterns=False,
-        max_tool_result_tokens=2000
-    )
-    context_mgmt = ContextManagementConfig(
-        enabled=True,
-        strategy="SUMMARIZE_OLDEST",
-        summarization_threshold=0.75,
-        prediction_threshold=0.90,
-        preserve_recent_messages=15,
-        max_summary_words=5000,
-        tool_result_preview_chars=500,
-        token_optimization=token_opt
     )
     
     # Create agent config with tools allowed
@@ -103,8 +80,7 @@ def test_agent_initialization_with_full_config():
     
     # Create system config
     system_config = AgentSystemConfig(
-        llm_system=llm_system,
-        agent_llm_profiles={"test_agent": "default"}
+        llm_system=llm_system
     )
     
     mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
@@ -118,9 +94,6 @@ def test_agent_initialization_with_full_config():
     assert agent.name == "test_agent"
     assert agent.description == "Agent: test_agent"  # No description field in AgentConfig
     assert agent.agent_config.max_steps == 10
-    assert agent.agent_config.context_management.enabled is True
-    assert agent.agent_config.context_management.strategy == "SUMMARIZE_OLDEST"
-    assert agent.agent_config.context_management.token_optimization.enable_compression is False
 
 
 # Test removed: context_manager is now handled by hook plugins (context_optimizer, context_summarizer)

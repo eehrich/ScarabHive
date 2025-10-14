@@ -46,7 +46,7 @@ class ConfigAgentInfo(BaseModel):
     system_template: Optional[str] = None
     has_inline_prompt: bool
     tools: Optional[Dict[str, List[str]]] = None
-    context_management: Optional[Dict[str, Any]] = None
+    hooks: Optional[Dict[str, Any]] = None  # Hook configuration
     metadata: Dict[str, Any]
 
 

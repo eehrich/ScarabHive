@@ -92,13 +92,14 @@ def _config_agents_show(config: Any, args: Any) -> None:
             if blocked:
                 print(f"  Blocked:  {', '.join(blocked)}")
         
-        if info.get('context_management'):
-            ctx = info['context_management']
-            print("\nContext Management:")
-            print(f"  Enabled:   {ctx.get('enabled', False)}")
-            if ctx.get('enabled'):
-                print(f"  Strategy:  {ctx.get('strategy', 'N/A')}")
-                print(f"  Preserve:  {ctx.get('preserve_recent_messages', 'N/A')} messages")
+        if info.get('hooks'):
+            hooks = info['hooks']
+            print("\nHooks:")
+            print(f"  Enabled:   {hooks.get('enabled', True)}")
+            if hooks.get('disabled_hooks'):
+                print(f"  Disabled:  {', '.join(hooks['disabled_hooks'])}")
+            if hooks.get('enabled_hooks'):
+                print(f"  Enabled:   {', '.join(hooks['enabled_hooks'])}")
         
         if info.get('metadata'):
             meta = info['metadata']

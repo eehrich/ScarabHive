@@ -107,45 +107,6 @@ class ToolConfig(BaseModel):
         super().__init__(**data)
 
 
-class TokenOptimizationConfig(BaseModel):
-    """Token optimization configuration"""
-    enable_compression: bool = False
-    compress_tool_results: bool = False
-    optimize_json: bool = False
-    remove_verbose_patterns: bool = False
-    max_tool_result_tokens: int = 1000  # Maximum tokens to preserve from tool results
-    
-    # Optimizer execution control
-    cooldown_seconds: float = 2.0  # Minimum seconds between optimizer runs (default: 2.0, previous: 10.0)
-    min_token_increase: int = 50  # Minimum token growth to trigger optimizer (default: 50, previous: 200)
-
-
-class ContextManagementConfig(BaseModel):
-    """Context window management configuration"""
-    enabled: bool = True
-    summarizer_llm_profile: str = "turbo"
-    strategy: Literal["TRUNCATE_OLDEST", "SUMMARIZE_OLDEST", "SLIDING_WINDOW", "SMART_COMPRESSION"] = "SUMMARIZE_OLDEST"
-    
-    # Thresholds
-    preserve_recent_messages: int = 10
-    prediction_threshold: float = 0.95
-    summarization_threshold: float = 0.70  # As percentage (0.70 = 70%)
-    
-    # Summarization settings
-    summarization_ratio: float = 0.5  # Reduce to 50% of original size
-    max_summary_words: int = 5000
-    tool_result_preview_chars: int = 500
-    
-    # Warning levels (as percentage of context window)
-    warning_levels: Dict[str, float] = Field(default_factory=lambda: {
-        "yellow": 0.70,
-        "orange": 0.85,
-        "red": 0.95
-    })
-    
-    token_optimization: Optional[TokenOptimizationConfig] = Field(default_factory=TokenOptimizationConfig)
-
-
 class HooksConfig(BaseModel):
     """Hook system configuration for individual agents."""
     enabled: bool = True  # Enable hook execution for this agent
@@ -160,7 +121,6 @@ class AgentConfig(BaseModel):
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning
     tools: ToolConfig = Field(default_factory=ToolConfig)
     tool_descriptions: Optional[Dict[str, str]] = Field(default_factory=dict)  # Custom descriptions for this agent's own tools
-    context_management: ContextManagementConfig = Field(default_factory=ContextManagementConfig)
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
