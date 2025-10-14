@@ -36,13 +36,44 @@ class HookIntegrationManager:
         self.agent = agent
         self.registry = get_hook_registry()
         self._enabled = True  # Can be disabled per-agent via config
+        self._hooks_config = None  # Cached hooks config from agent_config
+        
+        # Load hooks config from agent if available
+        if hasattr(self.agent, 'agent_config') and hasattr(self.agent.agent_config, 'hooks'):
+            self._hooks_config = self.agent.agent_config.hooks
     
     def is_enabled(self) -> bool:
-        """Check if hooks are enabled for this agent."""
-        # Check agent config for hook enablement
-        if hasattr(self.agent, 'agent_config') and hasattr(self.agent.agent_config, 'hooks'):
-            return getattr(self.agent.agent_config.hooks, 'enabled', True)
+        """Check if hooks are globally enabled for this agent."""
+        if self._hooks_config is not None:
+            return self._hooks_config.enabled
         return self._enabled
+    
+    def is_hook_enabled(self, hook_name: str) -> bool:
+        """Check if a specific hook is enabled for this agent.
+        
+        Args:
+            hook_name: Full hook name (e.g., 'markdown_formatter.format_markdown_output')
+            
+        Returns:
+            True if hook should execute, False otherwise
+        """
+        if not self.is_enabled():
+            # If hooks globally disabled, check enabled_hooks whitelist
+            if self._hooks_config and hook_name in self._hooks_config.enabled_hooks:
+                return True
+            return False
+        
+        # Hooks globally enabled, check disabled_hooks blacklist
+        if self._hooks_config and hook_name in self._hooks_config.disabled_hooks:
+            return False
+        
+        # Check per-hook overrides
+        if self._hooks_config and hook_name in self._hooks_config.hook_overrides:
+            override = self._hooks_config.hook_overrides[hook_name]
+            if 'enabled' in override:
+                return override.get('enabled', True)
+        
+        return True
     
     async def execute_pre_llm_hooks(
         self,
@@ -79,7 +110,11 @@ class HookIntegrationManager:
             llm=llm,
         )
         
-        modified_context = await self.registry.execute_hooks(HookType.PRE_LLM_CALL, context)
+        modified_context = await self.registry.execute_hooks(
+            HookType.PRE_LLM_CALL, 
+            context,
+            hook_filter=self.is_hook_enabled
+        )
         
         # Return modified messages if hooks changed them
         if modified_context.messages is not None:
@@ -124,7 +159,11 @@ class HookIntegrationManager:
             llm=llm,
         )
         
-        modified_context = await self.registry.execute_hooks(HookType.POST_LLM_CALL, context)
+        modified_context = await self.registry.execute_hooks(
+            HookType.POST_LLM_CALL, 
+            context,
+            hook_filter=self.is_hook_enabled
+        )
         
         # Return modified LLM response if hooks changed it
         if modified_context.llm_response is not None:
@@ -163,7 +202,11 @@ class HookIntegrationManager:
             step=step,
         )
         
-        modified_context = await self.registry.execute_hooks(HookType.PRE_TOOL_CALL, context)
+        modified_context = await self.registry.execute_hooks(
+            HookType.PRE_TOOL_CALL, 
+            context,
+            hook_filter=self.is_hook_enabled
+        )
         
         # Return modified tool call if hooks changed it
         if modified_context.tool_call is not None:
@@ -205,7 +248,11 @@ class HookIntegrationManager:
             step=step,
         )
         
-        modified_context = await self.registry.execute_hooks(HookType.POST_TOOL_CALL, context)
+        modified_context = await self.registry.execute_hooks(
+            HookType.POST_TOOL_CALL, 
+            context,
+            hook_filter=self.is_hook_enabled
+        )
         
         # Return modified tool result if hooks changed it
         if modified_context.tool_result is not None:
@@ -241,7 +288,11 @@ class HookIntegrationManager:
             output=output,
         )
         
-        modified_context = await self.registry.execute_hooks(HookType.FORMAT_OUTPUT, context)
+        modified_context = await self.registry.execute_hooks(
+            HookType.FORMAT_OUTPUT, 
+            context,
+            hook_filter=self.is_hook_enabled
+        )
         
         # Return modified output if hooks changed it
         if modified_context.output is not None:
@@ -277,7 +328,11 @@ class HookIntegrationManager:
             messages=messages,
         )
         
-        modified_context = await self.registry.execute_hooks(HookType.SESSION_START, context)
+        modified_context = await self.registry.execute_hooks(
+            HookType.SESSION_START, 
+            context,
+            hook_filter=self.is_hook_enabled
+        )
         
         # Return modified messages if hooks changed them
         return modified_context.messages
@@ -308,4 +363,8 @@ class HookIntegrationManager:
             messages=messages,
         )
         
-        await self.registry.execute_hooks(HookType.SESSION_END, context)
+        await self.registry.execute_hooks(
+            HookType.SESSION_END, 
+            context,
+            hook_filter=self.is_hook_enabled
+        )

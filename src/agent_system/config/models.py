@@ -146,6 +146,14 @@ class ContextManagementConfig(BaseModel):
     token_optimization: Optional[TokenOptimizationConfig] = Field(default_factory=TokenOptimizationConfig)
 
 
+class HooksConfig(BaseModel):
+    """Hook system configuration for individual agents."""
+    enabled: bool = True  # Enable hook execution for this agent
+    disabled_hooks: List[str] = Field(default_factory=list)  # Hook names to disable (e.g., 'markdown_formatter.format_markdown_output')
+    enabled_hooks: List[str] = Field(default_factory=list)  # Hook names to explicitly enable (when enabled=False)
+    hook_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # Per-hook config overrides
+
+
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     llm_profile: str = "normal"  # LLM profile to use
@@ -153,6 +161,7 @@ class AgentConfig(BaseModel):
     tools: ToolConfig = Field(default_factory=ToolConfig)
     tool_descriptions: Optional[Dict[str, str]] = Field(default_factory=dict)  # Custom descriptions for this agent's own tools
     context_management: ContextManagementConfig = Field(default_factory=ContextManagementConfig)
+    hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
 

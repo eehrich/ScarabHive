@@ -4,15 +4,14 @@ hooks:
     description: >
       Injects a system message at session start to guide LLM to generate Markdown output.
       Only runs once per session to avoid duplications.
-    # No before/after needed - typically first hook at session start
+    after: ["begin"] # define an order
     
   format_markdown_output:
     type: post_llm_call
     description: >
       Converts LLM Markdown output to HTML for frontend display.
       Processes assistant messages and converts Markdown formatting to HTML.
-    # Run after any post-processing hooks
-    after: []
+    before: ["end"] # run before output is sent to user
     
 config:
   # Enable/disable system prompt injection

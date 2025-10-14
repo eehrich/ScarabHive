@@ -46,6 +46,22 @@ agents:
         enabled: true
         strategy: "SUMMARIZE_OLDEST"
         preserve_recent_messages: 5
+      
+      # Hook system configuration (optional)
+      hooks:
+        enabled: true  # Enable hooks for this agent
+        # Disable specific hooks if needed
+        # disabled_hooks:
+        #   - "request_logger.log_pre_llm"  # Disable request logging
+        #   - "markdown_formatter.inject_markdown_system_prompt"  # Disable markdown prompt injection
+        # Per-hook configuration overrides
+        # hook_overrides:
+        #   "markdown_formatter.format_markdown_output":
+        #     enabled: true
+        #     timeout: 5.0
+        #     config:
+        #       convert_to_html: true
+        #       enable_code_highlighting: false
     
     metadata:
       author: "AgentSystem"

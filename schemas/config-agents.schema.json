@@ -150,6 +150,73 @@
                 }
               },
               "additionalProperties": false
+            },
+            "hooks": {
+              "type": "object",
+              "description": "Plugin hook system configuration for this agent",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Enable hook execution for this agent (global enable/disable)",
+                  "default": true
+                },
+                "disabled_hooks": {
+                  "type": "array",
+                  "description": "List of hook names to disable for this agent (e.g., 'markdown_formatter.format_markdown_output')",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z_][a-z0-9_]*\\.[a-z_][a-z0-9_]*$",
+                    "examples": [
+                      "markdown_formatter.inject_markdown_system_prompt",
+                      "request_logger.log_pre_llm",
+                      "llm_message_validator.validate_messages"
+                    ]
+                  },
+                  "uniqueItems": true,
+                  "default": []
+                },
+                "enabled_hooks": {
+                  "type": "array",
+                  "description": "List of hook names to explicitly enable (useful when hooks.enabled=false but you want specific hooks). If empty and hooks.enabled=true, all hooks run.",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z_][a-z0-9_]*\\.[a-z_][a-z0-9_]*$"
+                  },
+                  "uniqueItems": true,
+                  "default": []
+                },
+                "hook_overrides": {
+                  "type": "object",
+                  "description": "Per-hook configuration overrides for this agent",
+                  "patternProperties": {
+                    "^[a-z_][a-z0-9_]*\\.[a-z_][a-z0-9_]*$": {
+                      "type": "object",
+                      "description": "Override configuration for a specific hook",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Enable/disable this specific hook"
+                        },
+                        "timeout": {
+                          "type": "number",
+                          "description": "Timeout in seconds for this hook",
+                          "minimum": 0.1,
+                          "maximum": 120.0
+                        },
+                        "config": {
+                          "type": "object",
+                          "description": "Hook-specific configuration overrides",
+                          "additionalProperties": true
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "default": {},
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
             }
           },
           "oneOf": [

@@ -151,7 +151,8 @@ class HookRegistry:
         self,
         hook_type: HookType,
         context: HookContext,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
+        hook_filter: Optional[callable] = None
     ) -> HookContext:
         """
         Execute all registered hooks for a specific type in dependency order.
@@ -160,6 +161,7 @@ class HookRegistry:
             hook_type: Type of hooks to execute
             context: Hook context to pass to hooks
             timeout: Optional timeout override (seconds)
+            hook_filter: Optional filter function(hook_name: str) -> bool to skip hooks
             
         Returns:
             Modified context after all hooks executed
@@ -168,6 +170,7 @@ class HookRegistry:
             Hooks are executed sequentially in dependency order.
             Errors in individual hooks are logged but do not stop execution.
             Context modifications are accumulated across hooks.
+            hook_filter allows agent-specific hook filtering (e.g., disabled_hooks)
         """
         timeout = timeout or self.default_timeout
         
@@ -197,6 +200,11 @@ class HookRegistry:
         for hook_name, hook_instance, metadata in ordered_hooks:
             if not metadata.get("enabled", True):
                 logger.debug(f"Skipping disabled hook '{hook_name}'")
+                continue
+            
+            # Apply agent-specific hook filter if provided
+            if hook_filter and not hook_filter(hook_name):
+                logger.debug(f"Skipping hook '{hook_name}' (filtered by agent config)")
                 continue
             
             # Use hook-specific timeout if available, otherwise use registry default
