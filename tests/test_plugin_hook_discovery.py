@@ -18,33 +18,18 @@ from agent_system.hooks import (
     HookResult,
     HookType
 )
-from agent_system.mcp.base import MCPServer
 
 
-class MockHookPlugin(MCPServer, PluginHook):
-    """Mock plugin implementing PluginHook interface."""
+class MockHookPlugin(PluginHook):
+    """Mock plugin implementing ONLY PluginHook interface (no MCP tools)."""
     
-    def __init__(self, name: str, system_config=None, mcp_config=None):
-        # Create mock configs if not provided
-        if system_config is None:
-            from agent_system.config.models import AgentSystemConfig
-            system_config = AgentSystemConfig()
-        if mcp_config is None:
-            from agent_system.config.models import MCPConfig
-            mcp_config = MCPConfig()
-        
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name: str, config: Dict[str, Any] = None):
+        super().__init__(name, config or {})
         self.pre_llm_calls = 0
         self.post_llm_calls = 0
         # Hook attributes expected by HookRegistry
         self.enabled = True
         self.timeout = 30.0
-    
-    async def list_tools(self):
-        return []
-    
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any] | None = None):
-        raise ValueError(f"Tool '{tool_name}' not found")
     
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         self.pre_llm_calls += 1
@@ -70,25 +55,11 @@ class MockHookPlugin(MCPServer, PluginHook):
         return HookResult(success=True, modified=False, context=context)
 
 
-class MockNonHookPlugin(MCPServer):
+class MockNonHookPlugin:
     """Mock plugin NOT implementing PluginHook interface."""
     
-    def __init__(self, name: str, system_config=None, mcp_config=None):
-        # Create mock configs if not provided
-        if system_config is None:
-            from agent_system.config.models import AgentSystemConfig
-            system_config = AgentSystemConfig()
-        if mcp_config is None:
-            from agent_system.config.models import MCPConfig
-            mcp_config = MCPConfig()
-        
-        super().__init__(name, system_config, mcp_config)
-    
-    async def list_tools(self):
-        return []
-    
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any] | None = None):
-        raise ValueError(f"Tool '{tool_name}' not found")
+    def __init__(self, name: str):
+        self.name = name
 
 
 @pytest.fixture
@@ -158,7 +129,7 @@ async def test_register_multiple_hooks(clean_registry):
 @pytest.mark.asyncio
 async def test_plugin_without_plugin_hook_interface(clean_registry):
     """Test error when plugin declares hooks but doesn't implement PluginHook."""
-    plugin = MockNonHookPlugin("bad_plugin", {})
+    plugin = MockNonHookPlugin("bad_plugin")
     metadata = {
         'hooks': [
             {
@@ -170,6 +141,7 @@ async def test_plugin_without_plugin_hook_interface(clean_registry):
     
     with pytest.raises(TypeError, match="does not implement PluginHook interface"):
         await register_plugin_hooks("bad_plugin", plugin, metadata, clean_registry)
+
 
 
 @pytest.mark.asyncio

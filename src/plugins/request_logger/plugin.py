@@ -10,12 +10,11 @@ import time
 from typing import Any, Dict
 
 from agent_system.hooks import PluginHook, HookContext, HookResult
-from agent_system.mcp.base import MCPServer
 
 logger = logging.getLogger(__name__)
 
 
-class RequestLoggerPlugin(MCPServer, PluginHook):
+class RequestLoggerPlugin(PluginHook):
     """Example plugin that logs agent lifecycle events using hooks.
     
     This plugin demonstrates:
@@ -24,27 +23,21 @@ class RequestLoggerPlugin(MCPServer, PluginHook):
     - Hook ordering (log_post_llm comes after log_pre_llm)
     - Passing data between hooks using context metadata
     - Timing measurements
+    
+    Note: This plugin does NOT inherit from MCPServer because it provides
+    no tools. Hooks-only plugins should only inherit from PluginHook.
     """
     
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: Dict[str, Any] = None):
         """Initialize the request logger plugin.
         
         Args:
             name: Plugin name
             config: Plugin configuration dictionary
         """
-        super().__init__(name, config)
+        super().__init__(name, config or {})
         self.request_count = 0
         self.session_data: Dict[str, Any] = {}
-    
-    # MCP Server methods (required but not used for hooks-only plugin)
-    async def list_tools(self):
-        """No tools provided by this hooks-only plugin."""
-        return []
-    
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any] | None = None):
-        """No tools to call in this hooks-only plugin."""
-        raise ValueError(f"Tool '{tool_name}' not found")
     
     # Hook implementations
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
