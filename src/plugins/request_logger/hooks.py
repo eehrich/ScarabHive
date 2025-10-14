@@ -40,12 +40,12 @@ class RequestLoggerPlugin(SchemaBasedPluginHook):
         self.request_count = 0
         self.session_data: Dict[str, Any] = {}
         
-        # Load config from schema
+        # Get configuration - for hooks, config is a raw dict from YAML
         config = self.get_config()
-        self.log_level = config.get('log_level', 'INFO')
-        self.log_message_content = config.get('log_message_content', True)
-        self.log_timing = config.get('log_timing', True)
-        self.max_content_preview = config.get('max_content_preview', 100)
+        self.log_level = str(config.get('log_level', 'INFO'))
+        self.log_message_content = bool(config.get('log_message_content', True))
+        self.log_timing = bool(config.get('log_timing', True))
+        self.max_content_preview = int(config.get('max_content_preview', 100))
     
     # Hook handler methods - names must match hook names in schema.yaml
     
@@ -75,8 +75,8 @@ class RequestLoggerPlugin(SchemaBasedPluginHook):
             # Log message summary if enabled
             if self.log_message_content and context.messages and len(context.messages) > 0:
                 last_msg = context.messages[-1]
-                role = last_msg.get('role', 'unknown')
-                content = str(last_msg.get('content', ''))
+                role = last_msg.role
+                content = str(last_msg.content)
                 content_preview = content[:self.max_content_preview]
                 if len(content) > self.max_content_preview:
                     content_preview += "..."

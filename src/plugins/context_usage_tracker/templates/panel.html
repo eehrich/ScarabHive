@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Context Usage Debug</title>
+    <title>Context Usage Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -133,6 +134,9 @@
         
         .controls {
             margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
         }
         
         button {
@@ -143,10 +147,44 @@
             padding: 8px 16px;
             cursor: pointer;
             font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
         
         button:hover {
             background: #1177bb;
+        }
+        
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+        
+        button.icon-only.active {
+            background: #16825d;
+        }
+        
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+        
+        .chart-container {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+            height: 300px;
+            position: relative;
+        }
+        
+        .chart-container h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #dcdcaa;
         }
         
         .error {
@@ -166,11 +204,18 @@
 </head>
 <body>
     <div class="container">
-        <h1>📊 Context Usage Debug</h1>
+        <h1>📊 Context Usage Tracker</h1>
         
         <div class="controls">
-            <button onclick="refreshData()">🔄 Refresh</button>
-            <button onclick="clearHistory()">🗑️ Clear History</button>
+            <button class="icon-only" onclick="refreshData()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only" onclick="clearHistory()" title="Clear History">
+                🗑️
+            </button>
+            <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
+                ⏱️
+            </button>
         </div>
         
         <div id="error-container"></div>
@@ -179,6 +224,10 @@
             <div class="stat-card">
                 <div class="stat-label">Current Tokens</div>
                 <div class="stat-value" id="current-tokens">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Accumulated Tokens</div>
+                <div class="stat-value" id="accumulated-tokens">-</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Usage %</div>
@@ -192,6 +241,11 @@
                 <div class="stat-label">Total Calls</div>
                 <div class="stat-value" id="total-calls">-</div>
             </div>
+        </div>
+        
+        <div class="chart-container">
+            <h2>📈 Token Usage Over Time</h2>
+            <canvas id="token-chart"></canvas>
         </div>
         
         <div class="agent-section">
@@ -210,13 +264,86 @@
     </div>
     
     <script>
+        let autoRefreshInterval = null;
+        let tokenChart = null;
+        
+        function initChart() {
+            const ctx = document.getElementById('token-chart').getContext('2d');
+            tokenChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Total Tokens',
+                        data: [],
+                        borderColor: '#4ec9b0',
+                        backgroundColor: 'rgba(78, 201, 176, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }, {
+                        label: 'Prompt Tokens',
+                        data: [],
+                        borderColor: '#569cd6',
+                        backgroundColor: 'rgba(86, 156, 214, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }, {
+                        label: 'Completion Tokens',
+                        data: [],
+                        borderColor: '#ce9178',
+                        backgroundColor: 'rgba(206, 145, 120, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#d4d4d4'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#858585' },
+                            grid: { color: '#3e3e42' }
+                        },
+                        y: {
+                            ticks: { color: '#858585' },
+                            grid: { color: '#3e3e42' },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+        
+        function updateChart(historyData) {
+            if (!tokenChart || !historyData || historyData.length === 0) return;
+            
+            const maxPoints = 50;
+            const data = historyData.slice(-maxPoints);
+            
+            const labels = data.map(item => {
+                const date = new Date(item.timestamp * 1000);
+                return date.toLocaleTimeString();
+            });
+            
+            tokenChart.data.labels = labels;
+            tokenChart.data.datasets[0].data = data.map(item => item.total_tokens);
+            tokenChart.data.datasets[1].data = data.map(item => item.prompt_tokens);
+            tokenChart.data.datasets[2].data = data.map(item => item.completion_tokens);
+            tokenChart.update('none');
+        }
+        
         async function refreshData() {
             try {
-                // Fetch current usage
                 const usageResp = await fetch('/plugins/context_usage_tracker/usage');
                 const usageData = await usageResp.json();
                 
-                // Update stats
                 const latest = usageData.latest || {};
                 document.getElementById('current-tokens').textContent = 
                     latest.total_tokens?.toLocaleString() || '0';
@@ -225,13 +352,16 @@
                 document.getElementById('message-count').textContent = 
                     latest.message_count || '0';
                 
-                // Count total calls from agents
                 const agents = usageData.agents || {};
                 const totalCalls = Object.values(agents).reduce((sum, agent) => 
                     sum + (agent.total_calls || 0), 0);
                 document.getElementById('total-calls').textContent = totalCalls;
                 
-                // Update agent list
+                const accumulatedTokens = Object.values(agents).reduce((sum, agent) => 
+                    sum + (agent.total_tokens || 0), 0);
+                document.getElementById('accumulated-tokens').textContent = 
+                    accumulatedTokens.toLocaleString();
+                
                 const agentList = document.getElementById('agent-list');
                 if (Object.keys(agents).length > 0) {
                     agentList.innerHTML = Object.values(agents).map(agent => `
@@ -246,7 +376,7 @@
                             </div>
                             <div>
                                 <div class="agent-stat">${agent.total_tokens?.toLocaleString()}</div>
-                                <div class="agent-stat-label">Total Tokens</div>
+                                <div class="agent-stat-label">Accumulated</div>
                             </div>
                             <div>
                                 <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div>
@@ -258,14 +388,14 @@
                     agentList.innerHTML = '<div class="no-data">No agent data available</div>';
                 }
                 
-                // Fetch history
                 const historyResp = await fetch('/plugins/context_usage_tracker/history?last_n=50');
                 const historyData = await historyResp.json();
                 
-                // Update history list
-                const historyList = document.getElementById('history-list');
                 if (historyData.history && historyData.history.length > 0) {
-                    historyList.innerHTML = historyData.history.reverse().map(item => {
+                    updateChart(historyData.history);
+                    
+                    const historyList = document.getElementById('history-list');
+                    historyList.innerHTML = historyData.history.slice().reverse().map(item => {
                         const date = new Date(item.timestamp * 1000);
                         return `
                             <div class="history-item">
@@ -280,7 +410,8 @@
                         `;
                     }).join('');
                 } else {
-                    historyList.innerHTML = '<div class="no-data">No history available</div>';
+                    document.getElementById('history-list').innerHTML = 
+                        '<div class="no-data">No history available</div>';
                 }
                 
                 document.getElementById('error-container').innerHTML = '';
@@ -304,11 +435,27 @@
             }
         }
         
-        // Initial load
-        refreshData();
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            const isActive = btn.classList.contains('active');
+            
+            if (isActive) {
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Inactive';
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            } else {
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
+                autoRefreshInterval = setInterval(refreshData, 5000);
+            }
+        }
         
-        // Auto-refresh every 5 seconds
-        setInterval(refreshData, 5000);
+        initChart();
+        refreshData();
+        autoRefreshInterval = setInterval(refreshData, 5000);
     </script>
 </body>
 </html>

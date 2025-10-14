@@ -40,18 +40,18 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Web UI history tracking
         self.summarization_history = summarization_history
         
-        # Load config
+        # Load config - for hooks, config is a raw dict from YAML
         config = self.get_config()
-        self.trigger_percentage = config.get('summarization_trigger_percentage', {}).get('default', 0.60)
-        self.chunk_size = config.get('summarization_chunk_size', {}).get('default', 10)
-        self.preserve_recent = config.get('preserve_recent_count', {}).get('default', 10)
-        self.preserve_system = config.get('preserve_system_messages', {}).get('default', True)
-        self.llm_profile = config.get('llm_profile', {}).get('default', 'fast')
-        self.prompt_template = config.get('summary_prompt_template', {}).get('default', '')
-        self.min_reduction = config.get('min_summary_reduction', {}).get('default', 0.3)
-        self.store_metadata = config.get('store_original_metadata', {}).get('default', True)
-        self.marker_format = config.get('summary_marker_format', {}).get('default', 
-                                        '[Summary of {count} messages from {start_time} to {end_time}]')
+        self.trigger_percentage = float(config.get('summarization_trigger_percentage', 0.60))
+        self.chunk_size = int(config.get('summarization_chunk_size', 10))
+        self.preserve_recent = int(config.get('preserve_recent_count', 10))
+        self.preserve_system = bool(config.get('preserve_system_messages', True))
+        self.llm_profile = str(config.get('llm_profile', 'fast'))
+        self.prompt_template = str(config.get('summary_prompt_template', ''))
+        self.min_reduction = float(config.get('min_summary_reduction', 0.3))
+        self.store_metadata = bool(config.get('store_original_metadata', True))
+        self.marker_format = str(config.get('summary_marker_format', 
+                                        '[Summary of {count} messages from {start_time} to {end_time}]'))
         
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
@@ -82,6 +82,15 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     metadata={'reason': 'no_messages'}
                 )
             
+            # Convert ChatMessage objects to dicts for internal processing
+            from agent_system.llm.models import ChatMessage
+            messages_as_dicts = []
+            for msg in messages:
+                if isinstance(msg, ChatMessage):
+                    messages_as_dicts.append(msg.model_dump(exclude_none=True))
+                else:
+                    messages_as_dicts.append(msg)
+            
             # Get LLM context window size
             context_window = self._get_context_window(context)
             if not context_window:
@@ -97,7 +106,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             trigger_tokens = int(context_window * self.trigger_percentage)
             
             # Estimate token count (rough: 1 token ≈ 4 chars)
-            total_tokens = self._estimate_tokens(messages)
+            total_tokens = self._estimate_tokens(messages_as_dicts)
             
             if total_tokens < trigger_tokens:
                 return HookResult(
@@ -128,7 +137,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             )
             
             # Separate messages into categories
-            system_msgs, recent_msgs, old_msgs = self._categorize_messages(messages)
+            system_msgs, recent_msgs, old_msgs = self._categorize_messages(messages_as_dicts)
             
             if len(old_msgs) < 2:
                 # Not enough old messages to summarize
@@ -158,11 +167,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             )
             
             # Reconstruct message list: system + summarized + recent
-            new_messages = system_msgs + summarized_msgs + recent_msgs
+            new_messages_dicts = system_msgs + summarized_msgs + recent_msgs
             
             # Calculate reduction
-            original_tokens = self._estimate_tokens(messages)
-            new_tokens = self._estimate_tokens(new_messages)
+            original_tokens = self._estimate_tokens(messages_as_dicts)
+            new_tokens = self._estimate_tokens(new_messages_dicts)
             reduction_ratio = 1 - (new_tokens / max(original_tokens, 1))
             
             # Check if reduction meets minimum threshold
@@ -181,6 +190,14 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'min_reduction': self.min_reduction
                     }
                 )
+            
+            # Convert dicts back to ChatMessage objects
+            new_messages = []
+            for msg_dict in new_messages_dicts:
+                if isinstance(msg_dict, dict):
+                    new_messages.append(ChatMessage(**msg_dict))
+                else:
+                    new_messages.append(msg_dict)
             
             # Create modified context
             modified_context = HookContext(
@@ -274,26 +291,27 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             )
     
     def _get_context_window(self, context: HookContext) -> int | None:
-        """Extract context window size from LLM in HookContext.
+        """Extract context window size from agent's LLM config.
         
         Args:
-            context: Hook context containing LLM instance
+            context: Hook context containing agent with config
             
         Returns:
             Context window size in tokens, or None if not available
         """
-        if not context.llm:
-            return None
-        
-        # Try to get context_window from LLM instance
-        if hasattr(context.llm, 'context_window'):
-            return context.llm.context_window
-        
-        # Fallback: check if agent has config
-        if context.agent and hasattr(context.agent, 'agent_config'):
-            if hasattr(context.agent.agent_config, 'llm'):
-                if hasattr(context.agent.agent_config.llm, 'context_window'):
-                    return context.agent.agent_config.llm.context_window
+        if context.agent and hasattr(context.agent, 'agent_config') and hasattr(context.agent, 'system_config'):
+            try:
+                from agent_system.llm.factory import resolve_llm_config_for_agent
+                
+                llm_config = resolve_llm_config_for_agent(
+                    context.agent.system_config,
+                    context.agent.agent_config
+                )
+                
+                if 'context_window' in llm_config and llm_config['context_window']:
+                    return llm_config['context_window']
+            except Exception as e:
+                logger.debug(f"[ContextSummarizer] Error resolving LLM config: {e}")
         
         logger.warning("[ContextSummarizer] Could not determine context window size")
         return None

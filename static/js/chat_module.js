@@ -11,6 +11,12 @@
     return div.innerHTML;
   }
 
+  function formatTextWithLineBreaks(text) {
+    // Escape HTML first, then convert newlines to <br>
+    const escaped = escapeHtml(text);
+    return escaped.replace(/\n/g, '<br>');
+  }
+
   function scrollBottom() {
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
@@ -26,7 +32,7 @@
     
     // Add text content
     const textSpan = document.createElement('div');
-    textSpan.innerHTML = escapeHtml(displayText);
+    textSpan.innerHTML = formatTextWithLineBreaks(displayText);
     msgDiv.appendChild(textSpan);
     
     // Add image previews if any
@@ -647,8 +653,7 @@
           if (!resp.ok) {
             const txt = await resp.text();
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">Failed to append message: ${escapeHtml(txt)}</div>`;
-            // don't change current request state
+            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Failed to append message: ' + txt)}</div>`;
             return;
           }
 
@@ -712,8 +717,7 @@
           case 'final':
             const content = data.summary || data.content || '';
             showSection(blk.t);
-            // Use content as-is (backend handles formatting via plugins)
-            blk.t.innerHTML = `<div class="response-text">${content}</div>`;
+            blk.t.innerHTML = `<div class="response-text">${formatTextWithLineBreaks(content)}</div>`;
             break;
           case 'end':
             if (currentEventSource) {
@@ -736,7 +740,7 @@
             break;
           case 'error':
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">${escapeHtml(data.message)}</div>`;
+            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message)}</div>`;
             if (currentEventSource) {
               currentEventSource.close();
               currentEventSource = null;
@@ -825,7 +829,7 @@
               errorMsg = errorText || errorMsg;
             }
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">${escapeHtml(errorMsg)}</div>`;
+            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
             runBtn.style.display = 'block';
             stopBtn.style.display = 'none';
             return;
@@ -878,8 +882,7 @@
 
         } catch (err) {
           showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(err))}</div>`;
-          // Close status stream on error
+          blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(err))}</div>`;
           if (currentStatusEventSource) {
             currentStatusEventSource.close();
             currentStatusEventSource = null;
@@ -957,11 +960,10 @@
             const j = await r.json();
             const content = j.summary || JSON.stringify(j, null, 2);
             showSection(blk.t);
-            // Use content as-is (backend handles formatting via plugins)
-            blk.t.innerHTML = `<div class="response-text">${content}</div>`;
+            blk.t.innerHTML = `<div class="response-text">${formatTextWithLineBreaks(content)}</div>`;
           } catch (e) {
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text error">Request failed: ${escapeHtml(String(e))}</div>`;
+            blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(e))}</div>`;
           }
           runBtn.style.display = 'block'; // Show run button
           stopBtn.style.display = 'none'; // Hide stop button
@@ -1071,16 +1073,14 @@
           const msgDiv = document.createElement('div');
           msgDiv.className = 'msg user';
           const textSpan = document.createElement('div');
-          textSpan.innerHTML = escapeHtml(msg.content || '');
+          textSpan.innerHTML = formatTextWithLineBreaks(msg.content || '');
           msgDiv.appendChild(textSpan);
           row.appendChild(msgDiv);
           chatEl.appendChild(row);
         } else if (msg.role === 'assistant' && msg.content) {
-          // Add assistant message (only if it has content)
           const blk = addAssistantBlock(chatEl);
-          // Show response section - use content as-is (backend handles formatting)
           showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text">${msg.content}</div>`;
+          blk.t.innerHTML = `<div class="response-text">${formatTextWithLineBreaks(msg.content)}</div>`;
         }
       });
       

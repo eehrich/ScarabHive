@@ -9,23 +9,49 @@ from plugins.context_usage_tracker.tracker import UsageTracker
 
 
 @pytest.fixture
-def plugin():
-    """Create a context usage tracker plugin instance."""
-    return ContextUsageTrackerPlugin(
+def plugin(tmp_path):
+    """Create a context usage tracker plugin instance with temporary storage."""
+    storage_path = tmp_path / "test_context_usage.json"
+    tracker = UsageTracker(storage_path=storage_path)
+    
+    plugin = ContextUsageTrackerPlugin(
         name="context_usage_tracker",
         system_config={},
         mcp_config={}
     )
+    plugin.tracker = tracker
+    plugin.hooks_plugin.tracker = tracker
+    
+    return plugin
 
 
 @pytest.fixture
 def mock_hook_context():
     """Create a mock hook context for testing."""
+    from agent_system.config.models import AgentSystemConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+    
     context = Mock(spec=HookContext)
     context.hook_type = HookType.POST_LLM_CALL
     context.agent = Mock()
     context.agent.agent_id = "test-agent-123"
-    context.agent.context_window = 8000
+    
+    system_config = AgentSystemConfig()
+    system_config.llm_system = LLMSystemConfig(
+        models={
+            'gpt-4': LLMModelConfig(
+                provider='openai',
+                model='gpt-4',
+                context_window=8000
+            )
+        },
+        profiles={
+            'normal': LLMProfile(model_ref='gpt-4')
+        }
+    )
+    agent_config = AgentConfig(llm_profile='normal')
+    
+    context.agent.system_config = system_config
+    context.agent.agent_config = agent_config
     context.agent_name = "test_agent"
     context.session_id = "session-456"
     context.messages = [{"role": "user", "content": "Hello"}]

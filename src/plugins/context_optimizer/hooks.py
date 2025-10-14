@@ -19,7 +19,6 @@ Hook definitions are loaded from schema.yaml.
 """
 
 from pathlib import Path
-from typing import Any
 import logging
 
 from agent_system.hooks import (
@@ -28,10 +27,8 @@ from agent_system.hooks import (
     HookResult,
 )
 from agent_system.llm.token_utils import estimate_token_count
-from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
-
 
 class ContextOptimizerPlugin(SchemaBasedPluginHook):
     """
@@ -85,13 +82,13 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                     metadata={'reason': 'no_context_window'}
                 )
             
-            # Get config values
+            # Get config values - for hooks, config is a raw dict from YAML
             config = self.get_config()
-            max_context_pct = config.get('max_context_percentage', {}).get('default', 0.80)
-            max_message_length = config.get('max_message_length_chars', {}).get('default', 50000)
-            preserve_system = config.get('preserve_system_messages', {}).get('default', True)
-            preserve_last_n = config.get('preserve_last_n_messages', {}).get('default', 5)
-            remove_dupes = config.get('remove_duplicates', {}).get('default', True)
+            max_context_pct = float(config.get('max_context_percentage', 0.80))
+            max_message_length = int(config.get('max_message_length_chars', 50000))
+            preserve_system = bool(config.get('preserve_system_messages', True))
+            preserve_last_n = int(config.get('preserve_last_n_messages', 5))
+            remove_dupes = bool(config.get('remove_duplicates', True))
             
             # Calculate absolute token limit from percentage
             max_total_tokens = int(context_window * max_context_pct)
@@ -121,9 +118,7 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
                 preserve_last_n
             )
             
-            # Create modified context
-            modified_context = context.model_copy(deep=True)
-            modified_context.messages = optimized_messages
+            context.messages = optimized_messages
             
             modified = len(optimized_messages) != len(messages)
             
@@ -136,7 +131,7 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             return HookResult(
                 success=True,
                 modified=modified,
-                context=modified_context,
+                context=context,
                 metadata={
                     'original_count': original_count,
                     'optimized_count': len(optimized_messages),
@@ -157,26 +152,27 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             )
     
     def _get_context_window(self, context: HookContext) -> int | None:
-        """Extract context window size from LLM in HookContext.
+        """Extract context window size from agent's LLM config.
         
         Args:
-            context: Hook context containing LLM instance
+            context: Hook context containing agent with config
             
         Returns:
             Context window size in tokens, or None if not available
         """
-        if not context.llm:
-            return None
-        
-        # Try to get context_window from LLM instance
-        if hasattr(context.llm, 'context_window'):
-            return context.llm.context_window
-        
-        # Fallback: check if agent has config
-        if context.agent and hasattr(context.agent, 'agent_config'):
-            if hasattr(context.agent.agent_config, 'llm'):
-                if hasattr(context.agent.agent_config.llm, 'context_window'):
-                    return context.agent.agent_config.llm.context_window
+        if context.agent and hasattr(context.agent, 'agent_config') and hasattr(context.agent, 'system_config'):
+            try:
+                from agent_system.llm.factory import resolve_llm_config_for_agent
+                
+                llm_config = resolve_llm_config_for_agent(
+                    context.agent.system_config,
+                    context.agent.agent_config
+                )
+                
+                if 'context_window' in llm_config and llm_config['context_window']:
+                    return llm_config['context_window']
+            except Exception as e:
+                logger.debug(f"[ContextOptimizer] Error resolving LLM config: {e}")
         
         logger.warning("[ContextOptimizer] Could not determine context window size")
         return None
@@ -186,7 +182,8 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         """Log context statistics after LLM call (if enabled in schema.yaml)."""
         try:
             messages = context.messages or []
-            total_length = sum(len(str(msg.get('content', ''))) for msg in messages)
+            # Messages are ChatMessage objects
+            total_length = sum(len(str(msg.content)) for msg in messages)
             
             logger.debug(
                 f"Context stats: {len(messages)} messages, "
@@ -206,7 +203,7 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
             logger.exception(f"Error logging context stats: {e}")
             return HookResult(success=False, modified=False, context=context, error=str(e))
     
-    def _remove_duplicates(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _remove_duplicates(self, messages: list) -> list:
         """Remove consecutive duplicate messages."""
         if len(messages) <= 1:
             return messages
@@ -214,45 +211,46 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         result = [messages[0]]
         for msg in messages[1:]:
             prev_msg = result[-1]
-            if (msg.get('role') != prev_msg.get('role') or
-                msg.get('content') != prev_msg.get('content')):
+            if (msg.role != prev_msg.role or msg.content != prev_msg.content):
                 result.append(msg)
         
         return result
     
     def _truncate_messages(
         self,
-        messages: list[dict[str, Any]],
+        messages: list,
         max_length: int
-    ) -> list[dict[str, Any]]:
+    ) -> list:
         """Truncate overly long messages."""
         result = []
         for msg in messages:
-            content = str(msg.get('content', ''))
+            content = str(msg.content)
             if len(content) > max_length:
                 truncated_content = content[:max_length] + '... [truncated]'
-                msg = {**msg, 'content': truncated_content}
-            result.append(msg)
+                # Create new ChatMessage with truncated content
+                truncated_msg = msg.model_copy(update={'content': truncated_content})
+                result.append(truncated_msg)
+            else:
+                result.append(msg)
         return result
     
     def _enforce_token_limits(
         self,
-        messages: list[dict[str, Any]],
+        messages: list,
         max_tokens: int,
         preserve_system: bool,
         preserve_last_n: int
-    ) -> list[dict[str, Any]]:
+    ) -> list:
         """Ensure context stays within token limits."""
-        # Convert dict messages to ChatMessage for proper token estimation
-        chat_messages = [ChatMessage(**msg) if isinstance(msg, dict) else msg for msg in messages]
-        estimated_tokens = estimate_token_count(chat_messages)
+        # Messages are already ChatMessage objects
+        estimated_tokens = estimate_token_count(messages)
         
         if estimated_tokens <= max_tokens:
             return messages
         
         # Separate system and non-system messages
-        system_msgs = [msg for msg in messages if msg.get('role') == 'system']
-        other_msgs = [msg for msg in messages if msg.get('role') != 'system']
+        system_msgs = [msg for msg in messages if msg.role == 'system']
+        other_msgs = [msg for msg in messages if msg.role != 'system']
         
         # Preserve recent messages
         preserved = other_msgs[-preserve_last_n:] if len(other_msgs) > preserve_last_n else other_msgs
@@ -262,8 +260,7 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
         result = (system_msgs if preserve_system else []) + removable + preserved
         
         while len(result) > preserve_last_n:
-            chat_result = [ChatMessage(**msg) if isinstance(msg, dict) else msg for msg in result]
-            estimated_tokens = estimate_token_count(chat_result)
+            estimated_tokens = estimate_token_count(result)
             if estimated_tokens <= max_tokens:
                 break
             

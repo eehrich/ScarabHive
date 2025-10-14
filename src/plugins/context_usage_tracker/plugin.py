@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.factory import resolve_llm_config_for_agent
 from .tracker import UsageTracker
 from .web_endpoints import ContextUsageWebFactory
 
@@ -54,16 +55,17 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
             
-            # Get context window size from agent (if available)
             context_window = 0
-            if context.agent and hasattr(context.agent, 'context_window'):
-                context_window = context.agent.context_window
-            elif context.agent and hasattr(context.agent, 'llm_config'):
-                llm_config = context.agent.llm_config
-                if isinstance(llm_config, dict):
+            if context.agent:
+                try:
+                    llm_config = resolve_llm_config_for_agent(
+                        context.agent.system_config,
+                        context.agent.agent_config
+                    )
                     context_window = llm_config.get('context_window', 0)
+                except Exception as e:
+                    logger.debug(f"Could not resolve context_window: {e}")
             
-            # Count messages for tracking
             message_count = len(context.messages) if context.messages else 0
             
             agent_id = getattr(context.agent, 'agent_id', context.agent_name if context.agent else "unknown")

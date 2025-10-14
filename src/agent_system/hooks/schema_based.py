@@ -72,7 +72,13 @@ class SchemaBasedPluginHook(PluginHook):
         """
         self.plugin_dir = Path(plugin_dir)
         self._schema = self._load_schema()
-        self._config = self._schema.get("config", {})
+        
+        # Extract config values from schema
+        # Schema config has structure: {key: {type: ..., default: ..., ...}}
+        # We need to extract just the values: {key: default_value}
+        schema_config = self._schema.get("config", {})
+        self._config = self._extract_config_defaults(schema_config)
+        
         self._hooks = self._schema.get("hooks", [])
         
         # Extract plugin name from directory
@@ -80,6 +86,25 @@ class SchemaBasedPluginHook(PluginHook):
         
         # Initialize PluginHook with name and config
         super().__init__(name=plugin_name, config=self._config)
+    
+    def _extract_config_defaults(self, schema_config: dict[str, Any]) -> dict[str, Any]:
+        """Extract default values from schema config structure.
+        
+        Args:
+            schema_config: Config section from schema.yaml with type/default/description
+            
+        Returns:
+            Dict with just the config values (defaults)
+        """
+        config_values = {}
+        for key, value in schema_config.items():
+            if isinstance(value, dict) and 'default' in value:
+                # Schema format: {key: {type: ..., default: value}}
+                config_values[key] = value['default']
+            else:
+                # Already a simple value
+                config_values[key] = value
+        return config_values
     
     def _load_schema(self) -> dict[str, Any]:
         """Load schema.yaml from plugin directory.
