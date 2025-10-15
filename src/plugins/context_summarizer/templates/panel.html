@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Context Summarization History</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            background: #0c0c0c;
+            color: #cccccc;
+            height: 100vh;
+            overflow: hidden;
+            font-size: 14px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #007acc;
+        }
+
+        .header h1 {
+            color: #4fc3f7;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .stats-summary {
+            display: flex;
+            gap: 30px;
+            font-size: 13px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        .stat-label {
+            color: #858585;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            color: #6ee56e;
+            font-size: 18px;
+            font-weight: 600;
+            margin-top: 2px;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            background: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            color: #cccccc;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background: #3e3e3e;
+            border-color: #007acc;
+        }
+
+        .btn.active {
+            background: #007acc;
+            border-color: #007acc;
+            color: #ffffff;
+        }
+
+        /* History List */
+        .history-container {
+            flex: 1;
+            overflow-y: auto;
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            padding: 15px;
+        }
+
+        .history-item {
+            background: #2d2d2d;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .history-item:hover {
+            background: #3e3e3e;
+            border-color: #007acc;
+        }
+
+        .history-item.expanded {
+            border-color: #4fc3f7;
+        }
+
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .item-timestamp {
+            color: #4fc3f7;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .item-session {
+            color: #858585;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+
+        .item-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 13px;
+        }
+
+        .item-stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .item-stat-label {
+            color: #858585;
+            font-size: 11px;
+            margin-bottom: 2px;
+        }
+
+        .item-stat-value {
+            color: #ffffff;
+            font-weight: 500;
+        }
+
+        .item-stat-value.positive {
+            color: #6ee56e;
+        }
+
+        .item-stat-value.reduction {
+            color: #9ad4f5;
+        }
+
+        /* Expandable Details */
+        .item-details {
+            display: none;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #3c3c3c;
+        }
+
+        .item-details.visible {
+            display: block;
+        }
+
+        .messages-comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 10px;
+        }
+
+        .message-column {
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 12px;
+        }
+
+        .message-column-title {
+            color: #4fc3f7;
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .message-item {
+            background: #2d2d2d;
+            padding: 8px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            border-left: 3px solid #007acc;
+        }
+
+        .message-role {
+            color: #9ad4f5;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .message-content {
+            color: #cccccc;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Empty State */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #858585;
+        }
+
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .empty-state-text {
+            font-size: 16px;
+        }
+
+        /* Scrollbar styling */
+        .history-container::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .history-container::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+
+        .history-container::-webkit-scrollbar-thumb {
+            background: #3c3c3c;
+            border-radius: 5px;
+        }
+
+        .history-container::-webkit-scrollbar-thumb:hover {
+            background: #555555;
+        }
+
+        /* Loading indicator */
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #858585;
+        }
+
+        .spinner {
+            border: 3px solid #3c3c3c;
+            border-top: 3px solid #007acc;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header with stats -->
+        <div class="header">
+            <h1>🧠 Context Summarization History</h1>
+            <div class="stats-summary">
+                <div class="stat-item">
+                    <span class="stat-label">Total Events</span>
+                    <span class="stat-value" id="total-events">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Tokens Saved</span>
+                    <span class="stat-value" id="total-tokens-saved">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Reduction</span>
+                    <span class="stat-value" id="avg-reduction">0%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button class="btn active" onclick="refreshHistory()">🔄 Refresh</button>
+            <button class="btn" onclick="clearHistory()">🗑️ Clear History</button>
+            <span style="color: #858585; margin-left: auto; font-size: 12px;" id="last-updated">
+                Last updated: Never
+            </span>
+        </div>
+
+        <!-- History Container -->
+        <div class="history-container" id="history-container">
+            <div class="loading">
+                <div class="spinner"></div>
+                <div>Loading summarization history...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentEvents = [];
+        let autoRefresh = null;
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshHistory();
+            // Auto-refresh every 30 seconds
+            autoRefresh = setInterval(refreshHistory, 30000);
+        });
+
+        async function refreshHistory() {
+            try {
+                // Simple relative URLs work fine in iframe
+                const [historyResponse, statsResponse] = await Promise.all([
+                    fetch('/plugins/context_summarizer/history?limit=100'),
+                    fetch('/plugins/context_summarizer/stats')
+                ]);
+
+                const historyData = await historyResponse.json();
+                const statsData = await statsResponse.json();
+
+                if (historyData.success) {
+                    currentEvents = historyData.events;
+                    renderHistory();
+                }
+
+                if (statsData.success) {
+                    updateStats(statsData);
+                }
+
+                updateLastUpdated();
+            } catch (error) {
+                console.error('Error fetching history:', error);
+                showError('Failed to load summarization history: ' + error.message);
+            }
+        }
+
+        function updateStats(stats) {
+            document.getElementById('total-events').textContent = stats.total_events.toLocaleString();
+            document.getElementById('total-tokens-saved').textContent = stats.total_tokens_saved.toLocaleString();
+            document.getElementById('avg-reduction').textContent = 
+                (stats.average_reduction_ratio * 100).toFixed(1) + '%';
+        }
+
+        function renderHistory() {
+            const container = document.getElementById('history-container');
+            
+            if (currentEvents.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📊</div>
+                        <div class="empty-state-text">No summarization events yet</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = currentEvents.map((event, index) => {
+                const timestamp = new Date(event.timestamp).toLocaleString();
+                const reduction = (event.reduction_ratio * 100).toFixed(1);
+                
+                return `
+                    <div class="history-item" onclick="toggleDetails(${index})">
+                        <div class="item-header">
+                            <div>
+                                <span class="item-timestamp">${timestamp}</span>
+                                <span class="item-session">Session: ${event.session_id.substring(0, 8)}...</span>
+                            </div>
+                        </div>
+                        <div class="item-stats">
+                            <div class="item-stat">
+                                <span class="item-stat-label">Strategy</span>
+                                <span class="item-stat-value">LLM Summarization</span>
+                            </div>
+                            <div class="item-stat">
+                                <span class="item-stat-label">Messages</span>
+                                <span class="item-stat-value">${event.original_message_count} → ${event.summarized_message_count}</span>
+                            </div>
+                            <div class="item-stat">
+                                <span class="item-stat-label">Tokens Saved</span>
+                                <span class="item-stat-value positive">${event.tokens_saved.toLocaleString()}</span>
+                            </div>
+                            <div class="item-stat">
+                                <span class="item-stat-label">Reduction</span>
+                                <span class="item-stat-value reduction">${reduction}%</span>
+                            </div>
+                            <div class="item-stat">
+                                <span class="item-stat-label">Summaries Created</span>
+                                <span class="item-stat-value">${event.summary_count}</span>
+                            </div>
+                        </div>
+                        <div class="item-details" id="details-${index}">
+                            <div class="messages-comparison">
+                                <div class="message-column">
+                                    <div class="message-column-title">Before (Last 10 messages)</div>
+                                    ${renderMessages(event.before_messages)}
+                                </div>
+                                <div class="message-column">
+                                    <div class="message-column-title">After (Last 10 messages)</div>
+                                    ${renderMessages(event.after_messages)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderMessages(messages) {
+            if (!messages || messages.length === 0) {
+                return '<div style="color: #858585; font-size: 12px; padding: 8px;">No messages</div>';
+            }
+
+            return messages.map(msg => `
+                <div class="message-item">
+                    <div class="message-role">${msg.role.toUpperCase()}</div>
+                    <div class="message-content">${escapeHtml(msg.content)}</div>
+                </div>
+            `).join('');
+        }
+
+        function toggleDetails(index) {
+            const details = document.getElementById(`details-${index}`);
+            const item = details.parentElement;
+            
+            if (details.classList.contains('visible')) {
+                details.classList.remove('visible');
+                item.classList.remove('expanded');
+            } else {
+                // Close all other details
+                document.querySelectorAll('.item-details').forEach(d => {
+                    d.classList.remove('visible');
+                    d.parentElement.classList.remove('expanded');
+                });
+                // Open this one
+                details.classList.add('visible');
+                item.classList.add('expanded');
+            }
+        }
+
+        function clearHistory() {
+            if (confirm('Are you sure you want to clear the summarization history?')) {
+                currentEvents = [];
+                renderHistory();
+                updateStats({
+                    total_events: 0,
+                    total_tokens_saved: 0,
+                    average_reduction_ratio: 0
+                });
+            }
+        }
+
+        function updateLastUpdated() {
+            const now = new Date().toLocaleTimeString();
+            document.getElementById('last-updated').textContent = `Last updated: ${now}`;
+        }
+
+        function showError(message) {
+            const container = document.getElementById('history-container');
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">⚠️</div>
+                    <div class="empty-state-text">${escapeHtml(message)}</div>
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (autoRefresh) {
+                clearInterval(autoRefresh);
+            }
+        });
+    </script>
+</body>
+</html>

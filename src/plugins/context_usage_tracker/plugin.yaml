@@ -1,0 +1,8 @@
+name: context_usage_tracker
+version: 0.1.0
+type: web_with_hooks
+author: AgentSystem
+description: Tracks LLM context usage and token consumption with web UI
+enabled: true
+entrypoint: plugin.py
+category: monitoring

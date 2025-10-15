@@ -8,11 +8,14 @@
   <link rel="stylesheet" href="{{ url_for('static', path='css/layout.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/panels.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/mcp.css') }}?v=blocked-tools">
-  <link rel="stylesheet" href="{{ url_for('static', path='css/context_debug.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='css/debug.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/chat.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/components.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/sessions.css') }}" />
+  
+  <!-- Prism.js for Syntax Highlighting -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+  
   <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
   </head>
   <body>
@@ -30,9 +33,6 @@
         </button>
         <button id="statusToggleBtn" aria-expanded="false" title="Show status & metrics">Status</button>
         <button id="debugToggleBtn" aria-expanded="false" title="Show debug messages">Debug</button>
-        <button id="contextDebugToggleBtn" class="header-button" aria-expanded="false" title="Show context usage debug">
-          Context
-        </button>
         <!-- Plugin buttons will be dynamically inserted here -->
       </div>
     </header>
@@ -111,10 +111,22 @@
     <script src="{{ url_for('static', path='js/mcp_module.js') }}?v=blocked-tools"></script>
     <script src="{{ url_for('static', path='js/status_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/debug_module.js') }}"></script>
-    <script src="{{ url_for('static', path='js/context_debug_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/file_upload_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/chat_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/textarea_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/main.js') }}"></script>
+    
+    <!-- Prism.js for Syntax Highlighting -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-cpp.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-java.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
   </body>
 </html>

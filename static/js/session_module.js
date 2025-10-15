@@ -547,6 +547,10 @@ export class SessionManager {
       this.loadSessions();
     }
   }
+  
+  getCurrentSessionId() {
+    return this.currentSessionId;
+  }
 }
 
 // Initialize on load

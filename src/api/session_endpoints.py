@@ -50,12 +50,19 @@ class SessionResponse(BaseModel):
 
 # Global session manager reference (injected by build_app)
 _session_manager = None
+_default_agent = None
 
 
 def set_session_manager(manager):
     """Set global session manager instance."""
     global _session_manager
     _session_manager = manager
+
+
+def set_default_agent(agent):
+    """Set global default agent instance for formatting."""
+    global _default_agent
+    _default_agent = agent
 
 
 @session_router.post("", response_model=Dict[str, str], status_code=status.HTTP_201_CREATED)
@@ -149,6 +156,32 @@ async def get_session(
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
         
         session = await _session_manager.load_session(user_id, session_id)
+        
+        # Format assistant messages to HTML for frontend display
+        if _default_agent and session.get("messages"):
+            try:
+                # Format each assistant message using agent's hooks
+                for msg in session["messages"]:
+                    if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
+                        # Only format if not already formatted
+                        if not msg.get("content_format") or msg.get("content_format") != "html":
+                            try:
+                                formatted_content, content_format = await _default_agent._hook_manager.execute_format_output_hooks(
+                                    output=msg["content"],
+                                    request_id="session_load",
+                                    session_id=session_id,
+                                    output_format='html'
+                                )
+                                msg["content"] = formatted_content
+                                msg["content_format"] = content_format
+                            except Exception as format_error:
+                                logger.warning(f"Failed to format message in session {session_id}: {format_error}")
+                                # Keep original content if formatting fails
+                                msg["content_format"] = "text"
+            except Exception as hook_error:
+                logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
+                # Return session without formatting if hook access fails
+        
         return session
     
     except SessionNotFoundError:

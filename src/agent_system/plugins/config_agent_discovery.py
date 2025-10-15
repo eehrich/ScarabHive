@@ -215,11 +215,11 @@ def get_config_agent_info(agent_name: str, agents_config: Optional[Dict[str, Con
             "allowed": definition.agent_config.tools.allowed if definition.agent_config.tools else [],
             "blocked": definition.agent_config.tools.blocked if definition.agent_config.tools else []
         } if definition.agent_config.tools else None,
-        "context_management": {
-            "enabled": definition.agent_config.context_management.enabled,
-            "strategy": definition.agent_config.context_management.strategy,
-            "preserve_recent_messages": definition.agent_config.context_management.preserve_recent_messages
-        } if definition.agent_config.context_management else None,
+        "hooks": {
+            "enabled": definition.agent_config.hooks.enabled,
+            "disabled_hooks": definition.agent_config.hooks.disabled_hooks,
+            "enabled_hooks": definition.agent_config.hooks.enabled_hooks
+        } if definition.agent_config.hooks else None,
         "metadata": definition.metadata or {}
     }
 

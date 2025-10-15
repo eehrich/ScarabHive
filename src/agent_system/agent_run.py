@@ -26,7 +26,10 @@ from .mcp.status import status_bus
 from .servers.agent.server import Agent
 from .cli_utils.common import (
     set_color_mode,
-    status_subscriber, format_result_output, format_error
+    status_subscriber,
+    format_output_with_hooks,
+    print_agent_response,
+    format_error
 )
 
 
@@ -288,8 +291,22 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             logger.error(f"Failed to save session: {e}", exc_info=True)
             print(f"Warning: Failed to save session: {e}", file=sys.stderr)
         
-        # Print the result
-        print(format_result_output(result))
+        # Print the result with formatting based on --color setting
+        # Extract summary from result
+        summary = result.get("summary", "") if isinstance(result, dict) else str(result)
+        
+        if summary:
+            formatted_summary, content_format = await format_output_with_hooks(
+                output=summary,
+                agent_instance=agent,
+                session_id=actual_session_id,
+                request_id="agent_run"
+            )
+            
+            print_agent_response(formatted_summary, content_format)
+        else:
+            import json
+            print(json.dumps(result, indent=2, ensure_ascii=False))
         
     except ValueError as e:
         # User-friendly error for common issues (agent not found, etc.)
@@ -345,9 +362,9 @@ Examples:
     
     parser.add_argument(
         "--color",
-        choices=["auto", "always", "never"],
+        choices=["auto", "always", "never", "ansi", "html", "text"],
         default="always",
-        help="Control color output (default: always)"
+        help="Output format: auto=ANSI if TTY, always/ansi=ANSI colors, html=HTML, never/text=plain text"
     )
     
     parser.add_argument(

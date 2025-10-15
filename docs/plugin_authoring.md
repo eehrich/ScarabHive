@@ -2209,4 +2209,383 @@ print(schema)
 
 ---
 
+## Hooks-Only Plugins
+
+In addition to MCP tool plugins, AgentSystem supports **hooks-only plugins** that intercept agent lifecycle points without providing tools. This is ideal for cross-cutting concerns like logging, validation, context management, and monitoring.
+
+### When to Use Hooks vs Tools
+
+**Use Hooks When:**
+- You need to modify agent behavior globally
+- You want to intercept lifecycle events (session start/end, LLM calls, tool calls)
+- You're implementing cross-cutting concerns (logging, metrics, validation)
+- You want to transform inputs/outputs automatically
+- You don't need the agent to explicitly call your functionality
+
+**Use Tools When:**
+- The agent should decide when to use your functionality
+- You're providing specific capabilities (web scraping, database access)
+- The functionality should appear in tool listings
+- Users need to configure when/how it's used
+
+**Use Both (Hybrid) When:**
+- You provide tools AND want to modify behavior (e.g., caching plugin with cache invalidation tool)
+- You need lifecycle hooks to support your tools (e.g., cleanup at session end)
+
+### Hook Types
+
+Hooks can intercept these lifecycle points:
+
+1. **SESSION_START** - Agent session begins
+2. **SESSION_END** - Agent session ends
+3. **PRE_LLM_CALL** - Before sending messages to LLM
+4. **POST_LLM_CALL** - After receiving LLM response
+5. **PRE_TOOL_CALL** - Before executing a tool
+6. **POST_TOOL_CALL** - After tool execution
+7. **FORMAT_OUTPUT** - Before returning output to user
+
+### Schema-Based Hooks Pattern
+
+The recommended pattern uses `SchemaBasedPluginHook` with declarative YAML configuration.
+
+**Directory Structure:**
+```
+src/plugins/my_hook_plugin/
+├── plugin.py        # Factory function
+├── hooks.py         # Hook implementation
+├── schema.yaml      # Hook definitions + config
+└── README.md        # Documentation
+```
+
+**Example: schema.yaml**
+```yaml
+# Hook definitions
+hooks:
+  - name: my_handler        # Must match method name exactly
+    type: pre_llm_call
+    enabled: true
+    timeout: 30.0
+    description: "What this hook does"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
+# Configuration schema
+config:
+  max_items:
+    type: integer
+    default: 100
+    description: "Maximum items to process"
+  
+  enable_feature:
+    type: boolean
+    default: true
+    description: "Enable special feature"
+```
+
+**Example: hooks.py**
+```python
+from pathlib import Path
+from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+
+class MyHookPlugin(SchemaBasedPluginHook):
+    """Example hooks-only plugin."""
+    
+    def __init__(self, plugin_dir: Path | str):
+        super().__init__(plugin_dir)
+        
+        # Load config from schema
+        config = self.get_config()
+        self.max_items = config.get('max_items', {}).get('default', 100)
+        self.enabled = config.get('enable_feature', {}).get('default', True)
+    
+    # Handler name MUST match hook name in schema.yaml
+    async def my_handler(self, context: HookContext) -> HookResult:
+        """Handle pre-LLM call hook.
+        
+        Args:
+            context: Hook execution context with messages, agent, metadata
+            
+        Returns:
+            HookResult with success status and optionally modified context
+        """
+        try:
+            # Access context data
+            messages = context.messages or []
+            session_id = context.session_id
+            
+            # Perform hook logic
+            if self.enabled and len(messages) > self.max_items:
+                # Modify context (example)
+                modified_messages = messages[-self.max_items:]
+                
+                # Create modified context
+                modified_context = HookContext(
+                    hook_type=context.hook_type,
+                    request_id=context.request_id,
+                    session_id=context.session_id,
+                    agent=context.agent,
+                    messages=modified_messages,
+                    llm_response=context.llm_response,
+                    metadata=context.metadata
+                )
+                
+                return HookResult(
+                    success=True,
+                    modified=True,  # We modified the context
+                    context=modified_context,
+                    metadata={'items_removed': len(messages) - len(modified_messages)}
+                )
+            
+            # No modifications needed
+            return HookResult(
+                success=True,
+                modified=False,
+                context=context
+            )
+            
+        except Exception as e:
+            # Always return HookResult, never raise
+            return HookResult(
+                success=False,
+                modified=False,
+                context=context,
+                error=str(e)
+            )
+```
+
+**Example: plugin.py**
+```python
+from pathlib import Path
+from .hooks import MyHookPlugin
+
+def PLUGIN_FACTORY() -> MyHookPlugin:
+    """Factory function for plugin discovery."""
+    plugin_dir = Path(__file__).parent
+    return MyHookPlugin(plugin_dir)
+```
+
+### Hook Ordering
+
+Hooks can specify execution order using named dependencies:
+
+```yaml
+hooks:
+  - name: optimize_context
+    type: pre_llm_call
+    order:
+      after: ["begin"]                    # Run after these hooks
+      before: ["summarize", "validate"]   # Run before these hooks
+```
+
+**Special Order Names:**
+- `begin`: Virtual hook at start (always first)
+- `end`: Virtual hook at end (always last)
+
+**Example Chain:**
+```yaml
+# Execution order: begin -> optimize -> summarize -> validate -> end
+hooks:
+  - name: optimize_context
+    order:
+      after: ["begin"]
+      before: ["summarize_context"]
+  
+  - name: summarize_context
+    order:
+      after: ["optimize_context"]
+      before: ["validate_messages"]
+  
+  - name: validate_messages
+    order:
+      after: ["summarize_context"]
+      before: ["end"]
+```
+
+### Global Configuration
+
+Override hook behavior in `config/plugins.yaml`:
+
+```yaml
+hooks:
+  enabled: true
+  default_timeout: 30.0
+  overrides:
+    my_hook_plugin.my_handler:
+      enabled: false           # Disable this specific hook
+      timeout: 60.0           # Override timeout
+      order:
+        after: ["other_hook"] # Override order
+      config:
+        max_items: 50         # Override config values
+```
+
+### HookContext Reference
+
+```python
+@dataclass
+class HookContext:
+    hook_type: HookType              # Type of hook
+    request_id: str                  # Unique request ID
+    session_id: Optional[str]        # Session identifier
+    agent: Optional[Any]             # Agent instance
+    agent_name: Optional[str]        # Agent name
+    messages: Optional[List[Dict]]   # Conversation messages
+    llm_response: Optional[Any]      # LLM response (post-LLM only)
+    tool_call: Optional[Dict]        # Tool info (tool hooks only)
+    tool_result: Optional[Any]       # Tool result (post-tool only)
+    output: Optional[str]            # Output (format hook only)
+    metadata: Optional[Dict]         # Additional metadata
+    step: Optional[int]              # Execution step
+    llm: Optional[Any]               # LLM instance
+```
+
+### Hook Best Practices
+
+1. **Keep Hooks Fast**: Target <100ms execution time
+2. **Return HookResult**: Even on error, never raise exceptions
+3. **Set modified=True**: When you change the context
+4. **Use Async/Await**: For I/O operations
+5. **Log Appropriately**: Use logger for debugging, not print()
+6. **Handle Errors Gracefully**: Return success=False with error message
+7. **Test Edge Cases**: Empty inputs, large inputs, concurrent execution
+
+### Hook Examples
+
+**Logging Hook:**
+```python
+async def log_request(self, context: HookContext) -> HookResult:
+    """Log LLM requests."""
+    logger.info(
+        f"LLM call: session={context.session_id}, "
+        f"messages={len(context.messages or [])}"
+    )
+    return HookResult(success=True, modified=False, context=context)
+```
+
+**Validation Hook:**
+```python
+async def validate_messages(self, context: HookContext) -> HookResult:
+    """Validate message format."""
+    messages = context.messages or []
+    
+    for msg in messages:
+        if 'role' not in msg or 'content' not in msg:
+            return HookResult(
+                success=False,
+                modified=False,
+                context=context,
+                error="Invalid message format: missing role or content"
+            )
+    
+    return HookResult(success=True, modified=False, context=context)
+```
+
+**Transformation Hook:**
+```python
+async def add_timestamp(self, context: HookContext) -> HookResult:
+    """Add timestamps to messages."""
+    messages = context.messages or []
+    modified_messages = []
+    
+    for msg in messages:
+        if 'timestamp' not in msg:
+            msg['timestamp'] = datetime.now().isoformat()
+        modified_messages.append(msg)
+    
+    modified_context = HookContext(
+        hook_type=context.hook_type,
+        request_id=context.request_id,
+        session_id=context.session_id,
+        agent=context.agent,
+        messages=modified_messages,
+        llm_response=context.llm_response,
+        metadata=context.metadata
+    )
+    
+    return HookResult(
+        success=True,
+        modified=True,
+        context=modified_context,
+        metadata={'timestamps_added': len(messages)}
+    )
+```
+
+### Testing Hooks
+
+```python
+import pytest
+from agent_system.hooks import HookContext, HookType
+from plugins.my_hook_plugin.plugin import PLUGIN_FACTORY
+
+@pytest.fixture
+def plugin():
+    return PLUGIN_FACTORY()
+
+@pytest.mark.asyncio
+async def test_my_handler(plugin):
+    """Test hook handler."""
+    context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id='test-123',
+        session_id='session-1',
+        messages=[
+            {'role': 'user', 'content': 'Hello'},
+            {'role': 'assistant', 'content': 'Hi there!'}
+        ]
+    )
+    
+    result = await plugin.my_handler(context)
+    
+    assert result.success is True
+    assert result.modified is False  # Or True if modified
+    assert result.error is None
+```
+
+### Complete Hook Plugin Examples
+
+See these example implementations:
+
+- **[context_optimizer](../src/plugins/context_optimizer/)** - Basic context optimization (truncation, deduplication)
+- **[context_summarizer](../src/plugins/context_summarizer/)** - Intelligent LLM-based summarization
+- **[message_validator](../src/plugins/message_validator/)** - Message format validation
+- **[request_logger](../src/plugins/request_logger/)** - Request/response logging with timing
+
+### Hybrid Plugins (Tools + Hooks)
+
+You can combine tools and hooks in a single plugin:
+
+```python
+from agent_system.mcp import MCPServer
+from agent_system.hooks import PluginHook, HookContext, HookResult
+
+class MyHybridPlugin(MCPServer, PluginHook):
+    """Plugin with both tools and hooks."""
+    
+    def __init__(self, name: str, config: dict = None):
+        MCPServer.__init__(self, name, config)
+        PluginHook.__init__(self, name, config)
+    
+    # MCP Tools
+    async def call(self, name: str, arguments: dict) -> dict:
+        if name == "my_tool":
+            return await self._my_tool(**arguments)
+        raise ValueError(f"Unknown tool: {name}")
+    
+    async def _my_tool(self, param: str) -> dict:
+        """Example tool."""
+        return {"result": f"Processed: {param}"}
+    
+    # Hook Handlers
+    async def on_session_start(self, context: HookContext) -> HookResult:
+        """Initialize at session start."""
+        self.session_data = {}
+        return HookResult(success=True, modified=False, context=context)
+```
+
+For complete hooks documentation, see [Plugin Hook System](./plugin_hooks.md).
+
+---
+
 **Ready to build your plugin?** Start with the [Quick Start](#quick-start-your-first-plugin) section and refer back to specific sections as needed.
+

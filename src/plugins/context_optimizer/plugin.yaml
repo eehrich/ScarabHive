@@ -1,0 +1,11 @@
+name: context_optimizer
+version: 1.0.0
+description: >
+  Optimizes conversation context before LLM calls by removing redundant information,
+  truncating long messages, and ensuring context stays within token limits.
+author: AgentSystem Team
+enabled: true
+type: hooks
+entrypoint: plugin:PLUGIN_FACTORY
+category: hooks
+

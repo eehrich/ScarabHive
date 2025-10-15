@@ -1,0 +1,102 @@
+# Hook definitions for context_summarizer plugin
+# Convention: hook name must match method name exactly
+hooks:
+  - name: summarize_context
+    type: pre_llm_call
+    enabled: true
+    timeout: 60.0
+    description: "Intelligently summarizes older messages using LLM to reduce context size while preserving key information"
+    order:
+      after: ["optimize_context"]  # Run after basic context optimization
+      before: ["validate_messages"]
+
+# Configuration schema for this plugin
+config:
+  summarization_trigger_percentage:
+    type: number
+    default: 0.60
+    description: "Start summarization when context exceeds this percentage of LLM context window (0.0-1.0)"
+    minimum: 0.1
+    maximum: 0.95
+  
+  summarization_chunk_size:
+    type: integer
+    default: 10
+    description: "Number of older messages to summarize in one batch"
+    minimum: 2
+    maximum: 50
+  
+  preserve_recent_count:
+    type: integer
+    default: 10
+    description: "Always preserve the last N messages without summarization"
+    minimum: 2
+    maximum: 100
+  
+  preserve_system_messages:
+    type: boolean
+    default: true
+    description: "Always preserve system messages during summarization"
+  
+  llm_profile:
+    type: string
+    default: "turbo"
+    description: "LLM profile to use for summarization (turbo, normal, chat, think)"
+    enum: ["turbo", "normal", "chat", "think"]
+  
+  summary_prompt_template:
+    type: string
+    default: |
+      Summarize the following conversation messages concisely while preserving all key information, decisions, and context. 
+      Focus on facts, actions, and important details. Keep the summary clear and structured.
+      
+      Messages to summarize:
+      {messages}
+      
+      Provide a concise summary:
+    description: "Template for the summarization prompt. Use {messages} placeholder for message content."
+  
+  min_summary_reduction:
+    type: number
+    default: 0.3
+    description: "Minimum reduction ratio (0-1) to accept summary. If summary doesn't reduce by at least this much, keep original."
+    minimum: 0.1
+    maximum: 0.9
+  
+  store_original_metadata:
+    type: boolean
+    default: true
+    description: "Store original messages in metadata for audit trail and debugging"
+  
+  summary_marker_format:
+    type: string
+    default: "[Summary of {count} messages from {start_time} to {end_time}]"
+    description: "Format for summary marker. Placeholders: {count}, {start_time}, {end_time}"
+
+# Web UI configuration
+web_ui:
+  # Header button configuration
+  button:
+    enabled: true
+    text: "Context Summary"
+    icon: "📝"
+    tooltip: "View context summarization history and statistics"
+  
+  # Panel configuration
+  panel:
+    enabled: true
+    title: "Context Summarization History"
+    endpoint: "/plugins/context_summarizer/panel"
+    type: "iframe"
+    description: "View summarization events with before/after message counts and token savings"
+  
+  endpoints:
+    - path: "/plugins/context_summarizer/history"
+      method: "GET"
+      description: "Get summarization event history with timestamps and statistics"
+    - path: "/plugins/context_summarizer/stats"
+      method: "GET"
+      description: "Get aggregated summarization statistics"
+    - path: "/plugins/context_summarizer/panel"
+      method: "GET"
+      description: "Main context summarizer UI panel"

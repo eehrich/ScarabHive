@@ -1,0 +1,60 @@
+# Hook definitions for request_logger plugin
+# Convention: hook name must match method name exactly
+hooks:
+  - name: log_pre_llm
+    type: pre_llm_call
+    enabled: true
+    timeout: 2.0
+    description: "Logs incoming LLM requests"
+    order:
+      after: ["begin"]
+  
+  - name: log_post_llm
+    type: post_llm_call
+    enabled: true
+    timeout: 2.0
+    description: "Logs LLM responses with timing"
+    order:
+      after: ["log_pre_llm"]
+      before: ["end"]
+  
+  - name: log_session_start
+    type: session_start
+    enabled: true
+    timeout: 1.0
+    description: "Logs session start events"
+    order:
+      after: ["begin"]
+  
+  - name: log_session_end
+    type: session_end
+    enabled: true
+    timeout: 1.0
+    description: "Logs session end events with summary"
+    order:
+      before: ["end"]
+
+# Configuration schema
+config:
+  log_level:
+    type: string
+    enum: ["DEBUG", "INFO", "WARNING", "ERROR"]
+    default: "INFO"
+    description: "Logging level for request logs"
+  
+  log_message_content:
+    type: boolean
+    default: true
+    description: "Include message content in logs (may contain sensitive data)"
+  
+  log_timing:
+    type: boolean
+    default: true
+    description: "Include timing information in logs"
+  
+  max_content_preview:
+    type: integer
+    default: 100
+    minimum: 10
+    maximum: 1000
+    description: "Maximum characters to preview in log messages"

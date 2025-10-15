@@ -1,0 +1,7 @@
+name: message_validator
+version: 1.0.0
+description: >
+  Validates and sanitizes messages before LLM calls to ensure safety,
+  proper formatting, and compliance with content policies.
+author: AgentSystem Team
+enabled: true

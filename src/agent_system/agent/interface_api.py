@@ -34,7 +34,6 @@ from ..mcp.status import (
     get_status_metrics,
 )
 from ..mcp.integration import initialize_mcp, shutdown_mcp
-from ..context.agent_tracker import record_agent_summarization
 
 # Import services
 from ..services import ConfigService, MCPService, ToolService, AgentService
@@ -403,6 +402,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.warning(f"Failed to bind registry to agent: {e}", exc_info=True)
 
     agent = selected_agent
+
+    # Inject agent into session endpoints for message formatting
+    from api.session_endpoints import set_default_agent
+    set_default_agent(agent)
+    logger.info("Default agent injected into session endpoints for formatting")
 
     # Store registry and config globally
     global _app_registry, _app_config, _mcp_server_handler
@@ -819,7 +823,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
             # Pass LLM override to collect_final_result
-            return await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
+            result = await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
+            
+            # Format summary from Markdown to HTML for web display
+            if result.get("summary") and selected_agent._hook_manager:
+                try:
+                    formatted_summary, _ = await selected_agent._hook_manager.execute_format_output_hooks(
+                        output=result["summary"],
+                        request_id=request_id,
+                        session_id=session_id or "unknown",
+                        output_format='html'
+                    )
+                    result["summary"] = formatted_summary
+                except Exception as e:
+                    logger.warning(f"Failed to format summary to HTML: {e}")
+                    # Keep original markdown on error
+            
+            return result
 
         # Process uploaded files for multimodal input
         from ..llm.capabilities import get_model_capabilities
@@ -973,11 +993,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             )
 
         async def event_stream():
-            # Initial keep-alive line
             yield ":ok\n\n"
             
-            # Track if this is a new session
-            # If session_id is None OR session doesn't exist → new session
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
             
@@ -985,22 +1002,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                     logger.debug("SSE event: %s", ev.get("type"))
                     
-                    # Capture session_id from start event (created on first call)
                     if ev.get("type") == "start" and ev.get("session_id"):
                         old_session_id = actual_session_id
                         actual_session_id = ev["session_id"]
                         logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
                     
+                    if hasattr(ev, 'to_dict'):
+                        payload = ev.to_dict()
+                    else:
+                        payload = ev
+                    
+                    # Format final event summary to HTML
+                    if ev.get("type") == "final" and ev.get("summary") and selected_agent._hook_manager:
+                        try:
+                            formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                                output=payload["summary"],
+                                request_id=request_id,
+                                session_id=actual_session_id or "unknown",
+                                output_format='html'
+                            )
+                            payload["summary"] = formatted_summary
+                            payload["content_format"] = content_format
+                        except Exception as e:
+                            logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+                    
                     try:
-                        # Ensure proper JSON serialization of any potential enum values
-                        if hasattr(ev, 'to_dict'):
-                            payload = ev.to_dict()
-                        else:
-                            payload = ev
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     except (TypeError, ValueError) as e:
                         logger.error("Failed to serialize event %s: %s", ev, e)
-                        # Send an error event instead
                         error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
             finally:
@@ -1149,29 +1178,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 except Exception as e:
                     logger.exception("Failed to run token optimizer for session %s: %s", session_id, e)
 
-            if getattr(agent, 'context_manager', None):
-                try:
-                    async with agent._request_lock:
-                        msgs = list(agent._sessions.get(session_id, []))
-                    cm = agent.context_manager
-                    # If a dedicated summarizer is available, run a forced summarization
-                    if getattr(cm, '_summarizer', None):
-                        new_msgs = await cm._summarize_conversation(msgs)
-                        # Record summarization in agent tracking
-                        try:
-                            agent_name = getattr(agent, 'name', 'unknown_agent')
-                            record_agent_summarization(agent_name)
-                        except Exception as e:
-                            logger.debug("Failed to record summarization: %s", e)
-                    else:
-                        # No dedicated summarizer; fall back to normal management which may or may not summarize
-                        new_msgs = await cm.manage_context(msgs)
-
-                    async with agent._request_lock:
-                        agent._sessions[session_id] = new_msgs
-                    actions['summarizer'] = True
-                except Exception as e:
-                    logger.exception("Failed to run summarizer for session %s: %s", session_id, e)
+            # Context management and summarization are now handled by hook plugins
+            # (context_optimizer and context_summarizer) automatically during LLM calls
+            # No manual summarization endpoint needed
+            actions['summarizer'] = False  # Not applicable with hook-based management
 
             return {"status": "ok", "session_id": session_id, "actions": actions}
         except Exception as e:
@@ -1201,23 +1211,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug("Optimizer failed for session %s: %s", sid, e)
 
                 try:
-                    if getattr(agent, 'context_manager', None):
-                        cm = agent.context_manager
-                        msgs = list(agent._sessions.get(sid, []))
-                        if getattr(cm, '_summarizer', None):
-                            new_msgs = await cm._summarize_conversation(msgs)
-                            # Track summarization for UI display
-                            try:
-                                agent_name = getattr(agent, 'name', 'unknown_agent')
-                                record_agent_summarization(agent_name)
-                            except Exception as track_e:
-                                logger.debug("Failed to track summarization for %s: %s", agent_name, track_e)
-                        else:
-                            new_msgs = await cm.manage_context(msgs)
-
-                        async with agent._request_lock:
-                            agent._sessions[sid] = new_msgs
-                        actions['summarizer'] = True
+                    # Context management and summarization are now handled by hook plugins automatically
+                    # No manual summarization needed
+                    actions['summarizer'] = False
                 except Exception as e:
                     logger.debug("Summarizer failed for session %s: %s", sid, e)
 
@@ -1440,13 +1436,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "messages": []
                 }
 
-            # Get context manager usage stats
-            usage_stats = agent.context_manager.get_usage_stats() if hasattr(agent.context_manager, 'get_usage_stats') else {}
+            # Context management is now handled by hook plugins (no centralized stats available)
 
             # Get current conversation messages if available
             messages = []
             if hasattr(agent, '_current_messages') and agent._current_messages:
                 # Estimate tokens for each message and prepare for display
+                from ..llm.token_utils import estimate_token_count
                 for i, msg in enumerate(agent._current_messages):
                     # Make sure msg is a ChatMessage object before estimating tokens
                     if not isinstance(msg, ChatMessage):
@@ -1457,8 +1453,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             # Skip if conversion fails
                             continue
 
-                    # Use context manager's estimate_token_count method
-                    estimated_tokens = agent.context_manager.estimate_token_count([msg])
+                    # Use token_utils for estimation
+                    estimated_tokens = estimate_token_count([msg])
                     messages.append({
                         "role": msg.role,
                         "content": msg.content,
@@ -1467,13 +1463,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     })
 
             return {
-                "context_window": usage_stats.get("context_window", "N/A"),
-                "prediction_threshold": usage_stats.get("prediction_threshold", 0),
-                "summarization_threshold": usage_stats.get("summarization_threshold", "N/A"),
-                "actual_usage": usage_stats.get("actual_usage", {"total_tokens": 0, "last_call_tokens": 0}),
-                "warning_levels": usage_stats.get("warning_levels", {}),
+                "context_window": agent.llm.context_window if hasattr(agent, 'llm') else "N/A",
+                "prediction_threshold": 0,  # No longer tracked centrally
+                "summarization_threshold": "N/A",  # Now in hook plugin config
+                "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},  # No longer tracked centrally
+                "warning_levels": {},  # No longer tracked centrally
                 "messages": messages,
-                "message_count": len(messages)
+                "message_count": len(messages),
+                "note": "Context management migrated to hook plugins"
             }
         except Exception as e:
             logger = logging.getLogger(__name__)
@@ -1486,146 +1483,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},
                 "messages": []
             }
-
-    @app.get("/debug/context/usage")
-    async def debug_context_usage():
-        """Get context usage tracking data for monitoring and debugging."""
-        logger = logging.getLogger(__name__)
-        try:
-            from ..context.tracker import get_tracker
-            from agent_system.context.agent_tracker import get_all_agent_stats
-            tracker = get_tracker()
-
-            # Get latest snapshot and recent history
-            latest = tracker.get_latest()
-            recent_history = tracker.get_history(last_n=100)  # Last 100 data points
-
-
-
-            # Get statistics for different time windows
-            stats_1h = tracker.get_statistics(time_window_seconds=3600)  # Last hour
-            stats_24h = tracker.get_statistics(time_window_seconds=86400)  # Last 24 hours
-
-            # Get per-agent statistics
-            agent_stats = get_all_agent_stats()
-
-            # If tracker has no snapshots yet, synthesize a 'latest' view from per-agent stats
-            if not latest:
-                try:
-                    total_tokens = 0
-                    total_messages = 0
-                    context_window = 0
-                    warning_level = None
-
-                    # agent_stats is expected to be a dict of agent_id -> stats dict
-                    for aid, a in (agent_stats or {}).items():
-                        try:
-                            total_tokens += int(a.get('current_tokens', 0) or 0)
-                            total_messages += int(a.get('message_count', 0) or 0)
-                            context_window = max(context_window, int(a.get('context_window', 0) or 0))
-                        except Exception as e:
-                            logger.debug(f"Failed to parse agent stats for {aid}: {e}")
-                            continue
-
-                    usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
-                    latest = {
-                        'timestamp': __import__('time').time(),
-                        'total_tokens': total_tokens,
-                        'user_tokens': 0,
-                        'assistant_tokens': 0,
-                        'tool_call_tokens': 0,
-                        'tool_result_tokens': 0,
-                        'system_tokens': 0,
-                        'message_count': total_messages,
-                        'context_window': context_window,
-                        'usage_percentage': usage_percentage,
-                        'warning_level': warning_level,
-                        'session_id': None
-                    }
-                except Exception as e:
-                    logger.warning(f"Failed to compute context statistics: {e}", exc_info=True)
-                    latest = None
-
-            return {
-                "latest": latest,
-                "recent_history": recent_history,
-                "statistics": {
-                    "last_hour": stats_1h,
-                    "last_24_hours": stats_24h,
-                    "all_time": tracker.get_statistics()
-                },
-                "agents": {
-                    "count": len(agent_stats),
-                    "details": agent_stats
-                }
-            }
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.exception("Context usage endpoint failed: %s", e)
-            return {"error": f"Failed to get context usage data: {str(e)}"}
-
-    @app.get("/debug/context/usage/history")
-    async def debug_context_usage_history(last_n: int = 50):
-        """Get context usage history for graphing."""
-        try:
-            from ..context.tracker import get_tracker
-            tracker = get_tracker()
-
-            history = tracker.get_history(last_n=last_n)
-            return {"history": history, "count": len(history)}
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.exception("Context usage history endpoint failed: %s", e)
-            return {"error": f"Failed to get context usage history: {str(e)}"}
-
-    @app.post("/debug/context/usage/clear")
-    async def debug_context_usage_clear():
-        """Clear context usage history (for testing/debugging)."""
-        try:
-            import logging
-            logger = logging.getLogger(__name__)
-            from ..context.tracker import get_tracker
-            from ..context.accumulator import get_token_accumulator
-            from ..context.agent_tracker import get_agent_tracker
-
-            tracker = get_tracker()
-            tracker.clear_history()
-
-            # Reset persistent accumulated stats
-            try:
-                acc = get_token_accumulator()
-                acc.reset_all_stats()
-            except Exception as e:
-                # If accumulator reset fails, continue clearing in-memory history
-                logger.warning("Failed to reset accumulator stats during context clear: %s", e)
-
-            # Reset per-agent in-memory counters (keep registrations)
-            try:
-                agent_tracker = get_agent_tracker()
-                all_agents = agent_tracker.get_all_agents()
-                for aid, stats in all_agents.items():
-                    # Clear all relevant in-memory counters for the agent
-                    stats.current_tokens = 0
-                    stats.predicted_tokens = 0
-                    stats.actual_tokens = 0
-                    stats.message_count = 0
-                    stats.summarization_count = 0
-                    stats.peak_tokens = 0
-                    stats.total_llm_calls = 0
-                    stats.total_tokens_processed = 0
-                    # Reset timestamps
-                    now = __import__('time').time()
-                    stats.session_start = now
-                    stats.last_activity = now
-            except Exception as e:
-                logger = logging.getLogger(__name__)
-                logger.warning("Failed to reset per-agent in-memory counters during context clear: %s", e)
-
-            return {"result": "Context usage history and accumulated stats cleared"}
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.exception("Context usage clear endpoint failed: %s", e)
-            return {"error": f"Failed to clear context usage history: {str(e)}"}
 
     @app.get("/mcp/status")
     async def mcp_status(force_refresh: bool = False):
@@ -1934,6 +1791,90 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # ===========================
     # End MCP Server Mode Endpoints
+    # ===========================
+
+    # ===========================
+    # Hook Introspection Endpoints
+    # ===========================
+
+    @app.get("/hooks")
+    async def list_hooks(hook_type: str | None = None):
+        """List all registered hooks, optionally filtered by type."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            hooks_dict = registry.list_hooks()
+            
+            if hook_type:
+                # Filter by type
+                return {hook_type: hooks_dict.get(hook_type, [])}
+            
+            return hooks_dict
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to list hooks: %s", e)
+            return {"error": str(e)}
+
+    @app.get("/hooks/{hook_name}")
+    async def get_hook_info(hook_name: str):
+        """Get detailed information about a specific hook."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            info = registry.get_hook_info(hook_name)
+            
+            if not info:
+                return {"error": f"Hook '{hook_name}' not found"}
+            
+            return info
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to get hook info: %s", e)
+            return {"error": str(e)}
+
+    @app.get("/hooks/stats/all")
+    async def get_all_hooks_stats():
+        """Get execution statistics for all hooks."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            hooks_dict = registry.list_hooks()
+            all_stats = {}
+            
+            for hook_type, hook_names in hooks_dict.items():
+                for name in hook_names:
+                    stats = registry.get_stats(name)
+                    if stats:
+                        all_stats[name] = stats
+            
+            return all_stats
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to get hooks stats: %s", e)
+            return {"error": str(e)}
+
+    @app.get("/hooks/stats/{hook_name}")
+    async def get_hook_stats(hook_name: str):
+        """Get execution statistics for a specific hook."""
+        try:
+            from agent_system.hooks import get_hook_registry
+            registry = get_hook_registry()
+            stats = registry.get_stats(hook_name)
+            
+            if stats is None:
+                info = registry.get_hook_info(hook_name)
+                if not info:
+                    return {"error": f"Hook '{hook_name}' not found"}
+                return {hook_name: {}}
+            
+            return {hook_name: stats}
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to get hook stats: %s", e)
+            return {"error": str(e)}
+
+    # ===========================
+    # End Hook Introspection Endpoints
     # ===========================
 
     @app.get("/favicon.ico")

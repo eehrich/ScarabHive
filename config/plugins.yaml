@@ -21,27 +21,6 @@ plugins:
       tools:
         allowed: []
         blocked: []
-      
-      context_management:
-        enabled: true
-        summarizer_llm_profile: turbo
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 10
-        prediction_threshold: 0.95
-        summarization_threshold: 0.70
-        max_summary_words: 5000
-        tool_result_preview_chars: 500
-        warning_levels:
-          yellow: 0.70
-          orange: 0.85
-          red: 0.95
-        token_optimization:
-          enable_compression: true
-          compress_tool_results: true
-          optimize_json: true
-          remove_verbose_patterns: false
-          cooldown_seconds: 10.0
-          min_token_increase: 1000
   
   # Plugin server configurations
   servers:
@@ -145,3 +124,59 @@ plugins:
     user_management:
       type: user_management
       enabled: true
+    
+    context_summarizer:
+      type: context_summarizer
+      enabled: true
+    
+    context_optimizer:
+      type: context_optimizer
+      enabled: true
+    
+    context_usage_tracker:
+      type: context_usage_tracker
+      enabled: true
+    
+    request_logger:
+      type: request_logger
+      enabled: true
+    
+    message_validator:
+      type: message_validator
+      enabled: true
+    
+    markdown_formatter:
+      type: markdown_formatter
+      enabled: true
+
+# ================================
+# Hook Configuration
+# ================================
+# Global configuration for plugin hooks
+hooks:
+  # Global hook settings
+  enabled: true  # Master switch for all hooks
+  default_timeout: 30.0  # Default timeout in seconds
+  
+  # Per-hook configuration overrides
+  # Format: hook_name or plugin_name.hook_name
+  overrides:
+    # Example: Override request_logger hooks
+    # request_logger.log_pre_llm:
+    #   enabled: true
+    #   timeout: 5.0
+    
+    # Example: Configure hook ordering
+    # context_optimizer:
+    #   enabled: true
+    #   timeout: 10.0
+    #   order:
+    #     after: ["begin"]
+    #     before: ["message_validator"]
+    #
+    # message_validator:
+    #   enabled: true
+    #   timeout: 5.0
+    #   order:
+    #     after: ["context_optimizer"]
+    #     before: ["end"]

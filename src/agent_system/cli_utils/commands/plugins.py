@@ -139,7 +139,7 @@ def _plugin_disable(plugins: dict, config: Any, plugin_name: str, args: Any) -> 
     print(json.dumps({"error": "Plugin enable/disable not yet implemented - modify config.mcp.enabled_servers manually"}, ensure_ascii=False))
 
 
-def _plugin_status(plugins: dict, config: Any, plugin_name: str | None, args: Any) -> None:
+async def _plugin_status(plugins: dict, config: Any, plugin_name: str | None, args: Any) -> None:
     """Show status of plugins."""
     if plugin_name:
         await _plugin_info(plugins, config, plugin_name, args)
@@ -147,33 +147,33 @@ def _plugin_status(plugins: dict, config: Any, plugin_name: str | None, args: An
         await _plugin_list(plugins, config, args)
 
 
-def handle_plugin_command(plugins: dict, config: Any, args: Any) -> None:
+async def handle_plugin_command(plugins: dict, config: Any, args: Any) -> None:
     """Handle plugin subcommands."""
     action = getattr(args, 'action', 'list')
 
     if action == "list":
-        _plugin_list(plugins, config, args)
+        await _plugin_list(plugins, config, args)
     elif action == "info":
         plugin_name = getattr(args, 'name', None)
         if not plugin_name:
             print(json.dumps({"error": "Plugin name required for info action"}, ensure_ascii=False))
             return
-        _plugin_info(plugins, config, plugin_name, args)
+        await _plugin_info(plugins, config, plugin_name, args)
     elif action == "enable":
         plugin_name = getattr(args, 'name', None)
         if not plugin_name:
             print(json.dumps({"error": "Plugin name required for enable action"}, ensure_ascii=False))
             return
-        _plugin_enable(plugins, config, plugin_name, args)
+        await _plugin_enable(plugins, config, plugin_name, args)
     elif action == "disable":
         plugin_name = getattr(args, 'name', None)
         if not plugin_name:
             print(json.dumps({"error": "Plugin name required for disable action"}, ensure_ascii=False))
             return
-        _plugin_disable(plugins, config, plugin_name, args)
+        await _plugin_disable(plugins, config, plugin_name, args)
     elif action == "status":
         plugin_name = getattr(args, 'name', None)
-        _plugin_status(plugins, config, plugin_name, args)
+        await _plugin_status(plugins, config, plugin_name, args)
     elif action == "search":
         # Search functionality not implemented yet
         print(json.dumps({"error": "Plugin search not yet implemented"}, ensure_ascii=False))

@@ -1,0 +1,97 @@
+hooks:
+  - name: inject_markdown_system_prompt
+    type: session_start
+    enabled: true
+    timeout: 10.0
+    description: >
+      Injects a system message at session start to guide LLM to generate Markdown output.
+      Only runs once per session to avoid duplications.
+    order:
+      after: ["begin"]
+    
+  - name: format_markdown_output
+    type: format_output
+    enabled: true
+    timeout: 10.0
+    description: >
+      Converts LLM Markdown output to HTML for frontend display only.
+      Does not modify the stored messages, only formats output for rendering.
+    order:
+      before: ["end"]
+    
+config:
+  # Enable/disable system prompt injection
+  inject_system_prompt:
+    type: boolean
+    default: true
+    description: "Inject system prompt to guide LLM to use Markdown"
+    
+  # System prompt template
+  system_prompt_template:
+    type: string
+    default: |
+      Format your responses using Markdown for better readability:
+      - Use **bold** for emphasis
+      - Use `code` for inline code
+      - Use ```language blocks for code snippets
+      - Use # headers for structure
+      - Use - or * for lists
+      - Use tables where appropriate
+    description: "System prompt to inject at session start"
+    
+  # Enable/disable markdown to HTML conversion
+  convert_to_html:
+    type: boolean
+    default: true
+    description: "Convert Markdown output to HTML"
+    
+  # Markdown extensions to enable
+  enable_code_highlighting:
+    type: boolean
+    default: true
+    description: "Enable syntax highlighting for code blocks"
+    
+  enable_tables:
+    type: boolean
+    default: true
+    description: "Enable table formatting"
+    
+  enable_autolinks:
+    type: boolean
+    default: true
+    description: "Automatically convert URLs to links"
+    
+  # HTML sanitization
+  sanitize_html:
+    type: boolean
+    default: true
+    description: "Sanitize generated HTML to prevent XSS"
+    
+  allowed_html_tags:
+    type: array
+    default: 
+      - h1
+      - h2
+      - h3
+      - h4
+      - h5
+      - h6
+      - p
+      - br
+      - strong
+      - em
+      - code
+      - pre
+      - ul
+      - ol
+      - li
+      - table
+      - thead
+      - tbody
+      - tr
+      - th
+      - td
+      - a
+      - blockquote
+      - hr
+    description: "Allowed HTML tags after conversion"
