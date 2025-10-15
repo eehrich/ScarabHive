@@ -211,9 +211,12 @@ agents:
     base_type: web_research_agent
     
     agent_config:
-      llm_profile: turbo
+      llm_profile: chat
       max_steps: 10
       system_template: "config/prompts/meta_web_research_agent.yaml"
+
+      hooks:
+        enabled: true
 
       tools:
         allowed:

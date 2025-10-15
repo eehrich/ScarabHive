@@ -90,7 +90,7 @@ plugins:
       enabled: true
       max_steps: 20
       agent_config:
-        llm_profile: normal
+        llm_profile: chat
         tools:
           allowed:
             - "duckduckgo_search/*"
