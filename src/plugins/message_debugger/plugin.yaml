@@ -1,0 +1,8 @@
+name: message_debugger
+description: Debug and inspect LLM conversation messages with detailed token analysis and history tracking
+version: 1.0.0
+type: web_with_hooks
+author: AgentSystem
+enabled: true
+entrypoint: plugin:PLUGIN_FACTORY
+category: debugging

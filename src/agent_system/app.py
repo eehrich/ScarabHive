@@ -24,7 +24,6 @@ from .api.endpoints import router as api_router
 from .mcp.base import MCPRegistry
 from .servers.bootstrap import bootstrap_servers
 from .utils.logging import setup_logging
-from .llm.models import ChatMessage
 from .mcp.status import (
     status_bus,
     StatusEvent,
@@ -1352,75 +1351,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
-
-    @app.get("/debug/context")
-    async def debug_context(agent_name: str | None = None):
-        """Diagnostic endpoint to get current context management state and conversation messages."""
-        try:
-            # Get the agent from registry if available
-            agent = None
-            if _app_registry:
-                # Use provided agent_name, or fall back to configured default
-                entry_name = agent_name or config.default_agent or 'agent'
-                agent = _app_registry.get(entry_name)
-
-            if not agent or not hasattr(agent, 'context_manager'):
-                return {
-                    "error": "Agent or context manager not available",
-                    "context_window": "N/A",
-                    "prediction_threshold": 0,
-                    "summarization_threshold": "N/A",
-                    "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},
-                    "messages": []
-                }
-
-            # Context management is now handled by hook plugins (no centralized stats available)
-
-            # Get current conversation messages if available
-            messages = []
-            if hasattr(agent, '_current_messages') and agent._current_messages:
-                # Estimate tokens for each message and prepare for display
-                from .llm.token_utils import estimate_token_count
-                for i, msg in enumerate(agent._current_messages):
-                    # Make sure msg is a ChatMessage object before estimating tokens
-                    if not isinstance(msg, ChatMessage):
-                        # Attempt to convert dict to ChatMessage if possible
-                        try:
-                            msg = ChatMessage(**msg)
-                        except (TypeError, ValueError):
-                            # Skip if conversion fails
-                            continue
-
-                    # Use token_utils for estimation
-                    estimated_tokens = estimate_token_count([msg])
-                    messages.append({
-                        "role": msg.role,
-                        "content": msg.content,
-                        "estimated_tokens": estimated_tokens,
-                        "has_tool_calls": bool(msg.tool_calls)
-                    })
-
-            return {
-                "context_window": agent.llm.context_window if hasattr(agent, 'llm') else "N/A",
-                "prediction_threshold": 0,  # No longer tracked centrally
-                "summarization_threshold": "N/A",  # Now in hook plugin config
-                "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},  # No longer tracked centrally
-                "warning_levels": {},  # No longer tracked centrally
-                "messages": messages,
-                "message_count": len(messages),
-                "note": "Context management migrated to hook plugins"
-            }
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.exception("Debug context endpoint failed: %s", e)
-            return {
-                "error": f"Debug endpoint failed: {str(e)}",
-                "context_window": "Error",
-                "prediction_threshold": 0,
-                "summarization_threshold": "Error",
-                "actual_usage": {"total_tokens": 0, "last_call_tokens": 0},
-                "messages": []
-            }
 
     @app.get("/mcp/status")
     async def mcp_status(force_refresh: bool = False):

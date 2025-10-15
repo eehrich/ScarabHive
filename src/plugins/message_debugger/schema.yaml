@@ -1,0 +1,94 @@
+# Hook definitions for message_debugger plugin
+hooks:
+  - name: debugger_capture_pre_llm
+    type: pre_llm_call
+    enabled: true
+    timeout: 5.0
+    description: "Captures LLM input messages just before sending to LLM (runs last in pre-chain)"
+    order:
+      after: ["optimize_context", "summarize_context", "validate_messages"]  # After all message optimization
+      before: ["end"]   # But before the end marker
+  
+  - name: debugger_capture_post_llm
+    type: post_llm_call
+    enabled: true
+    timeout: 5.0
+    description: "Captures LLM response immediately after receiving from LLM (runs first in post-chain)"
+    order:
+      after: ["begin"]  # Right at the start
+      before: []   # Before any post-processing
+
+# Configuration schema
+config:
+  max_history_entries:
+    type: integer
+    default: 100
+    description: "Maximum number of message snapshots to keep in history"
+    minimum: 10
+    maximum: 1000
+  
+  capture_enabled:
+    type: boolean
+    default: true
+    description: "Enable/disable message capturing"
+  
+  capture_pre_llm:
+    type: boolean
+    default: true
+    description: "Capture messages before LLM call (input)"
+  
+  capture_post_llm:
+    type: boolean
+    default: true
+    description: "Capture messages after LLM call (output)"
+  
+  include_tool_calls:
+    type: boolean
+    default: true
+    description: "Include detailed tool call information in captured messages"
+  
+  include_token_estimates:
+    type: boolean
+    default: true
+    description: "Calculate and include token estimates for each message"
+  
+  auto_cleanup_threshold:
+    type: integer
+    default: 150
+    description: "When history exceeds this size, automatically cleanup old entries"
+    minimum: 50
+    maximum: 2000
+
+# Web UI configuration
+web_ui:
+  # Header button configuration
+  button:
+    enabled: true
+    text: "Message Debug"
+    icon: "🔍"
+    tooltip: "View captured LLM messages (pre & post calls)"
+  
+  # Panel configuration
+  panel:
+    enabled: true
+    title: "Message Debugger - LLM Input/Output Snapshots"
+    endpoint: "/plugins/message_debugger/panel"
+    type: "iframe"
+    description: "View captured message snapshots from before and after LLM calls"
+  
+  endpoints:
+    - path: "/plugins/message_debugger/snapshots"
+      method: "GET"
+      description: "Get list of captured message snapshots with filtering options"
+    - path: "/plugins/message_debugger/snapshots/{index}"
+      method: "GET"
+      description: "Get specific snapshot by index"
+    - path: "/plugins/message_debugger/stats"
+      method: "GET"
+      description: "Get debugger statistics (total captures, agent breakdown, etc.)"
+    - path: "/plugins/message_debugger/snapshots"
+      method: "DELETE"
+      description: "Clear all captured snapshots"
+    - path: "/plugins/message_debugger/panel"
+      method: "GET"
+      description: "Render the interactive web panel UI"

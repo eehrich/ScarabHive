@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Check if all required modules are loaded
-  const requiredModules = ['PanelManager', 'PluginManager', 'MCP', 'Status', 'Debug', 'Selectors'];
+  const requiredModules = ['PanelManager', 'PluginManager', 'MCP', 'Status', 'Selectors'];
   const missingModules = requiredModules.filter(module => !window.AgentSystem[module]);
   
   if (missingModules.length > 0) {
@@ -31,7 +31,6 @@ document.addEventListener('DOMContentLoaded', function() {
   // Initialize button event listeners
   const statusBtn = document.getElementById('statusToggleBtn');
   const mcpBtn = document.getElementById('mcpToggleBtn');
-  const debugBtn = document.getElementById('debugToggleBtn');
   
   if (statusBtn) {
     statusBtn.addEventListener('click', function() {
@@ -42,12 +41,6 @@ document.addEventListener('DOMContentLoaded', function() {
   if (mcpBtn) {
     mcpBtn.addEventListener('click', function() {
       window.AgentSystem.PanelManager.togglePanel('floatingMCPPanel', () => window.AgentSystem.MCP.showPanel());
-    });
-  }
-  
-  if (debugBtn) {
-    debugBtn.addEventListener('click', function() {
-      window.AgentSystem.PanelManager.togglePanel('floatingDebugPanel', () => window.AgentSystem.Debug.showPanel());
     });
   }
   

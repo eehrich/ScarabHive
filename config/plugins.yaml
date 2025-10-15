@@ -167,6 +167,10 @@ plugins:
     markdown_formatter:
       type: markdown_formatter
       enabled: true
+    
+    message_debugger:
+      type: message_debugger
+      enabled: true
 
 # ================================
 # Hook Configuration
