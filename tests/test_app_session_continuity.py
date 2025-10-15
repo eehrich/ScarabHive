@@ -2,7 +2,7 @@
 import pytest
 import json
 import httpx
-from agent_system.agent.interface_api import build_app
+from agent_system.app import build_app
 
 
 @pytest.mark.asyncio  

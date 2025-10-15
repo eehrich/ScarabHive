@@ -612,7 +612,7 @@ await mcp.shutdown()
 python -m agent_system.agent_cli plugins
 
 # Run MCP-enabled API server
-python -m agent_system.agent.interface_api
+python -m agent_system.app
 ```
 
 ## Security Best Practices

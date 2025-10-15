@@ -4,7 +4,7 @@ import httpx
 import pytest
 from datetime import datetime
 from agent_system.mcp.status import StatusBus, StatusEvent, publish_status, StatusPhase
-from agent_system.agent.interface_api import build_app
+from agent_system.app import build_app
 
 pytestmark = pytest.mark.anyio
 

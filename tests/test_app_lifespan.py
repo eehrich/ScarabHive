@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import Mock, patch, AsyncMock
 from contextlib import asynccontextmanager
 
-from agent_system.agent.interface_api import lifespan
+from agent_system.app import lifespan
 from fastapi import FastAPI
 
 
@@ -58,7 +58,7 @@ async def test_lifespan_handles_shutdown_errors():
 
 def test_fastapi_app_has_lifespan():
     """Test that the FastAPI app is configured with lifespan."""
-    from agent_system.agent.interface_api import build_app
+    from agent_system.app import build_app
     
     # Build an app instance to test
     app = build_app()

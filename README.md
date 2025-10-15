@@ -120,7 +120,7 @@ Start the API (recommended in a second terminal):
 
 ```bash
 with venv activated in the terminal
-python -m agent_system.agent.interface_api
+python -m agent_system.app
 # or the convenience wrapper (if installed in PATH)
 agent-api
 ```

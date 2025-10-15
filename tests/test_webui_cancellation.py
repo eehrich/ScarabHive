@@ -200,7 +200,7 @@ class TestAPIEndpoints:
         # This is a structural test - we verify the endpoint exists and has correct signature
         # Real integration testing would require a running server
         
-        from agent_system.agent.interface_api import build_app
+        from agent_system.app import build_app
         
         app = build_app()
         

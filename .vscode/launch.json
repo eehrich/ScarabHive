@@ -5,7 +5,7 @@
       "type": "debugpy",
       "request": "launch",
       "name": "Launch Agent API (module)",
-      "module": "agent_system.agent.interface_api",
+      "module": "agent_system.app",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": false

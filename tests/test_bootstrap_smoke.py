@@ -1,4 +1,4 @@
-from agent_system.agent.interface_api import build_app
+from agent_system.app import build_app
 from agent_system.config.settings import load_settings
 from agent_system.mcp.base import MCPRegistry
 from agent_system.servers.bootstrap import bootstrap_servers

@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import time
-from ..utils.id import short_id
+from .utils.id import short_id
 import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -18,26 +18,25 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-# Response is not needed here; FastAPI/Starlette response classes are imported where required
 
-from ..config.settings import load_settings
-from ..config.models import AgentConfig
-from api.endpoints import router as api_router
-from ..mcp.base import MCPRegistry
-from ..servers.bootstrap import bootstrap_servers
-from ..utils.logging import setup_logging
-from ..llm.models import ChatMessage
-from ..mcp.status import (
+from .config.settings import load_settings
+from .config.models import AgentConfig
+from .api.endpoints import router as api_router
+from .mcp.base import MCPRegistry
+from .servers.bootstrap import bootstrap_servers
+from .utils.logging import setup_logging
+from .llm.models import ChatMessage
+from .mcp.status import (
     status_bus,
     StatusEvent,
     publish_status,
     get_status_metrics,
 )
-from ..mcp.integration import initialize_mcp, shutdown_mcp
+from .mcp.integration import initialize_mcp, shutdown_mcp
 
 # Import services
-from ..services import ConfigService, MCPService, ToolService, AgentService
-from ..services.session_manager import SessionManager
+from .services import ConfigService, MCPService, ToolService, AgentService
+from .services.session_manager import SessionManager
 
 
 # Global registry for MCP endpoints access
@@ -89,7 +88,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Initialize ConfigService and load configuration
     if not config_path:
-        cfg_path = str(Path(__file__).parents[3] / "config" / "config.yaml")
+        cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
     else:
         cfg_path = config_path
     
@@ -137,12 +136,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.info(f"SessionManager initialized with storage_path={storage_path}")
             
             # Initialize SessionService (session loading/saving logic)
-            from agent_system.services.session_service import SessionService
+            from .services.session_service import SessionService
             _session_service = SessionService(_session_manager)
             logger.info("SessionService initialized")
             
             # Inject session manager into session endpoints NOW (after initialization)
-            from api.session_endpoints import set_session_manager
+            from .api.session_endpoints import set_session_manager
             set_session_manager(_session_manager)
             logger.info("SessionManager injected into session endpoints")
             
@@ -150,13 +149,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # (requires agent instance from bootstrap_servers)
             
             # Make integration accessible to mcp module
-            from ..mcp import integration as _mcp_mod
+            from .mcp import integration as _mcp_mod
             _mcp_mod.mcp_integration = mcp_integration
             
             logger.info("MCP integration and services initialized for API")
 
             # Apply plugin web capabilities
-            from ..plugins.web_adapter import plugin_web_registry
+            from .plugins.web_adapter import plugin_web_registry
             plugin_web_registry.apply_to_app(app)
             logger.info("Plugin web capabilities applied to app")
 
@@ -195,8 +194,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         3. X-API-Key header (for programmatic access)
         """
         try:
-            from ..auth.dependencies import get_current_user as get_user_dep
-            from ..auth.database import get_db
+            from .auth.dependencies import get_current_user as get_user_dep
+            from .auth.database import get_db
             from fastapi.security import HTTPBearer
             
             bearer_scheme = HTTPBearer(auto_error=False)
@@ -295,7 +294,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     try:
         if entry_name in registry.list():
             candidate = registry.get(entry_name)
-            from ..servers.agent.server import Agent as _Agent
+            from .servers.agent.server import Agent as _Agent
             if isinstance(candidate, _Agent):
                 selected_agent = candidate
                 # Apply server-level configuration overrides
@@ -324,7 +323,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 agent_tools = selected_agent.agent_config.tools if selected_agent.agent_config.tools else None
                                 if agent_tools is None or not agent_tools.allowed:
                                     try:
-                                        from ..config.models import ToolConfig
+                                        from .config.models import ToolConfig
                                         new_tools = ToolConfig(
                                             allowed=tools_cfg.get('allowed', []),
                                             blocked=agent_tools.blocked if agent_tools else []
@@ -337,7 +336,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 agent_tools = selected_agent.agent_config.tools if selected_agent.agent_config.tools else None
                                 if agent_tools is None or not agent_tools.blocked:
                                     try:
-                                        from ..config.models import ToolConfig
+                                        from .config.models import ToolConfig
                                         new_tools = ToolConfig(
                                             allowed=agent_tools.allowed if agent_tools else [],
                                             blocked=tools_cfg.get('blocked', [])
@@ -361,7 +360,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Create new agent if not found in registry
     if selected_agent is None:
-        from ..servers.agent.server import Agent as CoreAgent
+        from .servers.agent.server import Agent as CoreAgent
         try:
             # Check if this is a config-based agent first, then fallback to MCP server config
             agent_cfg = _config_service.get_agent_config(entry_name, config)
@@ -380,7 +379,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.debug(f"Failed to load server config: {e}")
         
         # Build MCPConfig for agent - use ConfigService
-        from agent_system.config.models import MCPConfig, AgentConfig, ToolConfig
+        from .config.models import MCPConfig, AgentConfig, ToolConfig
         mcp_cfg = _config_service.get_default_mcp_config(config)
         
         if not mcp_cfg:
@@ -404,7 +403,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     agent = selected_agent
 
     # Inject agent into session endpoints for message formatting
-    from api.session_endpoints import set_default_agent
+    from .api.session_endpoints import set_default_agent
     set_default_agent(agent)
     logger.info("Default agent injected into session endpoints for formatting")
 
@@ -418,7 +417,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     if server_mode_enabled:
         logger.info("Initializing MCP server handler for server mode")
         try:
-            from ..mcp.server_handler import MCPServerHandler
+            from .mcp.server_handler import MCPServerHandler
             _mcp_server_handler = MCPServerHandler(config, registry)
             logger.info("MCP server handler initialized successfully")
         except Exception as e:
@@ -436,10 +435,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.info("Multi-user authentication enabled, initializing auth system...")
         
         # Setup auth database and configuration
-        from agent_system.auth.database import setup_database
-        from agent_system.auth.security import set_jwt_config
-        from agent_system.auth.middleware import configure_cors, configure_security_middleware
-        from agent_system.auth.models import UserCreate, UserRole
+        from .auth.database import setup_database
+        from .auth.security import set_jwt_config
+        from .auth.middleware import configure_cors, configure_security_middleware
+        from .auth.models import UserCreate, UserRole
         from pathlib import Path as AuthPath
         
         # Configure JWT settings
@@ -495,10 +494,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         )
         
         # Include auth and admin routers
-        from api.auth_endpoints import router as auth_router
-        from api.admin_endpoints import router as admin_router
-        from api.menu_endpoints import menu_router
-        from api.session_endpoints import session_router
+        from .api.auth_endpoints import router as auth_router
+        from .api.admin_endpoints import router as admin_router
+        from .api.menu_endpoints import menu_router
+        from .api.session_endpoints import session_router
         
         app.include_router(auth_router)
         app.include_router(admin_router)
@@ -556,7 +555,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if agent_name and agent_name != selected_agent.name:
             try:
                 selected_agent = _app_registry.get(agent_name)  # type: ignore[attr-defined]
-                from ..servers.agent.server import Agent as _Agent
+                from .servers.agent.server import Agent as _Agent
                 if not isinstance(selected_agent, _Agent):
                     raise HTTPException(status_code=400, detail=f"'{agent_name}' is not an agent")
             except KeyError:
@@ -571,15 +570,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             
             try:
                 # Resolve profile to model config using the factory
-                from ..llm.factory import resolve_llm_config_for_agent
-                from ..config.models import AgentConfig
+                from .llm.factory import resolve_llm_config_for_agent
+                from .config.models import AgentConfig
                 
                 # Create temporary agent config with override profile
                 temp_agent_config = AgentConfig(llm_profile=llm_profile)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
                 
                 # Create new LLM with resolved config
-                from ..llm.clients import make_llm
+                from .llm.clients import make_llm
                 llm_override = make_llm(**llm_kwargs)
                 
                 # Build profile info string for status display (matching agent's format)
@@ -608,7 +607,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             for name in _app_registry.list():  # type: ignore[attr-defined]
                 try:
                     srv = _app_registry.get(name)  # type: ignore[attr-defined]
-                    from ..servers.agent.server import Agent as _Agent
+                    from .servers.agent.server import Agent as _Agent
                     if isinstance(srv, _Agent):
                         # Filter by _mcp_public flag (visibility control)
                         # Default to True if attribute doesn't exist (backward compatibility with plugin agents)
@@ -655,7 +654,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to get agent {agent_name}: {e}")
             return {"error": "agent not found", "agent": agent_name}
-        from ..servers.agent.server import Agent as _Agent
+        from .servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
         # Use unified discovery so API shows same filtered set as runtime
@@ -678,7 +677,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.debug(f"Failed to get agent {agent_name}: {e}")
             return {"error": "agent not found", "agent": agent_name}
-        from ..servers.agent.server import Agent as _Agent
+        from .servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
         try:
@@ -712,7 +711,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except Exception as e:
             logger.warning(f"Failed to get agent {agent_name}: {e}", exc_info=True)
             return {"error": "agent not found", "agent": agent_name}
-        from ..servers.agent.server import Agent as _Agent
+        from .servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
         try:
@@ -816,7 +815,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 selected_agent, user_id, session_id
             )
 
-        from agent_system.servers.agent.result_utils import collect_final_result
+        from .servers.agent.result_utils import collect_final_result
 
         # If no uploaded files, treat as text-only
         if not upload_files:
@@ -842,8 +841,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return result
 
         # Process uploaded files for multimodal input
-        from ..llm.capabilities import get_model_capabilities
-        from ..utils.image_processor import create_multimodal_message, ImageProcessingError
+        from .llm.capabilities import get_model_capabilities
+        from .utils.image_processor import create_multimodal_message, ImageProcessingError
         import tempfile
         from pathlib import Path
 
@@ -1442,7 +1441,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             messages = []
             if hasattr(agent, '_current_messages') and agent._current_messages:
                 # Estimate tokens for each message and prepare for display
-                from ..llm.token_utils import estimate_token_count
+                from .llm.token_utils import estimate_token_count
                 for i, msg in enumerate(agent._current_messages):
                     # Make sure msg is a ChatMessage object before estimating tokens
                     if not isinstance(msg, ChatMessage):
@@ -1608,8 +1607,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 auth_header = request.headers.get("Authorization", "")
                 if auth_header.startswith("Bearer "):
                     try:
-                        from agent_system.auth.dependencies import get_current_user_from_token
-                        from agent_system.auth.database import get_db
+                        from .auth.dependencies import get_current_user_from_token
+                        from .auth.database import get_db
                         
                         token = auth_header.split(" ", 1)[1]
                         db = await anext(get_db())  # Get database instance
@@ -1622,7 +1621,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 api_key = request.headers.get("X-API-Key")
                 if api_key:
                     try:
-                        from agent_system.auth.database import get_db, verify_api_key
+                        from .auth.database import get_db, verify_api_key
                         
                         db = await anext(get_db())
                         current_user = await verify_api_key(db, api_key)
@@ -1801,7 +1800,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def list_hooks(hook_type: str | None = None):
         """List all registered hooks, optionally filtered by type."""
         try:
-            from agent_system.hooks import get_hook_registry
+            from .hooks import get_hook_registry
             registry = get_hook_registry()
             hooks_dict = registry.list_hooks()
             
@@ -1819,7 +1818,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def get_hook_info(hook_name: str):
         """Get detailed information about a specific hook."""
         try:
-            from agent_system.hooks import get_hook_registry
+            from .hooks import get_hook_registry
             registry = get_hook_registry()
             info = registry.get_hook_info(hook_name)
             
@@ -1836,7 +1835,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def get_all_hooks_stats():
         """Get execution statistics for all hooks."""
         try:
-            from agent_system.hooks import get_hook_registry
+            from .hooks import get_hook_registry
             registry = get_hook_registry()
             hooks_dict = registry.list_hooks()
             all_stats = {}
@@ -1857,7 +1856,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def get_hook_stats(hook_name: str):
         """Get execution statistics for a specific hook."""
         try:
-            from agent_system.hooks import get_hook_registry
+            from .hooks import get_hook_registry
             registry = get_hook_registry()
             stats = registry.get_stats(hook_name)
             
@@ -1893,7 +1892,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 # function to supply a mock MCPIntegration. It delegates to the real
 # integration module when available.
 def get_mcp_integration(app: Optional[FastAPI] = None):
-    from ..mcp.integration import get_mcp_integration as _get
+    from .mcp.integration import get_mcp_integration as _get
     return _get(app)
 
 
@@ -1904,7 +1903,7 @@ def run() -> None:
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
     # Load configuration
-    cfg_path = str(Path(__file__).parents[3] / "config" / "config.yaml")
+    cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
     config = load_settings(cfg_path)
 
     # Build the application

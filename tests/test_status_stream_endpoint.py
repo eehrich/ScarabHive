@@ -3,7 +3,7 @@ import asyncio
 import pytest
 import httpx
 
-from agent_system.agent.interface_api import build_app
+from agent_system.app import build_app
 from agent_system.mcp.status import StatusPhase, publish_status
 
 pytestmark = pytest.mark.anyio  # single backend auto-selected

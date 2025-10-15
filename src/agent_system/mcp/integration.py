@@ -383,7 +383,7 @@ def get_mcp_integration(app: Optional[FastAPI] = None, config: Optional[AgentSys
     global mcp_integration
     # First check if the API has an initialized instance and prefer it
     try:
-        from agent_system.agent.interface_api import _mcp_integration as api_integration
+        from agent_system.app import _mcp_integration as api_integration
         if api_integration is not None and api_integration.initialized:
             return api_integration
     except (ImportError, AttributeError):

@@ -3,7 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_system.agent.interface_api import build_app
+from agent_system.app import build_app
 
 
 def test_http_append_consumed(tmp_path):
