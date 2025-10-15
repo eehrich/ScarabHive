@@ -159,6 +159,10 @@ plugins:
     message_validator:
       type: message_validator
       enabled: true
+      config:
+        enforce_alternating: true  # Merges consecutive duplicates instead of dropping
+        sanitize_content: true
+        max_message_length: 100000
     
     markdown_formatter:
       type: markdown_formatter

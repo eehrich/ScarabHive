@@ -41,7 +41,7 @@ config:
   enforce_alternating:
     type: boolean
     default: true
-    description: "Enforce alternating user/assistant message pattern"
+    description: "Enforce alternating user/assistant pattern by merging consecutive duplicates"
   
   allowed_roles:
     type: array

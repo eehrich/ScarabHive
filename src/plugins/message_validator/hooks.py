@@ -225,35 +225,70 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
         return content
     
     def _enforce_alternating_pattern(self, messages: list[Any]) -> list[Any]:
-        """Ensure user/assistant messages alternate (system messages are ignored).
+        """Ensure user/assistant messages alternate by merging consecutive duplicates.
         
         Works with both ChatMessage objects and dicts.
+        Note: Tool messages are NOT merged as they're part of the conversation flow.
+        
+        Instead of dropping duplicate messages, this merges them:
+        - Two consecutive user messages → merged into one
+        - Two consecutive assistant messages → merged into one
         """
         result = []
         last_role = None
+        merged_count = 0
         
         for msg in messages:
-            # Get role from ChatMessage or dict
+            # Get role and content from ChatMessage or dict
             if isinstance(msg, ChatMessage):
                 role = msg.role
+                content = msg.content
             elif isinstance(msg, dict):
                 role = msg.get('role', '')
+                content = msg.get('content', '')
             else:
                 # Unknown type, keep it
                 result.append(msg)
                 continue
             
-            # System and tool messages don't break the pattern
+            # System and tool messages don't break the pattern and are always kept
             if role in ('system', 'tool'):
                 result.append(msg)
                 continue
             
-            # Skip duplicate consecutive user/assistant roles
-            if role == last_role:
-                logger.warning(f"Skipping duplicate {role} message to enforce alternating pattern")
+            # Merge duplicate consecutive user/assistant roles
+            if role == last_role and result:
+                # Get the last message to merge with
+                last_msg = result[-1]
+                
+                # Get content from last message
+                if isinstance(last_msg, ChatMessage):
+                    last_content = last_msg.content
+                elif isinstance(last_msg, dict):
+                    last_content = last_msg.get('content', '')
+                else:
+                    # Can't merge, just append
+                    result.append(msg)
+                    continue
+                
+                # Merge contents with separator
+                merged_content = f"{last_content}\n\n{content}"
+                
+                # Update the last message with merged content
+                if isinstance(last_msg, ChatMessage):
+                    result[-1] = last_msg.model_copy(update={'content': merged_content})
+                elif isinstance(last_msg, dict):
+                    result[-1] = {**last_msg, 'content': merged_content}
+                
+                merged_count += 1
+                logger.debug(f"Merged duplicate {role} message into previous {role} message")
                 continue
             
             result.append(msg)
             last_role = role
+        
+        # Only log summary if messages were actually merged
+        if merged_count > 0:
+            logger.info(f"Enforced alternating pattern: merged {merged_count} consecutive duplicate messages")
         
         return result
