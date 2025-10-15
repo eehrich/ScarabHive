@@ -38,6 +38,7 @@ class PluginMCPAdapter(MCPServer):
         tools = []
 
         # If the plugin_server is already an MCPServer with list_tools(), delegate to it
+        # (Agent.list_tools() now applies custom self_tool_descriptions automatically)
         if hasattr(self.plugin_server, 'list_tools') and hasattr(self.plugin_server.__class__, '__bases__'):
             # Check if it inherits from MCPServer (not just has the method)
             from ..mcp.base import MCPServer

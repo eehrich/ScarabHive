@@ -80,7 +80,7 @@ external_servers:
     
     context7:
       url: https://server.smithery.ai/@upstash/context7-mcp/mcp?api_key=***REMOVED***&profile=***REMOVED***
-      enabled: true
+      enabled: false
       description: Remote Context7 MCP
       transport: streaming
       features:

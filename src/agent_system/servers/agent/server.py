@@ -596,7 +596,7 @@ class Agent(MCPServer):
         return matched
 
     def _apply_custom_tool_descriptions(self, tools_schema: List[Dict]) -> None:
-        """Apply custom tool descriptions from agent configuration.
+        """Apply custom self tool descriptions from agent configuration.
         
         Allows config-based agents to override tool descriptions inherited from base_type.
         For example, a sysadmin_agent based on basic_agent can customize the description
@@ -605,11 +605,11 @@ class Agent(MCPServer):
         Args:
             tools_schema: List of tool schemas to modify in-place
         """
-        if not self.agent_config or not hasattr(self.agent_config, 'tool_descriptions'):
+        if not self.agent_config or not hasattr(self.agent_config, 'self_tool_descriptions'):
             return
         
-        tool_descriptions = getattr(self.agent_config, 'tool_descriptions', None)
-        if not tool_descriptions:
+        self_tool_descriptions = getattr(self.agent_config, 'self_tool_descriptions', None)
+        if not self_tool_descriptions:
             return
         
         # Build set of available tool names for validation
@@ -622,10 +622,10 @@ class Agent(MCPServer):
         
         # Apply custom descriptions and warn about non-existent tools
         applied_count = 0
-        for tool_name, new_desc in tool_descriptions.items():
+        for tool_name, new_desc in self_tool_descriptions.items():
             if tool_name not in available_tool_names:
                 logger.warning(
-                    f"Agent '{self.name}': tool_descriptions contains non-existent tool '{tool_name}'. "
+                    f"Agent '{self.name}': self_tool_descriptions contains non-existent tool '{tool_name}'. "
                     f"Available tools: {sorted(available_tool_names)}"
                 )
                 continue
@@ -638,15 +638,53 @@ class Agent(MCPServer):
                         tool_schema["function"]["description"] = new_desc
                         applied_count += 1
                         logger.debug(
-                            f"Agent '{self.name}': Overriding tool description for '{tool_name}': "
+                            f"Agent '{self.name}': Overriding self tool description for '{tool_name}': "
                             f"'{old_desc[:50]}...' -> '{new_desc[:50]}...'"
                         )
                         break
         
         if applied_count > 0:
             logger.info(
-                f"Agent '{self.name}': Applied {applied_count} custom tool description(s)"
+                f"Agent '{self.name}': Applied {applied_count} custom self tool description(s)"
             )
+
+    async def list_tools(self) -> list:
+        """Override MCPServer.list_tools() to apply custom self_tool_descriptions.
+        
+        This ensures custom descriptions appear in MCP server tool lists (WebUI).
+        The base MCPServer.list_tools() calls get_tools() but doesn't apply custom descriptions.
+        """
+        from agent_system.mcp.core import MCPTool
+        
+        # Call get_tools() if available (inherited from base_type like WebResearchAgent, BasicAgent)
+        if not hasattr(self, 'get_tools'):
+            raise NotImplementedError(
+                f"Agent {self.name} must implement get_tools() to provide tool schemas"
+            )
+        
+        try:
+            tool_schemas = self.get_tools()
+        except NotImplementedError:
+            raise NotImplementedError(
+                f"Agent {self.name} must implement get_tools() to provide tool schemas"
+            )
+        
+        # Apply custom self_tool_descriptions if configured
+        self._apply_custom_tool_descriptions(tool_schemas)
+        
+        # Convert to MCPTool format (same as base MCPServer.list_tools())
+        tools = []
+        for tool_schema in tool_schemas:
+            if isinstance(tool_schema, dict) and 'function' in tool_schema:
+                func_def = tool_schema['function']
+                tool = MCPTool(
+                    name=func_def['name'],
+                    description=func_def.get('description', f'Tool {func_def["name"]}'),
+                    input_schema=func_def.get('parameters', {})
+                )
+                tools.append(tool)
+        
+        return tools
 
     async def list_allowed_tool_servers(self) -> list[str]:
         """Collect all available tool server names (plugins + external + registry) applying per-agent allow list.
@@ -1041,6 +1079,19 @@ class Agent(MCPServer):
             
             # Add individual tool names to available_tools for multi-tool servers
             available_tools.extend(internal_tools_to_add)
+
+            # Add own tools (from base_type) to tools_schema if this agent has get_tools()
+            # This ensures config-based agents can override tool descriptions for inherited tools
+            if hasattr(self, 'get_tools'):
+                try:
+                    own_tools = self.get_tools()
+                    tools_schema.extend(own_tools)
+                    logger.debug(
+                        f"Agent '{self.name}': Added {len(own_tools)} own tools: "
+                        f"{[t['function']['name'] for t in own_tools if 'function' in t]}"
+                    )
+                except Exception as e:
+                    logger.debug(f"Agent '{self.name}': Failed to get own tools: {e}")
 
             # Apply custom tool descriptions if configured
             self._apply_custom_tool_descriptions(tools_schema)

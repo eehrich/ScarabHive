@@ -120,7 +120,7 @@ class AgentConfig(BaseModel):
     llm_profile: str = "normal"  # LLM profile to use
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning
     tools: ToolConfig = Field(default_factory=ToolConfig)
-    tool_descriptions: Optional[Dict[str, str]] = Field(default_factory=dict)  # Custom descriptions for this agent's own tools
+    self_tool_descriptions: Optional[Dict[str, str]] = Field(default_factory=dict)  # Custom descriptions for this agent's own tools (inherited from base_type)
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
