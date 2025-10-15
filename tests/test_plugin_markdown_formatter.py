@@ -248,16 +248,13 @@ def hello():
     result = await formatter.format_markdown_output(context)
     
     assert result.success is True
-    # If Rich is available, should have ANSI codes
-    if result.modified:
-        assert result.metadata['content_format'] == 'ansi'
-        ansi_content = result.context.output
-        # ANSI escape codes start with \x1b or \033
-        assert '\x1b[' in ansi_content or '\033[' in ansi_content
-    else:
-        # Rich not available, should fallback to plain text
-        assert result.metadata['content_format'] == 'text'
-        assert result.metadata['reason'] == 'rich_not_available'
+    # Plugin returns markdown with metadata indicating CLI should render with Rich
+    # It does NOT generate ANSI codes itself - that's the CLI's job
+    assert result.metadata['content_format'] == 'ansi'
+    assert result.metadata.get('render_with_rich') is True
+    # Content should still be markdown (not ANSI-encoded)
+    assert result.context.output == output  # Unchanged markdown
+    assert result.modified is False  # Not modified, just tagged for Rich rendering
 
 
 @pytest.mark.asyncio
@@ -310,15 +307,11 @@ async def test_format_html_to_ansi(formatter):
     result = await formatter.format_markdown_output(context)
     
     assert result.success is True
-    # If both Rich and markdownify are available, should convert HTML->Markdown->ANSI
-    if result.modified:
-        assert result.metadata['content_format'] == 'ansi'
-        ansi_content = result.context.output
-        # Should have ANSI escape codes
-        assert '\x1b[' in ansi_content or '\033[' in ansi_content
-        # Should not contain raw HTML tags
-        assert '<h1>' not in ansi_content
-        assert '<pre>' not in ansi_content
-    else:
-        # Libraries not available, should fallback to plain text
-        assert result.metadata['content_format'] == 'text'
+    # Plugin returns content as-is with metadata indicating CLI should render with Rich
+    # When HTML is provided as input for ANSI format, plugin just passes it through
+    # (The LLM should generate markdown, not HTML, so this is an edge case)
+    assert result.metadata['content_format'] == 'ansi'
+    assert result.metadata.get('render_with_rich') is True
+    # Content is returned unchanged (HTML passed through)
+    assert result.context.output == html_output
+    assert result.modified is False  # Not modified
