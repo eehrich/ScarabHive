@@ -18,6 +18,21 @@ plugins:
       max_steps: 20
       system_template: "config/prompts/system_prompt.yaml"
       
+      hooks:        
+        enabled: true 
+        # Disable specific hooks if needed
+        # disabled_hooks:
+        #   - "request_logger.log_pre_llm"  # Disable request logging
+        #   - "markdown_formatter.inject_markdown_system_prompt"  # Disable markdown prompt injection
+        # Per-hook configuration overrides
+        # hook_overrides:
+        #   "markdown_formatter.format_markdown_output":
+        #     enabled: true
+        #     timeout: 5.0
+        #     config:
+        #       convert_to_html: true
+        #       enable_code_highlighting: false
+    
       tools:
         allowed: []
         blocked: []
