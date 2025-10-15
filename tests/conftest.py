@@ -211,7 +211,7 @@ def _find_project_python_pids() -> List[int]:
                 $cmd = $_.CommandLine; 
                 if ($cmd) {{ 
                     $lc = $cmd.ToLower(); 
-                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.agent.interface_api*" -or $lc -like "*agent_system*") {{ 
+                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.app*" -or $lc -like "*agent_system*") {{ 
                         Write-Output $_.ProcessId 
                     }} 
                 }} 
@@ -268,7 +268,7 @@ def _find_project_python_pids() -> List[int]:
             except Exception:
                 continue
             low = args.lower()
-            if "python" in low and (repo_root.lower() in low or "-m agent_system.agent.interface_api" in low or ".venv/" in low):
+            if "python" in low and (repo_root.lower() in low or "-m agent_system.app" in low or ".venv/" in low):
                 matches.append(pid)
 
     return matches

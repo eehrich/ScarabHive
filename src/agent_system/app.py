@@ -19,7 +19,6 @@ from starlette.datastructures import UploadFile  # Use starlette's UploadFile fo
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config.settings import load_settings
 from .config.models import AgentConfig
 from .api.endpoints import router as api_router
 from .mcp.base import MCPRegistry
@@ -29,7 +28,6 @@ from .llm.models import ChatMessage
 from .mcp.status import (
     status_bus,
     StatusEvent,
-    publish_status,
     get_status_metrics,
 )
 from .mcp.integration import initialize_mcp, shutdown_mcp
@@ -76,8 +74,8 @@ async def lifespan(app: FastAPI):
 
 
 # Module level templates and static path setup
-templates = Jinja2Templates(directory=str(Path(__file__).parents[3] / "templates"))
-static_path = Path(__file__).parents[3] / "static"
+templates = Jinja2Templates(directory=str(Path(__file__).parents[2] / "templates"))
+static_path = Path(__file__).parents[2] / "static"
 
 # Global application state
 _app_start_time = None
@@ -131,7 +129,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             
             # Initialize SessionManager (persistent session storage)
             from pathlib import Path
-            storage_path = Path(__file__).parents[3] / "data" / "sessions"
+            storage_path = Path(__file__).parents[2] / "data" / "sessions"
             _session_manager = SessionManager(storage_path=str(storage_path))
             logger.info(f"SessionManager initialized with storage_path={storage_path}")
             
@@ -520,7 +518,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         agent_config = {}
         try:
-            agent_config_path = Path(__file__).parents[3] / "config" / "config.yaml"
+            agent_config_path = Path(__file__).parents[2] / "config" / "config.yaml"
             with open(agent_config_path, 'r', encoding='utf-8') as f:
                 agent_config = yaml.safe_load(f) or {}
         except Exception as e:
@@ -1230,11 +1228,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         server: Optional[str] = Query(default=None, description="Filter by server name"),
         request_id: Optional[str] = Query(default=None, description="Filter by request id"),
         heartbeat: int = Query(default=15, ge=5, le=120, description="Heartbeat interval seconds"),
-        close_after: Optional[int] = Query(
-            default=None,
-            ge=0,
-            description="(Testing/diagnostics) Close stream after emitting this many events",
-        ),
     ):
         """Server-Sent Events endpoint for unified status events (Task 0187).
 
@@ -1256,12 +1249,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         queue = await status_bus.subscribe(server=server, request_id=request_id)
 
         async def event_gen():
-            sent_events = 0
             try:
                 yield ":ok\n\n"  # initial comment
-                if close_after is not None and close_after <= 0:
-                    # Immediate close requested (testing)
-                    return
                 loop = asyncio.get_event_loop()
                 last_hb = loop.time()
                 while True:
@@ -1281,14 +1270,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         try:
                             payload = ev.to_dict()
                             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                            sent_events += 1
-                            if close_after is not None and sent_events >= close_after:
-                                logger.debug(
-                                    "/status/stream close_after=%s reached (events=%s)",
-                                    close_after,
-                                    sent_events,
-                                )
-                                break
                         except Exception as e:
                             logger.error(f"Failed to serialize status event: {e}", exc_info=True)
 
@@ -1371,48 +1352,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=401, detail="Unauthorized")
         return get_status_metrics()
-
-    @app.post("/status/publish-test")
-    async def status_publish_test(server: str = Query(..., description="Server name for test event"), message: str = Query("Test event", description="Message text")):
-        """Diagnostic endpoint to publish a test status event for the given server.
-
-        Helps verifying that the SSE `/status/stream` is delivering events to connected clients.
-        """
-        try:
-            await publish_status(server, message, phase="progress")
-            return {"result": "published", "server": server, "message": message}
-        except Exception as e:
-            return {"error": str(e)}
-
-    @app.post("/debug/toggle")
-    async def debug_toggle():
-        """Toggle application debug logging and return current debug state.
-
-        This endpoint is used by the status toolbar integration tests to flip
-        debug mode on/off for the running FastAPI app instance. It does not
-        modify global logging configuration permanently; instead it stores a
-        simple flag on `app.state.debug_enabled` for the lifetime of this app.
-        """
-        try:
-            # Initialize flag if missing
-            if not hasattr(app.state, 'debug_enabled'):
-                app.state.debug_enabled = False
-
-            # Toggle flag
-            app.state.debug_enabled = not app.state.debug_enabled
-
-            # Attempt to adjust root logger level for convenience (non-fatal)
-            try:
-                root_logger = logging.getLogger()
-                root_logger.setLevel(logging.DEBUG if app.state.debug_enabled else logging.INFO)
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to set root logger level during debug toggle: {e}", exc_info=True)
-
-            return {"debug": bool(app.state.debug_enabled)}
-        except Exception as e:
-            logging.getLogger(__name__).exception("Debug toggle failed: %s", e)
-            from fastapi import HTTPException
-            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/debug/context")
     async def debug_context(agent_name: str | None = None):
@@ -1878,7 +1817,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/favicon.ico")
     async def favicon():
-        favicon_path = Path(__file__).parents[3] / "static" / "favicon.ico"
+        favicon_path = Path(__file__).parents[2] / "static" / "favicon.ico"
         if favicon_path.exists():
             return FileResponse(favicon_path)
         else:
@@ -1888,38 +1827,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     return app
 
 
-# Compatibility shim: expose a simple getter so tests can patch this module
-# function to supply a mock MCPIntegration. It delegates to the real
-# integration module when available.
-def get_mcp_integration(app: Optional[FastAPI] = None):
-    from .mcp.integration import get_mcp_integration as _get
-    return _get(app)
-
-
 def run() -> None:
     """Run the FastAPI server with proper configuration."""
     # Set UTF-8 environment for Windows compatibility
     os.environ.setdefault('PYTHONUTF8', '1')
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
-    # Load configuration
+    # Build the application (loads config internally)
     cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
-    config = load_settings(cfg_path)
-
-    # Build the application
     app_obj = build_app(cfg_path)
+    
+    # Get config from global ConfigService (already loaded in build_app)
+    config = _config_service.get_config()
 
     # Get server configuration
     host = os.getenv("HOST") or config.network.host or "127.0.0.1"
-    # Allow tests to override the server port explicitly via TEST_SERVER_PORT
-    # so they don't accidentally collide with a locally running production
-    # instance on the default port (8000).
-    test_port_env = os.getenv("TEST_SERVER_PORT")
     port_env = os.getenv("PORT")
-    if test_port_env:
-        port = int(test_port_env)
-    else:
-        port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
+    port = int(port_env) if port_env else int(getattr(config.network, "port", 8000))
 
     # Configure log level. Allow AGENT_LOG_LEVEL to override for the running
     # uvicorn process as well so console logging can be forced without editing

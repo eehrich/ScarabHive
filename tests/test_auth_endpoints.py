@@ -72,7 +72,7 @@ def admin_user(temp_db):
 @pytest.fixture
 def client(temp_db):
     """Create test client with temporary database."""
-    from api.auth_endpoints import router
+    from agent_system.api.auth_endpoints import router
     
     app = FastAPI()
     app.include_router(router)
@@ -278,7 +278,7 @@ class TestLogout:
         
         app = FastAPI()
         
-        from api.auth_endpoints import router as auth_router
+        from agent_system.api.auth_endpoints import router as auth_router
         app.include_router(auth_router)
         
         # Override database dependency
@@ -313,7 +313,7 @@ class TestUserRegistration:
         
         app = FastAPI()
         
-        from api.auth_endpoints import router as auth_router
+        from agent_system.api.auth_endpoints import router as auth_router
         app.include_router(auth_router)
         
         # Override database dependency

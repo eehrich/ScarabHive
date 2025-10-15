@@ -8,7 +8,7 @@ from fastapi import FastAPI
 import tempfile
 from pathlib import Path
 
-from api.auth_endpoints import router
+from agent_system.api.auth_endpoints import router
 from agent_system.auth.database import setup_database, get_db
 from agent_system.auth.models import UserCreate, UserRole
 

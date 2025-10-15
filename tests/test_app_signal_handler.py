@@ -38,7 +38,7 @@ async def test_lifespan_handles_shutdown_errors():
         mock_get_logger.return_value = mock_logger
         
         # Mock an exception during shutdown
-        with patch('agent_system.agent.interface_api.lifespan') as mock_lifespan:
+        with patch('agent_system.app.lifespan') as mock_lifespan:
             @asynccontextmanager
             async def failing_lifespan(app):
                 yield

@@ -22,7 +22,7 @@ async def test_server_with_connection():
     # threads that may cause ResourceWarning during pytest cleanup. We still
     # monitor the process via polling and only communicate if it exits.
     server_process = subprocess.Popen(
-        [sys.executable, "-m", "agent_system.agent.interface_api"],
+        [sys.executable, "-m", "agent_system.app"],
         cwd=Path(__file__).parent.parent,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
