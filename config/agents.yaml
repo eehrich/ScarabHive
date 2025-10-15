@@ -225,12 +225,13 @@ agents:
           - "web_scraper/*"
           - "duckduckgo_search/*"
       
-      # Custom descriptions for this agent's own tools (inherited from web_research_agent)
+      # Custom descriptions for inherited tools from web_research_agent
+      # Note: Tool names use the base_type prefix, not the agent name
       tool_descriptions:
-        meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
-        meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
-        meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
-        meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
+        web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
+        web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
+        web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
+        web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
     
     metadata:
       author: "AgentSystem"
