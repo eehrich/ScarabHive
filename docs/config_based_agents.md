@@ -26,7 +26,7 @@ agents:
   my_financial_analyst:
     enabled: true
     description: "Professional financial analyst for stock market analysis"
-    base_type: "agent"
+    base_type: "basic_agent"
     agent_config:
       llm_profile: "turbo"
       max_steps: 20
@@ -40,15 +40,14 @@ agents:
         blocked:
           - "ssh_control/*"
           - "script_interpreter/*"
-      context_management:
-        enabled: true
-        strategy: "SUMMARIZE_OLDEST"
-        preserve_recent_messages: 8
+      self_tool_descriptions:
+        my_financial_analyst_execute_task: "Analyze stocks and market data using financial tools"
     metadata:
       author: "Your Name"
       version: "1.0.0"
       tags: ["finance", "analysis"]
       category: "financial"
+      visibility: "both"  # Visible in UI and as tool
 ```
 
 ### 2. Create Your Prompt Template
@@ -137,19 +136,36 @@ tools:
 2. `blocked` takes precedence over `allowed`
 3. Patterns support wildcards (`*`)
 
-### Context Management Configuration
+### self_tool_descriptions Configuration
+
+Override descriptions for the agent's own tools (inherited from base_type):
 
 ```yaml
-context_management:
-  enabled: true                    # Enable context management
-  strategy: "SUMMARIZE_OLDEST"     # Strategy: SUMMARIZE_OLDEST, TRUNCATE, SLIDING_WINDOW
-  preserve_recent_messages: 8      # Number of recent messages to keep intact
+self_tool_descriptions:
+  my_agent_execute_task: "Custom description for this agent's execute_task tool"
+  my_agent_list_tools: "Custom description for this agent's list_tools tool"
 ```
 
-**Available Strategies:**
-- `SUMMARIZE_OLDEST`: Summarize old messages when context limit reached
-- `TRUNCATE`: Remove oldest messages
-- `SLIDING_WINDOW`: Keep fixed window of recent messages
+**Note**: Tool names must start with the agent's name prefix (e.g., `my_agent_`).
+
+### hooks Configuration
+
+Configure the hook system for this agent:
+
+```yaml
+hooks:
+  enabled: true  # Enable hooks for this agent
+  disabled_hooks:
+    - "request_logger.log_pre_llm"  # Disable specific hooks
+  hook_overrides:
+    "markdown_formatter.format_markdown_output":
+      enabled: true
+      timeout: 5.0
+      config:
+        convert_to_html: false
+```
+
+See [Plugin Hooks](plugin_hooks.md) for details.
 
 ## System Prompts
 
@@ -229,27 +245,29 @@ llm_system:
 ### Example 1: Simple Q&A Agent
 
 ```yaml
-config_agents:
+agents:
   simple_qa:
     enabled: true
     description: "Lightweight Q&A agent for quick questions"
-    base_type: "agent"
+    base_type: "basic_agent"
     agent_config:
       llm_profile: "turbo"
       max_steps: 5
       system_prompt: |
         You are a helpful assistant for answering quick questions.
         Provide concise, accurate answers. If you don't know, say so.
+    metadata:
+      visibility: "ui"
 ```
 
 ### Example 2: Code Reviewer
 
 ```yaml
-config_agents:
+agents:
   code_reviewer:
     enabled: true
     description: "Expert code reviewer for pull requests"
-    base_type: "agent"
+    base_type: "basic_agent"
     agent_config:
       llm_profile: "deepseek"
       max_steps: 15
@@ -260,26 +278,29 @@ config_agents:
           - "basic_operations/*"
         blocked:
           - "ssh_control/*"
-      context_management:
+      hooks:
         enabled: true
-        strategy: "SLIDING_WINDOW"
-        preserve_recent_messages: 10
+        hook_overrides:
+          "markdown_formatter.format_markdown_output":
+            enabled: true
     metadata:
       author: "DevOps Team"
       version: "2.0.0"
       tags: ["code-review", "quality"]
+      category: "development"
+      visibility: "ui"
 ```
 
 ### Example 3: Research Assistant
 
 ```yaml
-config_agents:
+agents:
   research_assistant:
     enabled: true
     description: "Comprehensive research assistant with web access"
-    base_type: "agent"
+    base_type: "basic_agent"
     agent_config:
-      llm_profile: "o1-mini"
+      llm_profile: "turbo"
       max_steps: 30
       system_template: "config/prompts/research_assistant_prompt.yaml"
       tools:
@@ -290,8 +311,10 @@ config_agents:
         blocked:
           - "ssh_control/*"
           - "script_interpreter/*"
-      context_management:
-        enabled: true
+    metadata:
+      category: "research"
+      visibility: "both"
+```
         strategy: "SUMMARIZE_OLDEST"
         preserve_recent_messages: 12
     metadata:

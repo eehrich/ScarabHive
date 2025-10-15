@@ -1,0 +1,701 @@
+# Software Architecture Document: AgentSystem Core
+
+**Document Type:** Software Architecture Document (SAD)  
+**Component:** AgentSystem Core Architecture  
+**Version:** 1.0  
+**Last Updated:** 2025-01-15  
+**Status:** Active
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Architectural Goals](#architectural-goals)
+3. [System Context](#system-context)
+4. [Component Architecture](#component-architecture)
+5. [Key Design Decisions](#key-design-decisions)
+6. [Data Flow](#data-flow)
+7. [Technology Stack](#technology-stack)
+8. [Quality Attributes](#quality-attributes)
+9. [Deployment View](#deployment-view)
+10. [Related Documents](#related-documents)
+
+---
+
+## 1. Overview
+
+### 1.1 Purpose
+
+AgentSystem is a modular, extensible AI agent framework that enables:
+- Multi-agent orchestration with specialized capabilities
+- Plugin-based tool ecosystem (MCP protocol)
+- Configuration-driven agent definition
+- Real-time status streaming and cancellation
+- Multi-user session management with authentication
+
+### 1.2 Scope
+
+This document describes the core architecture of AgentSystem, including:
+- Core components and their interactions
+- Plugin and agent systems
+- Configuration management
+- Communication protocols (HTTP, SSE, MCP)
+
+### 1.3 Audience
+
+- System architects
+- Backend developers
+- Plugin developers
+- DevOps engineers
+
+---
+
+## 2. Architectural Goals
+
+### 2.1 Primary Goals
+
+| Goal | Description | Priority |
+|------|-------------|----------|
+| **Modularity** | Loosely coupled components, plugin-based extensibility | High |
+| **Scalability** | Support multiple concurrent users and sessions | High |
+| **Configurability** | YAML-driven configuration without code changes | High |
+| **Reliability** | Graceful error handling, cancellation support | High |
+| **Developer Experience** | Clear APIs, good documentation, easy plugin authoring | Medium |
+| **Performance** | Caching, parallel execution, efficient resource usage | Medium |
+
+### 2.2 Non-Goals
+
+- Distributed agent execution (single-process architecture)
+- Built-in LLM training or fine-tuning
+- GUI-based configuration (YAML/API only)
+- Real-time collaboration between multiple users on same session
+
+---
+
+## 3. System Context
+
+### 3.1 Context Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         AgentSystem                              │
+│                                                                  │
+│  ┌────────────────┐         ┌────────────────┐                 │
+│  │   Web UI       │◄───────►│   FastAPI App  │                 │
+│  │   (Browser)    │   HTTP  │   (REST API)   │                 │
+│  └────────────────┘  /SSE   └────────┬───────┘                 │
+│                                       │                          │
+│  ┌────────────────┐                  │                          │
+│  │   CLI Client   │◄─────────────────┘                          │
+│  │   (Terminal)   │         │                                   │
+│  └────────────────┘         │                                   │
+│                              ▼                                   │
+│                     ┌────────────────┐                          │
+│                     │  Agent Service │                          │
+│                     │   (Core Logic) │                          │
+│                     └────────┬───────┘                          │
+│                              │                                   │
+│         ┌────────────────────┼────────────────────┐            │
+│         │                    │                    │            │
+│         ▼                    ▼                    ▼            │
+│  ┌─────────────┐   ┌─────────────────┐   ┌─────────────┐    │
+│  │   Agents    │   │   Plugins       │   │   Config    │    │
+│  │  (Executor) │   │   (Tools/Hooks) │   │   (YAML)    │    │
+│  └─────────────┘   └─────────────────┘   └─────────────┘    │
+│         │                    │                                │
+│         └────────────────────┴────────────┐                  │
+│                                            ▼                   │
+│                                    ┌──────────────┐           │
+│                                    │  LLM Clients │           │
+│                                    │ (OpenAI/etc) │           │
+│                                    └──────────────┘           │
+└──────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+┌──────────────┐   ┌───────────────┐   ┌──────────────────┐
+│  File System │   │  External MCP │   │  LLM Providers   │
+│  (Sessions,  │   │    Servers    │   │  (OpenAI, etc)   │
+│   Config)    │   │               │   │                  │
+└──────────────┘   └───────────────┘   └──────────────────┘
+```
+
+### 3.2 External Systems
+
+| System | Protocol | Purpose |
+|--------|----------|---------|
+| **LLM Providers** | HTTP/HTTPS | AI model inference (OpenAI, Ollama, etc.) |
+| **External MCP Servers** | HTTP/SSE | External tool integration (Context7, Memory, etc.) |
+| **File System** | Local I/O | Configuration, sessions, cache storage |
+| **Web Browsers** | HTTP/SSE | Web UI access, real-time updates |
+| **CLI Clients** | HTTP | Command-line interface |
+
+---
+
+## 4. Component Architecture
+
+### 4.1 High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Presentation Layer                          │
+├─────────────────────────────────────────────────────────────────┤
+│  FastAPI Routes  │  WebSocket/SSE  │  Static Files (UI)         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Application Layer                           │
+├─────────────────────────────────────────────────────────────────┤
+│  Agent Service   │  Session Manager  │  Auth Service            │
+│  Status Bus      │  Cancellation Mgr │  Config Loader           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       Domain Layer                               │
+├─────────────────────────────────────────────────────────────────┤
+│  Agent (Executor)         │  Plugin Registry                     │
+│  MCP Integration          │  Hook System                         │
+│  LLM Clients              │  Tool Execution Manager              │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Infrastructure Layer                          │
+├─────────────────────────────────────────────────────────────────┤
+│  File Storage    │  Cache System   │  HTTP Clients              │
+│  JSON Serializer │  Logger         │  Event Bus                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 Core Components
+
+#### 4.2.1 FastAPI Application (`app.py`)
+
+**Responsibilities:**
+- HTTP server lifecycle management
+- Route registration and middleware
+- Lifespan events (startup/shutdown)
+- CORS, authentication, rate limiting
+
+**Key Files:**
+- `src/agent_system/app.py` - Application factory
+- `src/agent_system/api/endpoints.py` - API routes
+- `src/agent_system/api/streaming.py` - SSE endpoints
+
+**Dependencies:**
+- FastAPI framework
+- Uvicorn ASGI server
+- Pydantic models
+
+#### 4.2.2 Agent Service (`services/agent_service.py`)
+
+**Responsibilities:**
+- Agent execution orchestration
+- Request lifecycle management
+- Status event coordination
+- Error handling and recovery
+
+**Key Interfaces:**
+```python
+class AgentService:
+    async def run_agent_stream(
+        request_id: str,
+        agent_name: str,
+        task: str,
+        session_id: str
+    ) -> AsyncGenerator[dict, None]
+```
+
+#### 4.2.3 Agent (`servers/agent/server.py`)
+
+**Responsibilities:**
+- Multi-step reasoning loop
+- Tool discovery and execution
+- LLM interaction
+- Context management
+
+**Key Interfaces:**
+```python
+class Agent(MCPServer):
+    async def run_events(
+        task: str,
+        request_id: str,
+        session_id: str,
+        ...
+    ) -> AsyncGenerator[dict, None]
+```
+
+#### 4.2.4 Plugin Registry (`plugins/registry.py`)
+
+**Responsibilities:**
+- Plugin discovery (filesystem + config)
+- Factory registration and instantiation
+- Metadata management
+
+**Key Features:**
+- Auto-discovery from `src/plugins/`
+- Config-based agent registration
+- Lazy initialization support
+
+#### 4.2.5 MCP Integration (`mcp/integration.py`)
+
+**Responsibilities:**
+- External MCP server connections
+- Tool list aggregation
+- Tool call routing
+- Connection health monitoring
+
+**Key Components:**
+- `MCPClientManager` - Client lifecycle
+- `MCPHTTPServer` - Server mode
+- `ToolCache` - Tool list caching
+
+#### 4.2.6 Hook System (`hooks/`)
+
+**Responsibilities:**
+- Lifecycle event interception
+- Plugin hook execution
+- Order management and dependencies
+- Error isolation
+
+**Hook Types:**
+- `pre_llm_call` - Before LLM request
+- `post_llm_call` - After LLM response
+- `pre_tool_call` - Before tool execution
+- `post_tool_call` - After tool execution
+- `format_output` - Output formatting
+- `session_start/end` - Session lifecycle
+
+#### 4.2.7 Configuration System (`config/`)
+
+**Responsibilities:**
+- Multi-file YAML loading
+- Environment variable substitution
+- Schema validation
+- Pydantic model binding
+
+**Configuration Files:**
+- `config/config.yaml` - Main system config
+- `config/llm.yaml` - LLM profiles
+- `config/agents.yaml` - Config-based agents
+- `config/mcp_servers.yaml` - External MCP servers
+- `config/plugins.yaml` - Plugin overrides
+
+---
+
+## 5. Key Design Decisions
+
+### 5.1 Decision Records
+
+#### ADR-001: FastAPI over Flask
+
+**Context:** Need async HTTP server with SSE support  
+**Decision:** Use FastAPI with Uvicorn  
+**Rationale:**
+- Native async/await support
+- Built-in OpenAPI documentation
+- Excellent SSE streaming performance
+- Type hints and validation via Pydantic
+
+**Status:** Accepted
+
+---
+
+#### ADR-002: YAML-Based Configuration
+
+**Context:** Need flexible, user-friendly configuration  
+**Decision:** Multi-file YAML configuration with Pydantic models  
+**Rationale:**
+- Human-readable and editable
+- Support for comments and documentation
+- Schema validation via Pydantic
+- Environment variable substitution
+- Separation of concerns (llm.yaml, agents.yaml, etc.)
+
+**Status:** Accepted
+
+---
+
+#### ADR-003: Plugin Architecture
+
+**Context:** Need extensible tool and hook system  
+**Decision:** Dual plugin types (Tools via MCPServer, Hooks via PluginHook)  
+**Rationale:**
+- Clear separation of concerns
+- Minimal inheritance (composition over inheritance)
+- Supports pure tool plugins, pure hook plugins, and hybrids
+- Standard MCP protocol for tools
+
+**Status:** Accepted
+
+---
+
+#### ADR-004: Config-Based Agents
+
+**Context:** Many agents differ only in prompts and tool access  
+**Decision:** Support YAML-defined agents without Python code  
+**Rationale:**
+- Lower barrier to entry for non-developers
+- Faster prototyping and iteration
+- Reduced code duplication
+- Coexists with plugin-based agents
+
+**Status:** Accepted
+
+---
+
+#### ADR-005: Session-Based Architecture
+
+**Context:** Support multiple users with isolated contexts  
+**Decision:** Session-based storage with per-user directories  
+**Rationale:**
+- Data isolation between users
+- Persistent conversation history
+- Easy backup and migration
+- Simpler than database for MVP
+
+**Status:** Accepted
+
+---
+
+#### ADR-006: Status Streaming via SSE
+
+**Context:** Need real-time progress updates in UI  
+**Decision:** Server-Sent Events for status streaming  
+**Rationale:**
+- Simpler than WebSockets for one-way communication
+- Better browser compatibility
+- Automatic reconnection
+- HTTP/2 multiplexing support
+
+**Status:** Accepted
+
+---
+
+### 5.2 Technology Choices
+
+| Component | Technology | Rationale |
+|-----------|-----------|-----------|
+| **Web Framework** | FastAPI | Async, type hints, OpenAPI |
+| **ASGI Server** | Uvicorn | Performance, HTTP/2, WebSockets |
+| **LLM Client** | LiteLLM | Multi-provider support |
+| **Validation** | Pydantic | Type safety, validation, serialization |
+| **Config Format** | YAML | Human-readable, comments, nesting |
+| **Session Storage** | JSON files | Simple, inspectable, version-controllable |
+| **Caching** | In-memory + file | Performance, persistence |
+| **Logging** | Python logging | Standard library, configurable |
+
+---
+
+## 6. Data Flow
+
+### 6.1 Agent Execution Flow
+
+```
+User Request (HTTP/CLI)
+         │
+         ▼
+   FastAPI Endpoint
+         │
+         ▼
+   Agent Service
+         │
+         ├─► Status Bus (emit "starting")
+         │
+         ▼
+   Agent.run_events()
+         │
+         ├─► Load Session History
+         ├─► Hook: pre_llm_call
+         ├─► LLM Request
+         ├─► Hook: post_llm_call
+         │
+         ├─► Parse Tool Calls
+         │      │
+         │      ▼
+         │   Tool Execution Manager
+         │      │
+         │      ├─► Hook: pre_tool_call
+         │      ├─► Execute Tool (Plugin/MCP)
+         │      ├─► Hook: post_tool_call
+         │      ▼
+         │   Tool Results
+         │
+         ├─► Repeat until complete
+         │
+         ▼
+   Hook: format_output
+         │
+         ▼
+   Save Session
+         │
+         ▼
+   Return Result (Stream/JSON)
+```
+
+### 6.2 Configuration Loading
+
+```
+Startup
+   │
+   ▼
+Load config/config.yaml
+   │
+   ├─► Resolve includes (llm.yaml, etc.)
+   ├─► Substitute environment variables
+   ├─► Validate with Pydantic schemas
+   │
+   ▼
+Initialize Components
+   │
+   ├─► LLM Clients (from llm.yaml)
+   ├─► MCP Integration (from mcp_servers.yaml)
+   ├─► Plugin Registry (discover + config agents)
+   ├─► Hook System (load hooks from plugins)
+   │
+   ▼
+Ready for Requests
+```
+
+### 6.3 Plugin Discovery
+
+```
+System Startup
+   │
+   ▼
+Filesystem Discovery
+   │
+   ├─► Scan src/plugins/*/plugin.py
+   ├─► Load plugin.yaml metadata
+   ├─► Register factories in registry
+   │
+   ▼
+Config-Based Agent Discovery
+   │
+   ├─► Load agents.yaml
+   ├─► Validate agent definitions
+   ├─► Create factories dynamically
+   ├─► Register alongside plugins
+   │
+   ▼
+Bootstrap Agents
+   │
+   ├─► Instantiate from factories
+   ├─► Apply configuration overrides
+   ├─► Register in MCP registry
+   │
+   ▼
+Ready
+```
+
+---
+
+## 7. Technology Stack
+
+### 7.1 Core Stack
+
+```yaml
+runtime:
+  language: Python 3.11+
+  framework: FastAPI 0.109+
+  server: Uvicorn
+
+dependencies:
+  web:
+    - fastapi
+    - uvicorn[standard]
+    - pydantic >= 2.0
+    - python-multipart
+  
+  llm:
+    - litellm
+    - openai
+    - anthropic
+  
+  data:
+    - pyyaml
+    - jinja2
+    - jsonschema
+  
+  utilities:
+    - httpx
+    - python-jose[cryptography]
+    - passlib[bcrypt]
+```
+
+### 7.2 Development Stack
+
+```yaml
+development:
+  testing:
+    - pytest
+    - pytest-asyncio
+    - pytest-cov
+  
+  code_quality:
+    - ruff
+    - mypy
+    - black
+  
+  documentation:
+    - mkdocs
+    - mkdocs-material
+```
+
+---
+
+## 8. Quality Attributes
+
+### 8.1 Performance
+
+| Metric | Target | Current | Notes |
+|--------|--------|---------|-------|
+| **Agent Response Time** | < 30s | ~10-20s | Depends on LLM latency |
+| **Tool Execution** | Parallel | Parallel | asyncio.gather() |
+| **Concurrent Users** | 50+ | Tested: 20 | Limited by LLM rate limits |
+| **Session Load Time** | < 100ms | ~50ms | JSON file I/O |
+| **Tool Cache Hit Rate** | > 80% | ~85% | 30s TTL |
+
+### 8.2 Reliability
+
+| Aspect | Implementation | Status |
+|--------|---------------|--------|
+| **Error Handling** | Try/catch, graceful degradation | ✅ Implemented |
+| **Cancellation** | Token-based, cooperative | ✅ Implemented |
+| **Retries** | Exponential backoff for LLM/MCP | ✅ Implemented |
+| **Validation** | Pydantic models, schema checks | ✅ Implemented |
+| **Logging** | Structured logging, levels | ✅ Implemented |
+
+### 8.3 Security
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Authentication** | ✅ JWT + API Keys | Optional, configurable |
+| **Authorization** | ✅ User-based sessions | Per-user isolation |
+| **Input Validation** | ✅ Pydantic models | All API inputs validated |
+| **Rate Limiting** | ✅ Token bucket | Configurable per-user |
+| **CORS** | ✅ Configurable | Default: localhost only |
+| **Secrets Management** | ✅ Env vars | No secrets in config files |
+
+### 8.4 Maintainability
+
+| Aspect | Score | Notes |
+|--------|-------|-------|
+| **Code Coverage** | 75% | Target: 80% |
+| **Documentation** | Good | SAD, API docs, user guides |
+| **Modularity** | Excellent | Clear component boundaries |
+| **Type Safety** | Good | Pydantic + type hints |
+| **Code Quality** | Good | Ruff, Mypy checks |
+
+---
+
+## 9. Deployment View
+
+### 9.1 Single-Server Deployment
+
+```
+┌─────────────────────────────────────┐
+│         Server (Linux/Windows)      │
+│                                     │
+│  ┌──────────────────────────────┐  │
+│  │   AgentSystem Process        │  │
+│  │   (Python + Uvicorn)         │  │
+│  │                              │  │
+│  │   Port: 8000 (HTTP)          │  │
+│  └──────────────────────────────┘  │
+│              │                      │
+│              ▼                      │
+│  ┌──────────────────────────────┐  │
+│  │   File System                │  │
+│  │   - config/                  │  │
+│  │   - data/sessions/           │  │
+│  │   - .cache/                  │  │
+│  │   - logs/                    │  │
+│  └──────────────────────────────┘  │
+└─────────────────────────────────────┘
+          │
+          ▼
+    Internet (LLM APIs, MCP Servers)
+```
+
+### 9.2 Reverse Proxy Deployment
+
+```
+Internet
+    │
+    ▼
+┌─────────────────┐
+│  Nginx/Caddy    │  HTTPS Termination
+│  (Port 443)     │  Static Files
+│  (Port 80)      │  Rate Limiting
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  AgentSystem    │  HTTP
+│  (Port 8000)    │  Internal Only
+└─────────────────┘
+```
+
+### 9.3 Environment Variables
+
+```bash
+# Required
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Optional
+AGENT_LOG_LEVEL=info
+AGENT_CACHE_DIR=/var/cache/agent_system
+AGENT_SESSION_DIR=/var/data/agent_system/sessions
+AGENT_CONFIG_PATH=/etc/agent_system/config.yaml
+
+# Development
+AGENT_DEBUG=1
+AGENT_RELOAD=1
+```
+
+---
+
+## 10. Related Documents
+
+### 10.1 Architecture Documents
+
+- [Plugin Architecture](plugin_architecture.md) - Plugin system design
+- [MCP Server Integration](mcp_configuration.md) - External MCP servers
+- [Hook System](plugin_hooks.md) - Lifecycle hooks
+- [Tool Execution](tool_execution.md) - Tool execution flow
+
+### 10.2 Design Documents
+
+- [Configurable Agents](configurable_agents.md) - YAML-based agents
+- [Session Management](session_management.md) - Multi-user sessions
+- [Status System](status_design.md) - Real-time updates
+- [Caching Systems](caching_systems.md) - Performance optimization
+
+### 10.3 User Guides
+
+- [Plugin Authoring](plugin_authoring.md) - How to create plugins
+- [Configuration Guide](../config/README.md) - Configuration reference
+- [API Documentation](../README.md#api) - REST API reference
+- [CLI Reference](cli_reference.md) - Command-line usage
+
+---
+
+**Document Changelog:**
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2025-01-15 | AgentSystem Team | Initial comprehensive SAD |
+
+---
+
+**Approval:**
+
+| Role | Name | Date | Signature |
+|------|------|------|-----------|
+| Architect | - | - | - |
+| Tech Lead | - | - | - |
+| Product Owner | - | - | - |

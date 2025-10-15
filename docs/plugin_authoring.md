@@ -68,21 +68,31 @@ AgentSystem now supports **configuration-based agents** that can be defined pure
 
 **Example Configuration-Based Agent:**
 ```yaml
-# In config/mcp.yaml under mcp_system.config_agents:
-financial_analyst:
-  base_type: generic
-  description: "Financial analysis and market research agent"
-  system_template: prompts/financial_analyst.md
-  llm_profile: deepseek-chat
-  tools:
-    allowed:
-      - "mcp_*"  # All MCP tools
-      - "browser_*"  # Browser tools
-    blocked:
-      - "filesystem_*"  # Block file operations
+# In config/agents.yaml:
+agents:
+  financial_analyst:
+    enabled: true
+    description: "Financial analysis and market research agent"
+    base_type: basic_agent
+    agent_config:
+      llm_profile: turbo
+      max_steps: 20
+      system_template: "config/prompts/financial_analyst_prompt.yaml"
+      tools:
+        allowed:
+          - "yahoo_finance/*"
+          - "web_scraper/*"
+          - "duckduckgo_search/*"
+        blocked:
+          - "ssh_control/*"
+      self_tool_descriptions:
+        financial_analyst_execute_task: "Analyze stocks and market data"
+    metadata:
+      category: "financial"
+      visibility: "both"
 ```
 
-See [Configuration-Based Agents Guide](config_based_agents.md) for complete documentation.
+See [Configurable Agents Guide](configurable_agents.md) for complete documentation.
 
 ---
 
@@ -135,7 +145,7 @@ class HelloWorldServer(SchemaBasedMCPServer):
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration from config.mcp_system.servers[name]
+            mcp_config: Plugin-specific configuration (MCPConfig from mcp_servers.yaml)
         """
         super().__init__(name, system_config, mcp_config)
         
@@ -1727,7 +1737,7 @@ async def _tool_with_subtasks(self, params: dict):
 
 ### Plugin Configuration
 
-Operators configure plugins in `config/mcp.yaml`:
+Operators configure plugins in `config/mcp_servers.yaml`:
 
 ```yaml
 mcp:
@@ -2167,7 +2177,7 @@ PLUGIN_FACTORY = MyPluginServer
 
 **Configuration issues:**
 - Log effective configuration in `__init__()`
-- Check `config/mcp.yaml` has your plugin enabled
+- Check `config/mcp_servers.yaml` has your plugin enabled
 - Validate configuration values and provide good defaults
 
 ### Debugging Tips

@@ -280,15 +280,15 @@ The system uses two levels of caching:
 
 ### Configuration
 
-#### config/mcp.yaml
+MCP tool caching is configured in `config/mcp_servers.yaml`:
+
+#### config/mcp_servers.yaml
 
 ```yaml
-mcp_system:
-  external_servers:
-    cache:
-      enabled: true              # Enable tool list caching (default: true)
-      tool_list_ttl: 30.0        # TTL for MCPClientManager cache (seconds)
-      max_size: null             # Maximum cache entries (null = unlimited)
+cache:
+  enabled: true         # Enable tool list caching
+  tool_list_ttl: 30.0  # Cache TTL in seconds (30 seconds default)
+  max_size: 1000       # Maximum cache entries (None = unlimited)
 ```
 
 #### Configuration Options

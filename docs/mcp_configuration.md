@@ -8,50 +8,45 @@ The Model Context Protocol (MCP) implementation in AgentSystem provides seamless
 
 ### Basic Configuration
 
-Create or update your `config/mcp.yaml` file:
+MCP servers are configured in `config/mcp_servers.yaml`:
 
 ```yaml
-mcp:
+# External MCP server connections
+external_servers:
+  weather_service:
+    url: "https://api.weather.com/mcp"
+    enabled: true
+    description: "Weather data and forecasting"
+    auth:
+      type: "api_key"
+      api_key: "${WEATHER_API_KEY}"
+      api_key_header: "X-API-Key"
+    ssl_verify: true
+    timeout: 30.0
+    max_retries: 3
+    retry_delay: 1.0
+    features:
+      tools: true
+      resources: true
+      prompts: true
+    tools:
+      allowed: ["get_forecast", "get_current"]
+      blocked: ["admin_tools"]
+    tags: ["weather", "data"]
+    priority: 50
+
+# Connection and cache settings
+connection:
+  timeout: 5.0
+  parallel_connect: true
+
+cache:
   enabled: true
-
-  # Local server settings
-  expose_local_server: true
-
-  # Global settings
-  default_timeout: 30.0
-  max_concurrent_requests: 10
-
-  # Security
-  require_auth: false
-  allowed_origins: ["http://localhost:3000"]
-  rate_limit_requests: 1000
-  rate_limit_window: 3600  # 1 hour
-
-  # External MCP servers
-  external_servers:
-    weather_service:
-      url: "https://api.weather.com/mcp"
-      enabled: true
-      description: "Weather data and forecasting"
-      auth:
-        type: "api_key"
-        api_key: "${WEATHER_API_KEY}"
-        api_key_header: "X-API-Key"
-      ssl_verify: true
-      timeout: 30.0
-      max_retries: 3
-      retry_delay: 1.0
-      features:
-        tools: true
-        resources: true
-        prompts: true
-      tools:
-        prefix: "weather_"
-        allowed: ["get_forecast", "get_current"]
-        blocked: ["admin_tools"]
-      tags: ["weather", "data"]
-      priority: 50
+  tool_list_ttl: 30.0
+  max_size: 1000
 ```
+
+**Note**: System-wide MCP settings (ports, security, etc.) are configured in `config/config.yaml` under the `mcp` section.
 
 ## Transport Types
 
@@ -667,7 +662,7 @@ mcp:
 
 ### Web Scraper Proxy Configuration
 
-The web scraper plugin supports proxy rotation to avoid IP-based blocking. Configure proxies in your `config/mcp.yaml`:
+The web scraper plugin supports proxy rotation to avoid IP-based blocking. Configure proxies in your `config/plugins.yaml`:
 
 ```yaml
 servers:
@@ -711,10 +706,10 @@ AgentSystem can operate as an MCP server, exposing activated plugins as remote t
 
 ### Configuration
 
-Add the `server_mode` section to `config/mcp.yaml`:
+Add the `server_mode` section to `config/config.yaml`:
 
 ```yaml
-mcp_system:
+mcp:
   server_mode:
     enabled: true
     endpoint: "/mcp"
