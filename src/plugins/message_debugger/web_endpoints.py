@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Query, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,17 @@ class MessageDebuggerWebFactory:
             self.render_panel,
             methods=["GET"],
             response_class=HTMLResponse
+        )
+        # Static file routes
+        self.router.add_api_route(
+            "/static/panel.css",
+            self.serve_css,
+            methods=["GET"]
+        )
+        self.router.add_api_route(
+            "/static/panel.js",
+            self.serve_js,
+            methods=["GET"]
         )
     
     async def list_snapshots(
@@ -163,6 +174,22 @@ class MessageDebuggerWebFactory:
                 status_code=500,
                 media_type="text/html"
             )
+    
+    async def serve_css(self):
+        """Serve the panel CSS file."""
+        css_path = self.plugin_dir / "static" / "panel.css"
+        return FileResponse(
+            css_path,
+            media_type="text/css"
+        )
+    
+    async def serve_js(self):
+        """Serve the panel JavaScript file."""
+        js_path = self.plugin_dir / "static" / "panel.js"
+        return FileResponse(
+            js_path,
+            media_type="application/javascript"
+        )
     
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router for web UI."""
