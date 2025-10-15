@@ -1,7 +1,11 @@
 """Unit tests for LLM message validator."""
 
-from agent_system.llm.message_validator import (
+import pytest
+from typing import List
+from plugins.llm_message_validator.validator import (
     MessageValidator,
+    ValidationIssue,
+    ValidationResult,
     validate_messages_before_llm,
     get_validation_stats
 )
@@ -51,14 +55,21 @@ class TestToolCallConsistency:
         assert len(result.repaired_messages) == 4
 
     def test_orphaned_tool_call(self):
-        """Test detection of orphaned tool call (no response)."""
+        """Test detection of orphaned tool call (no response).
+        
+        Note: If the assistant message with tool_calls is the LAST message,
+        it's NOT considered orphaned because tool responses are expected
+        to be added AFTER validation (e.g., in pre_llm_call hook scenario).
+        """
+        # Case 1: Assistant with tool_calls is NOT the last message -> orphaned
         messages = [
             ChatMessage(role="user", content="What's the weather?"),
             ChatMessage(
                 role="assistant",
                 content=None,
                 tool_calls=[{"id": "call_1", "function": {"name": "get_weather"}}]
-            )
+            ),
+            ChatMessage(role="user", content="Any update?")  # Another message after
         ]
         
         validator = MessageValidator()
@@ -71,6 +82,26 @@ class TestToolCallConsistency:
         assert orphaned_issues[0].severity == "error"
         # Repaired messages should remove the assistant with orphaned tool call
         assert len(result.repaired_messages) < len(messages)
+        
+        # Case 2: Assistant with tool_calls IS the last message -> NOT orphaned
+        # (tool responses will be added after validation)
+        messages_last = [
+            ChatMessage(role="user", content="What's the weather?"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "get_weather"}}]
+            )
+        ]
+        
+        result_last = validator.validate_and_repair(messages_last, "test")
+        
+        # Should be valid (tool responses expected to follow)
+        assert result_last.is_valid
+        orphaned_issues_last = [i for i in result_last.issues if i.type == "orphaned_tool_call"]
+        assert len(orphaned_issues_last) == 0
+        # Messages should remain unchanged
+        assert len(result_last.repaired_messages) == len(messages_last)
 
     def test_orphaned_tool_response(self):
         """Test detection of orphaned tool response (no call)."""
@@ -366,8 +397,31 @@ class TestConvenienceFunction:
         assert result[0].role == "user"
 
     def test_validate_messages_before_llm_critical_errors(self):
-        """Test convenience function with critical errors."""
+        """Test convenience function with critical errors.
+        
+        Note: Assistant with tool_calls as last message is NOT an error
+        (tool responses expected to follow after validation).
+        """
+        # Case with orphaned tool_call NOT as last message (真正的错误)
         messages = [
+            ChatMessage(role="user", content="Hello"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "test"}}]
+            ),
+            ChatMessage(role="user", content="Any update?")  # More messages after
+        ]
+        
+        # Should repair by removing orphaned tool call
+        result = validate_messages_before_llm(messages, "test_context")
+        
+        assert isinstance(result, list)
+        # Should have removed the orphaned tool call assistant message
+        assert len(result) == 2  # user + user (assistant removed)
+        
+        # Case with tool_calls as LAST message (valid pre-tool-execution scenario)
+        messages_valid = [
             ChatMessage(role="user", content="Hello"),
             ChatMessage(
                 role="assistant",
@@ -376,12 +430,11 @@ class TestConvenienceFunction:
             )
         ]
         
-        # Should not raise, but log errors and return repaired messages
-        result = validate_messages_before_llm(messages, "test_context")
+        # Should NOT remove (tool responses will be added after)
+        result_valid = validate_messages_before_llm(messages_valid, "test_context")
         
-        assert isinstance(result, list)
-        # Should have removed the orphaned tool call
-        assert len(result) == 1
+        assert isinstance(result_valid, list)
+        assert len(result_valid) == 2  # Both messages kept
 
 
 class TestGetValidationStats:

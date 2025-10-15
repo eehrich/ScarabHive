@@ -1,7 +1,7 @@
 """LLM Message Validator Plugin - Hook implementation.
 
-Validates and repairs message sequences before LLM calls using existing
-MessageValidator from agent_system.llm.message_validator.
+Validates and repairs message sequences before LLM calls using the
+MessageValidator implementation in this plugin.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from agent_system.hooks import HookContext, HookResult
 from agent_system.hooks.schema_based import SchemaBasedPluginHook
-from agent_system.llm.message_validator import MessageValidator, ValidationResult
+from .validator import MessageValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,11 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
         """
         super().__init__(plugin_dir)
         
-        # Get config from schema
+        # Get config from schema - handle both dict and non-dict cases
         config = self.config or {}
+        if not isinstance(config, dict):
+            logger.warning(f"Config is not a dict (type={type(config)}), using defaults")
+            config = {}
         
         # Extract log_level (config might be nested dict)
         log_level = config.get('log_level', 'warning')
@@ -128,19 +131,12 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
             modified = len(result.issues) > 0
             
             if modified:
-                # Convert back to dict format for consistency
-                repaired_dicts = []
-                for msg in result.repaired_messages:
-                    if hasattr(msg, 'model_dump'):
-                        repaired_dicts.append(msg.model_dump(exclude_none=True))
-                    else:
-                        repaired_dicts.append(msg)
+                # Keep messages as ChatMessage objects (don't convert to dict)
+                # The hook system expects ChatMessage objects, not dicts
+                context.messages = result.repaired_messages
                 
-                # Update context with repaired messages
-                context.messages = repaired_dicts
-                
-                logger.info(
-                    f"Message validation repaired {len(result.issues)} issues: "
+                logger.warning(
+                    f"Message validation auto-repaired {len(result.issues)} issues in {validation_context}: "
                     f"{result.repair_summary}"
                 )
             

@@ -718,13 +718,22 @@ class Agent(MCPServer):
         if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
             plugin_tools = self._mcp_integration_manager.mcp_integration.plugin_registry.list_servers()
 
+        # DEBUG: Log plugin tools
+        logger.warning(f"[DEBUG_TOOLS] Agent '{self.name}': plugin_tools from registry: {plugin_tools[:10]}{'...' if len(plugin_tools) > 10 else ''}")
+
         # External + plugin + adapter tools via integration manager helper
         available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
+        
+        # DEBUG: Log after integration manager
+        logger.warning(f"[DEBUG_TOOLS] Agent '{self.name}': available_tools after integration manager: {len(available_tools)} tools")
 
         # Local registry (directly registered servers including agents)
         # Filter by _mcp_tool_visible to only include agents exposed as tools
         if hasattr(self, 'registry') and self.registry:
-            for tool_name in self.registry.list():
+            registry_tools = self.registry.list()
+            logger.warning(f"[DEBUG_TOOLS] Agent '{self.name}': local registry has {len(registry_tools)} servers")
+            
+            for tool_name in registry_tools:
                 if tool_name in available_tools:
                     continue  # Already added from plugins/external
                 
@@ -753,6 +762,7 @@ class Agent(MCPServer):
             blocked_patterns = None
 
         available_tools = self._filter_available_tools(available_tools, allowed_patterns)
+        logger.warning(f"[DEBUG_TOOLS] Agent '{self.name}': After allow-list filter: {len(available_tools)} tools: {available_tools[:10]}{'...' if len(available_tools) > 10 else ''}")
         logger.debug("Filtered available tools for agent %s (allow list) -> %s", self.name, available_tools)
         if not available_tools:
             logger.warning("Agent %s allow list patterns produced an empty tool set", self.name)
@@ -1115,6 +1125,9 @@ class Agent(MCPServer):
                         logger.debug(f"Failed to get schema from server '{tool_name}': {e}")
             
             # Add individual tool names to available_tools for multi-tool servers
+            logger.warning(f"[DEBUG_TOOLS] Agent '{self.name}': Adding {len(internal_tools_to_add)} internal tools to available_tools")
+            if internal_tools_to_add[:5]:
+                logger.warning(f"[DEBUG_TOOLS] Sample internal tools: {internal_tools_to_add[:5]}")
             available_tools.extend(internal_tools_to_add)
 
             # Add own tools (from base_type) to tools_schema if this agent has get_tools()
@@ -1125,9 +1138,15 @@ class Agent(MCPServer):
                     # Apply custom descriptions to own tools BEFORE adding to schema
                     self._apply_custom_tool_descriptions(own_tools)
                     tools_schema.extend(own_tools)
+                    
+                    # DEBUG: Log own tools
+                    own_tool_names = [t['function']['name'] for t in own_tools if 'function' in t]
+                    logger.warning(
+                        f"[DEBUG_TOOLS] Agent '{self.name}': Added {len(own_tools)} own tools: {own_tool_names}"
+                    )
                     logger.debug(
                         f"Agent '{self.name}': Added {len(own_tools)} own tools with custom descriptions: "
-                        f"{[t['function']['name'] for t in own_tools if 'function' in t]}"
+                        f"{own_tool_names}"
                     )
                 except Exception as e:
                     logger.debug(f"Agent '{self.name}': Failed to get own tools: {e}")

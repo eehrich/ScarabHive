@@ -1,11 +1,12 @@
 hooks:
-  validate_messages:
+  - name: validate_messages
     type: pre_llm_call
     description: >
       Validates message sequences before LLM calls and auto-repairs common issues.
       Checks tool call consistency, tool name patterns, content structure, and sequence validity.
     # Run before context optimization to ensure clean messages
-    before: ["end"]
+    order:
+      before: ["end"]
     
 config:
   # Repair mode: 'auto' repairs issues automatically, 'strict' raises on errors

@@ -11,7 +11,7 @@ import re
 from typing import List, Dict, Any, Set
 from dataclasses import dataclass
 
-from .models import ChatMessage
+from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -50,36 +50,52 @@ class MessageValidator:
         context: str = "unknown"
     ) -> ValidationResult:
         """
-        Validate message sequence and repair issues if possible.
+        Validate message sequence and apply automatic repairs.
         
         Args:
-            messages: List of ChatMessage objects to validate
-            context: Context string for logging (e.g., "summarizer", "agent_server")
+            messages: List of chat messages to validate
+            context: Context identifier for logging
             
         Returns:
-            ValidationResult with validation status, issues, and repaired messages
+            ValidationResult with issues found and repaired messages
         """
-        issues = []
-        repaired_messages = messages.copy()
+        if not messages:
+            return ValidationResult(
+                is_valid=True,
+                issues=[],
+                repaired_messages=[],
+                repair_summary="Empty message list"
+            )
+        
+        # Log message structure for debugging tool_call issues (debug level)
+        logger.debug(
+            f"[{context}] Validating {len(messages)} messages. "
+            f"Last message: role={messages[-1].role}, "
+            f"has_tool_calls={bool(messages[-1].tool_calls)}, "
+            f"message_roles=[{', '.join(m.role for m in messages[-5:])}]"
+        )
+        
+        issues: List[ValidationIssue] = []
         
         # Run all validation checks
-        issues.extend(self._check_tool_call_consistency(repaired_messages))
-        issues.extend(self._check_tool_names(repaired_messages))
-        issues.extend(self._check_content_structure(repaired_messages))
-        issues.extend(self._check_message_sequence(repaired_messages))
+        issues.extend(self._check_tool_call_consistency(messages))
+        issues.extend(self._check_tool_names(messages))
+        issues.extend(self._check_content_structure(messages))
+        issues.extend(self._check_message_sequence(messages))
         
-        # Apply repairs if needed
+        # Apply repairs if issues found
+        repaired_messages = messages
+        repair_summary = "No issues found"
+        
         if issues:
-            repaired_messages = self._apply_repairs(repaired_messages, issues)
+            repaired_messages = self._apply_repairs(messages, issues)
             repair_summary = self._generate_repair_summary(issues)
-            
-            # Log detailed warning with context
             self._log_validation_issues(issues, context, repair_summary)
-        else:
-            repair_summary = "No issues found"
-            
+        
+        is_valid = not any(issue.severity == "error" for issue in issues)
+        
         return ValidationResult(
-            is_valid=len([i for i in issues if i.severity == "error"]) == 0,
+            is_valid=is_valid,
             issues=issues,
             repaired_messages=repaired_messages,
             repair_summary=repair_summary
@@ -131,14 +147,41 @@ class MessageValidator:
                     ))
         
         # Report any remaining pending tool calls (orphaned)
+        # BUT: If the last message is an assistant with tool_calls, don't mark as orphaned
+        # because tool responses are expected to be added AFTER this validation (pre_llm_call hook)
+        last_msg_is_tool_call = False
+        if messages:
+            last_msg = messages[-1]
+            if last_msg.role == "assistant" and last_msg.tool_calls:
+                last_msg_is_tool_call = True
+        
+        # Debug logging to diagnose tool_call issues
+        if pending_tool_calls:
+            logger.debug(
+                f"Tool call consistency check: {len(pending_tool_calls)} pending tool_calls, "
+                f"last_msg_is_tool_call={last_msg_is_tool_call}, "
+                f"total_messages={len(messages)}, "
+                f"pending_ids={list(pending_tool_calls.keys())}"
+            )
+        
         for tool_call_id, msg_idx in pending_tool_calls.items():
-            issues.append(ValidationIssue(
-                type="orphaned_tool_call",
-                severity="error",
-                message_index=msg_idx,
-                description=f"Assistant tool call '{tool_call_id}' has no corresponding tool response",
-                details={"tool_call_id": tool_call_id}
-            ))
+            # Only report orphaned if NOT the last message (which expects responses to follow)
+            if not (last_msg_is_tool_call and msg_idx == len(messages) - 1):
+                logger.warning(
+                    f"Orphaned tool_call detected: id={tool_call_id}, msg_idx={msg_idx}, "
+                    f"is_last={msg_idx == len(messages) - 1}, total_msgs={len(messages)}"
+                )
+                issues.append(ValidationIssue(
+                    type="orphaned_tool_call",
+                    severity="error",
+                    message_index=msg_idx,
+                    description=f"Assistant tool call '{tool_call_id}' has no corresponding tool response",
+                    details={"tool_call_id": tool_call_id}
+                ))
+            else:
+                logger.debug(
+                    f"Skipping orphaned check for tool_call_id={tool_call_id} (last message, responses expected)"
+                )
             
         return issues
     
@@ -269,11 +312,25 @@ class MessageValidator:
         # Collect indices of messages to remove
         remove_indices: Set[int] = set()
         
+        # Track tool_call_ids that will be removed (so we can remove their responses too)
+        removed_tool_call_ids: Set[str] = set()
+        
         for issue in issues:
             if issue.type == "orphaned_tool_call":
                 # Remove assistant messages with orphaned tool calls
-                remove_indices.add(issue.message_index)
-                logger.debug(f"Marking message {issue.message_index} for removal: orphaned tool call")
+                msg_idx = issue.message_index
+                remove_indices.add(msg_idx)
+                
+                # Collect tool_call_ids from this message so we can remove matching responses
+                if 0 <= msg_idx < len(repaired):
+                    msg = repaired[msg_idx]
+                    if msg.role == "assistant" and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                            if tc_id:
+                                removed_tool_call_ids.add(tc_id)
+                
+                logger.debug(f"Marking message {msg_idx} for removal: orphaned tool call")
                 
             elif issue.type == "orphaned_tool_response":
                 # Remove tool responses without matching calls
@@ -313,6 +370,16 @@ class MessageValidator:
                         # Cannot repair, mark for removal
                         remove_indices.add(msg_idx)
                         logger.warning(f"Cannot repair invalid tool name '{original_name}', removing message")
+        
+        # Also remove any tool responses that belong to removed tool_calls
+        if removed_tool_call_ids:
+            for i, msg in enumerate(repaired):
+                if msg.role == "tool" and hasattr(msg, "tool_call_id"):
+                    if msg.tool_call_id in removed_tool_call_ids:
+                        remove_indices.add(i)
+                        logger.debug(
+                            f"Marking message {i} for removal: tool response to removed tool_call_id={msg.tool_call_id}"
+                        )
         
         # Remove problematic messages (in reverse order to preserve indices)
         for idx in sorted(remove_indices, reverse=True):
@@ -469,3 +536,4 @@ def get_validation_stats() -> Dict[str, Any]:
         "validator_available": True,
         "log_level": _validator.log_level
     }
+
