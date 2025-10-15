@@ -653,6 +653,10 @@ class Agent(MCPServer):
         
         This ensures custom descriptions appear in MCP server tool lists (WebUI).
         The base MCPServer.list_tools() calls get_tools() but doesn't apply custom descriptions.
+        
+        Config-based agents (e.g., sysadmin_agent based on BasicAgent) inherit get_tools() 
+        from their base_type, so we can't override get_tools() - we must apply custom 
+        descriptions here in list_tools() instead.
         """
         from agent_system.mcp.core import MCPTool
         
@@ -670,6 +674,7 @@ class Agent(MCPServer):
             )
         
         # Apply custom self_tool_descriptions if configured
+        # This modifies tool_schemas in-place
         self._apply_custom_tool_descriptions(tool_schemas)
         
         # Convert to MCPTool format (same as base MCPServer.list_tools())
@@ -1052,8 +1057,40 @@ class Agent(MCPServer):
                     continue
                 
                 # Get tools from this server
-                if hasattr(server, 'get_tools'):
-                    # New multi-tool interface
+                # Prefer list_tools() over get_tools() because list_tools() applies custom descriptions
+                if hasattr(server, 'list_tools'):
+                    # Modern multi-tool interface with custom descriptions applied
+                    try:
+                        mcp_tools = await server.list_tools()
+                        # Convert MCPTool objects back to OpenAI function format
+                        server_tools = []
+                        for mcp_tool in mcp_tools:
+                            tool_schema = {
+                                "type": "function",
+                                "function": {
+                                    "name": mcp_tool.name,
+                                    "description": mcp_tool.description,
+                                    "parameters": mcp_tool.input_schema
+                                }
+                            }
+                            server_tools.append(tool_schema)
+                        
+                        tools_schema.extend(server_tools)
+                        # Map individual tool names back to the server name
+                        for tool_schema in server_tools:
+                            if tool_schema.get("type") == "function" and "function" in tool_schema:
+                                individual_tool_name = tool_schema["function"].get("name")
+                                if individual_tool_name:
+                                    tool_name_mapping[individual_tool_name] = tool_name
+                                    internal_tools_to_add.append(individual_tool_name)
+                        logger.debug(
+                            f"Added {len(server_tools)} tools from server '{tool_name}' (via list_tools with custom descriptions): "
+                            f"{[t['function']['name'] for t in server_tools if 'function' in t]}"
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to list tools from server '{tool_name}': {e}")
+                elif hasattr(server, 'get_tools'):
+                    # Fallback to get_tools() (doesn't apply custom descriptions)
                     try:
                         server_tools = server.get_tools()
                         tools_schema.extend(server_tools)
@@ -1065,7 +1102,7 @@ class Agent(MCPServer):
                                     tool_name_mapping[individual_tool_name] = tool_name
                                     internal_tools_to_add.append(individual_tool_name)
                         logger.debug(
-                            f"Added {len(server_tools)} tools from server '{tool_name}': "
+                            f"Added {len(server_tools)} tools from server '{tool_name}' (via get_tools): "
                             f"{[t['function']['name'] for t in server_tools if 'function' in t]}"
                         )
                     except Exception as e:
@@ -1081,19 +1118,22 @@ class Agent(MCPServer):
             available_tools.extend(internal_tools_to_add)
 
             # Add own tools (from base_type) to tools_schema if this agent has get_tools()
-            # This ensures config-based agents can override tool descriptions for inherited tools
+            # Apply custom descriptions to own tools as well
             if hasattr(self, 'get_tools'):
                 try:
                     own_tools = self.get_tools()
+                    # Apply custom descriptions to own tools BEFORE adding to schema
+                    self._apply_custom_tool_descriptions(own_tools)
                     tools_schema.extend(own_tools)
                     logger.debug(
-                        f"Agent '{self.name}': Added {len(own_tools)} own tools: "
+                        f"Agent '{self.name}': Added {len(own_tools)} own tools with custom descriptions: "
                         f"{[t['function']['name'] for t in own_tools if 'function' in t]}"
                     )
                 except Exception as e:
                     logger.debug(f"Agent '{self.name}': Failed to get own tools: {e}")
 
-            # Apply custom tool descriptions if configured
+            # Also apply custom descriptions to external tools from other agents/servers
+            # This handles the case where meta_agent loads tools from sysadmin_agent, etc.
             self._apply_custom_tool_descriptions(tools_schema)
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
