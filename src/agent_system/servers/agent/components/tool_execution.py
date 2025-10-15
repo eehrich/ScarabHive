@@ -110,7 +110,7 @@ class ToolExecutionManager:
         tool_messages = []
         events_to_yield = []
         results_to_add: List[Dict] = []
-
+        
         # Prepare tool executions (parse arguments and validate tools)
         valid_tool_executions = []
 
@@ -119,7 +119,7 @@ class ToolExecutionManager:
             openai_tool_name = func.get("name")  # This is the OpenAI-compatible name
             raw_args = func.get("arguments")
 
-            # Map back to original tool name if it was converted
+            # Map OpenAI tool name to internal tool name
             tool_name = tool_name_mapping.get(openai_tool_name, openai_tool_name)
 
             # Parse arguments
@@ -190,19 +190,28 @@ class ToolExecutionManager:
 
             # Process results (maintain order based on original tool_calls order)
             for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    # Handle exceptions from parallel execution
+                # Check for both Exception and BaseException (e.g., GeneratorExit)
+                if isinstance(result, BaseException) and not isinstance(result, tuple):
+                    # Handle exceptions/errors from parallel execution
                     tc, tool_name, openai_tool_name, params = valid_tool_executions[i]
-                    logger.exception("Tool execution failed for %s: %s", tool_name, result)
+                    
+                    # Special handling for GeneratorExit (async generator tools closed prematurely)
+                    if isinstance(result, GeneratorExit):
+                        logger.warning("Tool %s closed with GeneratorExit during parallel execution", tool_name)
+                        error_msg = "Tool execution was cancelled (GeneratorExit)"
+                    else:
+                        logger.exception("Tool execution failed for %s: %s", tool_name, result)
+                        error_msg = f"Tool execution failed: {str(result)}"
+                    
                     tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
                     tool_messages.append(ChatMessage(
                         role="tool",
                         tool_call_id=tool_call_id,
                         name=openai_tool_name,
-                        content=json.dumps({"error": f"Tool execution failed: {str(result)}"})
+                        content=json.dumps({"error": error_msg})
                     ))
                 else:
-                    # Normal result
+                    # Normal result (tuple of message, events, results)
                     tool_message, events, tool_results = result
                     tool_messages.append(tool_message)
                     events_to_yield.extend(events)
@@ -347,10 +356,18 @@ class ToolExecutionManager:
                 content=tool_msg_content
             )
             return message, events, results
-        except Exception as e:
-            logger.exception("External tool %s invocation failed: %s", tool_name, e)
-            tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
-            error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
+        except (Exception, GeneratorExit) as e:
+            # Handle both normal exceptions and GeneratorExit (when async generator tools are closed)
+            if isinstance(e, GeneratorExit):
+                logger.warning("Tool %s closed with GeneratorExit (request_id: %s)", tool_name, request_id)
+                # Treat GeneratorExit as cancellation
+                tool_call_id = tc.get("id") or f"{tool_name}-cancelled-{int(time.time()*1000)}"
+                error_content = json.dumps({"error": "Tool execution was cancelled (GeneratorExit)"})
+            else:
+                logger.exception("External tool %s invocation failed: %s", tool_name, e)
+                tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
+                error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
+            
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,
@@ -362,32 +379,39 @@ class ToolExecutionManager:
     async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a plugin tool (or config agent tool)."""
-        # Use agent's central method to get server from any registry
-        server = None
-        if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
-            server = self._agent._get_server_from_any_registry(tool_name)
-        
-        # Fallback to legacy lookup if central method not available
-        if not server:
-            # Get plugin server from MCP integration plugin registry
-            if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
-                mcp_integration = self._agent._mcp_integration_manager.mcp_integration
-                if mcp_integration is not None:  # type: ignore[unreachable]
-                    if mcp_integration.initialized:  # type: ignore[unreachable]
-                        plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
-                        if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                            server = plugin_adapter.plugin_server
-
+        # CRITICAL FIX: Check if this is the agent's OWN tool (recursive call)
+        # Own tools are prefixed with agent name: e.g. "meta_web_research_agent_web_research"
+        if self._agent and tool_name.startswith(f"{self._agent.name}_"):
+            # This is an own tool - use the agent itself as the server
+            server = self._agent
+            logger.debug(f"Tool '{tool_name}' is agent's own tool, using self as server")
+        else:
+            # Use agent's central method to get server from any registry
+            server = None
+            if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
+                server = self._agent._get_server_from_any_registry(tool_name)
+            
+            # Fallback to legacy lookup if central method not available
             if not server:
-                # Fallback to agent's registry (for config agents and other servers)
-                if self._agent and hasattr(self._agent, 'registry'):
-                    agent_registry = self._agent.registry
-                    if agent_registry and tool_name in agent_registry.list():
-                        server = agent_registry.get(tool_name)
-                
-                # Final fallback to legacy registry (though it may be empty)
+                # Get plugin server from MCP integration plugin registry
+                if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
+                    mcp_integration = self._agent._mcp_integration_manager.mcp_integration
+                    if mcp_integration is not None:  # type: ignore[unreachable]
+                        if mcp_integration.initialized:  # type: ignore[unreachable]
+                            plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                            if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
+                                server = plugin_adapter.plugin_server
+
                 if not server:
-                    server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
+                    # Fallback to agent's registry (for config agents and other servers)
+                    if self._agent and hasattr(self._agent, 'registry'):
+                        agent_registry = self._agent.registry
+                        if agent_registry and tool_name in agent_registry.list():
+                            server = agent_registry.get(tool_name)
+                    
+                    # Final fallback to legacy registry (though it may be empty)
+                    if not server:
+                        server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
 
         if not server:
             raise RuntimeError(f"Server not found for tool: {tool_name}")
@@ -431,7 +455,15 @@ class ToolExecutionManager:
 
         try:
             logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
-            tool_result = await self._invoke_tool(tool_name, params, action_name)
+            
+            # CRITICAL FIX: If we already have the server (e.g., for own tools), call it directly
+            # instead of going through _invoke_tool() which tries to look up the server again
+            if hasattr(server, 'call_with_status'):
+                tool_result = await server.call_with_status(action_name, params)
+            else:
+                # Fallback to regular call method
+                tool_result = await server.call(action_name, params)
+                
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
             results.append({
@@ -458,11 +490,19 @@ class ToolExecutionManager:
             )
             return message, events, results
 
-        except Exception as e:
-            logger.exception("Tool %s invocation failed: %s", tool_name, e)
-            # Add error result for this specific tool call
-            tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
-            error_content = json.dumps({"error": sanitize_for_llm(str(e))})
+        except (Exception, GeneratorExit) as e:
+            # Handle both normal exceptions and GeneratorExit (when async generator tools are closed)
+            if isinstance(e, GeneratorExit):
+                logger.warning("Tool %s closed with GeneratorExit (request_id: %s)", tool_name, request_id)
+                # Treat GeneratorExit as cancellation
+                tool_call_id = tc.get("id") or f"{tool_name}-cancelled-{int(time.time()*1000)}"
+                error_content = json.dumps({"error": "Tool execution was cancelled (GeneratorExit)"})
+            else:
+                logger.exception("Tool %s invocation failed: %s", tool_name, e)
+                # Add error result for this specific tool call
+                tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                error_content = json.dumps({"error": sanitize_for_llm(str(e))})
+            
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,
