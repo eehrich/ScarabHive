@@ -315,7 +315,6 @@ form {
   border-color: var(--border-strong);
 }
 
-/* Attached Files List (VS Code style) */
 .attached-files {
   display: none; /* Hidden by default, shown by JS when files are added */
   flex-direction: row;
@@ -544,7 +543,7 @@ form {
   color: #f85149;
   padding: 2px 4px;
   border-radius: 3px;
-  font-size: 1em !important;
+  font-size: 1.2em !important;
 }
 
 .container-section .response-text pre {
