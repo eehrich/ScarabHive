@@ -1,13 +1,11 @@
-"""Unit tests for LLM message validator."""
+"""Unit tests for message_validator plugin."""
 
 import pytest
 from typing import List
-from plugins.llm_message_validator.validator import (
-    MessageValidator,
+from plugins.message_validator.hooks import (
+    InternalMessageValidator,
     ValidationIssue,
     ValidationResult,
-    validate_messages_before_llm,
-    get_validation_stats
 )
 from agent_system.llm.models import ChatMessage
 
@@ -17,12 +15,12 @@ class TestMessageValidatorInitialization:
 
     def test_default_initialization(self):
         """Test validator with default log level."""
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         assert validator.log_level == "warning"
 
     def test_custom_log_level(self):
         """Test validator with custom log level."""
-        validator = MessageValidator(log_level="DEBUG")
+        validator = InternalMessageValidator(log_level="DEBUG")
         assert validator.log_level == "debug"
 
 
@@ -47,7 +45,7 @@ class TestToolCallConsistency:
             ChatMessage(role="assistant", content="It's sunny and 72°F!")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert result.is_valid
@@ -72,7 +70,7 @@ class TestToolCallConsistency:
             ChatMessage(role="user", content="Any update?")  # Another message after
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert not result.is_valid
@@ -116,7 +114,7 @@ class TestToolCallConsistency:
             ChatMessage(role="assistant", content="Got it!")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert len(result.issues) == 1
@@ -133,7 +131,7 @@ class TestToolCallConsistency:
             ChatMessage(role="assistant", content="Got it!")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert not result.is_valid
@@ -158,7 +156,7 @@ class TestToolCallConsistency:
             ChatMessage(role="assistant", content="Weather is sunny, time is 3 PM")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert result.is_valid
@@ -176,7 +174,7 @@ class TestContentStructure:
             ChatMessage(role="user", content="Are you there?")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert len(result.issues) == 1
@@ -195,7 +193,7 @@ class TestContentStructure:
             ChatMessage(role="tool", content="Sunny", tool_call_id="call_1")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         # Should not flag as empty assistant since it has tool_calls
@@ -217,7 +215,7 @@ class TestMessageSequence:
             ChatMessage(role="assistant", content="How can I help?")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert len(result.issues) == 1
@@ -233,7 +231,7 @@ class TestMessageSequence:
             ChatMessage(role="assistant", content="I'm good!")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         # Should not have sequence issues
@@ -256,7 +254,7 @@ class TestRepairFunctionality:
             ChatMessage(role="user", content="Anything?")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         # Repaired messages should have removed the assistant with orphaned tool call
@@ -272,7 +270,7 @@ class TestRepairFunctionality:
             ChatMessage(role="assistant", content="Done")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         # Should remove the orphaned tool response
@@ -287,7 +285,7 @@ class TestRepairFunctionality:
             ChatMessage(role="assistant", content="Done")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         # Should remove the tool message without ID
@@ -305,7 +303,7 @@ class TestRepairSummary:
             ChatMessage(role="assistant", content="Hi!")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert result.repair_summary == "No issues found"
@@ -322,7 +320,7 @@ class TestRepairSummary:
             ChatMessage(role="tool", content="Data", tool_call_id="call_999")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         # Should have error and warning
@@ -337,7 +335,7 @@ class TestValidationResult:
         """Test that ValidationResult has all required fields."""
         messages = [ChatMessage(role="user", content="Hello")]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert hasattr(result, 'is_valid')
@@ -356,7 +354,7 @@ class TestValidationResult:
             ChatMessage(role="assistant", content=None)
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         if result.issues:
@@ -366,88 +364,6 @@ class TestValidationResult:
             assert hasattr(issue, 'message_index')
             assert hasattr(issue, 'description')
             assert hasattr(issue, 'details')
-
-
-class TestConvenienceFunction:
-    """Test the convenience function validate_messages_before_llm."""
-
-    def test_validate_messages_before_llm_valid(self):
-        """Test convenience function with valid messages."""
-        messages = [
-            ChatMessage(role="user", content="Hello"),
-            ChatMessage(role="assistant", content="Hi!")
-        ]
-        
-        result = validate_messages_before_llm(messages, "test_context")
-        
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-    def test_validate_messages_before_llm_repairs(self):
-        """Test convenience function repairs issues."""
-        messages = [
-            ChatMessage(role="user", content="Hello"),
-            ChatMessage(role="tool", content="Data", tool_call_id="call_999")
-        ]
-        
-        result = validate_messages_before_llm(messages, "test_context")
-        
-        # Should have repaired by removing orphaned tool response
-        assert len(result) == 1
-        assert result[0].role == "user"
-
-    def test_validate_messages_before_llm_critical_errors(self):
-        """Test convenience function with critical errors.
-        
-        Note: Assistant with tool_calls as last message is NOT an error
-        (tool responses expected to follow after validation).
-        """
-        # Case with orphaned tool_call NOT as last message (真正的错误)
-        messages = [
-            ChatMessage(role="user", content="Hello"),
-            ChatMessage(
-                role="assistant",
-                content=None,
-                tool_calls=[{"id": "call_1", "function": {"name": "test"}}]
-            ),
-            ChatMessage(role="user", content="Any update?")  # More messages after
-        ]
-        
-        # Should repair by removing orphaned tool call
-        result = validate_messages_before_llm(messages, "test_context")
-        
-        assert isinstance(result, list)
-        # Should have removed the orphaned tool call assistant message
-        assert len(result) == 2  # user + user (assistant removed)
-        
-        # Case with tool_calls as LAST message (valid pre-tool-execution scenario)
-        messages_valid = [
-            ChatMessage(role="user", content="Hello"),
-            ChatMessage(
-                role="assistant",
-                content=None,
-                tool_calls=[{"id": "call_1", "function": {"name": "test"}}]
-            )
-        ]
-        
-        # Should NOT remove (tool responses will be added after)
-        result_valid = validate_messages_before_llm(messages_valid, "test_context")
-        
-        assert isinstance(result_valid, list)
-        assert len(result_valid) == 2  # Both messages kept
-
-
-class TestGetValidationStats:
-    """Test validation statistics function."""
-
-    def test_get_validation_stats(self):
-        """Test that validation stats are returned."""
-        stats = get_validation_stats()
-        
-        assert isinstance(stats, dict)
-        assert "validator_available" in stats
-        assert stats["validator_available"] is True
-        assert "log_level" in stats
 
 
 class TestComplexScenarios:
@@ -466,7 +382,7 @@ class TestComplexScenarios:
             )
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         # Should detect multiple issues
@@ -493,7 +409,7 @@ class TestComplexScenarios:
             ChatMessage(role="assistant", content="Done!")
         ]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert result.is_valid
@@ -507,7 +423,7 @@ class TestEdgeCases:
         """Test validation with empty message list."""
         messages = []
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert result.is_valid
@@ -518,7 +434,7 @@ class TestEdgeCases:
         """Test validation with single message."""
         messages = [ChatMessage(role="user", content="Hello")]
         
-        validator = MessageValidator()
+        validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
         
         assert result.is_valid

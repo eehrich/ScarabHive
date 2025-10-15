@@ -2,15 +2,15 @@
 
 **Plugin Type:** Hook-only (inherits only from `PluginHook`)
 
-A reference implementation of a hooks-only plugin that validates and sanitizes messages before LLM calls to ensure safety, proper formatting, and compliance with content policies.
+Comprehensive message validation and repair before LLM calls to ensure OpenAI API compliance and proper message formatting.
 
 ## Features
 
-- **Structure Validation**: Ensures messages have required fields (role, content)
-- **Role Validation**: Checks message roles are valid and recognized
-- **Content Sanitization**: Removes potentially harmful content (XSS, script injection)
-- **Length Limits**: Enforces maximum message length
-- **Sequence Validation**: Optionally enforces alternating user/assistant pattern
+- **Tool Call Consistency**: Detects and repairs orphaned tool calls and missing tool responses
+- **Tool Name Validation**: Ensures tool names comply with OpenAI pattern (^[a-zA-Z0-9_-]+$)
+- **Content Structure Validation**: Checks for malformed or problematic content structures
+- **Message Sequence Validation**: Detects problematic patterns like consecutive assistant messages
+- **Cascading Removal**: When removing assistant messages with tool_calls, also removes corresponding tool responses
 - **Auto-fixing**: Can auto-fix issues in non-strict mode
 - **Validation Metrics**: Provides detailed statistics about validation performed
 
@@ -22,6 +22,7 @@ Configure in `config/plugins.yaml`:
 message_validator:
   enabled: true
   config:
+    log_level: "warning"             # Logging level for validation issues
     strict_mode: false              # Reject invalid vs auto-fix
     max_message_length: 100000      # Maximum allowed message length
     allow_empty_messages: false     # Allow messages with empty content

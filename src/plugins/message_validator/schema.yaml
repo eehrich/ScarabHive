@@ -21,6 +21,12 @@ hooks:
 
 # Configuration schema for this plugin
 config:
+  log_level:
+    type: string
+    default: "warning"
+    enum: ["debug", "info", "warning", "error"]
+    description: "Logging level for validation issues"
+  
   strict_mode:
     type: boolean
     default: false

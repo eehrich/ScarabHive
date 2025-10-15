@@ -156,19 +156,12 @@ plugins:
       type: request_logger
       enabled: true
     
-    llm_message_validator:
-      type: llm_message_validator
+    message_validator:
+      type: message_validator
       enabled: true
       config:
-        repair_mode: auto
         log_level: warning
-        enable_tool_call_check: true
-        enable_tool_name_check: true
-        enable_content_check: true
-        enable_sequence_check: true
-    
-    # message_validator: REMOVED - replaced by llm_message_validator
-    # Old plugin at src/plugins/message_validator/ should be deleted
+        strict_mode: false
     
     markdown_formatter:
       type: markdown_formatter
