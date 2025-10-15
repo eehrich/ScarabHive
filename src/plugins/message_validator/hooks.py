@@ -22,12 +22,14 @@ from pathlib import Path
 from typing import Any
 import logging
 import re
+from dataclasses import replace
 
 from agent_system.hooks import (
     SchemaBasedPluginHook,
     HookContext,
     HookResult,
 )
+from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +79,21 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
             errors = []
             
             for i, msg in enumerate(messages):
+                # Handle both dict and ChatMessage objects
+                if isinstance(msg, ChatMessage):
+                    role = msg.role
+                    content = msg.content
+                elif isinstance(msg, dict):
+                    role = msg.get('role', '')
+                    content = msg.get('content', '')
+                else:
+                    error = f"Message {i} is neither ChatMessage nor dict: {type(msg)}"
+                    if strict_mode:
+                        return HookResult(success=False, modified=False, context=context, error=error)
+                    errors.append(error)
+                    continue
+                
                 # Validate role
-                role = msg.get('role', '')
                 if role not in allowed_roles:
                     error = f"Invalid role '{role}' at index {i}"
                     if strict_mode:
@@ -87,28 +102,35 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                     continue
                 
                 # Validate content length
-                content = str(msg.get('content', ''))
-                if len(content) > max_length:
-                    error = f"Message {i} exceeds max length ({len(content)} > {max_length})"
+                content_str = str(content) if content is not None else ''
+                if len(content_str) > max_length:
+                    error = f"Message {i} exceeds max length ({len(content_str)} > {max_length})"
                     if strict_mode:
                         return HookResult(success=False, modified=False, context=context, error=error)
                     # Truncate in non-strict mode
-                    content = content[:max_length] + '... [truncated]'
+                    content_str = content_str[:max_length] + '... [truncated]'
                     errors.append(error)
                 
-                # Sanitize content
-                if sanitize:
-                    content = self._sanitize_content(content)
+                # Sanitize content (only for string content)
+                if sanitize and isinstance(content_str, str):
+                    content_str = self._sanitize_content(content_str)
                 
-                validated_messages.append({**msg, 'content': content})
+                # Create validated message
+                if isinstance(msg, ChatMessage):
+                    # Update ChatMessage with sanitized content
+                    validated_msg = msg.model_copy(update={'content': content_str})
+                else:
+                    # Dict message
+                    validated_msg = {**msg, 'content': content_str}
+                
+                validated_messages.append(validated_msg)
             
             # Check alternating pattern
             if enforce_alternating:
                 validated_messages = self._enforce_alternating_pattern(validated_messages)
             
-            # Create modified context
-            modified_context = context.model_copy(deep=True)
-            modified_context.messages = validated_messages
+            # Create modified context using dataclasses.replace
+            modified_context = replace(context, messages=validated_messages)
             
             modified = len(errors) > 0
             
@@ -144,17 +166,23 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
             errors = []
             
             for i, msg in enumerate(messages):
-                if not isinstance(msg, dict):
-                    errors.append(f"Message {i} is not a dictionary")
-                    continue
-                
-                if 'role' not in msg:
-                    errors.append(f"Message {i} missing 'role' field")
-                
-                if 'content' not in msg:
-                    errors.append(f"Message {i} missing 'content' field")
-                elif msg['content'] is None:
-                    errors.append(f"Message {i} has None content")
+                # Handle both ChatMessage and dict
+                if isinstance(msg, ChatMessage):
+                    # ChatMessage is always valid structurally (Pydantic enforces it)
+                    if msg.role is None:
+                        errors.append(f"Message {i} has None role")
+                    if msg.content is None:
+                        errors.append(f"Message {i} has None content")
+                elif isinstance(msg, dict):
+                    if 'role' not in msg:
+                        errors.append(f"Message {i} missing 'role' field")
+                    
+                    if 'content' not in msg:
+                        errors.append(f"Message {i} missing 'content' field")
+                    elif msg['content'] is None:
+                        errors.append(f"Message {i} has None content")
+                else:
+                    errors.append(f"Message {i} is neither ChatMessage nor dict: {type(msg).__name__}")
             
             if errors:
                 config = self.get_config()
@@ -196,13 +224,24 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
         
         return content
     
-    def _enforce_alternating_pattern(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Ensure user/assistant messages alternate (system messages are ignored)."""
+    def _enforce_alternating_pattern(self, messages: list[Any]) -> list[Any]:
+        """Ensure user/assistant messages alternate (system messages are ignored).
+        
+        Works with both ChatMessage objects and dicts.
+        """
         result = []
         last_role = None
         
         for msg in messages:
-            role = msg.get('role', '')
+            # Get role from ChatMessage or dict
+            if isinstance(msg, ChatMessage):
+                role = msg.role
+            elif isinstance(msg, dict):
+                role = msg.get('role', '')
+            else:
+                # Unknown type, keep it
+                result.append(msg)
+                continue
             
             # System and tool messages don't break the pattern
             if role in ('system', 'tool'):

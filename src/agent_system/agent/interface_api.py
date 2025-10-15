@@ -403,6 +403,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     agent = selected_agent
 
+    # Inject agent into session endpoints for message formatting
+    from api.session_endpoints import set_default_agent
+    set_default_agent(agent)
+    logger.info("Default agent injected into session endpoints for formatting")
+
     # Store registry and config globally
     global _app_registry, _app_config, _mcp_server_handler
     _app_registry = registry
@@ -818,7 +823,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
             # Pass LLM override to collect_final_result
-            return await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
+            result = await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
+            
+            # Format summary from Markdown to HTML for web display
+            if result.get("summary") and selected_agent._hook_manager:
+                try:
+                    formatted_summary, _ = await selected_agent._hook_manager.execute_format_output_hooks(
+                        output=result["summary"],
+                        request_id=request_id,
+                        session_id=session_id or "unknown",
+                        output_format='html'
+                    )
+                    result["summary"] = formatted_summary
+                except Exception as e:
+                    logger.warning(f"Failed to format summary to HTML: {e}")
+                    # Keep original markdown on error
+            
+            return result
 
         # Process uploaded files for multimodal input
         from ..llm.capabilities import get_model_capabilities
@@ -972,11 +993,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             )
 
         async def event_stream():
-            # Initial keep-alive line
             yield ":ok\n\n"
             
-            # Track if this is a new session
-            # If session_id is None OR session doesn't exist → new session
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
             
@@ -984,22 +1002,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                     logger.debug("SSE event: %s", ev.get("type"))
                     
-                    # Capture session_id from start event (created on first call)
                     if ev.get("type") == "start" and ev.get("session_id"):
                         old_session_id = actual_session_id
                         actual_session_id = ev["session_id"]
                         logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
                     
+                    if hasattr(ev, 'to_dict'):
+                        payload = ev.to_dict()
+                    else:
+                        payload = ev
+                    
+                    # Format final event summary to HTML
+                    if ev.get("type") == "final" and ev.get("summary") and selected_agent._hook_manager:
+                        try:
+                            formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                                output=payload["summary"],
+                                request_id=request_id,
+                                session_id=actual_session_id or "unknown",
+                                output_format='html'
+                            )
+                            payload["summary"] = formatted_summary
+                            payload["content_format"] = content_format
+                        except Exception as e:
+                            logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+                    
                     try:
-                        # Ensure proper JSON serialization of any potential enum values
-                        if hasattr(ev, 'to_dict'):
-                            payload = ev.to_dict()
-                        else:
-                            payload = ev
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     except (TypeError, ValueError) as e:
                         logger.error("Failed to serialize event %s: %s", ev, e)
-                        # Send an error event instead
                         error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
             finally:

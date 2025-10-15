@@ -140,6 +140,14 @@ plugins:
     request_logger:
       type: request_logger
       enabled: true
+    
+    message_validator:
+      type: message_validator
+      enabled: true
+    
+    markdown_formatter:
+      type: markdown_formatter
+      enabled: true
 
 # ================================
 # Hook Configuration

@@ -498,6 +498,11 @@ form {
   font-style: italic;
 }
 
+/* Base font size for all response content */
+.response-text {
+  font-size: 1em !important;
+}
+
 /* Typography in Response Content */
 .container-section .response-text h1,
 .container-section .response-text h2,
@@ -539,7 +544,7 @@ form {
   color: #f85149;
   padding: 2px 4px;
   border-radius: 3px;
-  font-size: 0.9em;
+  font-size: 1em !important;
 }
 
 .container-section .response-text pre {
@@ -549,6 +554,7 @@ form {
   padding: 12px;
   margin: 12px 0;
   overflow-x: auto;
+  font-size: 1em; /* Ensure pre blocks use full size */
 }
 
 .container-section .response-text pre code {
@@ -556,7 +562,7 @@ form {
   color: #e6edf3;
   padding: 0;
   border-radius: 0;
-  font-size: inherit;
+  font-size: 1em; /* Increased from inherit to explicit size */
 }
 
 .container-section .response-text ul,

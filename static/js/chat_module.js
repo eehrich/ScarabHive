@@ -17,6 +17,15 @@
     return escaped.replace(/\n/g, '<br>');
   }
 
+  function formatContent(content, format) {
+    // If format is explicitly 'html', return as-is (already sanitized by backend)
+    if (format === 'html') {
+      return content;
+    }
+    // Otherwise, escape and convert line breaks
+    return formatTextWithLineBreaks(content);
+  }
+
   function scrollBottom() {
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   }
@@ -716,8 +725,14 @@
             break;
           case 'final':
             const content = data.summary || data.content || '';
+            const contentFormat = data.content_format || 'text';
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text">${formatTextWithLineBreaks(content)}</div>`;
+            blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+            
+            // Apply Prism.js syntax highlighting if available and content is HTML
+            if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+              Prism.highlightAllUnder(blk.t);
+            }
             break;
           case 'end':
             if (currentEventSource) {
@@ -959,8 +974,12 @@
             const r = await fetch('/run?task=' + encodeURIComponent(task), { method: 'POST' });
             const j = await r.json();
             const content = j.summary || JSON.stringify(j, null, 2);
+            const contentFormat = j.content_format || 'text';
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text">${formatTextWithLineBreaks(content)}</div>`;
+            blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+            if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+              Prism.highlightAllUnder(blk.t);
+            }
           } catch (e) {
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(e))}</div>`;
@@ -1080,7 +1099,11 @@
         } else if (msg.role === 'assistant' && msg.content) {
           const blk = addAssistantBlock(chatEl);
           showSection(blk.t);
-          blk.t.innerHTML = `<div class="response-text">${formatTextWithLineBreaks(msg.content)}</div>`;
+          // Use formatContent to detect HTML vs plain text
+          blk.t.innerHTML = `<div class="response-text">${formatContent(msg.content, msg.content_format)}</div>`;
+          if (msg.content_format === 'html' && typeof Prism !== 'undefined') {
+            Prism.highlightAllUnder(blk.t);
+          }
         }
       });
       

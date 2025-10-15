@@ -50,6 +50,7 @@ class HookContext:
         tool_call: Tool call information (for tool-related hooks)
         tool_result: Tool execution result (for post_tool_call hooks)
         output: Final output to format (for format_output hooks)
+        output_format: Target format for output ('html', 'ansi', 'text', 'markdown')
         metadata: Additional hook-specific metadata
         step: Current execution step number
         llm: Reference to the LLM client being used
@@ -64,6 +65,7 @@ class HookContext:
     tool_call: Optional[Dict[str, Any]] = None
     tool_result: Optional[Dict[str, Any]] = None
     output: Optional[str] = None
+    output_format: str = "text"  # Target format: 'html', 'ansi', 'text', 'markdown'
     metadata: Dict[str, Any] = field(default_factory=dict)
     step: int = 0
     llm: Optional[Any] = None

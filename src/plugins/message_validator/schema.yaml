@@ -13,7 +13,7 @@ hooks:
   - name: validate_structure
     type: pre_llm_call
     enabled: true
-    timeout: 5.0
+    timeout: 10.0
     description: "Validates message structure and role sequences"
     order:
       after: ["begin"]

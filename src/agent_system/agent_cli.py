@@ -32,7 +32,9 @@ from .services import MCPService, ToolService
 from .cli_utils.common import (
     supports_color as _supports_color,
     colorize as _colorize,
-    set_color_mode
+    set_color_mode,
+    format_output_with_hooks,
+    render_with_rich
 )
 from .cli_utils.commands.hooks import handle_hooks_command
 
@@ -592,8 +594,8 @@ def main() -> None:
     prelim = argparse.ArgumentParser(add_help=False)
     prelim.add_argument("--config", dest="config", default=str(Path("config/config.yaml")))
     prelim.add_argument("-v", "--verbose", dest="verbose", action="store_true")
-    # color can be set to auto/always/never; --no-color is alias for never
-    prelim.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always")
+    # color can be set to auto/always/never/ansi/html/text
+    prelim.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="always")
     prelim.add_argument("--no-color", dest="no_color", action="store_true")
     prelim.add_argument("--show-mcp", dest="show_mcp", action="store_true")
     prelim.add_argument("--no-status", dest="no_status", action="store_true")
@@ -650,7 +652,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Agent System CLI")
     parser.add_argument("--config", dest="config", default=str(Path("config/config.yaml")), help="Path to config")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
-    parser.add_argument("--color", dest="color", choices=["auto", "always", "never"], default="always", help="Colorize output (auto|always|never)")
+    parser.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="always", 
+                        help="Output format: auto=ANSI if TTY, always/ansi=ANSI colors, html=HTML, never/text=plain text")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
     parser.add_argument("--show-mcp", dest="show_mcp", action="store_true", help="Show MCP call/result details (for debugging)")
     parser.add_argument("--no-status", dest="no_status", action="store_true", help="Hide status messages during execution")
@@ -1909,7 +1912,7 @@ def main() -> None:
             logger.warning("Failed to shutdown MCP integration: %s", e)
 
     # Human-readable final output
-    def _pretty_print_result(res: dict, show_mcp: bool = False) -> None:
+    def _pretty_print_result(res: dict, show_mcp: bool = False, agent_instance=None, session_id_val: str = "unknown") -> None:
         # Calls (print first so summary appears at the end, only when show_mcp is True)
         calls = res.get("calls", []) or []
         if calls and show_mcp:
@@ -1941,11 +1944,44 @@ def main() -> None:
         # Summary (print after calls so it is the final user-visible result)
         summary = res.get("summary")
         if summary:
+            # Format summary using FORMAT_OUTPUT hooks if available (ANSI for terminal)
+            formatted_summary = summary
+            content_format = 'text'
+            
+            try:
+                # Use central ANSI formatting function (respects --color flag)
+                import asyncio
+                
+                # Get or create event loop
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                formatted_summary, content_format = loop.run_until_complete(
+                    format_output_with_hooks(
+                        output=summary,
+                        agent_instance=agent_instance,
+                        session_id=session_id_val,
+                        request_id="cli_display"
+                    )
+                )
+                logger.info(f"Formatted summary: format={content_format}, length={len(formatted_summary)}")
+                vprint(f"[cli] Formatted summary: format={content_format}, length={len(formatted_summary)}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to format summary with ANSI: {e}", exc_info=True)
+                vprint(f"[cli] ERROR formatting summary: {e}")
+            
             print("")
-            line = f"Summary: {summary}"
-            if _supports_color():
-                line = _colorize(line, "33")
-            print(line)
+            if content_format == 'ansi':
+                render_with_rich(formatted_summary)
+            else:
+                line = f"Summary: {formatted_summary}"
+                if _supports_color():
+                    line = _colorize(line, "33")
+                print(line)
 
         # Errors
         errors = res.get("errors") or []
@@ -1966,7 +2002,7 @@ def main() -> None:
     if getattr(args, "raw", False):
         print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
     else:
-        _pretty_print_result(result, show_mcp=show_mcp)
+        _pretty_print_result(result, show_mcp=show_mcp, agent_instance=agent, session_id_val=actual_session_id)
         try:
             sys.stdout.flush()
         except Exception:

@@ -15,6 +15,7 @@ import sys
 logger = logging.getLogger(__name__)
 
 # Global color mode (can be set by CLI tools)
+# Supports: 'auto', 'always', 'never', 'ansi', 'html', 'text'
 color_mode: str = "auto"
 
 
@@ -22,28 +23,60 @@ def set_color_mode(mode: str) -> None:
     """Set global color mode.
     
     Args:
-        mode: One of 'auto', 'always', 'never'
+        mode: One of 'auto', 'always', 'never', 'ansi', 'html', 'text'
+              - auto: ANSI if TTY, otherwise text
+              - always/ansi: Force ANSI colors
+              - never/text: Plain text only
+              - html: HTML output
     """
     global color_mode
     color_mode = mode
+
+
+def get_output_format() -> str:
+    """Get the desired output format based on color_mode.
+    
+    Returns:
+        One of 'ansi', 'html', 'text', 'markdown'
+        - 'ansi': ANSI colored terminal output
+        - 'html': HTML formatted output
+        - 'text': Plain text (no formatting)
+        - 'markdown': Raw markdown (fallback)
+    """
+    # Normalize aliases
+    mode = color_mode
+    if mode == "always":
+        mode = "ansi"
+    elif mode == "never":
+        mode = "text"
+    
+    # Handle explicit formats
+    if mode in ("ansi", "html", "text", "markdown"):
+        return mode
+    
+    # Auto mode: ANSI if TTY, otherwise text
+    if mode == "auto":
+        try:
+            return "ansi" if sys.stdout.isatty() else "text"
+        except Exception as e:
+            logger.debug(f"Failed to check if stdout is a TTY: {e}")
+            return "text"
+    
+    # Default fallback
+    return "text"
 
 
 def supports_color() -> bool:
     """Return whether ANSI color sequences should be used.
 
     Honors the global `color_mode` which can be set to 'auto',
-    'always' or 'never'. In 'auto' mode this checks stdout.isatty().
+    'always', 'never', 'ansi', 'html', 'text'.
+    
+    Note: This returns True for both 'ansi' and legacy 'always' modes.
+          For explicit format detection, use get_output_format().
     """
-    if color_mode == "never":
-        return False
-    if color_mode == "always":
-        return True
-    # auto
-    try:
-        return sys.stdout.isatty()
-    except Exception as e:
-        logger.debug(f"Failed to check if stdout is a TTY: {e}")
-        return False
+    format_mode = get_output_format()
+    return format_mode == "ansi"
 
 
 def colorize(text: str, color_code: str) -> str:
@@ -216,41 +249,6 @@ async def sse_subscriber(
         return
 
 
-def format_result_output(result: dict, show_summary: bool = True) -> str:
-    """Format agent result for display.
-    
-    Args:
-        result: Result dictionary from agent execution
-        show_summary: Whether to show summary section
-        
-    Returns:
-        Formatted result string
-    """
-    output = []
-    
-    if show_summary:
-        output.append("\n" + "="*50)
-        output.append("AGENT RESPONSE:")
-        output.append("="*50)
-    
-    # Extract summary or response from result
-    if isinstance(result, dict):
-        summary = result.get("summary", "")
-        if summary:
-            output.append(summary)
-        else:
-            # Print the whole result if no summary
-            import json
-            output.append(json.dumps(result, indent=2, ensure_ascii=False))
-    else:
-        output.append(str(result))
-    
-    if show_summary:
-        output.append("="*50)
-    
-    return "\n".join(output)
-
-
 def format_error(error_msg: str, use_color: bool = True) -> str:
     """Format error message for display.
     
@@ -267,3 +265,95 @@ def format_error(error_msg: str, use_color: bool = True) -> str:
     if use_color and supports_color():
         return colorize(error_msg, "31")  # Red
     return error_msg
+
+
+def render_with_rich(markdown_content: str, code_theme: str = "monokai") -> None:
+    """Render markdown content with Rich Console (for ANSI terminal display)."""
+    try:
+        from rich.console import Console
+        from rich.markdown import Markdown as RichMarkdown
+        
+        console = Console()
+        md = RichMarkdown(markdown_content, code_theme=code_theme)
+        console.print(md)
+    except ImportError:
+        print(markdown_content)
+    except Exception as e:
+        logger.warning(f"Failed to render with Rich: {e}")
+        print(markdown_content)
+
+
+def print_agent_response(formatted_content: str, content_format: str) -> None:
+    """Print agent response with appropriate formatting and headers.
+    
+    Args:
+        formatted_content: The formatted content to display
+        content_format: Format type ('ansi', 'html', 'text', 'markdown')
+    """
+    print("\n" + "="*50)
+    print("AGENT RESPONSE:")
+    print("="*50)
+    
+    if content_format == 'ansi':
+        render_with_rich(formatted_content)
+    else:
+        print(formatted_content)
+    
+    print("="*50)
+
+
+async def format_output_with_hooks(
+    output: str,
+    agent_instance,
+    session_id: str = "unknown",
+    request_id: str = "cli_display",
+    output_format: str | None = None
+) -> tuple[str, str]:
+    """Format output using FORMAT_OUTPUT hooks based on --color setting.
+    
+    This is a central function used by both agent-cli and agent-run to convert
+    agent output (markdown or HTML) to the desired format using FORMAT_OUTPUT hooks.
+    
+    Args:
+        output: The output string to format (can be markdown or HTML)
+        agent_instance: Agent instance with hook manager
+        session_id: Session ID for context
+        request_id: Request ID for context
+        output_format: Override format ('ansi', 'html', 'text'). If None, uses get_output_format()
+        
+    Returns:
+        Tuple of (formatted_output, content_format)
+        - formatted_output: Formatted string in requested format
+        - content_format: Actual format type ('ansi', 'html', 'text', 'markdown')
+        
+    Note:
+        - Honors --color flag via get_output_format()
+        - Falls back to original output if hooks not available
+        - Handles both markdown and HTML input (auto-detects and converts)
+    """
+    # Determine desired output format
+    if output_format is None:
+        output_format = get_output_format()
+    
+    # Check if agent has hook manager
+    if not agent_instance or not hasattr(agent_instance, '_hook_manager') or not agent_instance._hook_manager:
+        logger.debug("No hook manager available, returning original output")
+        return output, 'text'
+    
+    try:
+        logger.info(f"Formatting output with format='{output_format}' (length: {len(output)})")
+        
+        # Execute format hooks with requested output format
+        formatted_output, content_format = await agent_instance._hook_manager.execute_format_output_hooks(
+            output=output,
+            request_id=request_id,
+            session_id=session_id,
+            output_format=output_format
+        )
+        
+        logger.info(f"Formatting complete: format={content_format}, length={len(formatted_output)}")
+        return formatted_output, content_format
+        
+    except Exception as e:
+        logger.warning(f"Failed to format output: {e}", exc_info=True)
+        return output, 'text'

@@ -12,6 +12,10 @@
   <link rel="stylesheet" href="{{ url_for('static', path='css/chat.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/components.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', path='css/sessions.css') }}" />
+  
+  <!-- Prism.js for Syntax Highlighting -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+  
   <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
   </head>
   <body>
@@ -111,5 +115,18 @@
     <script src="{{ url_for('static', path='js/chat_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/textarea_module.js') }}"></script>
     <script src="{{ url_for('static', path='js/main.js') }}"></script>
+    
+    <!-- Prism.js for Syntax Highlighting -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-cpp.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-java.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
   </body>
 </html>

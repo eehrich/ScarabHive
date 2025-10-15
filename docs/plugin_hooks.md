@@ -148,18 +148,48 @@ async def on_post_tool_call(self, context: HookContext) -> HookResult:
 ### FORMAT_OUTPUT
 
 **Trigger:** Before returning output to user  
-**Use Cases:** Output formatting, markdown rendering, filtering  
-**Can Modify:** Final output content
+**Use Cases:** Multi-format rendering (HTML, ANSI, text), filtering  
+**Can Modify:** Final output content based on target format
 
 ```python
 async def on_format_output(self, context: HookContext) -> HookResult:
     """Executed before output formatting.
     
+    Context provides:
+    - output: The content to format (usually Markdown)
+    - output_format: Target format ('html', 'ansi', 'text', 'markdown')
+    
     Common use cases:
-    - Convert markdown to HTML
-    - Apply custom formatting
+    - Convert markdown to HTML (web frontend with syntax highlighting)
+    - Convert markdown to ANSI (CLI with colors)
+    - Apply custom formatting per interface
     - Filter sensitive information
     - Add metadata/footers
+    
+    Example:
+        target_format = context.output_format or 'text'
+        
+        if target_format == 'html':
+            # Convert to HTML with Prism.js syntax highlighting
+            html = markdown_to_html(context.output)
+            return HookResult(
+                success=True,
+                modified=True,
+                context=replace(context, output=html),
+                metadata={'content_format': 'html'}
+            )
+        elif target_format == 'ansi':
+            # Convert to ANSI colored terminal output
+            ansi = markdown_to_ansi(context.output)
+            return HookResult(
+                success=True,
+                modified=True,
+                context=replace(context, output=ansi),
+                metadata={'content_format': 'ansi'}
+            )
+        else:
+            # Return plain text/markdown unchanged
+            return HookResult(success=True, modified=False, context=context)
     """
 ```
 

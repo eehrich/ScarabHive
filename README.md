@@ -18,6 +18,7 @@ This README is a concise developer and user guide matching this repository layou
   - [IBKR](src/plugins/ibkr/README.md) — Interactive Brokers trading platform integration
   - [LLM Router](src/plugins/llm_router/README.md) — Multi-provider LLM routing with profiles
   - [Log Viewer](src/plugins/log_viewer/README.md) — Log file management with web interface
+  - [Markdown Formatter](src/plugins/markdown_formatter/README.md) — Multi-format output rendering (HTML, ANSI, text)
   - [Script Interpreter](src/plugins/script_interpreter/README.md) — Sandboxed Python code execution
   - [SSH Control](src/plugins/ssh_control/README.md) — Multi-machine SSH management with web UI
   - [Twitter Search](src/plugins/twitter_search/README.md) — Twitter/X public content search
@@ -35,6 +36,12 @@ This README is a concise developer and user guide matching this repository layou
 ## Features
 * Modular agent core with MCP integration (consume & expose tool servers)
 * Pluggable plugin system (local + external MCP servers)
+* **Multi-Format Output Rendering**: Adaptive formatting for different interfaces
+  - HTML with Prism.js syntax highlighting for web frontend
+  - ANSI colored terminal output for CLI
+  - Plain Markdown storage format
+  - Same content optimized for each interface
+  - See [Multi-Format Output Guide](docs/multi_format_output.md) for details
 * **Configuration-Based Agents (Epic 0043)**: Create custom agents without writing code
   - Define agents purely in YAML configuration
   - Configure prompts, tools, LLM profiles, and context management

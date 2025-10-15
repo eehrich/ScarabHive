@@ -8,9 +8,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import re
+from dataclasses import replace
 
 from agent_system.hooks import HookContext, HookResult
 from agent_system.hooks.schema_based import SchemaBasedPluginHook
+from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +68,20 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
             if self.enable_tables:
                 extensions.append('tables')
             if self.enable_code_highlighting:
-                extensions.extend(['fenced_code', 'codehilite'])
+                # Use fenced_code with Prism.js-compatible class names
+                # Note: Do NOT use 'codehilite' - it generates incompatible CSS classes
+                extensions.append('fenced_code')
+            
+            # Configure fenced_code to use 'language-' prefix for Prism.js
+            extension_configs = {
+                'fenced_code': {
+                    'lang_prefix': 'language-'
+                }
+            }
             
             self.markdown_converter = markdown.Markdown(
                 extensions=extensions,
+                extension_configs=extension_configs,
                 output_format='html5'
             )
             logger.debug(f"MarkdownFormatterPlugin initialized with {len(extensions)} extensions")
@@ -120,35 +132,42 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
             )
             
             if has_system:
-                # Append to existing system message
+                # Append to existing system message - create new list with modified message
+                modified_messages = []
                 for msg in messages:
                     msg_role = msg.get('role') if isinstance(msg, dict) else getattr(msg, 'role', None)
                     if msg_role == 'system':
                         existing_content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', '')
                         new_content = f"{existing_content}\n\n{self.system_prompt_template}"
                         if isinstance(msg, dict):
-                            msg['content'] = new_content
+                            modified_msg = {**msg, 'content': new_content}
                         else:
-                            msg.content = new_content
-                        break
+                            # ChatMessage - use model_copy
+                            modified_msg = msg.model_copy(update={'content': new_content})
+                        modified_messages.append(modified_msg)
+                    else:
+                        modified_messages.append(msg)
+                messages = modified_messages
             else:
                 # Insert new system message at the beginning
-                system_msg = {
-                    'role': 'system',
-                    'content': self.system_prompt_template
-                }
-                messages.insert(0, system_msg)
+                system_msg = ChatMessage(
+                    role='system',
+                    content=self.system_prompt_template
+                )
+                messages = [system_msg] + list(messages)
             
             # Mark as injected
             _injected_sessions.add(session_id)
-            context.messages = messages
+            
+            # Return modified context with new messages list
+            modified_context = replace(context, messages=messages)
             
             logger.debug(f"Injected Markdown system prompt for session {session_id}")
             
             return HookResult(
                 success=True,
                 modified=True,
-                context=context,
+                context=modified_context,
                 metadata={
                     'injected': True,
                     'session_id': session_id,
@@ -166,71 +185,146 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
             )
     
     async def format_markdown_output(self, context: HookContext) -> HookResult:
-        """Convert LLM Markdown output to HTML.
+        """Convert LLM Markdown output to requested format.
         
-        Hook implementation for post_llm_call. Converts assistant message Markdown to HTML.
+        Hook implementation for format_output. Converts Markdown text to
+        the requested format (HTML, ANSI, etc.) for rendering without
+        modifying stored messages.
         
         Args:
-            context: Hook context with LLM response
+            context: Hook context with output string and output_format
             
         Returns:
-            HookResult with HTML-formatted content
+            HookResult with formatted content and content_format metadata
         """
         try:
-            if not self.convert_to_html or not self.markdown_converter:
+            # Get target format from context
+            target_format = context.output_format or 'text'
+            
+            logger.info(f"format_markdown_output called: target_format={target_format}, output_length={len(context.output) if context.output else 0}")
+            
+            # Get output from context
+            output = context.output
+            if not output or not isinstance(output, str):
+                logger.warning(f"No valid output in context: output={output}, type={type(output)}")
                 return HookResult(
                     success=True,
                     modified=False,
                     context=context,
-                    metadata={'reason': 'conversion_disabled_or_unavailable'}
+                    metadata={'content_format': 'text', 'reason': 'no_output'}
                 )
             
-            llm_response = context.llm_response
-            if not llm_response:
+            # Handle different target formats
+            if target_format == 'html':
+                if not self.convert_to_html or not self.markdown_converter:
+                    return HookResult(
+                        success=True,
+                        modified=False,
+                        context=context,
+                        metadata={'content_format': 'text'}
+                    )
+                
+                # Convert Markdown to HTML
+                html_content = self.markdown_converter.convert(output)
+                
+                # Sanitize HTML if enabled
+                if self.sanitize_html:
+                    html_content = self._sanitize_html(html_content)
+                
+                # Update context with formatted output
+                context.output = html_content
+                
+                logger.debug(f"Converted {len(output)} chars of Markdown to {len(html_content)} chars of HTML")
+                
+                return HookResult(
+                    success=True,
+                    modified=True,
+                    context=context,
+                    metadata={
+                        'content_format': 'html',
+                        'converted': True,
+                        'original_length': len(output),
+                        'html_length': len(html_content)
+                    }
+                )
+            
+            elif target_format == 'ansi':
+                # For ANSI output, return the markdown content as-is
+                # The CLI will render it directly with Rich Console
+                # Input is ALWAYS markdown from LLM (thanks to system prompt)
+                
+                logger.info(f"Preparing markdown for ANSI rendering (length: {len(output)})")
+                
+                # Just return the markdown - no conversion needed!
+                # Rich Markdown will handle the syntax highlighting
+                updated_context = replace(context, output=output)
+                
+                return HookResult(
+                    success=True,
+                    modified=False,  # We're not modifying, just passing through
+                    context=updated_context,
+                    metadata={
+                        'content_format': 'ansi',
+                        'original_length': len(output),
+                        'render_with_rich': True  # Signal to CLI to use Rich Console
+                    }
+                )
+            
+            elif target_format == 'text':
+                # Convert to plain text
+                # If input is HTML, strip tags; otherwise return as-is
+                text_content = output
+                
+                if output.strip().startswith('<') and ('<p>' in output or '<h1>' in output or '<pre>' in output):
+                    logger.info("Detected HTML input for text output, stripping HTML tags")
+                    try:
+                        from markdownify import markdownify as md_convert
+                        import re
+                        
+                        # Convert HTML to Markdown first
+                        markdown_content = md_convert(output, heading_style="ATX")
+                        
+                        # Then strip markdown formatting to get plain text
+                        # Remove markdown headers
+                        text_content = re.sub(r'^#+\s+', '', markdown_content, flags=re.MULTILINE)
+                        # Remove bold/italic
+                        text_content = re.sub(r'\*\*([^*]+)\*\*', r'\1', text_content)
+                        text_content = re.sub(r'\*([^*]+)\*', r'\1', text_content)
+                        text_content = re.sub(r'__([^_]+)__', r'\1', text_content)
+                        text_content = re.sub(r'_([^_]+)_', r'\1', text_content)
+                        # Remove inline code backticks
+                        text_content = re.sub(r'`([^`]+)`', r'\1', text_content)
+                        # Remove links but keep text
+                        text_content = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text_content)
+                        
+                        logger.info(f"HTML->Text conversion done (text length: {len(text_content)})")
+                        
+                    except ImportError:
+                        logger.warning("markdownify not available for HTML->text conversion")
+                    except Exception as e:
+                        logger.warning(f"Error converting HTML to text: {e}")
+                
+                # Return text content
+                return HookResult(
+                    success=True,
+                    modified=(text_content != output),
+                    context=replace(context, output=text_content) if text_content != output else context,
+                    metadata={
+                        'content_format': 'text',
+                        'converted': text_content != output,
+                        'original_length': len(output),
+                        'text_length': len(text_content)
+                    }
+                )
+            
+            else:
+                # For 'markdown' or unknown formats, return as-is
                 return HookResult(
                     success=True,
                     modified=False,
                     context=context,
-                    metadata={'reason': 'no_llm_response'}
+                    metadata={'content_format': target_format or 'text'}
                 )
-            
-            # Extract assistant content
-            assistant_data = llm_response.get('assistant', {})
-            content = assistant_data.get('content', '')
-            
-            if not content or not isinstance(content, str):
-                return HookResult(
-                    success=True,
-                    modified=False,
-                    context=context,
-                    metadata={'reason': 'no_content_to_convert'}
-                )
-            
-            # Convert Markdown to HTML
-            html_content = self.markdown_converter.convert(content)
-            
-            # Sanitize HTML if enabled
-            if self.sanitize_html:
-                html_content = self._sanitize_html(html_content)
-            
-            # Update response with HTML content
-            llm_response['assistant']['content'] = html_content
-            llm_response['assistant']['content_format'] = 'html'  # Flag for frontend
-            context.llm_response = llm_response
-            
-            logger.debug(f"Converted {len(content)} chars of Markdown to {len(html_content)} chars of HTML")
-            
-            return HookResult(
-                success=True,
-                modified=True,
-                context=context,
-                metadata={
-                    'converted': True,
-                    'original_length': len(content),
-                    'html_length': len(html_content),
-                    'format': 'html'
-                }
-            )
             
         except Exception as e:
             logger.exception(f"Error in format_markdown_output: {e}")
@@ -238,6 +332,7 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 success=False,
                 modified=False,
                 context=context,
+                metadata={'content_format': 'text'},
                 error=str(e)
             )
     

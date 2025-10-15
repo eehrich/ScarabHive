@@ -249,8 +249,16 @@ class HookRegistry:
                         )
                         # Use modified context for next hook
                         current_context = result.context
+                        
+                        # Merge hook result metadata into context metadata
+                        if result.metadata:
+                            current_context.metadata.update(result.metadata)
+                        
                         logger.debug(f"Hook '{hook_name}' modified context")
                     else:
+                        # Even if not modified, update metadata from hook result
+                        if result.metadata:
+                            current_context.metadata.update(result.metadata)
                         logger.debug(f"Hook '{hook_name}' executed successfully (no modifications)")
                 else:
                     logger.warning(
@@ -421,6 +429,7 @@ class HookRegistry:
             tool_call=copy.deepcopy(context.tool_call) if context.tool_call else None,
             tool_result=copy.deepcopy(context.tool_result) if context.tool_result else None,
             output=context.output,  # String is immutable
+            output_format=context.output_format,  # Add output_format for format hooks
             metadata=copy.deepcopy(context.metadata),
             step=context.step,
             llm=context.llm,  # Reference copy

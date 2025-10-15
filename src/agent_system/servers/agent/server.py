@@ -1287,7 +1287,9 @@ class Agent(MCPServer):
                         messages.append(ChatMessage(role="assistant", content=content or ""))
                         results["summary"] = content
                         self._current_messages = messages.copy()
-                        yield {"type": "final", "summary": content}
+                        
+                        # Return raw markdown - formatting happens in API/CLI layer
+                        yield {"type": "final", "summary": content, "content_format": "markdown"}
                     else:
                         results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls")
                         yield {"type": "error", "message": f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls"}
@@ -1349,12 +1351,8 @@ class Agent(MCPServer):
                         # Update tracked messages with final response
                         self._current_messages = messages.copy()
                         
-                        # Execute format output hooks before yielding final result
-                        formatted_content = await self._hook_manager.execute_format_output_hooks(
-                            content, request_id, session_id
-                        )
-                        
-                        yield {"type": "final", "summary": formatted_content}
+                        # Return raw markdown - formatting happens in API/CLI layer
+                        yield {"type": "final", "summary": content, "content_format": "markdown"}
                         break
                 # If we had tool calls, continue to next iteration to let LLM respond to tool results
                 # Don't add extra assistant messages here as it creates invalid conversation flow
@@ -1380,12 +1378,8 @@ class Agent(MCPServer):
                         # Update tracked messages and emit final event
                         self._current_messages = messages.copy()
                         
-                        # Execute format output hooks
-                        formatted_final = await self._hook_manager.execute_format_output_hooks(
-                            final_content, request_id, session_id
-                        )
-                        
-                        yield {"type": "final", "summary": formatted_final}
+                        # Return raw markdown - formatting happens in API/CLI layer
+                        yield {"type": "final", "summary": final_content, "content_format": "markdown"}
                     else:
                         results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
                         yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
