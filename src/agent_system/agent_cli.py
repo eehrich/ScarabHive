@@ -1619,8 +1619,9 @@ def main() -> None:
         # Save session after successful task execution
         async def save_session_after_task():
             try:
-                # Determine agent name and LLM profile
-                agent_name_used = agent.agent_name if hasattr(agent, 'agent_name') else "default"
+                # Use the actual agent name that was requested (entry_name from args)
+                # instead of agent.agent_name which may not exist or be "default"
+                agent_name_used = entry_name  # The agent name determined from args.agent_override or config.default_agent
                 llm_profile_used = getattr(args, "llm_profile_override", None) or "normal"
                 
                 # Save the session

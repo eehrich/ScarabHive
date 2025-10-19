@@ -20,19 +20,10 @@ plugins:
       
       hooks:        
         enabled: true 
-        # Disable specific hooks if needed
-        # disabled_hooks:
-        #   - "request_logger.log_pre_llm"  # Disable request logging
-        #   - "markdown_formatter.inject_markdown_system_prompt"  # Disable markdown prompt injection
-        # Per-hook configuration overrides
-        # hook_overrides:
-        #   "markdown_formatter.format_markdown_output":
-        #     enabled: true
-        #     timeout: 5.0
-        #     config:
-        #       convert_to_html: true
-        #       enable_code_highlighting: false
-    
+        overrides:  # by default disable html formatting of markdown
+          format_markdown_output:
+             enabled: false     
+
       tools:
         allowed: []
         blocked: []
@@ -210,6 +201,9 @@ plugins:
         
         hooks:
           enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true    
       
       metadata:
         author: "AgentSystem"
@@ -237,10 +231,13 @@ plugins:
             - "yahoo_finance/*"
             - "web_scraper/*"
             - "duckduckgo_search/*"
-            - "basic_operations/wait_for"
-          blocked:
-            - "ssh_control/*"
-            - "script_interpreter/*"
+            - "basic_operations/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true             
       
       metadata:
         author: "AgentSystem"
@@ -268,9 +265,12 @@ plugins:
             - "script_interpreter/*"
             - "log_viewer/*"
             - "web_scraper/*"
-          blocked:
-            - "ssh_control/*"
-            - "yahoo_finance/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true            
       
       metadata:
         author: "AgentSystem"
@@ -313,7 +313,7 @@ plugins:
         
         tools:
           allowed: []
-          blocked: []
+          blocked: []       
       
       metadata:
         author: "AgentSystem"
@@ -342,6 +342,12 @@ plugins:
             - "ssh_control/*"
             - "basic_operations/*"
             - "meta_web_research_agent/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true              
       
       metadata:
         author: "AgentSystem"
@@ -369,6 +375,9 @@ plugins:
         
         hooks:
           enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true    
         
         tools:
           allowed:

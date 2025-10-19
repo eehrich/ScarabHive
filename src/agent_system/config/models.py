@@ -109,10 +109,8 @@ class ToolConfig(BaseModel):
 
 class HooksConfig(BaseModel):
     """Hook system configuration for individual agents."""
-    enabled: bool = True  # Enable hook execution for this agent
-    disabled_hooks: List[str] = Field(default_factory=list)  # Hook names to disable (e.g., 'markdown_formatter.format_markdown_output')
-    enabled_hooks: List[str] = Field(default_factory=list)  # Hook names to explicitly enable (when enabled=False)
-    hook_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # Per-hook config overrides
+    enabled: bool = True  # Global switch: enable/disable all hooks for this agent
+    overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # Per-hook config (enabled, timeout, custom config, etc.)
 
 
 class AgentConfig(BaseModel):

@@ -265,8 +265,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         
         # Save session after successful request execution
         try:
-            # Determine agent name and LLM profile
-            agent_name_used = agent.agent_name if hasattr(agent, 'agent_name') else (config.default_agent or "default")
+            # Use the actual agent name that was requested (from parameter or config.default_agent)
+            # instead of agent.agent_name which may not exist or be "default"
+            agent_name_used = agent_name  # Already determined from args or config.default_agent at line 172-174
             llm_profile_used = llm_profile or "normal"
             
             # Save the session
