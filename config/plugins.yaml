@@ -280,13 +280,19 @@ plugins:
     simple_qa_agent:
       type: basic_agent
       enabled: true
-      description: "Lightweight Q&A agent for general knowledge questions without external tools"
+      description: "Simple Q&A agent that answers questions using LLM knowledge only (no external tools)"
+      
+      # self_tool_descriptions now at MCPConfig level (not in agent_config)
+      self_tool_descriptions:
+        simple_qa_agent_execute_task: "Answer general knowledge questions using LLM knowledge only (no external tools or real-time data)"
+        simple_qa_agent_list_tools: "List available tools (none - pure LLM-based Q&A)"
       
       agent_config:
-        llm_profile: normal
-        max_steps: 5
+        llm_profile: chat
+        max_steps: 10
+        
         system_prompt: |
-          You are a helpful AI assistant for answering general knowledge questions.
+          You are a helpful AI assistant that answers questions using your training knowledge.
           
           Guidelines:
           - Provide accurate, concise answers
@@ -306,10 +312,6 @@ plugins:
         tools:
           allowed: []
           blocked: []
-        
-        self_tool_descriptions:
-          simple_qa_agent_execute_task: "Answer general knowledge questions using LLM knowledge only (no external tools or real-time data)"
-          simple_qa_agent_list_tools: "List available tools (none - pure LLM-based Q&A)"
       
       metadata:
         author: "AgentSystem"
@@ -323,6 +325,11 @@ plugins:
       enabled: true
       description: "System Administrator who has ssh access to different servers"
       
+      # self_tool_descriptions now at MCPConfig level (not in agent_config)
+      self_tool_descriptions:
+        sysadmin_agent_execute_task: "Execute system administration tasks with SSH access to production and development servers. Use this for server management, deployment, monitoring, and troubleshooting."
+        sysadmin_agent_list_tools: "List all SSH and system administration tools available to the sysadmin agent"
+      
       agent_config:
         llm_profile: chat
         max_steps: 100
@@ -333,10 +340,6 @@ plugins:
             - "ssh_control/*"
             - "basic_operations/*"
             - "meta_web_research_agent/*"
-        
-        self_tool_descriptions:
-          sysadmin_agent_execute_task: "Execute system administration tasks with SSH access to production and development servers. Use this for server management, deployment, monitoring, and troubleshooting."
-          sysadmin_agent_list_tools: "List all SSH and system administration tools available to the sysadmin agent"
       
       metadata:
         author: "AgentSystem"
@@ -349,6 +352,11 @@ plugins:
       type: web_research_agent
       enabled: true
       description: "Meta Web Research Agent for advanced web scraping and research tasks"
+      
+      # self_tool_descriptions now at MCPConfig level (not in agent_config)
+      self_tool_descriptions:
+        meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
+        meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
       
       agent_config:
         llm_profile: chat
@@ -364,10 +372,6 @@ plugins:
             - "web_research_agent/*"
             - "web_scraper/*"
             - "duckduckgo_search/*"
-        
-        self_tool_descriptions:
-          meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
-          meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
           meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
           meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
       
