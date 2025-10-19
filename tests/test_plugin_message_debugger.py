@@ -276,7 +276,7 @@ class TestMessageDebuggerWebEndpoints:
         router = web_factory.get_web_router()
         
         # Find the list_snapshots endpoint
-        list_endpoint = next(r for r in router.routes if r.path == "/api/plugins/message-debugger/snapshots")
+        list_endpoint = next(r for r in router.routes if r.path == "/plugins/message_debugger/snapshots" and 'GET' in r.methods)
         
         # Mock request with default params
         result = await list_endpoint.endpoint(agent_name=None, session_id=None, limit=50)
@@ -296,7 +296,7 @@ class TestMessageDebuggerWebEndpoints:
         ])
         
         router = web_factory.get_web_router()
-        list_endpoint = next(r for r in router.routes if r.path == "/api/plugins/message-debugger/snapshots")
+        list_endpoint = next(r for r in router.routes if r.path == "/plugins/message_debugger/snapshots" and 'GET' in r.methods)
         
         result = await list_endpoint.endpoint(agent_name='agent_1', session_id=None, limit=50)
         
@@ -313,7 +313,7 @@ class TestMessageDebuggerWebEndpoints:
         ])
         
         router = web_factory.get_web_router()
-        stats_endpoint = next(r for r in router.routes if r.path == "/api/plugins/message-debugger/stats")
+        stats_endpoint = next(r for r in router.routes if r.path == "/plugins/message_debugger/stats")
         
         result = await stats_endpoint.endpoint()
         
@@ -332,8 +332,8 @@ class TestMessageDebuggerWebEndpoints:
         ])
         
         router = web_factory.get_web_router()
-        clear_endpoint = next(r for r in router.routes if r.path == "/api/plugins/message-debugger/snapshots" 
-                             and r.methods == {'DELETE'})
+        clear_endpoint = next(r for r in router.routes if r.path == "/plugins/message_debugger/snapshots" 
+                             and 'DELETE' in r.methods)
         
         result = await clear_endpoint.endpoint()
         
@@ -370,7 +370,7 @@ class TestMessageDebuggerHybridPlugin:
         """Test that web router is properly exposed."""
         router = hybrid_plugin.get_web_router()
         assert router is not None
-        assert router.prefix == "/api/plugins/message-debugger"
+        assert router.prefix == "/plugins/message_debugger"
     
     def test_get_panels(self, hybrid_plugin):
         """Test that UI panels are properly defined."""
@@ -378,7 +378,7 @@ class TestMessageDebuggerHybridPlugin:
         assert len(panels) == 1
         assert panels[0]['id'] == 'message-debugger'
         assert panels[0]['title'] == 'Message Debugger'
-        assert panels[0]['icon'] == 'bug'
+        assert panels[0]['icon'] == '🔍'
     
     def test_shared_history(self, hybrid_plugin):
         """Test that hooks and web factory share the same history."""
@@ -426,7 +426,7 @@ class TestMessageDebuggerIntegration:
         
         # 4. Verify via API
         router = hybrid_plugin.get_web_router()
-        list_endpoint = next(r for r in router.routes if r.path == "/api/plugins/message-debugger/snapshots")
+        list_endpoint = next(r for r in router.routes if r.path == "/plugins/message_debugger/snapshots" and 'GET' in r.methods)
         list_result = await list_endpoint.endpoint(agent_name=None, session_id=None, limit=50)
         
         assert list_result['total'] == 2
