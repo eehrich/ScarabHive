@@ -61,12 +61,6 @@ def get_agent_with_llm_override(
                 if server.enabled and server.agent_config is not None
             ])
         
-        # Get config-based agents
-        if config.agents:
-            from ..plugins.config_agent_discovery import discover_config_agents
-            config_agents = discover_config_agents(config.agents)
-            available_agents.extend(config_agents.keys())
-        
         # Remove duplicates and sort
         available_agents = sorted(set(available_agents))
         
@@ -149,25 +143,8 @@ async def create_and_register_agent(
     except KeyError:
         pass  # Agent doesn't exist, need to create it
     
-    from ..plugins.config_agent_discovery import discover_config_agents
-    
-    # Try to get MCP config from plugins.servers first
+    # Try to get MCP config from plugins.servers
     mcp_config = get_mcp_config_by_name(agent_name, config)
-    
-    # If not found in plugins.servers, check if it's a config-based agent
-    if not mcp_config:
-        config_agents = discover_config_agents(config.agents)
-        if agent_name in config_agents:
-            # Found as config-based agent - get its definition
-            agent_def = config.agents.get(agent_name) if config.agents else None
-            if agent_def and hasattr(agent_def, 'agent_config'):
-                # Create MCPConfig from config agent definition
-                mcp_config = MCPConfig(
-                    type=agent_def.base_type if hasattr(agent_def, 'base_type') else "agent",
-                    enabled=True,
-                    agent_config=agent_def.agent_config
-                )
-                logger.info(f"Using config-based agent '{agent_name}' (base_type={agent_def.base_type})")
     
     if not mcp_config:
         # Build helpful error message
@@ -179,11 +156,6 @@ async def create_and_register_agent(
                 name for name, server in config.plugins.servers.items()
                 if server.enabled and server.agent_config is not None
             ])
-        
-        # Get config-based agents
-        if config.agents:
-            config_agents = discover_config_agents(config.agents)
-            available_agents.extend(config_agents.keys())
         
         # Remove duplicates and sort
         available_agents = sorted(set(available_agents))

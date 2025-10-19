@@ -468,48 +468,6 @@ Plugin-Management with:
 agent-cli plugins list|info|enable|disable|search|status — manage plugins
 ```
 
-### Configuration-Based Agents CLI Commands
-
-Manage agents defined purely in configuration (no code required):
-
-```bash
-# List all configuration-based agents
-agent-cli config-agents list [--format json|table]
-
-# Show detailed information about a specific agent
-agent-cli config-agents show <agent_name>
-
-# Validate configuration for one or all agents
-agent-cli config-agents validate [agent_name]
-
-# Run a config-based agent
-agent-cli run <agent_name> "Your task or question"
-```
-
-**Quick Example:**
-
-```bash
-# List available config agents
-$ agent-cli config-agents list
-
-Config-Based Agents:
-╭────────────────────┬──────────┬────────┬──────────┬────────────────────────╮
-│ NAME               │ LLM      │ STEPS  │ STATUS   │ DESCRIPTION            │
-├────────────────────┼──────────┼────────┼──────────┼────────────────────────┤
-│ financial_analyst  │ turbo    │ 20     │ Enabled  │ Financial analyst...   │
-│ code_reviewer      │ deepseek │ 15     │ Enabled  │ Code review expert...  │
-╰────────────────────┴──────────┴────────┴──────────┴────────────────────────╯
-
-# Show details
-$ agent-cli config-agents show financial_analyst
-
-# Validate configuration
-$ agent-cli config-agents validate
-✓ All 5 config agents passed validation
-```
-
-See [Configuration-Based Agents Guide](docs/config_based_agents.md) for complete documentation on creating and managing config-based agents.
-
 ## MCP (Model Context Protocol) Integration
 
 AgentSystem provides comprehensive MCP support for both consuming external MCP servers and exposing local functionality as MCP endpoints.

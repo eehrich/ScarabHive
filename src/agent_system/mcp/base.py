@@ -92,7 +92,7 @@ class MCPServer(ABC):
         """
         from .core import MCPTool
 
-        # Try get_tools() method (modern multi-tool interface)
+        # Try get_tools() method
         if hasattr(self, 'get_tools'):
             try:
                 tool_schemas = self.get_tools()

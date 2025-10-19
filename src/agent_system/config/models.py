@@ -146,32 +146,15 @@ class AgentMetadata(BaseModel):
     # - "private": Neither UI nor tool (for testing/experimental agents)
 
 
-class ConfigBasedAgentDefinition(BaseModel):
-    """Definition for a configuration-based agent (Epic 0043).
-    
-    Config-based agents are defined purely in YAML configuration without requiring
-    Python plugin code. They are suitable for agents that differ only in:
-    - System prompt/instructions
-    - Tool allow/block lists
-    - LLM profile selection
-    - Max steps configuration
-    
-    For agents requiring custom logic, use the plugin system instead.
-    """
-    enabled: bool = True  # Whether this agent is enabled
-    description: str  # Human-readable description of the agent's purpose
-    base_type: str = "agent"  # Base agent class to use ("agent" or "basic_agent")
-    agent_config: AgentConfig  # Agent configuration (tools, LLM, prompts, etc.)
-    metadata: Optional[AgentMetadata] = None  # Agent metadata (author, version, visibility, etc.)
-
-
 class MCPConfig(BaseModel):
     """MCP configuration (matches type comment in mcp.yaml for default_config)"""
     model_config = {"extra": "allow"}  # Allow extra fields for plugin-specific config
     
     type: str = "basic_agent"   # type of mcp-server/agent to use
     enabled: bool = False       # enable or disable this mcp-server/agent
+    description: Optional[str] = None  # Human-readable description of this instance
     agent_config: Optional[AgentConfig] = None
+    metadata: Optional[AgentMetadata] = None  # Instance metadata (author, version, visibility)
 
 
 class ExternalServerConnectionConfig(BaseModel):
@@ -269,18 +252,11 @@ class MCPServersConfig(BaseModel):
     remote_servers: Dict[str, RemoteMCPConfig] = Field(default_factory=dict)
 
 
-class AgentsConfig(BaseModel):
-    """Configuration for config-based agents (matches config/agents.yaml)"""
-    # This is a flat dict of agent definitions (no wrapper needed)
-    # Will be loaded as Dict[str, ConfigBasedAgentDefinition]
-    pass
-
-
 # Backward compatibility: Keep MCPSystemConfig for transition period
 class MCPSystemConfig(BaseModel):
     """
     DEPRECATED: Old monolithic MCP system configuration.
-    Use separate configs instead: PluginsConfig, MCPServersConfig, AgentsConfig, MCPServerModeConfig.
+    Use separate configs instead: PluginsConfig, MCPServersConfig, MCPServerModeConfig.
     This model is kept for backward compatibility during migration.
     """
     plugin_dirs: List[str] = Field(default_factory=list)
@@ -288,7 +264,6 @@ class MCPSystemConfig(BaseModel):
     external_servers: ExternalServersConfig = Field(default_factory=ExternalServersConfig)
     servers: Dict[str, MCPConfig] = Field(default_factory=dict)  # Named MCP server configurations
     server_mode: MCPServerModeConfig = Field(default_factory=MCPServerModeConfig)  # MCP server mode configuration
-    config_agents: Dict[str, ConfigBasedAgentDefinition] = Field(default_factory=dict)  # Config-based agents (Epic 0043)
 
 
 # ===========================
@@ -381,4 +356,3 @@ class AgentSystemConfig(BaseModel):
     plugins: Optional[PluginsConfig] = None  # From config/plugins.yaml -> plugins:
     external_servers: Optional[MCPServersConfig] = None  # From config/mcp_servers.yaml -> external_servers:
     server_mode: Optional[MCPServerModeConfig] = None  # From config/mcp_server_mode.yaml -> server_mode:
-    agents: Optional[Dict[str, ConfigBasedAgentDefinition]] = None  # From config/agents.yaml -> agents:

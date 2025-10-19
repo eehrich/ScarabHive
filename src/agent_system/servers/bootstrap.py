@@ -12,7 +12,6 @@ from ..config.models import AgentSystemConfig
 from ..config.settings import get_mcp_config_by_name
 from ..mcp.base import MCPRegistry
 from ..plugins import discover_all_plugins
-from ..plugins.config_agent_discovery import discover_config_agents
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +19,12 @@ logger = logging.getLogger(__name__)
 def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     """Discover and register all configured MCP servers.
     
-    New structure (Epic 0044):
-    - Uses config.plugins for local plugin servers
-    - Uses config.agents for configuration-based agents
-    - All plugins use (name, system_config, mcp_config) constructor
-    - No legacy mcp_system support
+    Uses config.plugins for local plugin servers.
+    All plugins use (name, system_config, mcp_config) constructor.
     """
-    # Check for new structure
-    if not config.plugins and not config.agents:
-        logger.warning("No plugins or agents configuration found, skipping bootstrap")
+    # Check for plugins configuration
+    if not config.plugins:
+        logger.warning("No plugins configuration found, skipping bootstrap")
         return
     
     # Discover plugins from configured directories
@@ -36,24 +32,6 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     dirs = [Path(p) for p in configured if p]
 
     plugins = discover_all_plugins(dirs=dirs if dirs else None)
-
-    # Discover configuration-based agents (Epic 0043)
-    # Pass agents dict directly (no longer needs MCPSystemConfig wrapper)
-    config_agents = discover_config_agents(config.agents)
-    
-    # Merge config agents into plugins dict (config agents override if name conflicts)
-    if config_agents:
-        logger.info(
-            f"Discovered {len(config_agents)} configuration-based agents: "
-            f"{', '.join(sorted(config_agents.keys()))}"
-        )
-        # Config agents take precedence over plugin-based agents with same name
-        for name, factory in config_agents.items():
-            if name in plugins:
-                logger.warning(
-                    f"Config agent '{name}' overrides plugin-based agent with same name"
-                )
-            plugins[name] = factory
 
     # Log discovered plugins
     if plugins:
@@ -67,37 +45,9 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
     else:
         enabled_servers = [k for k, v in config.plugins.servers.items() if v.enabled]
     
-    # Add enabled config-based agents to enabled_servers
-    # Config agents are already filtered by enabled flag in discover_config_agents
-    if config_agents:
-        for agent_name in config_agents.keys():
-            if agent_name not in enabled_servers:
-                enabled_servers.append(agent_name)
-                logger.debug(f"Added config agent '{agent_name}' to enabled_servers")
-    
     for key in enabled_servers:
         # Use get_mcp_config_by_name to merge default_config with server-specific config
-        # For config agents, create MCPConfig from their definition if not in servers
-        if key in config_agents:
-            plugins_servers = config.plugins.servers if config.plugins else {}
-            if key not in plugins_servers:
-                # Config agent not in servers section - create MCPConfig from definition
-                from ..config.models import MCPConfig
-                agent_def_data = config.agents.get(key) if config.agents else None
-                if not agent_def_data:
-                    logger.warning(f"Config agent '{key}' not found in config.agents, skipping")
-                    continue
-                    
-                server_mcp_cfg = MCPConfig(
-                    type=agent_def_data.base_type if hasattr(agent_def_data, 'base_type') else "agent",
-                    enabled=True,
-                    agent_config=agent_def_data.agent_config if hasattr(agent_def_data, 'agent_config') else None
-                )
-                logger.debug(f"Created MCPConfig for config agent '{key}' from definition")
-            else:
-                server_mcp_cfg = get_mcp_config_by_name(key, config)
-        else:
-            server_mcp_cfg = get_mcp_config_by_name(key, config)
+        server_mcp_cfg = get_mcp_config_by_name(key, config)
         
         if not server_mcp_cfg:
             logger.warning("Failed to resolve MCP config for server '%s', skipping", key)
@@ -106,13 +56,8 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
         logger.debug(f"Bootstrap server '{key}': type={server_mcp_cfg.type}, enabled={server_mcp_cfg.enabled}")
         typ = server_mcp_cfg.type
         
-        # For config-based agents, use the agent's factory (not the base_type's plugin factory)
-        # This ensures multi-section prompts and config-specific settings are applied
-        if key in config_agents:
-            factory = config_agents[key]
-            logger.debug(f"Using config-based agent factory for '{key}' (base_type={typ})")
         # Check if plugin provides this type
-        elif typ in plugins:
+        if typ in plugins:
             factory = plugins[typ]
             
             # Log plugin metadata if available
@@ -138,14 +83,27 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                     logger.debug("Updated agent %s to use shared registry with %d servers", 
                                key, len(registry._servers))
                     
+                    # Apply instance-level metadata from MCPConfig (if provided)
+                    if server_mcp_cfg.metadata:
+                        inst._metadata = server_mcp_cfg.metadata.model_dump()
+                        logger.debug("Applied instance metadata to agent '%s': %s", key, inst._metadata)
+                    
+                    # Apply instance-level description from MCPConfig (if provided)
+                    if server_mcp_cfg.description:
+                        inst._description = server_mcp_cfg.description
+                        logger.debug("Applied instance description to agent '%s': %s", key, server_mcp_cfg.description)
+                    
                     # Set visibility for plugin agents
-                    # 1. Check if plugin.yaml has visibility field
-                    # 2. Otherwise use default "private" (secure by default)
+                    # Priority: 1. MCPConfig.metadata.visibility, 2. plugin.yaml visibility, 3. default "private"
                     if not hasattr(inst, '_visibility_set_explicitly'):
-                        visibility = "private"  # Default: not visible
+                        visibility = "private"  # Default: not visible (secure by default)
                         
+                        # Check MCPConfig metadata first (instance-level override)
+                        if server_mcp_cfg.metadata and server_mcp_cfg.metadata.visibility:
+                            visibility = server_mcp_cfg.metadata.visibility
+                            logger.debug("Plugin agent '%s' using visibility from MCPConfig: %s", key, visibility)
                         # Check plugin.yaml metadata for visibility
-                        if hasattr(factory, '_plugin_metadata') and factory._plugin_metadata:
+                        elif hasattr(factory, '_plugin_metadata') and factory._plugin_metadata:
                             plugin_vis = factory._plugin_metadata.get('visibility')
                             if plugin_vis in ["ui", "tool", "both", "private"]:
                                 visibility = plugin_vis
@@ -156,6 +114,12 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                         inst._mcp_tool_visible = visibility in ["tool", "both"]
                         logger.debug("Plugin agent '%s' visibility set: %s (ui=%s, tool=%s)", 
                                    key, visibility, inst._mcp_public, inst._mcp_tool_visible)
+                    
+                    # Apply self_tool_descriptions from agent_config (if provided)
+                    if server_mcp_cfg.agent_config and server_mcp_cfg.agent_config.self_tool_descriptions:
+                        inst._self_tool_descriptions = server_mcp_cfg.agent_config.self_tool_descriptions
+                        logger.debug("Applied self_tool_descriptions to agent '%s': %d overrides", 
+                                   key, len(inst._self_tool_descriptions))
                     
             except Exception as e:
                 logger.exception("Failed to instantiate plugin '%s' for server '%s': %s", typ, key, e)
