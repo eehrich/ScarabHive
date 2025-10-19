@@ -115,9 +115,9 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                         logger.debug("Plugin agent '%s' visibility set: %s (ui=%s, tool=%s)", 
                                    key, visibility, inst._mcp_public, inst._mcp_tool_visible)
                     
-                    # Apply self_tool_descriptions from agent_config (if provided)
-                    if server_mcp_cfg.agent_config and server_mcp_cfg.agent_config.self_tool_descriptions:
-                        inst._self_tool_descriptions = server_mcp_cfg.agent_config.self_tool_descriptions
+                    # Apply self_tool_descriptions from MCPConfig (if provided)
+                    if server_mcp_cfg.self_tool_descriptions:
+                        inst._self_tool_descriptions = server_mcp_cfg.self_tool_descriptions
                         logger.debug("Applied self_tool_descriptions to agent '%s': %d overrides", 
                                    key, len(inst._self_tool_descriptions))
                     
