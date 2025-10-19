@@ -214,6 +214,13 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                     metadata={'content_format': 'text', 'reason': 'no_output'}
                 )
             
+            # Extract markdown content if wrapped in ```markdown``` code block
+            # This handles cases where LLM wraps markdown in a code block
+            markdown_content = self._extract_markdown_content(output)
+            if markdown_content != output:
+                logger.debug(f"Extracted markdown from code block wrapper (original: {len(output)} chars, extracted: {len(markdown_content)} chars)")
+                output = markdown_content
+            
             # Handle different target formats
             if target_format == 'html':
                 if not self.convert_to_html or not self.markdown_converter:
@@ -335,6 +342,30 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 metadata={'content_format': 'text'},
                 error=str(e)
             )
+    
+    def _extract_markdown_content(self, text: str) -> str:
+        """Extract markdown content from code block wrapper if present.
+        
+        Handles cases where LLM wraps markdown output in ```markdown``` code block.
+        Also handles cases where markdown content is not wrapped.
+        
+        Args:
+            text: Input text that may be wrapped in ```markdown``` block
+            
+        Returns:
+            Extracted markdown content or original text
+        """
+        # Pattern to match ```markdown ... ``` or ```md ... ```
+        # Use DOTALL flag to match newlines within the block
+        pattern = r'^```(?:markdown|md)\s*\n(.*?)\n```\s*$'
+        match = re.match(pattern, text.strip(), re.DOTALL)
+        
+        if match:
+            # Extract content from code block
+            return match.group(1)
+        
+        # No wrapper found, treat entire text as markdown
+        return text
     
     def _sanitize_html(self, html: str) -> str:
         """Sanitize HTML to prevent XSS attacks.
