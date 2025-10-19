@@ -26,4 +26,5 @@ general_instructions_prompt: |
    - Current timezone: {{ current_timezone }}
    - Current location: {{ current_location }}
    - use compact output if not specified otherwise.
+   - use metric system units unless specified otherwise.
 
