@@ -357,6 +357,8 @@ plugins:
       self_tool_descriptions:
         meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
         meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
+        meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
+        meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
       
       agent_config:
         llm_profile: chat
@@ -368,13 +370,11 @@ plugins:
         
         tools:
           allowed:
-            - "weather/*"
             - "web_research_agent/*"
+            - "weather/*"
             - "web_scraper/*"
             - "duckduckgo_search/*"
-          meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
-          meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
-      
+
       metadata:
         author: "AgentSystem"
         version: "1.1.0"
