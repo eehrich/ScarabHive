@@ -872,13 +872,6 @@ class Agent(MCPServer):
                     self._emergency_context_attempts = 0
                     logger.debug("Reset emergency context counter for new session")
             
-            # Execute session start hooks for new sessions
-            is_new_session = not self._sessions.get(session_id)
-            if is_new_session:
-                await self._hook_manager.execute_session_start_hooks(
-                    session_id, request_id, messages=None
-                )
-
             yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
             # Start status event forwarding
@@ -910,9 +903,22 @@ class Agent(MCPServer):
             async with self._request_lock:
                 session_msgs = list(self._sessions.get(session_id, []))
 
+            # Create initial system messages
             messages = [ChatMessage(role="system", content=system_msg)]
             if tools_msg:
                 messages.append(ChatMessage(role="system", content=tools_msg))
+            
+            # Execute session start hooks for new sessions AFTER creating system messages
+            # This allows hooks like markdown_formatter to inject additional system prompts
+            # Check if session is empty (new session), not just if it exists (setdefault creates it above)
+            is_new_session = len(session_msgs) == 0
+            if is_new_session:
+                modified_messages = await self._hook_manager.execute_session_start_hooks(
+                    session_id, request_id, messages=messages
+                )
+                if modified_messages is not None:
+                    messages = modified_messages
+                    logger.debug(f"Session start hooks modified messages: {len(messages)} total messages")
             # include persisted session messages
             if session_msgs:
                 # Convert dicts to ChatMessage objects if needed
