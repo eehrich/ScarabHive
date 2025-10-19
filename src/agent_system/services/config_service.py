@@ -73,8 +73,7 @@ class ConfigService:
             # Count all configured servers
             plugin_count = len(config.plugins.servers) if config.plugins else 0
             mcp_remote_count = len(config.external_servers.remote_servers) if config.external_servers else 0
-            agent_count = len(config.agents) if config.agents else 0
-            logger.debug(f"Config loaded: {plugin_count} plugins, {mcp_remote_count} remote MCP servers, {agent_count} config-agents")
+            logger.debug(f"Config loaded: {plugin_count} plugins, {mcp_remote_count} remote MCP servers")
             return config
         except Exception as e:
             logger.error(f"Failed to load configuration: {e}")

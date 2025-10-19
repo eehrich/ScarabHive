@@ -399,10 +399,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     agent = selected_agent
 
-    # Inject agent into session endpoints for message formatting
-    from .api.session_endpoints import set_default_agent
+    # Inject agent and registry into session endpoints for message formatting
+    from .api.session_endpoints import set_default_agent, set_app_registry
     set_default_agent(agent)
-    logger.info("Default agent injected into session endpoints for formatting")
+    set_app_registry(registry)
+    logger.info("Default agent and registry injected into session endpoints for formatting")
 
     # Store registry and config globally
     global _app_registry, _app_config, _mcp_server_handler

@@ -12,8 +12,9 @@ system_prompt: |
   - Current date: {{ current_date | default('n/a') }}
 
   Tool Usage:
-  - web_research_agent for research and information gathering
-  - web_scraper for extracting relevant information from web pages
-  - duckduckgo_search for general web searches (as fallback only, use web_research_agent)
+  - weather to get weather information (preferred)
+  - web_research_agent for research and information gathering (preferred)
+  - duckduckgo_search for general web searches (as fallback only, use web_research_agent if possible)
+  - web_scraper for extracting relevant information from web pages (as fallback)  
 
-  Make compact Output, MD-Formatted, MD-Tables, Structured. Also include URLs and access dates.
+  Make compact Output, MD formatted.

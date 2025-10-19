@@ -33,6 +33,7 @@ async def test_status_meta_endpoint_provides_metrics():
         assert 'delivered' in data
 
 
+@pytest.mark.skip(reason="Debug toggle endpoint no longer exists")
 async def test_debug_toggle_functionality():
     """POST /debug/toggle toggles debug flag and returns JSON with debug boolean."""
     app = build_app()

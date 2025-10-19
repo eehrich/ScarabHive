@@ -25,7 +25,6 @@ general_instructions_prompt: |
    - Current time: {{ current_time }}
    - Current timezone: {{ current_timezone }}
    - Current location: {{ current_location }}
-   
-   Use Markdown for output formatting. (tables, lists, bold, italics, code, etc.)
-   When providing code snippets, use triple backticks with the appropriate language identifier.
+   - use compact output if not specified otherwise.
+   - use metric system units unless specified otherwise.
 

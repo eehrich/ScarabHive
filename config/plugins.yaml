@@ -20,19 +20,10 @@ plugins:
       
       hooks:        
         enabled: true 
-        # Disable specific hooks if needed
-        # disabled_hooks:
-        #   - "request_logger.log_pre_llm"  # Disable request logging
-        #   - "markdown_formatter.inject_markdown_system_prompt"  # Disable markdown prompt injection
-        # Per-hook configuration overrides
-        # hook_overrides:
-        #   "markdown_formatter.format_markdown_output":
-        #     enabled: true
-        #     timeout: 5.0
-        #     config:
-        #       convert_to_html: true
-        #       enable_code_highlighting: false
-    
+        overrides:  # by default disable html formatting of markdown
+          format_markdown_output:
+             enabled: false     
+
       tools:
         allowed: []
         blocked: []
@@ -104,8 +95,10 @@ plugins:
       type: web_research_agent
       enabled: true
       max_steps: 20
+
       agent_config:
         llm_profile: chat
+        system_template: ""  # Use plugin's own system prompt template (empty string to override default)
         tools:
           allowed:
             - "duckduckgo_search/*"
@@ -170,6 +163,235 @@ plugins:
     message_debugger:
       type: message_debugger
       enabled: true
+    
+    # ================================
+    # Configuration-Based Agent Instances
+    # ================================
+    # These agents are created from plugin types with custom configurations
+    # Previously defined in config/agents.yaml (now consolidated here)
+    
+    meta_agent:
+      type: basic_agent
+      enabled: true
+      description: "Meta Agent for orchestrating other agents and managing complex tasks"
+      
+      agent_config:
+        llm_profile: turbo
+        max_steps: 10
+        
+        system_prompt: |
+          You are a helpful AI assistant to delegate tasks to specialized agents and manage complex workflows.
+          
+          Guidelines:
+          - Provide accurate, concise answers
+          - If you don't know something, say so honestly
+          - Avoid speculation without clear indication
+          - Use examples when helpful
+          - Be friendly and professional
+          
+          Operational Context:
+          - Planning budget: {{ max_steps }} steps
+          - Current date: {{ current_date | default('n/a') }}
+        
+        tools:
+          allowed:
+            - "sysadmin_agent/*"
+            - "meta_web_research_agent/*"
+            - "basic_agent/*"
+        
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true    
+      
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["meta", "orchestration", "management"]
+        category: "meta"
+        visibility: "ui"
+    
+    financial_analyst_agent:
+      type: basic_agent
+      enabled: true
+      description: "Professional financial analyst for stock market analysis, fundamentals research, and investment insights"
+      
+      self_tool_descriptions:
+        financial_analyst_agent_execute_task: "Analyze stocks, market data, and financial fundamentals using Yahoo Finance, web scraping, and search capabilities"
+        financial_analyst_agent_list_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
+      
+      agent_config:
+        llm_profile: turbo
+        max_steps: 20
+        system_template: "config/prompts/financial_analyst_prompt.yaml"
+        
+        tools:
+          allowed:
+            - "yahoo_finance/*"
+            - "web_scraper/*"
+            - "duckduckgo_search/*"
+            - "basic_operations/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true             
+      
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["finance", "stocks", "analysis", "research"]
+        category: "financial"
+        visibility: "both"
+    
+    code_reviewer_agent:
+      type: basic_agent
+      enabled: true
+      description: "Expert code reviewer for quality analysis, security audits, and best practices validation"
+      
+      self_tool_descriptions:
+        code_reviewer_agent_execute_task: "Review code quality, security, and best practices using script execution, log analysis, and web research"
+        code_reviewer_agent_list_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
+      
+      agent_config:
+        llm_profile: chat
+        max_steps: 15
+        system_template: "config/prompts/code_reviewer_prompt.yaml"
+        
+        tools:
+          allowed:
+            - "script_interpreter/*"
+            - "log_viewer/*"
+            - "web_scraper/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true            
+      
+      metadata:
+        author: "AgentSystem"
+        version: "1.1.0"
+        tags: ["code", "review", "quality", "security"]
+        category: "development"
+        visibility: "both"
+    
+    simple_qa_agent:
+      type: basic_agent
+      enabled: true
+      description: "Simple Q&A agent that answers questions using LLM knowledge only (no external tools)"
+      
+      # self_tool_descriptions now at MCPConfig level (not in agent_config)
+      self_tool_descriptions:
+        simple_qa_agent_execute_task: "Answer general knowledge questions using LLM knowledge only (no external tools or real-time data)"
+        simple_qa_agent_list_tools: "List available tools (none - pure LLM-based Q&A)"
+      
+      agent_config:
+        llm_profile: chat
+        max_steps: 10
+        
+        system_prompt: |
+          You are a helpful AI assistant that answers questions using your training knowledge.
+          
+          Guidelines:
+          - Provide accurate, concise answers
+          - If you don't know something, say so honestly
+          - Avoid speculation without clear indication
+          - Use examples when helpful
+          - Be friendly and professional
+          
+          Operational Context:
+          - No external tools available (knowledge cutoff applies)
+          - Planning budget: {{ max_steps }} steps
+          - Current date: {{ current_date | default('n/a') }}
+          
+          If the question requires real-time data, current events, or external resources,
+          clearly state that you cannot access that information.
+        
+        tools:
+          allowed: []
+          blocked: []       
+      
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["qa", "simple", "knowledge", "general"]
+        category: "general"
+        visibility: "ui"
+    
+    sysadmin_agent:
+      type: basic_agent
+      enabled: true
+      description: "System Administrator who has ssh access to different servers"
+      
+      # self_tool_descriptions now at MCPConfig level (not in agent_config)
+      self_tool_descriptions:
+        sysadmin_agent_execute_task: "Execute system administration tasks with SSH access to production and development servers. Use this for server management, deployment, monitoring, and troubleshooting."
+        sysadmin_agent_list_tools: "List all SSH and system administration tools available to the sysadmin agent"
+      
+      agent_config:
+        llm_profile: chat
+        max_steps: 100
+        system_template: "config/prompts/system_admin_prompt.yaml"
+        
+        tools:
+          allowed:
+            - "ssh_control/*"
+            - "basic_operations/*"
+            - "meta_web_research_agent/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true              
+      
+      metadata:
+        author: "AgentSystem"
+        version: "1.1.0"
+        tags: ["ssh", "server", "Administrator", "security"]
+        category: "it"
+        visibility: "both"
+    
+    meta_web_research_agent:
+      type: web_research_agent
+      enabled: true
+      description: "Meta Web Research Agent for advanced web scraping and research tasks"
+      
+      # self_tool_descriptions for own tools (meta_web_research_agent_*)
+      self_tool_descriptions:
+        meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
+        meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
+        meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
+        meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
+      
+      agent_config:
+        llm_profile: chat
+        max_steps: 10
+        system_template: "config/prompts/meta_web_research_agent.yaml"
+        
+        hooks:
+          enabled: true
+          overrides:
+            format_markdown_output:
+              enabled: true    
+        
+        tools:
+          allowed:
+            - "web_research_agent/*"
+            - "weather/*"
+            - "web_scraper/*"
+            - "duckduckgo_search/*"
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.1.0"
+        tags: ["web", "research", "meta"]
+        category: "search"
+        visibility: "both"
 
 # ================================
 # Hook Configuration

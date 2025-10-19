@@ -89,13 +89,19 @@ class MCPServer(ABC):
         
         Plugins must implement this method directly or override get_tools() 
         to return a list of tool schemas in OpenAI function calling format.
+        
+        This method applies custom self_tool_descriptions from mcp_config if configured.
         """
         from .core import MCPTool
 
-        # Try get_tools() method (modern multi-tool interface)
+        # Try get_tools() method
         if hasattr(self, 'get_tools'):
             try:
                 tool_schemas = self.get_tools()
+                
+                # Apply custom self_tool_descriptions if configured
+                self._apply_custom_tool_descriptions(tool_schemas)
+                
                 tools = []
                 for tool_schema in tool_schemas:
                     if isinstance(tool_schema, dict) and 'function' in tool_schema:
@@ -113,6 +119,62 @@ class MCPServer(ABC):
         raise NotImplementedError(
             f"Plugin {self.name} must implement list_tools() or get_tools() to provide tool schemas"
         )
+
+    def _apply_custom_tool_descriptions(self, tools_schema: List[dict]) -> None:
+        """Apply custom self tool descriptions from MCP configuration.
+        
+        Allows instances to override tool descriptions without modifying the base plugin code.
+        For example, a sysadmin_agent based on basic_agent can customize the description
+        of sysadmin_agent_execute_task to better reflect its SSH capabilities.
+        
+        Args:
+            tools_schema: List of tool schemas to modify in-place
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not self.mcp_config or not hasattr(self.mcp_config, 'self_tool_descriptions'):
+            return
+        
+        self_tool_descriptions = getattr(self.mcp_config, 'self_tool_descriptions', None)
+        if not self_tool_descriptions:
+            return
+        
+        # Build set of available tool names for validation
+        available_tool_names = set()
+        for tool_schema in tools_schema:
+            if tool_schema.get("type") == "function" and "function" in tool_schema:
+                tool_name = tool_schema["function"].get("name")
+                if tool_name:
+                    available_tool_names.add(tool_name)
+        
+        # Apply custom descriptions and warn about non-existent tools
+        applied_count = 0
+        for tool_name, new_desc in self_tool_descriptions.items():
+            if tool_name not in available_tool_names:
+                logger.warning(
+                    f"MCP Server '{self.name}': self_tool_descriptions contains non-existent tool '{tool_name}'. "
+                    f"Available tools: {sorted(available_tool_names)}"
+                )
+                continue
+            
+            # Find and update the tool schema
+            for tool_schema in tools_schema:
+                if tool_schema.get("type") == "function" and "function" in tool_schema:
+                    if tool_schema["function"].get("name") == tool_name:
+                        old_desc = tool_schema["function"].get("description", "")
+                        tool_schema["function"]["description"] = new_desc
+                        applied_count += 1
+                        logger.debug(
+                            f"MCP Server '{self.name}': Overriding self tool description for '{tool_name}': "
+                            f"'{old_desc[:50]}...' -> '{new_desc[:50]}...'"
+                        )
+                        break
+        
+        if applied_count > 0:
+            logger.info(
+                f"MCP Server '{self.name}': Applied {applied_count} custom self tool description(s)"
+            )
 
 
 

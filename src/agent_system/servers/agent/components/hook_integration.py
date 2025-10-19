@@ -57,23 +57,14 @@ class HookIntegrationManager:
         Returns:
             True if hook should execute, False otherwise
         """
-        if not self.is_enabled():
-            # If hooks globally disabled, check enabled_hooks whitelist
-            if self._hooks_config and hook_name in self._hooks_config.enabled_hooks:
-                return True
-            return False
-        
-        # Hooks globally enabled, check disabled_hooks blacklist
-        if self._hooks_config and hook_name in self._hooks_config.disabled_hooks:
-            return False
-        
-        # Check per-hook overrides
-        if self._hooks_config and hook_name in self._hooks_config.hook_overrides:
-            override = self._hooks_config.hook_overrides[hook_name]
+        # Check per-hook override first (highest priority)
+        if self._hooks_config and hook_name in self._hooks_config.overrides:
+            override = self._hooks_config.overrides[hook_name]
             if 'enabled' in override:
                 return override.get('enabled', True)
         
-        return True
+        # Fall back to global enabled setting
+        return self.is_enabled()
     
     async def execute_pre_llm_hooks(
         self,

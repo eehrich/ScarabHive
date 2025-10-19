@@ -599,6 +599,7 @@ form {
 }
 
 /* Markdown Tables */
+.container-section .response-text table,
 .container-section .response-text .markdown-table {
   border-collapse: collapse;
   margin: 12px 0;
@@ -609,6 +610,7 @@ form {
   overflow: hidden;
 }
 
+.container-section .response-text table th,
 .container-section .response-text .markdown-table th {
   background: var(--border-normal);
   color: #f0f6fc;
@@ -616,18 +618,39 @@ form {
   padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border-strong);
+  border-right: 1px solid var(--border-subtle);  /* Spalten-Trenner */
 }
 
+.container-section .response-text table th:last-child,
+.container-section .response-text .markdown-table th:last-child {
+  border-right: none;  /* Kein Trenner bei letzter Spalte */
+}
+
+.container-section .response-text table td,
 .container-section .response-text .markdown-table td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);  /* Spalten-Trenner */
   color: #e6edf3;
 }
 
+.container-section .response-text table td:last-child,
+.container-section .response-text .markdown-table td:last-child {
+  border-right: none;  /* Kein Trenner bei letzter Spalte */
+}
+
+.container-section .response-text table tr:last-child td,
 .container-section .response-text .markdown-table tr:last-child td {
   border-bottom: none;
 }
 
+/* Zebra-Streifen: ungerade Zeilen mit leicht hellerem Hintergrund */
+.container-section .response-text table tbody tr:nth-child(odd),
+.container-section .response-text .markdown-table tr:nth-child(odd) {
+  background: rgba(56, 139, 253, 0.08);  /* Leicht blau-transparenter Hintergrund */
+}
+
+.container-section .response-text table tbody tr:nth-child(even),
 .container-section .response-text .markdown-table tr:nth-child(even) {
   background: var(--bg-darkest);
 }

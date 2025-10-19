@@ -595,102 +595,6 @@ class Agent(MCPServer):
             logger.debug("Agent %s tools.allowed patterns with no matches: %s", self.name, unmatched)
         return matched
 
-    def _apply_custom_tool_descriptions(self, tools_schema: List[Dict]) -> None:
-        """Apply custom self tool descriptions from agent configuration.
-        
-        Allows config-based agents to override tool descriptions inherited from base_type.
-        For example, a sysadmin_agent based on basic_agent can customize the description
-        of sysadmin_agent_execute_task to better reflect its SSH capabilities.
-        
-        Args:
-            tools_schema: List of tool schemas to modify in-place
-        """
-        if not self.agent_config or not hasattr(self.agent_config, 'self_tool_descriptions'):
-            return
-        
-        self_tool_descriptions = getattr(self.agent_config, 'self_tool_descriptions', None)
-        if not self_tool_descriptions:
-            return
-        
-        # Build set of available tool names for validation
-        available_tool_names = set()
-        for tool_schema in tools_schema:
-            if tool_schema.get("type") == "function" and "function" in tool_schema:
-                tool_name = tool_schema["function"].get("name")
-                if tool_name:
-                    available_tool_names.add(tool_name)
-        
-        # Apply custom descriptions and warn about non-existent tools
-        applied_count = 0
-        for tool_name, new_desc in self_tool_descriptions.items():
-            if tool_name not in available_tool_names:
-                logger.warning(
-                    f"Agent '{self.name}': self_tool_descriptions contains non-existent tool '{tool_name}'. "
-                    f"Available tools: {sorted(available_tool_names)}"
-                )
-                continue
-            
-            # Find and update the tool schema
-            for tool_schema in tools_schema:
-                if tool_schema.get("type") == "function" and "function" in tool_schema:
-                    if tool_schema["function"].get("name") == tool_name:
-                        old_desc = tool_schema["function"].get("description", "")
-                        tool_schema["function"]["description"] = new_desc
-                        applied_count += 1
-                        logger.debug(
-                            f"Agent '{self.name}': Overriding self tool description for '{tool_name}': "
-                            f"'{old_desc[:50]}...' -> '{new_desc[:50]}...'"
-                        )
-                        break
-        
-        if applied_count > 0:
-            logger.info(
-                f"Agent '{self.name}': Applied {applied_count} custom self tool description(s)"
-            )
-
-    async def list_tools(self) -> list:
-        """Override MCPServer.list_tools() to apply custom self_tool_descriptions.
-        
-        This ensures custom descriptions appear in MCP server tool lists (WebUI).
-        The base MCPServer.list_tools() calls get_tools() but doesn't apply custom descriptions.
-        
-        Config-based agents (e.g., sysadmin_agent based on BasicAgent) inherit get_tools() 
-        from their base_type, so we can't override get_tools() - we must apply custom 
-        descriptions here in list_tools() instead.
-        """
-        from agent_system.mcp.core import MCPTool
-        
-        # Call get_tools() if available (inherited from base_type like WebResearchAgent, BasicAgent)
-        if not hasattr(self, 'get_tools'):
-            raise NotImplementedError(
-                f"Agent {self.name} must implement get_tools() to provide tool schemas"
-            )
-        
-        try:
-            tool_schemas = self.get_tools()
-        except NotImplementedError:
-            raise NotImplementedError(
-                f"Agent {self.name} must implement get_tools() to provide tool schemas"
-            )
-        
-        # Apply custom self_tool_descriptions if configured
-        # This modifies tool_schemas in-place
-        self._apply_custom_tool_descriptions(tool_schemas)
-        
-        # Convert to MCPTool format (same as base MCPServer.list_tools())
-        tools = []
-        for tool_schema in tool_schemas:
-            if isinstance(tool_schema, dict) and 'function' in tool_schema:
-                func_def = tool_schema['function']
-                tool = MCPTool(
-                    name=func_def['name'],
-                    description=func_def.get('description', f'Tool {func_def["name"]}'),
-                    input_schema=func_def.get('parameters', {})
-                )
-                tools.append(tool)
-        
-        return tools
-
     async def list_allowed_tool_servers(self) -> list[str]:
         """Collect all available tool server names (plugins + external + registry) applying per-agent allow list.
 
@@ -968,13 +872,6 @@ class Agent(MCPServer):
                     self._emergency_context_attempts = 0
                     logger.debug("Reset emergency context counter for new session")
             
-            # Execute session start hooks for new sessions
-            is_new_session = not self._sessions.get(session_id)
-            if is_new_session:
-                await self._hook_manager.execute_session_start_hooks(
-                    session_id, request_id, messages=None
-                )
-
             yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
             # Start status event forwarding
@@ -1006,9 +903,22 @@ class Agent(MCPServer):
             async with self._request_lock:
                 session_msgs = list(self._sessions.get(session_id, []))
 
+            # Create initial system messages
             messages = [ChatMessage(role="system", content=system_msg)]
             if tools_msg:
                 messages.append(ChatMessage(role="system", content=tools_msg))
+            
+            # Execute session start hooks for new sessions AFTER creating system messages
+            # This allows hooks like markdown_formatter to inject additional system prompts
+            # Check if session is empty (new session), not just if it exists (setdefault creates it above)
+            is_new_session = len(session_msgs) == 0
+            if is_new_session:
+                modified_messages = await self._hook_manager.execute_session_start_hooks(
+                    session_id, request_id, messages=messages
+                )
+                if modified_messages is not None:
+                    messages = modified_messages
+                    logger.debug(f"Session start hooks modified messages: {len(messages)} total messages")
             # include persisted session messages
             if session_msgs:
                 # Convert dicts to ChatMessage objects if needed
@@ -1119,36 +1029,10 @@ class Agent(MCPServer):
             # Add individual tool names to available_tools for multi-tool servers
             available_tools.extend(internal_tools_to_add)
 
-            # Add own tools (from base_type) to tools_schema if this agent has get_tools()
-            # Apply custom descriptions to own tools as well
-            if hasattr(self, 'get_tools'):
-                try:
-                    own_tools = self.get_tools()
-                    # Apply custom descriptions to own tools BEFORE adding to schema
-                    self._apply_custom_tool_descriptions(own_tools)
-                    tools_schema.extend(own_tools)
-                    
-                    # CRITICAL: Also add own tool names to available_tools!
-                    # Otherwise the agent can't execute its own tools (recursive calls fail)
-                    own_tool_names = []
-                    for tool_schema in own_tools:
-                        if tool_schema.get("type") == "function" and "function" in tool_schema:
-                            tool_name = tool_schema["function"].get("name")
-                            if tool_name:
-                                own_tool_names.append(tool_name)
-                    
-                    available_tools.extend(own_tool_names)
-                    
-                    logger.debug(
-                        f"Agent '{self.name}': Added {len(own_tools)} own tools with custom descriptions: "
-                        f"{own_tool_names}"
-                    )
-                except Exception as e:
-                    logger.debug(f"Agent '{self.name}': Failed to get own tools: {e}")
-
-            # Also apply custom descriptions to external tools from other agents/servers
-            # This handles the case where meta_agent loads tools from sysadmin_agent, etc.
-            self._apply_custom_tool_descriptions(tools_schema)
+            # NOTE: self_tool_descriptions is applied in MCPServer.list_tools() for own tools,
+            # not here where we collect tools from OTHER servers for the agent to use.
+            # Applying it here would try to customize tool descriptions from other servers,
+            # which is incorrect (we want to customize OUR tools when OTHERS call us).
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}
