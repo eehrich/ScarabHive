@@ -1023,8 +1023,10 @@ class Agent(MCPServer):
             # Add individual tool names to available_tools for multi-tool servers
             available_tools.extend(internal_tools_to_add)
 
-            # Apply custom descriptions to tools from other agents/servers
-            super()._apply_custom_tool_descriptions(tools_schema)
+            # NOTE: self_tool_descriptions is applied in MCPServer.list_tools() for own tools,
+            # not here where we collect tools from OTHER servers for the agent to use.
+            # Applying it here would try to customize tool descriptions from other servers,
+            # which is incorrect (we want to customize OUR tools when OTHERS call us).
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
             results: Dict[str, Any] = {"task": task, "calls": []}

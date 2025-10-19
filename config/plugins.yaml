@@ -104,8 +104,10 @@ plugins:
       type: web_research_agent
       enabled: true
       max_steps: 20
+
       agent_config:
         llm_profile: chat
+        system_template: null  # Use plugin's own system prompt template
         tools:
           allowed:
             - "duckduckgo_search/*"
@@ -221,6 +223,10 @@ plugins:
       enabled: true
       description: "Professional financial analyst for stock market analysis, fundamentals research, and investment insights"
       
+      self_tool_descriptions:
+        financial_analyst_agent_execute_task: "Analyze stocks, market data, and financial fundamentals using Yahoo Finance, web scraping, and search capabilities"
+        financial_analyst_agent_list_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
+      
       agent_config:
         llm_profile: turbo
         max_steps: 20
@@ -235,10 +241,6 @@ plugins:
           blocked:
             - "ssh_control/*"
             - "script_interpreter/*"
-        
-        self_tool_descriptions:
-          financial_analyst_agent_execute_task: "Analyze stocks, market data, and financial fundamentals using Yahoo Finance, web scraping, and search capabilities"
-          financial_analyst_agent_list_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
       
       metadata:
         author: "AgentSystem"
@@ -251,6 +253,10 @@ plugins:
       type: basic_agent
       enabled: true
       description: "Expert code reviewer for quality analysis, security audits, and best practices validation"
+      
+      self_tool_descriptions:
+        code_reviewer_agent_execute_task: "Review code quality, security, and best practices using script execution, log analysis, and web research"
+        code_reviewer_agent_list_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
       
       agent_config:
         llm_profile: chat
@@ -265,10 +271,6 @@ plugins:
           blocked:
             - "ssh_control/*"
             - "yahoo_finance/*"
-        
-        self_tool_descriptions:
-          code_reviewer_agent_execute_task: "Review code quality, security, and best practices using script execution, log analysis, and web research"
-          code_reviewer_agent_list_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
       
       metadata:
         author: "AgentSystem"
@@ -353,7 +355,7 @@ plugins:
       enabled: true
       description: "Meta Web Research Agent for advanced web scraping and research tasks"
       
-      # self_tool_descriptions now at MCPConfig level (not in agent_config)
+      # self_tool_descriptions for own tools (meta_web_research_agent_*)
       self_tool_descriptions:
         meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
         meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
