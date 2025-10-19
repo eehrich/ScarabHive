@@ -107,7 +107,7 @@ plugins:
 
       agent_config:
         llm_profile: chat
-        system_template: null  # Use plugin's own system prompt template
+        system_template: ""  # Use plugin's own system prompt template (empty string to override default)
         tools:
           allowed:
             - "duckduckgo_search/*"
