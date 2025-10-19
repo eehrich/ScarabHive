@@ -1023,36 +1023,7 @@ class Agent(MCPServer):
             # Add individual tool names to available_tools for multi-tool servers
             available_tools.extend(internal_tools_to_add)
 
-            # Add own tools (from base_type) to tools_schema if this agent has get_tools()
-            # Custom descriptions are applied automatically by MCPServer.list_tools()
-            if hasattr(self, 'get_tools'):
-                try:
-                    own_tools = self.get_tools()
-                    # Apply custom descriptions via MCPServer._apply_custom_tool_descriptions
-                    # (inherited from base class)
-                    super()._apply_custom_tool_descriptions(own_tools)
-                    tools_schema.extend(own_tools)
-                    
-                    # CRITICAL: Also add own tool names to available_tools!
-                    # Otherwise the agent can't execute its own tools (recursive calls fail)
-                    own_tool_names = []
-                    for tool_schema in own_tools:
-                        if tool_schema.get("type") == "function" and "function" in tool_schema:
-                            tool_name = tool_schema["function"].get("name")
-                            if tool_name:
-                                own_tool_names.append(tool_name)
-                    
-                    available_tools.extend(own_tool_names)
-                    
-                    logger.debug(
-                        f"Agent '{self.name}': Added {len(own_tools)} own tools with custom descriptions: "
-                        f"{own_tool_names}"
-                    )
-                except Exception as e:
-                    logger.debug(f"Agent '{self.name}': Failed to get own tools: {e}")
-
-            # Also apply custom descriptions to external tools from other agents/servers
-            # This handles the case where meta_agent loads tools from sysadmin_agent, etc.
+            # Apply custom descriptions to tools from other agents/servers
             super()._apply_custom_tool_descriptions(tools_schema)
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
