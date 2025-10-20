@@ -761,21 +761,39 @@ def main() -> None:
         plugins = discover_all_plugins(dirs if dirs else None)
 
         def to_list():
+            """Build a list of plugins with their instances grouped by type."""
             out = []
-            for name, factory in plugins.items():
+            # Build a mapping of plugin_type -> list of instances
+            type_to_instances = {}
+            
+            if plugins_cfg:
+                for instance_name, mcp_config in plugins_cfg.servers.items():
+                    plugin_type = mcp_config.type
+                    if plugin_type not in type_to_instances:
+                        type_to_instances[plugin_type] = []
+                    type_to_instances[plugin_type].append({
+                        "instance_name": instance_name,
+                        "enabled": mcp_config.enabled,
+                        "description": mcp_config.description or "",
+                    })
+            
+            # Now build the output list with plugin types and their instances
+            for plugin_type, factory in plugins.items():
                 meta = getattr(factory, "_plugin_metadata", None) or {}
-                # metadata loading is handled centrally in discover_all_plugins();
-                # keep local code minimal.
-                # include whether this plugin is enabled in the current config
-                plugins_cfg = _get_plugins_config(config)
-                enabled_servers = [k for k, v in plugins_cfg.servers.items() if v.enabled] if plugins_cfg else []
-                enabled_flag = name in enabled_servers
-                out.append({
-                    "name": name,
+                instances = type_to_instances.get(plugin_type, [])
+                
+                # Check if any instance of this type is enabled
+                any_enabled = any(inst["enabled"] for inst in instances)
+                
+                plugin_entry = {
+                    "name": plugin_type,
                     "description": meta.get("description"),
                     "version": meta.get("version"),
-                    "enabled": enabled_flag,
-                })
+                    "enabled": any_enabled,
+                    "instances": instances if len(instances) > 1 else [],  # Only show instances if multiple exist
+                }
+                out.append(plugin_entry)
+            
             return out
 
         # info action: print metadata for a specific plugin
@@ -894,7 +912,33 @@ def main() -> None:
                         display_enabled = _colorize(enabled_text, "32")
                     else:
                         display_enabled = _colorize(enabled_text, "31")
-                rows.append((p.get("name") or "", display_enabled, p.get("description") or "", p.get("version") or ""))
+                
+                # Add the main plugin type row with truncated description
+                desc = p.get("description") or ""
+                if len(desc) > 80:
+                    desc = desc[:77] + "..."
+                rows.append((p.get("name") or "", display_enabled, desc, p.get("version") or ""))
+                
+                # Add instance rows if multiple instances exist
+                instances = p.get("instances", [])
+                if instances:
+                    for inst in instances:
+                        inst_enabled = inst.get("enabled", False)
+                        inst_enabled_text = "YES" if inst_enabled else "NO"
+                        inst_display_enabled = inst_enabled_text
+                        if _supports_color():
+                            if inst_enabled:
+                                inst_display_enabled = _colorize(inst_enabled_text, "32")
+                            else:
+                                inst_display_enabled = _colorize(inst_enabled_text, "31")
+                        
+                        # Indent instance name with tree characters
+                        inst_name = f"  ├─ {inst.get('instance_name', '')}"
+                        inst_desc = inst.get("description", "")
+                        if len(inst_desc) > 80:
+                            inst_desc = inst_desc[:77] + "..."
+                        rows.append((inst_name, inst_display_enabled, inst_desc, ""))
+            
             headers = ["NAME", "ENABLED", "DESCRIPTION", "VERSION"]
             if tabulate:
                 print(tabulate(rows, headers=headers, tablefmt="github"))
