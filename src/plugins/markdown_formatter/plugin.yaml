@@ -5,5 +5,4 @@ description: >
   Injects system prompt to guide LLM to generate Markdown output.
   Converts Markdown responses to HTML for frontend display.
 author: AgentSystem Team
-enabled: true
 type: hook

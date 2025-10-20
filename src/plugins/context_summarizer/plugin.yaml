@@ -3,7 +3,6 @@ description: Intelligent LLM-based conversation summarization with percentage-ba
 version: 1.0.0
 type: web_with_hooks
 author: AgentSystem
-enabled: true
 entrypoint: plugin:PLUGIN_FACTORY
 category: hooks
 
