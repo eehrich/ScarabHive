@@ -206,7 +206,7 @@ agent-cli config-agents enabled --format json
 
 ## `agent-cli plugins` - Plugin Management
 
-Manage local plugin servers.
+Manage local plugin servers. The command displays plugin types and their configured instances.
 
 ### Subcommands
 
@@ -215,7 +215,7 @@ Manage local plugin servers.
 ```bash
 agent-cli plugins list [--format {table,json}]
 
-# Table view (default)
+# Table view (default) - shows plugin types and instances
 agent-cli plugins list
 
 # JSON for scripting
@@ -225,14 +225,49 @@ agent-cli plugins list --format json | jq '.[] | select(.enabled)'
 **Example Output:**
 
 ```
-╭─────────────────────┬─────────┬─────────┬────────────────────────────╮
-│ NAME                │ VERSION │ STATUS  │ DESCRIPTION                │
-├─────────────────────┼─────────┼─────────┼────────────────────────────┤
-│ llm_router          │ 1.0.0   │ Enabled │ Multi-provider LLM router  │
-│ web_scraper         │ 1.2.0   │ Enabled │ Web content extraction     │
-│ weather             │ 1.0.0   │ Enabled │ Weather information        │
-│ ssh_control         │ 2.0.0   │ Disabled│ SSH machine management     │
-╰─────────────────────┴─────────┴─────────┴────────────────────────────╯
+| NAME                       | ENABLED | DESCRIPTION                                                              | VERSION |
+|----------------------------|---------|--------------------------------------------------------------------------|---------|
+| basic_agent                | YES     | Basic agent plugin providing agent execution capabilities as MCP tools   | 1.0.0   |
+| ├─ basic_agent             | YES     |                                                                          |         |
+| ├─ meta_agent              | YES     | Meta Agent for orchestrating other agents and managing complex tasks     |         |
+| ├─ financial_analyst_agent | YES     | Professional financial analyst for stock market analysis, fundamental... |         |
+| ├─ sysadmin_agent          | YES     | System Administrator who has ssh access to different servers             |         |
+| web_research_agent         | YES     | Specialized web research agent combining DuckDuckGo search with web s... | 0.1.0   |
+| ├─ web_research_agent      | YES     |                                                                          |         |
+| ├─ meta_web_research_agent | YES     | Meta Web Research Agent for advanced web scraping and research tasks     |         |
+| llm_router                 | YES     | Route requests to different LLM providers for specialized tasks or al... | 1.0.0   |
+| web_scraper                | YES     | Fetch and extract readable text and structured data (tables/forms/li... | 0.1.0   |
+```
+
+**Features:**
+- **Plugin types** shown as main rows with version numbers
+- **Multiple instances** grouped under their type with tree characters (`├─`)
+- **Individual enabled status** for each instance
+- **Descriptions truncated** to 80 characters for readability
+- **Full descriptions** available in JSON output
+
+**JSON Output Structure:**
+```json
+[
+  {
+    "name": "basic_agent",
+    "description": "Basic agent plugin providing agent execution capabilities...",
+    "version": "1.0.0",
+    "enabled": true,
+    "instances": [
+      {
+        "instance_name": "basic_agent",
+        "enabled": true,
+        "description": ""
+      },
+      {
+        "instance_name": "meta_agent",
+        "enabled": true,
+        "description": "Meta Agent for orchestrating other agents..."
+      }
+    ]
+  }
+]
 ```
 
 #### `info` - Show Plugin Details
@@ -247,20 +282,24 @@ agent-cli plugins info llm_router
 agent-cli plugins info llm_router --raw
 ```
 
-#### `enable` / `disable` - Manage Plugin Status
+#### `search` - Search Plugins
 
 ```bash
-# Enable a plugin
-agent-cli plugins enable PLUGIN_NAME [--yes]
+agent-cli plugins search TERM
 
-# Disable a plugin
-agent-cli plugins disable PLUGIN_NAME [--yes]
-
-# Without --yes, prompts for confirmation
-agent-cli plugins enable ssh_control
+# Search by name or description
+agent-cli plugins search "web"
 ```
 
-**Note:** Enable/disable functionality requires updating `config/plugins.yaml`.
+#### `status` - Show Plugin Status
+
+```bash
+agent-cli plugins status
+
+# JSON output with enabled/disabled status for all plugins
+```
+
+**Note:** To enable/disable plugins, edit `config/plugins.yaml` directly and set `enabled: true/false` for the specific plugin server.
 
 ---
 
