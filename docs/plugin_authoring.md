@@ -610,37 +610,44 @@ The server is the core of your plugin. It handles tool routing, validation, and 
 
 **Key Principles:**
 1. **Modern Constructor**: `(name, system_config, mcp_config)` signature
-2. **No Manual Routing**: Remove `call()` override - use generic dispatcher
+2. **No Manual Routing**: Remove `call()` override - `SchemaBasedMixin` handles it
 3. **Tool Methods**: Implement methods matching tool names exactly
 4. **Type Hints**: Use modern Python type hints (`| None` instead of `Optional[]`)
 5. **Configuration**: Extract from `mcp_config` (plugin-specific) and `system_config` (system-wide)
 
 ### Method 1: Schema-Based Server (Recommended)
 
-Use `SchemaBasedMCPServer` for automatic schema loading and generic dispatching:
+Use `SchemaBasedMCPServer` for automatic schema loading and generic dispatching.
+
+**Note:** `SchemaBasedMCPServer` inherits from `SchemaBasedMixin` which provides:
+- Automatic `schema.yaml` loading and caching
+- Generic `call()` dispatcher (routes tool calls to methods automatically)
+- Template variable support (`{{name}}` in schema.yaml)
+- Development utilities (`get_schema_data()`, `clear_schema_cache()`)
 
 ```python
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.config import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, MCPServerConfig
 
 class WebScrapingServer(SchemaBasedMCPServer):
     """Modern schema-based plugin with automatic tool routing."""
     
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPServerConfig):
         """
         Modern constructor signature.
         
         Args:
             name: Plugin instance name (used for tool prefixing in schema templates)
             system_config: System-wide configuration (ports, paths, etc.)
-            mcp_config: Plugin-specific configuration from config.mcp_system.servers[name]
+            mcp_config: Plugin-specific configuration from config/plugins.yaml
         """
         super().__init__(name, system_config, mcp_config)
         
-        # Extract plugin-specific configuration from mcp_config
-        self.timeout = float(mcp_config.get("timeout", 30))
-        self.user_agent = mcp_config.get("user_agent", "AgentSystem/1.0")
-        self.max_retries = int(mcp_config.get("max_retries", 3))
+        # Extract plugin-specific configuration from mcp_config.config
+        config = mcp_config.config or {}
+        self.timeout = float(config.get("timeout", 30))
+        self.user_agent = config.get("user_agent", "AgentSystem/1.0")
+        self.max_retries = int(config.get("max_retries", 3))
         
         # Validate configuration
         if self.timeout <= 0:
@@ -650,12 +657,14 @@ class WebScrapingServer(SchemaBasedMCPServer):
         self.base_url = system_config.api_base_url if hasattr(system_config, 'api_base_url') else None
         
         # Log effective configuration
-        self.logger.info(
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
             f"WebScraping configured: timeout={self.timeout}, "
             f"user_agent={self.user_agent}, max_retries={self.max_retries}"
         )
 
-    # Tool methods - automatically called by generic dispatcher
+    # Tool methods - automatically called by SchemaBasedMixin.call() dispatcher
     # Method names MUST match tool names in schema.yaml exactly!
     
     async def fetch_url(self, params: dict) -> dict:
@@ -663,7 +672,7 @@ class WebScrapingServer(SchemaBasedMCPServer):
         Fetch content from a URL.
         
         This method is automatically called when the 'fetch_url' tool is invoked.
-        No manual routing needed - MCPServer.call() dispatches automatically.
+        No manual routing needed - SchemaBasedMixin.call() dispatches automatically.
         """
         url = params["url"]
         
@@ -733,25 +742,31 @@ PLUGIN_FACTORY = WebScrapingServer
 **How the Generic Dispatcher Works:**
 
 1. Agent calls tool: `await server.call("fetch_url", {"url": "https://example.com"})`
-2. MCPServer.call() receives request
+2. `SchemaBasedMixin.call()` receives request
 3. Generic dispatcher looks for method named `fetch_url`
 4. Automatically invokes `self.fetch_url(params)`
 5. Returns result to caller
 
-**No manual `call()` override needed!** The base class handles all routing automatically.
+**No manual `call()` override needed!** The `SchemaBasedMixin` base class handles all routing automatically.
 
 **Method Naming Rule:**
 - Tool name in `schema.yaml`: `fetch_url`
 - Method name in server: `async def fetch_url(self, params: dict)`
 - They MUST match exactly for automatic routing to work
 
-**Schema Template Constraint:**
-If using `{{ name }}` templates in schema (e.g., `{{ name }}_calculator`), your method must match the resolved name:
-```python
-# schema.yaml: {{ name }}_calculator
-# Plugin instantiated as: ExampleServer("example", ...)
-# Method must be named: async def example_calculator(self, params: dict)
-```
+**For Agent Plugins (SchemaBasedAgent):**
+Agent tools have the plugin name prefix automatically stripped:
+- Tool in schema.yaml: `{{ name }}_execute_task` → `"basic_agent_execute_task"`
+- Method name: `async def execute_task(self, params: dict)` (no prefix)
+- The `SchemaBasedAgent._get_method_name()` strips the prefix automatically
+
+**Architecture Note:**
+Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin`, which provides:
+- `get_tools()` - loads from schema.yaml with caching
+- `call()` - generic dispatcher with customizable routing
+- `_get_method_name()` - override to customize tool → method mapping
+- `get_schema_data()` - access full schema (not just tools)
+- `clear_schema_cache()` - development/testing utility
 
 ### Method 2: Web-Only Plugin
 
@@ -1069,14 +1084,25 @@ class ModernPlugin(SchemaBasedMCPServer):
 
 **Critical Rules:**
 1. Method names MUST match tool names in `schema.yaml` exactly
-2. If using `{{ name }}` in schema templates, plugin instance name must match method prefixes
-3. No manual `call()` override - let the generic dispatcher work
-4. Extract config from `mcp_config`, not `self.config`
+2. For agents using `SchemaBasedAgent`, the agent name prefix is automatically stripped
+3. No manual `call()` override - `SchemaBasedMixin` handles routing automatically
+4. Extract config from `mcp_config.config`, not `self.config`
 5. Use modern type hints (`| None` not `Optional[]`)
+
+**SchemaBasedMixin Architecture:**
+Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin` for shared functionality:
+- Schema loading and caching
+- Generic call dispatcher
+- Template variable support
+- Development utilities
+
+This eliminates code duplication and ensures consistent behavior across simple tools and intelligent agents.
 
 ## Agent-Based Plugins
 
-For plugins that need full agent execution capabilities (conversation, LLM integration, multi-turn interactions), inherit from the `Agent` class instead of implementing MCP server interfaces manually.
+For plugins that need full agent execution capabilities (conversation, LLM integration, multi-turn interactions), inherit from the `Agent` or `SchemaBasedAgent` class instead of implementing MCP server interfaces manually.
+
+> **📖 See Also:** [Agent Architecture Guide](agent_architecture.md) for detailed explanation of `Agent` vs `SchemaBasedAgent` base classes and when to use each.
 
 ### When to Use Agent Plugins
 
@@ -1135,61 +1161,38 @@ dependencies:
 ```
 
 **3. Agent Implementation (`server.py`):**
+
+> **💡 Choosing the Right Base Class:**  
+> - Use `SchemaBasedAgent` (recommended) for agents with declarative `schema.yaml` tool definitions  
+> - Use `Agent` only if tools require runtime generation or complex logic  
+> - See [Agent Architecture Guide](agent_architecture.md#when-to-use-each-base-class) for decision guide
+
 ```python
-from agent_system.agent.agent import Agent
-from agent_system.config import AgentSystemConfig, MCPConfig
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+# Option 1: SchemaBasedAgent (recommended for most cases)
+from agent_system.servers.agent.schema_based import SchemaBasedAgent
+from agent_system.config.models import AgentSystemConfig, MCPServerConfig
 
-
-class MyAgent(Agent):
-    """Agent-based plugin with full conversation capabilities."""
+class MyAgent(SchemaBasedAgent):
+    """Agent with schema.yaml tool definitions (automatically loaded)."""
     
     def __init__(
         self, 
-        name: str, 
         system_config: AgentSystemConfig, 
-        mcp_config: MCPConfig,
-        registry=None,
-        llm=None,
-        llm_factory=None
+        mcp_config: MCPServerConfig,
+        registry=None
     ):
-        """
-        Modern constructor for agent-based plugins.
-        
-        Note: Agent plugins have additional parameters (registry, llm, llm_factory)
-        beyond the standard plugin signature.
-        """
+        """Initialize agent with schema-based tools."""
         super().__init__(
-            name=name, 
             system_config=system_config,
             mcp_config=mcp_config,
-            registry=registry,
-            llm=llm,
-            llm_factory=llm_factory
+            registry=registry
         )
-        self.schema_server = SchemaBasedMCPServer(name, system_config, mcp_config)
-        
-    async def get_tools(self):
-        """Return available tools from schema."""
-        return await self.schema_server.list_tools()
     
-    # Tool methods - automatically routed by generic dispatcher
-    
-    async def execute_task(self, params: dict) -> dict:
-        """
-        Execute complex task using agent capabilities.
-        Method name matches tool name in schema.yaml.
-        """
-        task = params["task"]
-        
-        # Extract runtime parameters
-        status = params.get("_status")
-        token = params.get("_cancellation_token")
-        request_id = params.get("request_id") or params.get("requestId")
-        context = params.get("context", "")
-        
-        if status:
-            await status.update(f"Planning task: {task}")
+    # Tool handler methods match tool names in schema.yaml
+    async def handle_execute_task(self, arguments: dict) -> str:
+        """Execute complex task using agent capabilities."""
+        task = arguments["task"]
+        context = arguments.get("context", "")
         
         # Use agent's conversation capabilities
         prompt = f"Execute this task: {task}"
@@ -1197,24 +1200,44 @@ class MyAgent(Agent):
             prompt += f"\n\nContext: {context}"
         
         # Process through agent conversation
-        message = {"content": prompt, "role": "user"}
-        response = await self.run_conversation([message])
+        messages = [{"content": prompt, "role": "user"}]
+        response = await self.run_conversation(messages)
         
-        if status:
-            await status.update("Task completed")
-        
-        return {
-            "success": True,
-            "result": response[-1]["content"] if response else "No response",
-            "task": task
-        }
+        result = response[-1]["content"] if response else "No response"
+        return f"Task completed: {result}"
     
-    async def _list_available_tools(self):
+    async def handle_list_tools(self, arguments: dict) -> str:
         """List all available tools."""
-        tools = await self.get_tools()
-        return {
-            "tools": [tool["function"]["name"] for tool in tools]
-        }
+        tools = self.get_tools()
+        tool_names = [tool["name"] for tool in tools]
+        return f"Available tools: {', '.join(tool_names)}"
+
+
+# Option 2: Agent (only for programmatic tool definitions)
+from agent_system.servers.agent import Agent
+
+class CustomAgent(Agent):
+    """Agent with programmatically defined tools."""
+    
+    def get_tools(self) -> list[dict]:
+        """Define tools programmatically (overrides base implementation)."""
+        return [
+            {
+                "name": "dynamic_tool",
+                "description": f"Dynamic tool for {self.name}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "input": {"type": "string"}
+                    },
+                    "required": ["input"]
+                }
+            }
+        ]
+    
+    async def handle_dynamic_tool(self, arguments: dict) -> str:
+        """Handle dynamically defined tool."""
+        return f"Processed: {arguments['input']}"
 ```
 
 **4. Factory Function (`plugin.py`):**
@@ -1255,12 +1278,14 @@ def PLUGIN_FACTORY(
 
 | Aspect | Agent Plugin | Schema-Based Plugin |
 |--------|-------------|-------------------|
-| **Base Class** | `Agent` | `SchemaBasedMCPServer` |
+| **Base Class** | `Agent` or `SchemaBasedAgent` | `SchemaBasedMCPServer` |
 | **Complexity** | High - full agent capabilities | Low - simple tool execution |
 | **LLM Access** | ✅ Built-in conversation | ❌ Manual integration needed |
 | **Multi-turn** | ✅ Conversation history | ❌ Stateless calls |
 | **Tool Access** | ✅ Can use other agent tools | ❌ Limited to own tools |
 | **Use Cases** | Complex reasoning, planning | Simple utilities, API calls |
+
+> **📚 For More Details:** See [Agent Architecture Guide](agent_architecture.md) for comprehensive comparison of `Agent`, `SchemaBasedAgent`, and `SchemaBasedMCPServer`.
 
 ### Agent Plugin Best Practices
 

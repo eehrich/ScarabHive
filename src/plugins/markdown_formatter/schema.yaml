@@ -33,6 +33,7 @@ config:
       Format your responses using Markdown for better readability:
       - DO NOT wrap the complete response in markdown code blocks.
       - Use tables and lists where appropriate.
+      - Put code snippets in triple backtick blocks with language specified.
     description: "System prompt to inject at session start"
     
   # Enable/disable markdown to HTML conversion

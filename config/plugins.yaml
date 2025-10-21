@@ -179,25 +179,16 @@ plugins:
         llm_profile: turbo
         max_steps: 10
         
-        system_prompt: |
-          You are a helpful AI assistant to delegate tasks to specialized agents and manage complex workflows.
-          
-          Guidelines:
-          - Provide accurate, concise answers
-          - If you don't know something, say so honestly
-          - Avoid speculation without clear indication
-          - Use examples when helpful
-          - Be friendly and professional
-          
-          Operational Context:
-          - Planning budget: {{ max_steps }} steps
-          - Current date: {{ current_date | default('n/a') }}
+        system_template: "config/prompts/meta_agent_prompt.yaml"
         
         tools:
           allowed:
             - "sysadmin_agent/*"
             - "meta_web_research_agent/*"
+            #- "financial_analyst_agent/*"
+            #- "code_reviewer_agent/*"
             - "basic_agent/*"
+            - "basic_operations/*"
         
         hooks:
           enabled: true
@@ -219,7 +210,7 @@ plugins:
       
       self_tool_descriptions:
         financial_analyst_agent_execute_task: "Analyze stocks, market data, and financial fundamentals using Yahoo Finance, web scraping, and search capabilities"
-        financial_analyst_agent_list_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
+        financial_analyst_agent_list_available_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
       
       agent_config:
         llm_profile: turbo
@@ -253,7 +244,7 @@ plugins:
       
       self_tool_descriptions:
         code_reviewer_agent_execute_task: "Review code quality, security, and best practices using script execution, log analysis, and web research"
-        code_reviewer_agent_list_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
+        code_reviewer_agent_list_available_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
       
       agent_config:
         llm_profile: chat
@@ -287,7 +278,7 @@ plugins:
       # self_tool_descriptions now at MCPConfig level (not in agent_config)
       self_tool_descriptions:
         simple_qa_agent_execute_task: "Answer general knowledge questions using LLM knowledge only (no external tools or real-time data)"
-        simple_qa_agent_list_tools: "List available tools (none - pure LLM-based Q&A)"
+        simple_qa_agent_list_available_tools: "List available tools (none - pure LLM-based Q&A)"
       
       agent_config:
         llm_profile: chat
@@ -330,7 +321,7 @@ plugins:
       # self_tool_descriptions now at MCPConfig level (not in agent_config)
       self_tool_descriptions:
         sysadmin_agent_execute_task: "Execute system administration tasks with SSH access to production and development servers. Use this for server management, deployment, monitoring, and troubleshooting."
-        sysadmin_agent_list_tools: "List all SSH and system administration tools available to the sysadmin agent"
+        sysadmin_agent_list_available_tools: "List all SSH and system administration tools available to the sysadmin agent"
       
       agent_config:
         llm_profile: chat

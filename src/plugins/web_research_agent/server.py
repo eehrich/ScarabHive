@@ -7,27 +7,146 @@ and mcp_config; enabled_servers / filtering handled centrally.
 from __future__ import annotations
 
 from typing import Dict, Any
-from pathlib import Path
 import logging
 
-from agent_system.servers.agent.server import Agent
+from agent_system.servers.agent.schema_based import SchemaBasedAgent
 
 logger = logging.getLogger(__name__)
 
 
-class WebResearchAgent(Agent):
-    """Lean web research agent (search + scraping via configured MCP servers)."""
+class WebResearchAgent(SchemaBasedAgent):
+    """Lean web research agent (search + scraping via configured MCP servers).
+    
+    Uses SchemaBasedAgent's automatic method routing.
+    Tools defined in schema.yaml are automatically routed to methods:
+    - Tool: "web_research_agent_web_research" → Method: web_research(params)
+    - Tool: "web_research_agent_fact_check" → Method: fact_check(params)
+    - Tool: "web_research_agent_source_analysis" → Method: source_analysis(params)
+    - Tool: "web_research_agent_research_assistant" → Method: research_assistant(params)
+    """
 
     # No custom __init__: base Agent handles config/LLM initialization.
     # Tools come from enabled MCP servers (duckduckgo_search, web_scraper) in config.
 
-    async def _execute_task(self, prompt: str, request_id: str, status) -> Dict[str, Any]:  # type: ignore[override]
-        """Run a task by streaming base Agent events; simplified result extraction."""
+    async def web_research(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Perform comprehensive web research.
+        
+        This method is automatically called for the "web_research_agent_web_research" tool.
+        """
+        topic = params.get("topic")
+        if not topic:
+            return {"status": "error", "error": "Missing required parameter 'topic'"}
+        
+        max_results = params.get("max_results", 5)
+        request_id = params.get("request_id") or params.get("requestId")
+        
+        research_prompt = f"""
+Perform comprehensive research.
+
+Topic: {topic}
+
+Instructions:
+1. choose the right tools to use for this research.
+2.1. if no web research is needed and a better tool is available:
+    a. use that tool first.
+    b. in case the tool does not provide enough information, repeat the research using web_search 2.2.
+2.2. if web search is needed:
+    a. search for recent information about the topic using web search tool.
+    b. From the search results, identify the {max_results} most relevant sources.
+    c. Scrape content from those sources to get detailed information.
+3. Ensure all information is up-to-date and from credible sources.
+4. Synthesize the findings into a comprehensive research summary.        
+
+Please provide:
+- Key findings and insights
+- Important facts and data points
+- Different perspectives or viewpoints
+- Source URLs for verification
+"""
+        return await self._run_task(research_prompt, request_id, params.get("_status"))
+    
+    async def fact_check(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fact-check a specific claim.
+        
+        This method is automatically called for the "web_research_agent_fact_check" tool.
+        """
+        claim = params.get("claim")
+        if not claim:
+            return {"status": "error", "error": "Missing required parameter 'claim'"}
+        
+        request_id = params.get("request_id") or params.get("requestId")
+        
+        fact_check_prompt = f"""
+Fact-check this claim: "{claim}"
+
+Instructions:
+1. Search for information about this specific claim
+2. Look for authoritative sources (news, academic, official sites)
+3. Scrape content from credible sources
+4. Analyze the evidence for and against the claim
+5. Provide a verdict with supporting evidence
+
+Please provide:
+- Verdict (True/False/Partially True/Unverified)
+- Evidence supporting or refuting the claim
+- Quality and credibility of sources
+- Important context or nuances
+- Source URLs for verification
+"""
+        return await self._run_task(fact_check_prompt, request_id, params.get("_status"))
+    
+    async def source_analysis(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze and compare sources for a topic.
+        
+        This method is automatically called for the "web_research_agent_source_analysis" tool.
+        """
+        topic = params.get("topic")
+        if not topic:
+            return {"status": "error", "error": "Missing required parameter 'topic'"}
+        
+        request_id = params.get("request_id") or params.get("requestId")
+        
+        compare_prompt = f"""
+Compare and analyze multiple sources about: {topic}
+
+Instructions:
+1. Search for information from multiple sources
+2. Scrape content from diverse sources (news, academic, blogs, official)
+3. Compare how different sources present the information
+4. Identify common facts vs. differing opinions
+5. Assess source credibility and potential biases
+
+Please provide:
+- Common facts agreed upon by multiple sources
+- Points of disagreement or different perspectives
+- Source credibility assessment
+- Identified biases or agendas
+- Synthesis of the most reliable information
+- Source URLs for each perspective
+"""
+        return await self._run_task(compare_prompt, request_id, params.get("_status"))
+    
+    async def research_assistant(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """General research assistant for any task.
+        
+        This method is automatically called for the "web_research_agent_research_assistant" tool.
+        """
+        task = params.get("task") or params.get("query") or params.get("prompt")
+        if not task:
+            return {"status": "error", "error": "Missing required parameter 'task'"}
+        
+        request_id = params.get("request_id") or params.get("requestId")
+        
+        # For general tasks, just pass through to the agent
+        return await self._run_task(task, request_id, params.get("_status"))
+
+    async def _run_task(self, prompt: str, request_id: str, status) -> Dict[str, Any]:
+        """Run a task by streaming agent events and collecting results."""
         result: Dict[str, Any] = {"task": prompt, "calls": []}
         try:
             async for event in self.run_events(prompt, request_id=request_id):
-                et = event.get("type")
-                if et == "mcp_call":
+                event_type = event.get("type")
+                if event_type == "mcp_call":
                     filtered_params = {k: v for k, v in event.get("params", {}).items() if not k.startswith('_')}
                     result["calls"].append({
                         "function": {"name": event.get("server", "unknown")},
@@ -35,120 +154,17 @@ class WebResearchAgent(Agent):
                         "action": event.get("action", "unknown"),
                         "params": filtered_params
                     })
-                elif et == "final":
+                elif event_type == "final":
                     result["summary"] = event.get("summary", "")
-                elif et == "error":
-                    msg = event.get("message", "error")
-                    return {"status": "error", "error": msg, "agent": self.name}
+                elif event_type == "error":
+                    error_msg = event.get("message", "error")
+                    return {"status": "error", "error": error_msg, "agent": self.name}
+            
             result["status"] = "success"
             result["agent"] = self.name
             return result
         except Exception as e:  # pragma: no cover - defensive
             return {"status": "error", "error": str(e), "agent": self.name}
-
-    async def research(self, topic: str, max_results: int, request_id: str, status) -> Dict[str, Any]:
-        research_prompt = f"""
-        Perform comprehensive research on: {topic}
-
-        Instructions:
-        1. First, search for recent information about "{topic}" using DuckDuckGo
-        2. From the search results, identify the {max_results} most relevant sources
-        3. Scrape content from those sources to get detailed information
-        4. Synthesize the findings into a comprehensive research summary
-
-        Please provide:
-        - Key findings and insights
-        - Important facts and data points
-        - Different perspectives or viewpoints
-        - Source URLs for verification
-        """
-        return await self._execute_task(research_prompt, request_id, status)
-
-    async def fact_check(self, claim: str, request_id: str, status) -> Dict[str, Any]:
-        fact_check_prompt = f"""
-        Fact-check this claim: "{claim}"
-
-        Instructions:
-        1. Search for information about this specific claim
-        2. Look for authoritative sources (news, academic, official sites)
-        3. Scrape content from credible sources
-        4. Analyze the evidence for and against the claim
-
-        Please provide:
-        - Verification status (True/False/Partially True/Unverified)
-        - Supporting evidence with sources
-        - Contradicting evidence if any
-        - Context and nuances
-        """
-        return await self._execute_task(fact_check_prompt, request_id, status)
-
-    async def compare_sources(self, topic: str, request_id: str, status) -> Dict[str, Any]:
-        compare_prompt = f"""
-        Compare information about this topic across multiple sources: "{topic}"
-
-        Instructions:
-        1. Search for information about this topic from multiple perspectives
-        2. Include diverse sources (news, academic, blogs, official sites)
-        3. Scrape content from various credible sources
-        4. Compare and contrast the information provided
-        5. Identify consensus, disagreements, and biases
-
-        Please provide:
-        - Summary of common information
-        - Points of agreement and disagreement
-        - Source credibility assessment
-        - Potential biases or limitations
-        """
-        return await self._execute_task(compare_prompt, request_id, status)
-
-    def get_tools(self) -> list[Dict[str, Any]]:
-        """Return the multi-tool schema for web research agent."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for web_research_agent plugin")
-        
-        # Extract tools array from schema
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            # Fallback for single-tool schemas
-            return [schema_data]
-
-
-
-    async def call(self, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
-        # Extract request_id for status correlation
-        request_id = params.get("request_id") or params.get("requestId")
-        status = params.get("_status")   
-
-        # Handle dynamic tool names with {{ name }} prefix
-        # Tool names are now: {name}_web_research, {name}_fact_check, etc.
-        if tool == f"{self.name}_web_research":
-            topic = params.get("topic")
-            if not topic:
-                return {"status": "error", "error": "Missing required parameter 'topic' for research action"}
-            max_results = params.get("max_results", 5)
-            return await self.research(topic, max_results, request_id, status)
-        elif tool == f"{self.name}_fact_check":
-            claim = params.get("claim")
-            if not claim:
-                return {"status": "error", "error": "Missing required parameter 'claim' for fact_check action"}
-            return await self.fact_check(claim, request_id, status)
-        elif tool == f"{self.name}_source_analysis":
-            topic = params.get("topic")
-            if not topic:
-                return {"status": "error", "error": "Missing required parameter 'topic' for compare_sources action"}
-            return await self.compare_sources(topic, request_id, status)
-        elif tool == f"{self.name}_research_assistant":
-            # Handle general task requests by routing to research with progress tracking
-            task = params.get("task") or params.get("query") or params.get("prompt")
-            if not task:
-                return {"status": "error", "error": f"Missing required parameter 'task' for {tool} action"}
-            # Route general tasks to research method with progress tracking
-            return await self.research(task, params.get("max_results", 5), request_id, status)
-
-        raise ValueError(f"Unknown tool: {tool}")
 
 
     # ------------------------------------------------------------------
@@ -175,6 +191,7 @@ class WebResearchAgent(Agent):
         
         # No config-based prompt, load plugin's default template
         try:
+            from pathlib import Path
             prompt_file = Path(__file__).parent / "prompts" / "system_prompt.yaml"
             if prompt_file.exists():
                 # We only need the raw system_prompt block; reuse simple YAML parse

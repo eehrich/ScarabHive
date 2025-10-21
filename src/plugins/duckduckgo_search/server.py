@@ -51,7 +51,7 @@ class DuckDuckGoSearchServer(SchemaBasedMCPServer):
         Method name matches tool name in schema.yaml.
         """
         query = params.get("query", "")
-        max_results = int(params.get("max_results", 5))
+        max_results = int(params.get("max_results", 10))
         ignore_cache = params.get("ignore_cache", False)
         custom_cache_ttl = params.get("cache_ttl")
         status = params["_status"]  # Status is mandatory from framework

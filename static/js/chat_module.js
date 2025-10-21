@@ -366,11 +366,6 @@
     const requestId = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
     const operationKey = requestId || ev.server;
     
-    // Debug logging can be enabled here if needed
-    // if (requestId && (ev.server === 'token-optimizer' || ev.server === 'duckduckgo_search')) {
-    //   console.log(`[HIERARCHY DEBUG] ${ev.server}:`, { requestId, originalParentId: ev.tree?.parent_id });
-    // }
-    
     // Get tree hierarchy metadata
     const treeInfo = ev.tree || { parent_id: null, depth_level: 0, child_count: 0, is_leaf: true };
     let depthLevel = treeInfo.depth_level || 0;
@@ -387,8 +382,38 @@
     if (!parentId && requestId && requestId.includes('_')) {
       const parts = requestId.split('_');
       if (parts.length >= 2) {
-        parentId = parts.length > 2 ? parts.slice(0, parts.length - 1).join('_') : null;
-        depthLevel = parts.length - 2; // first child depth 0
+        // For multi-level IDs like q2f381f3v6_006_015_016:
+        // - parts = ['q2f381f3v6', '006', '015', '016']
+        // - parentId should be 'q2f381f3v6_006_015' (all parts except last)
+        // For two-level IDs like q2f381f3v6_006:
+        // - parts = ['q2f381f3v6', '006']
+        // - parentId should be 'q2f381f3v6' (first part only, which is the root)
+        parentId = parts.slice(0, -1).join('_');
+        // Depth: q2f381f3v6 = 0, q2f381f3v6_006 = 1, q2f381f3v6_006_015 = 2, etc.
+        depthLevel = parts.length - 1;
+        
+        // Auto-create virtual parent node if it doesn't exist yet
+        if (!treeNodes.has(parentId)) {
+          const virtualParent = document.createElement('div');
+          virtualParent.className = 'operation-progress virtual-parent';
+          virtualParent.setAttribute('data-operation', parentId);
+          virtualParent.setAttribute('data-request-id', parentId);
+          virtualParent.setAttribute('data-depth', depthLevel - 1);
+          virtualParent.setAttribute('data-expanded', 'true');
+          virtualParent.style.display = 'none'; // Hidden by default, will be made visible if needed
+          
+          // Recursively determine this parent's parent for proper hierarchy
+          let grandParentId = null;
+          if (parentId.includes('_')) {
+            const parentParts = parentId.split('_');
+            if (parentParts.length >= 2) {
+              grandParentId = parentParts.slice(0, -1).join('_');
+            }
+          }
+          
+          container.appendChild(virtualParent);
+          registerNode(parentId, grandParentId, virtualParent, depthLevel - 1);
+        }
       }
     }
     
@@ -408,7 +433,10 @@
         insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
         
         activeOperations.set(operationKey, operationDiv);
-        registerNode(requestId, parentId, operationDiv, depthLevel);
+        // Register node with requestId (if available) for tree structure
+        if (requestId) {
+          registerNode(requestId, parentId, operationDiv, depthLevel);
+        }
       }
     } else if (ev.phase === 'progress') {
       let operationDiv = activeOperations.get(operationKey);
@@ -420,7 +448,10 @@
         insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
         
         activeOperations.set(operationKey, operationDiv);
-        registerNode(requestId, parentId, operationDiv, depthLevel);
+        // Register node with requestId (if available) for tree structure
+        if (requestId) {
+          registerNode(requestId, parentId, operationDiv, depthLevel);
+        }
       } else {
         const messageSpan = operationDiv.querySelector('.progress-message');
         const timeSpan = operationDiv.querySelector('.progress-time');

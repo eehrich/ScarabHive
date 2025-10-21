@@ -60,14 +60,16 @@ class ExampleServer(SchemaBasedMCPServer):
         
         logger.info(f"Example server '{name}' initialized with precision={self.precision}, max_length={self.max_text_length}")
 
-    # Tool methods - these are automatically called by MCPServer.call() dispatcher
-    # Method names must match the tool names defined in schema.yaml
+    # Tool methods - these are automatically called by SchemaBasedMixin.call() dispatcher
+    # Method names should match tool names WITHOUT the "{name}_" prefix
+    # Tool "example_calculator" → method "calculator()"
     
-    async def example_calculator(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def calculator(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle calculator operations with high precision.
         
         This method is automatically called when the "example_calculator" tool is invoked.
-        The generic dispatcher in MCPServer routes the call here based on the tool name.
+        The generic dispatcher in SchemaBasedMixin strips the "example_" prefix
+        and routes to this method.
         
         Args:
             params: Parameters containing operation, a, and b
@@ -122,7 +124,7 @@ class ExampleServer(SchemaBasedMCPServer):
         logger.debug(f"Calculator result: {response}")
         return response
 
-    async def example_formatter(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def formatter(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle text formatting operations.
         
         This method is automatically called when the "example_formatter" tool is invoked.
@@ -175,7 +177,7 @@ class ExampleServer(SchemaBasedMCPServer):
         logger.debug(f"Formatter result: {len(text)} chars -> {len(formatted)} chars")
         return response
 
-    async def example_status(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle status information requests.
         
         This method is automatically called when the "example_status" tool is invoked.

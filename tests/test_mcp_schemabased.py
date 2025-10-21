@@ -445,7 +445,8 @@ class TestIntegrationWithMCPServer:
                     }
                 }]
             
-            async def test_greet(self, params):
+            async def greet(self, params):
+                """Method name is 'greet' - the 'test_' prefix is stripped."""
                 name = params.get("name", "World")
                 return {"message": f"Hello, {name}!"}
         
@@ -509,7 +510,8 @@ class TestRealWorldScenarios:
                     }
                 }]
             
-            async def calculator_calculate(self, params):
+            async def calculate(self, params):
+                """Method name is 'calculate' - the 'calculator_' prefix is stripped."""
                 op = params["operation"]
                 a, b = params["a"], params["b"]
                 
@@ -536,5 +538,5 @@ class TestRealWorldScenarios:
         
         _ = SimpleServer("simple", system_config, mcp_config)
         
-        # Should not have call() in its own __dict__ (inherits from MCPServer)
+        # Should not have call() in its own __dict__ (inherits from SchemaBasedMixin)
         assert 'call' not in SimpleServer.__dict__

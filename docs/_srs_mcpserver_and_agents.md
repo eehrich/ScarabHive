@@ -21,6 +21,11 @@ MCPServer (Basis-Interface)
     │   └── ConfigAgent (YAML-konfigurierte Agents)
     │
     └── SchemaBasedMCPServer (Schema-definierte Server)
+
+SchemaBasedMixin (Shared Functionality)
+    │
+    ├─► SchemaBasedMCPServer (nutzt Mixin für Schema-Loading)
+    └─► SchemaBasedAgent (nutzt Mixin für Schema-Loading)
 ```
 
 ### 2.3 References (Architectures & Designs)
@@ -86,6 +91,7 @@ MCPServer (Basis-Interface)
 - **FR8.2**: Plugin-Factory muss `(name, system_config, mcp_config)` Signature haben
 - **FR8.3**: Custom Logic in `server.py` muss möglich sein
 - **FR8.4**: Schema-Dateien (`schema.yaml`) müssen unterstützt werden
+- **FR8.5**: SchemaBasedMixin ermöglicht automatisches Method-Routing von schema.yaml zu Python-Methoden
 
 #### FR9: Plugin Metadata
 - **FR9.1**: `plugin.yaml` muss Metadata (name, version, author) definieren

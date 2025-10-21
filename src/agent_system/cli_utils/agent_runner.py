@@ -13,7 +13,7 @@ import logging
 from typing import Optional, Any, Tuple
 
 from ..config.settings import AgentSystemConfig, get_mcp_config_by_name
-from ..config.models import MCPConfig, AgentConfig
+from ..config.models import AgentConfig
 from ..mcp.base import MCPRegistry
 from ..servers.agent.server import Agent
 

@@ -161,11 +161,11 @@ class TestBasicAgentServer:
         tools = self.agent.get_tools()
         
         assert isinstance(tools, list)
-        assert len(tools) == 2  # basic_agent and basic_agent_list_tools
+        assert len(tools) == 2  # execute_task and list_available_tools
         
         tool_names = [tool["function"]["name"] for tool in tools]
         assert "test_agent_execute_task" in tool_names
-        assert "test_agent_list_tools" in tool_names
+        assert "test_agent_list_available_tools" in tool_names
 
     def test_get_default_action(self):
         """Test default action returns 'run'."""
@@ -225,7 +225,7 @@ class TestBasicAgentServer:
         """Test calling unknown tool raises ValueError."""
         params = {"task": "test task"}
         
-        with pytest.raises(ValueError, match="Unknown tool: unknown_tool"):
+        with pytest.raises(ValueError, match="Tool 'unknown_tool' not found"):
             await self.agent.call("unknown_tool", params)
 
     @pytest.mark.asyncio
@@ -240,10 +240,10 @@ class TestBasicAgentServer:
 
     @pytest.mark.asyncio
     async def test_call_list_tools(self):
-        """Test calling list_tools function."""
+        """Test calling list_available_tools function."""
         params = {}
         
-        result = await self.agent.call("test_agent_list_tools", params)
+        result = await self.agent.call("test_agent_list_available_tools", params)
         
         assert isinstance(result, list)
 
@@ -272,7 +272,7 @@ class TestBasicAgentSchemaLoading:
         # Check that template variables were replaced
         tool_names = [tool["function"]["name"] for tool in tools]
         assert "test_agent_execute_task" in tool_names
-        assert "test_agent_list_tools" in tool_names
+        assert "test_agent_list_available_tools" in tool_names
 
     def test_schema_loading_missing_template_vars(self):
         """Test schema loading without template variables."""

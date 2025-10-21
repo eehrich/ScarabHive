@@ -94,18 +94,20 @@ class TestExampleServerTools:
         assert "example_status" in tool_names
 
     def test_tool_names_match_methods(self, example_server):
-        """Test that tool names match implemented methods."""
+        """Test that tool names map to methods correctly with prefix stripping."""
         tools = example_server.get_tools()
         
         for tool in tools:
             tool_name = tool["function"]["name"]
-            # Method should exist
-            assert hasattr(example_server, tool_name)
-            assert callable(getattr(example_server, tool_name))
+            # Method name should be the stripped version
+            method_name = example_server._get_method_name(tool_name)
+            assert hasattr(example_server, method_name), \
+                f"Method {method_name} not found for tool {tool_name}"
+            assert callable(getattr(example_server, method_name))
 
     def test_no_manual_call_override(self):
         """Test that ExampleServer doesn't override call()."""
-        # Should not have call() in its own __dict__ (inherits from MCPServer)
+        # Should not have call() in its own __dict__ (inherits from SchemaBasedMixin)
         assert 'call' not in ExampleServer.__dict__
 
 
@@ -538,19 +540,22 @@ class TestModernPattern:
 
     @pytest.mark.asyncio
     async def test_method_names_match_tools(self, example_server):
-        """Test that all tool methods follow naming convention."""
+        """Test that all tool methods follow naming convention with prefix stripping."""
         import asyncio
         tools = example_server.get_tools()
         
         for tool in tools:
             tool_name = tool["function"]["name"]
-            # Should have a method with exact tool name
-            assert hasattr(example_server, tool_name), \
-                f"Method {tool_name} not found for tool"
+            # Method name should be the tool name with prefix stripped
+            # Tool: "example_calculator" → Method: "calculator"
+            method_name = example_server._get_method_name(tool_name)
             
-            method = getattr(example_server, tool_name)
+            assert hasattr(example_server, method_name), \
+                f"Method {method_name} not found for tool {tool_name}"
+            
+            method = getattr(example_server, method_name)
             assert callable(method)
             
             # Should be async
             assert asyncio.iscoroutinefunction(method), \
-                f"Method {tool_name} should be async"
+                f"Method {method_name} should be async"

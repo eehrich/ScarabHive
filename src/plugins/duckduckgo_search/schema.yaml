@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: web_search
+      name: "{{ name }}_web_search"
       description: Search the web using DuckDuckGo search engine. Returns search results with titles, URLs, and snippets.
       parameters:
         type: object
@@ -12,8 +12,8 @@ tools:
           max_results:
             type: integer
             minimum: 1
-            maximum: 10
-            default: 5
+            maximum: 20
+            default: 10
             description: "Maximum number of search results to return"
           ignore_cache:
             type: boolean

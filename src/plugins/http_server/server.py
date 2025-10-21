@@ -33,7 +33,7 @@ class HTTPServer(SchemaBasedMCPServer):
         """Wrap an MCP server to expose it via HTTP."""
         self.wrapped_server = server
 
-    async def http_server_ops(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def ops(self, params: dict[str, Any]) -> dict[str, Any]:
         """
         HTTP server operations (health, call).
         

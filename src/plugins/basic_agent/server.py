@@ -1,62 +1,44 @@
-"""
-BasicAgent - Simple agent for basic task execution.
-"""
+"""BasicAgent - the simplest agent that can execute tasks and list tools."""
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
-from pathlib import Path
+from typing import Dict, Any
 
-from agent_system.servers.agent.server import Agent
-
-if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
-    from agent_system.mcp.base import MCPRegistry
+from agent_system.servers.agent.schema_based import SchemaBasedAgent
+from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.mcp.base import MCPRegistry
 
 logger = logging.getLogger(__name__)
 
 
-class BasicAgent(Agent):
-    """Agent for basic requests."""
+class BasicAgent(SchemaBasedAgent):
+    """Agent for basic requests.
+    
+    This agent uses SchemaBasedAgent's automatic method routing.
+    Tools defined in schema.yaml are automatically routed to methods:
+    - Tool: "basic_agent_execute_task" → Method: execute_task(params)
+    - Tool: "basic_agent_list_available_tools" → Method: list_available_tools(params)
+    
+    Note: The MCP standard method list_tools() is inherited from Agent base class.
+    """
 
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig, registry: MCPRegistry):
         """Initialize BasicAgent with modern config system."""
         super().__init__(name, system_config, mcp_config, registry)
 
-    def get_tools(self) -> list[Dict[str, Any]]:
-        """Return the tool schema for basic agent."""
-        from agent_system.plugins.schema_loader import load_schema_from_dir
-        schema_data = load_schema_from_dir(Path(__file__).parent, template_vars={"name": self.name})
-        if not schema_data:
-            raise RuntimeError("Missing required schema.yaml for basic_agent plugin")
+    async def execute_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a task using the basic agent.
         
-        # Extract tools array from schema
-        if 'tools' in schema_data:
-            return schema_data['tools']
-        else:
-            # Fallback for single-tool schemas
-            return [schema_data]
-
-    async def call(self, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
-        """Handle tool calls for basic agent."""
-        # Extract request_id and status for tracking
+        This method is automatically called for the "basic_agent_execute_task" tool.
+        """
+        # Extract parameters
+        task = params.get("task")
+        if not task:
+            return {"status": "error", "error": "Missing required parameter 'task'"}
+        
         request_id = params.get("request_id") or params.get("requestId")
         status = params.get("_status")
         
-        if tool == f"{self.name}_execute_task":
-            # Main agent execution tool
-            task = params.get("task")
-            if not task:
-                return {"status": "error", "error": f"Missing required parameter 'task' for {tool}"}
-            return await self._execute_task(task, request_id, status)
-        elif tool == f"{self.name}_list_tools":
-            # List available tools (uses base Agent class implementation)
-            return await self._list_available_tools(params)
-        else:
-            raise ValueError(f"Unknown tool: {tool}")
-
-    async def _execute_task(self, task: str, request_id: Optional[str], status) -> Dict[str, Any]:
-        """Execute a task using the basic agent."""
         try:
             if status:
                 await status.progress(f"Starting basic agent task: {task[:100]}...")
@@ -131,3 +113,10 @@ class BasicAgent(Agent):
                 "error": str(e),
                 "request_id": request_id
             }
+    
+    async def list_available_tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """List all available tools for this agent.
+        
+        This method is automatically called for the "basic_agent_list_available_tools" tool.
+        """
+        return await self._list_available_tools(params)

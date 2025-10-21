@@ -14,7 +14,7 @@ tools:
 
   - type: function
     function:
-      name: "{{ name }}_list_tools"
+      name: "{{ name }}_list_available_tools"
       description: List all available tools that the agent can access (returns only tool names and descriptions)
       parameters:
         type: object
