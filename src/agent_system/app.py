@@ -50,6 +50,9 @@ _agent_service: Optional[AgentService] = None
 _session_manager: Optional[SessionManager] = None
 _session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
 
+# Security: Track request_id -> user_id mapping for status stream authorization
+_request_user_map: dict[str, str] = {}  # request_id -> user_id
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -802,6 +805,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"
+        
+        # Register request ownership for status stream security
+        _request_user_map[request_id] = user_id
 
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
@@ -819,24 +825,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not upload_files:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
-            # Pass LLM override to collect_final_result
-            result = await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
             
-            # Format summary from Markdown to HTML for web display
-            if result.get("summary") and selected_agent._hook_manager:
-                try:
-                    formatted_summary, _ = await selected_agent._hook_manager.execute_format_output_hooks(
-                        output=result["summary"],
-                        request_id=request_id,
-                        session_id=session_id or "unknown",
-                        output_format='html'
-                    )
-                    result["summary"] = formatted_summary
-                except Exception as e:
-                    logger.warning(f"Failed to format summary to HTML: {e}")
-                    # Keep original markdown on error
-            
-            return result
+            try:
+                # Pass LLM override to collect_final_result
+                result = await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
+                
+                # Format summary from Markdown to HTML for web display
+                if result.get("summary") and selected_agent._hook_manager:
+                    try:
+                        formatted_summary, _ = await selected_agent._hook_manager.execute_format_output_hooks(
+                            output=result["summary"],
+                            request_id=request_id,
+                            session_id=session_id or "unknown",
+                            output_format='html'
+                        )
+                        result["summary"] = formatted_summary
+                    except Exception as e:
+                        logger.warning(f"Failed to format summary to HTML: {e}")
+                        # Keep original markdown on error
+                
+                return result
+            finally:
+                # Cleanup: Remove request_id from ownership map
+                _request_user_map.pop(request_id, None)
 
         # Process uploaded files for multimodal input
         from .llm.capabilities import get_model_capabilities
@@ -927,6 +938,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             was_new_session
                         )
                     
+                    # Cleanup: Remove request_id from ownership map
+                    _request_user_map.pop(request_id, None)
+                    
                     # Cleanup temp files after streaming completes
                     for temp_file in temp_files:
                         try:
@@ -975,6 +989,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"
+        
+        # Register request ownership for status stream security
+        _request_user_map[request_id] = user_id
         
         logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s", 
                    task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id)
@@ -1043,6 +1060,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         llm_profile_used,
                         was_new_session
                     )
+                
+                # Cleanup: Remove request_id from ownership map to prevent memory leak
+                _request_user_map.pop(request_id, None)
 
         return StreamingResponse(
             event_stream(),
@@ -1244,6 +1264,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if not expected or provided != expected:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=401, detail="Unauthorized status stream")
+        
+        # Security: Verify user owns the request_id they're trying to monitor
+        if request_id:
+            current_user = await _get_current_user_optional(request)
+            requesting_user_id = current_user.username if current_user else "anonymous"
+            
+            # Check if this request_id has a registered owner
+            owner_user_id = _request_user_map.get(request_id)
+            if owner_user_id is not None and owner_user_id != requesting_user_id:
+                logger.warning(
+                    "User '%s' attempted to access status stream for request_id '%s' owned by '%s'",
+                    requesting_user_id, request_id, owner_user_id
+                )
+                from fastapi import HTTPException
+                raise HTTPException(status_code=403, detail="Cannot access other users' status streams")
 
         logger.info("SSE /status/stream connected (server=%s request_id=%s)", server, request_id)
         queue = await status_bus.subscribe(server=server, request_id=request_id)
