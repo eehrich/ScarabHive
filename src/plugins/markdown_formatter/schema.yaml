@@ -1,13 +1,14 @@
 hooks:
   - name: inject_markdown_system_prompt
-    type: session_start
+    type: pre_llm_call
     enabled: true
     timeout: 10.0
     description: >
-      Injects a system message at session start to guide LLM to generate Markdown output.
-      Only runs once per session to avoid duplications.
+      Injects a system message before each LLM call to guide LLM to generate Markdown output.
+      Modifies messages temporarily for the LLM call without persisting to session.
     order:
       after: ["begin"]
+      before: ["optimize_context", "summarize_context"]
     
   - name: format_markdown_output
     type: format_output

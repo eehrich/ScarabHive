@@ -16,9 +16,6 @@ from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
-# Track sessions where system prompt was injected to avoid duplicates
-_injected_sessions: set[str] = set()
-
 
 class MarkdownFormatterPlugin(SchemaBasedPluginHook):
     """Hook plugin for Markdown formatting and HTML conversion."""
@@ -90,12 +87,13 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
             self.markdown_converter = None
     
     async def inject_markdown_system_prompt(self, context: HookContext) -> HookResult:
-        """Inject system prompt at session start to guide LLM to use Markdown.
+        """Inject system prompt before each LLM call to guide LLM to use Markdown.
         
-        Hook implementation for session_start. Injects system message once per session.
+        Hook implementation for pre_llm_call. Injects system message temporarily
+        for the LLM call without persisting to the session storage.
         
         Args:
-            context: Hook context with session information
+            context: Hook context with messages for LLM call
             
         Returns:
             HookResult with modified context containing system prompt
@@ -109,18 +107,7 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                     metadata={'reason': 'injection_disabled'}
                 )
             
-            session_id = context.session_id or 'unknown'
-            
-            # Check if already injected for this session
-            if session_id in _injected_sessions:
-                return HookResult(
-                    success=True,
-                    modified=False,
-                    context=context,
-                    metadata={'reason': 'already_injected', 'session_id': session_id}
-                )
-            
-            # Inject system message
+            # Inject system message before every LLM call
             messages = context.messages or []
             
             # Check if system message already exists
@@ -131,13 +118,20 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 for msg in messages
             )
             
+            # Track if we actually modified anything
+            was_modified = False
+            
             if has_system:
-                # Append to existing system message - create new list with modified message
+                # Append to existing system message
                 modified_messages = []
                 for msg in messages:
                     msg_role = msg.get('role') if isinstance(msg, dict) else getattr(msg, 'role', None)
                     if msg_role == 'system':
                         existing_content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', '')
+                        # Check if already injected to avoid duplication
+                        if self.system_prompt_template in existing_content:
+                            modified_messages.append(msg)
+                            continue
                         new_content = f"{existing_content}\n\n{self.system_prompt_template}"
                         if isinstance(msg, dict):
                             modified_msg = {**msg, 'content': new_content}
@@ -145,6 +139,7 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                             # ChatMessage - use model_copy
                             modified_msg = msg.model_copy(update={'content': new_content})
                         modified_messages.append(modified_msg)
+                        was_modified = True
                     else:
                         modified_messages.append(msg)
                 messages = modified_messages
@@ -155,14 +150,29 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                     content=self.system_prompt_template
                 )
                 messages = [system_msg] + list(messages)
+                was_modified = True
             
-            # Mark as injected
-            _injected_sessions.add(session_id)
+            # If nothing was modified, return original context
+            if not was_modified:
+                return HookResult(
+                    success=True,
+                    modified=False,
+                    context=context,
+                    metadata={'reason': 'already_present'}
+                )
             
             # Return modified context with new messages list
             modified_context = replace(context, messages=messages)
             
-            logger.debug(f"Injected Markdown system prompt for session {session_id}")
+            # Debug: log the modified messages to verify injection worked
+            system_msg_content = ""
+            if messages:
+                for msg in messages:
+                    msg_role = msg.get('role') if isinstance(msg, dict) else getattr(msg, 'role', None)
+                    if msg_role == 'system':
+                        system_msg_content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', '')
+                        break
+            logger.info(f"[MarkdownFormatter] Injected prompt. System message now {len(system_msg_content)} chars. Contains markdown template: {self.system_prompt_template[:50] in system_msg_content}")
             
             return HookResult(
                 success=True,
@@ -170,7 +180,6 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 context=modified_context,
                 metadata={
                     'injected': True,
-                    'session_id': session_id,
                     'prompt_length': len(self.system_prompt_template)
                 }
             )

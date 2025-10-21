@@ -14,10 +14,10 @@ def formatter():
     return MarkdownFormatterPlugin(plugin_dir)
 
 
-def create_context(messages=None, session_id="test_session"):
+def create_context(messages=None, session_id="test_session", hook_type=HookType.PRE_LLM_CALL):
     """Helper to create HookContext for testing."""
     return HookContext(
-        hook_type=HookType.SESSION_START,
+        hook_type=hook_type,
         request_id="test",
         session_id=session_id,
         agent=None,
@@ -63,21 +63,23 @@ async def test_inject_markdown_system_prompt_with_existing_system(formatter):
 
 
 @pytest.mark.asyncio
-async def test_inject_markdown_system_prompt_only_once_per_session(formatter):
-    """Test that system prompt is only injected once per session."""
-    messages = [ChatMessage(role='user', content='Hello')]
-    session_id = "persistent_session"
+async def test_inject_markdown_system_prompt_prevents_duplication(formatter):
+    """Test that system prompt is not injected twice if already present."""
+    # Create a system message that already contains the markdown prompt
+    existing_content = f"You are a helpful assistant.\n\n{formatter.system_prompt_template}"
+    messages = [
+        ChatMessage(role='system', content=existing_content),
+        ChatMessage(role='user', content='Hello'),
+    ]
     
-    # First call - should inject
-    context1 = create_context(messages, session_id=session_id)
-    result1 = await formatter.inject_markdown_system_prompt(context1)
-    assert result1.modified is True
+    context = create_context(messages, session_id="test_session")
+    result = await formatter.inject_markdown_system_prompt(context)
     
-    # Second call with same session - should skip
-    context2 = create_context(messages, session_id=session_id)
-    result2 = await formatter.inject_markdown_system_prompt(context2)
-    assert result2.modified is False
-    assert result2.metadata['reason'] == 'already_injected'
+    # Should not modify if prompt already present
+    assert result.success is True
+    assert result.modified is False
+    # Content should not be duplicated
+    assert result.context.messages[0].content.count(formatter.system_prompt_template) == 1
 
 
 @pytest.mark.asyncio

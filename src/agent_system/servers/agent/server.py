@@ -1090,8 +1090,6 @@ class Agent(MCPServer):
                 # Context management now handled by hook plugins
                 estimated_tokens = sum(len(str(msg.content or "")) for msg in messages) // 4
 
-                logger.debug("LLM messages: %s", [m.model_dump() for m in messages])
-
                 # Emit thinking event before LLM call
                 yield {"type": "thinking", "step": step + 1}
 
@@ -1107,6 +1105,9 @@ class Agent(MCPServer):
                 messages = await self._hook_manager.execute_pre_llm_hooks(
                     messages, step, request_id, session_id, active_llm
                 )
+                
+                # Log messages AFTER hooks have modified them
+                logger.debug("LLM messages (after hooks): %s", [m.model_dump() for m in messages])
 
                 # Message validation is now handled by llm_message_validator hook plugin
 
