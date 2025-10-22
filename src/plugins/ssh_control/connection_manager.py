@@ -394,66 +394,107 @@ class SSHConnectionManager:
             stderr_lines = []
             
             async with conn.create_process(command) as process:
-                # Read stdout and stderr line by line
+                # Read stdout and stderr line by line using event-driven approach
                 stdout_done = False
                 stderr_done = False
                 
-                while not (stdout_done and stderr_done):
-                    # Try reading from both streams with timeout
-                    try:
-                        # Read stdout
-                        if not stdout_done:
-                            try:
-                                line = await asyncio.wait_for(process.stdout.readline(), timeout=0.1)
-                                if line:
-                                    line_stripped = line.rstrip('\n')
-                                    stdout_lines.append(line_stripped)
-                                    yield {
-                                        'type': 'stdout',
-                                        'data': line_stripped
-                                    }
-                                else:
-                                    stdout_done = True
-                            except asyncio.TimeoutError:
-                                pass
-                        
-                        # Read stderr
-                        if not stderr_done:
-                            try:
-                                line = await asyncio.wait_for(process.stderr.readline(), timeout=0.1)
-                                if line:
-                                    line_stripped = line.rstrip('\n')
-                                    stderr_lines.append(line_stripped)
-                                    yield {
-                                        'type': 'stderr',
-                                        'data': line_stripped
-                                    }
-                                else:
-                                    stderr_done = True
-                            except asyncio.TimeoutError:
-                                pass
-                        
-                        # Check if process finished
-                        if process.returncode is not None:
-                            break
-                            
-                    except Exception as e:
-                        logger.error(f"Error reading stream: {e}")
-                        break
+                # Create task to wait for process completion with timeout
+                process_wait_task = asyncio.create_task(
+                    asyncio.wait_for(process.wait(), timeout=timeout)
+                )
                 
-                # Wait for process to complete
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    duration = time.time() - start_time
-                    yield {
-                        'type': 'error',
-                        'data': f'Command timeout after {duration:.2f}s'
-                    }
-                    raise
+                    while not (stdout_done and stderr_done):
+                        # Create tasks for reading both streams
+                        tasks = [('process', process_wait_task)]
+                        
+                        if not stdout_done:
+                            stdout_task = asyncio.create_task(process.stdout.readline())
+                            tasks.append(('stdout', stdout_task))
+                        
+                        if not stderr_done:
+                            stderr_task = asyncio.create_task(process.stderr.readline())
+                            tasks.append(('stderr', stderr_task))
+                        
+                        # Wait for any stream to have data or process to complete (no polling!)
+                        task_set = {task for _, task in tasks}
+                        done, pending = await asyncio.wait(
+                            task_set,
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        
+                        # Check if process completed or timed out
+                        if process_wait_task in done:
+                            try:
+                                await process_wait_task
+                                # Process finished normally, exit loop to drain remaining output
+                                break
+                            except asyncio.TimeoutError:
+                                # Kill process on timeout
+                                process.kill()
+                                duration = time.time() - start_time
+                                yield {
+                                    'type': 'error',
+                                    'data': f'Command timeout after {duration:.2f}s'
+                                }
+                                # Cancel pending stream reads
+                                for _, task in tasks:
+                                    if task in pending and task != process_wait_task:
+                                        task.cancel()
+                                raise
+                        
+                        # Process completed stream reads
+                        for stream_name, task in tasks:
+                            if stream_name == 'process':
+                                continue
+                            
+                            if task in done:
+                                try:
+                                    line = await task
+                                    if line:
+                                        line_stripped = line.rstrip('\n')
+                                        if stream_name == 'stdout':
+                                            stdout_lines.append(line_stripped)
+                                            yield {
+                                                'type': 'stdout',
+                                                'data': line_stripped
+                                            }
+                                        else:  # stderr
+                                            stderr_lines.append(line_stripped)
+                                            yield {
+                                                'type': 'stderr',
+                                                'data': line_stripped
+                                            }
+                                    else:
+                                        # Empty line means stream closed
+                                        if stream_name == 'stdout':
+                                            stdout_done = True
+                                        else:
+                                            stderr_done = True
+                                except Exception as e:
+                                    logger.error(f"Error reading {stream_name}: {e}")
+                                    if stream_name == 'stdout':
+                                        stdout_done = True
+                                    else:
+                                        stderr_done = True
+                            elif task in pending:
+                                # Cancel pending stream read task
+                                task.cancel()
+                                try:
+                                    await task
+                                except asyncio.CancelledError:
+                                    pass
                 
-                # Read any remaining output
+                finally:
+                    # Ensure process_wait_task is cleaned up
+                    if not process_wait_task.done():
+                        process_wait_task.cancel()
+                        try:
+                            await process_wait_task
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
+                            pass
+                
+                # Drain any remaining output after process completion
                 remaining_stdout = await process.stdout.read()
                 if remaining_stdout:
                     for line in remaining_stdout.splitlines():

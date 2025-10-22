@@ -640,9 +640,6 @@ class SSHControlWebEndpoints(PluginWebInterface):
                         # SSE format: event: type\ndata: json\n\n
                         yield f"event: {event_type}\ndata: {data_json}\n\n"
 
-                        # Add small delay to prevent overwhelming client
-                        await asyncio.sleep(0.01)
-
                     # Send done event
                     yield "event: done\ndata: {}\n\n"
 

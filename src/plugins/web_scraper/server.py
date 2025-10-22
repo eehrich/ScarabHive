@@ -322,28 +322,28 @@ class WebScraperServer(SchemaBasedMCPServer):
         final_url: str = target_url
         content_type: str = ""
         
+        import httpx  # type: ignore
+        from httpx import ReadTimeout, RequestError
+        
+        # Get browser-like headers
+        headers = self._get_browser_headers(user_agent)
+        
+        # Extract domain for session management
+        from urllib.parse import urlparse
+        domain = urlparse(target_url).netloc
+        
+        # Get or create session cookies for this domain
+        if domain not in self._sessions:
+            self._sessions[domain] = httpx.Cookies()
+        
+        # Configure proxy if available
+        proxy_url = None
+        if self._proxies:
+            # Rotate through available proxies
+            proxy_index = hash(domain) % len(self._proxies)
+            proxy_url = self._proxies[proxy_index]
+        
         try:
-            import httpx  # type: ignore
-            from httpx import ReadTimeout, RequestError
-            
-            # Get browser-like headers
-            headers = self._get_browser_headers(user_agent)
-            
-            # Extract domain for session management
-            from urllib.parse import urlparse
-            domain = urlparse(target_url).netloc
-            
-            # Get or create session cookies for this domain
-            if domain not in self._sessions:
-                self._sessions[domain] = httpx.Cookies()
-            
-            # Configure proxy if available
-            proxy_url = None
-            if self._proxies:
-                # Rotate through available proxies
-                proxy_index = hash(domain) % len(self._proxies)
-                proxy_url = self._proxies[proxy_index]
-            
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 verify=self.ssl_verify,
@@ -352,55 +352,24 @@ class WebScraperServer(SchemaBasedMCPServer):
                 timeout=timeout,
                 proxies=proxy_url,
             ) as client:
-                try:
-                    resp = await client.get(target_url)
-                    status_code = resp.status_code
-                    final_url = str(resp.url)
-                    content_type = resp.headers.get("content-type", "").lower()
+                resp = await client.get(target_url)
+                status_code = resp.status_code
+                final_url = str(resp.url)
+                content_type = resp.headers.get("content-type", "").lower()
 
-                    # Check if content is actually HTML/text before processing
-                    if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]):
-                        html = resp.text or ""
-                    else:
-                        # Non-HTML content detected
-                        html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
-                except ReadTimeout:
-                    return "", 0, target_url, ""
-                except RequestError:
-                    return "", 0, target_url, ""
+                # Check if content is actually HTML/text before processing
+                if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]):
+                    html = resp.text or ""
+                else:
+                    # Non-HTML content detected
+                    html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
+        except ReadTimeout:
+            return "", 0, target_url, ""
+        except RequestError:
+            return "", 0, target_url, ""
         except Exception:
-            # Fallback sync approach
-            import ssl
-            from urllib.request import Request, urlopen
-            from urllib.error import URLError, HTTPError
-            ctx = None
-            if not self.ssl_verify:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-            try:
-                # Get browser-like headers for urllib fallback
-                headers = self._get_browser_headers(user_agent)
-                req = Request(target_url, headers=headers)
-                with urlopen(req, context=ctx, timeout=timeout) as r:  # type: ignore[arg-type]
-                    final_url = r.geturl()
-                    status_code = getattr(r, "status", 200)
-                    content_type = r.headers.get("content-type", "").lower()
-                    data = r.read()
-                    
-                    # Check content type and data header for binary content
-                    if any(ct in content_type for ct in ["text/html", "text/plain", "application/xml", "text/xml"]) and not data.startswith(b'%PDF'):
-                        try:
-                            html = data.decode("utf-8", errors="ignore")
-                        except Exception:
-                            html = data.decode(errors="ignore")
-                    else:
-                        # Non-HTML content detected
-                        html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
-            except (URLError, HTTPError) as e:
-                if hasattr(e, 'code'):
-                    status_code = e.code
-                return "", status_code or 0, final_url, content_type
+            # Any other error - return empty
+            return "", 0, target_url, ""
 
         return html, status_code, final_url, content_type
 
