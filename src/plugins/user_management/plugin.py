@@ -3,20 +3,20 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .endpoints import UserManagementWebEndpoints
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
-class UserManagementPlugin:
+class UserManagementPlugin(SchemaBasedPluginWebInterface):
     """Web-only plugin for user management UI"""
     
     def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
         """Initialize with new signature."""
-        self.name = name
-        self.system_config = system_config
-        self.mcp_config = mcp_config
+        # Initialize base class (loads schema automatically)
+        super().__init__(name, system_config, mcp_config)
         
         # Check if auth is enabled
         self.auth_enabled = getattr(system_config.auth, 'enabled', False) if hasattr(system_config, 'auth') and system_config.auth else False
@@ -39,10 +39,6 @@ class UserManagementPlugin:
             "auth_enabled": self.auth_enabled,
             "active": self.auth_enabled
         }
-    
-    def get_tools(self):
-        """No MCP tools - web UI only"""
-        return []
     
     # Web Interface methods
     def get_web_router(self):

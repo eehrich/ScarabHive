@@ -538,5 +538,5 @@ class TestRealWorldScenarios:
         
         _ = SimpleServer("simple", system_config, mcp_config)
         
-        # Should not have call() in its own __dict__ (inherits from SchemaBasedMixin)
+        # Should not have call() in its own __dict__ (inherits from SchemaBasedToolMixin)
         assert 'call' not in SimpleServer.__dict__

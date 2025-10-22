@@ -584,7 +584,7 @@
             // startAutoRefresh();
         }
 
-        // Auto-refresh history every 5 seconds (DISABLED for debugging)
+        // Auto-refresh history every 5 seconds (DISABLED - causing duplicates)
         function startAutoRefresh() {
             if (autoRefreshInterval) {
                 clearInterval(autoRefreshInterval);
@@ -1214,6 +1214,7 @@
         function refreshCurrentMachine() {
             if (activeTab) {
                 refreshMachineHistory(activeTab);
+            } else {
             }
         }
 

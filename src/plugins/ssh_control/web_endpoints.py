@@ -52,10 +52,10 @@ class SSHControlWebEndpoints(PluginWebInterface):
     def __init__(
         self,
         name: str,
-        system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig",
-        connection_manager=None,
-        command_history: Optional["deque"] = None
+        system_config,
+        mcp_config,
+        connection_manager,
+        command_history
     ):
         """Initialize SSH control web endpoints.
 
@@ -75,8 +75,6 @@ class SSHControlWebEndpoints(PluginWebInterface):
         # Initialize templates
         template_dir = Path(__file__).parent / "templates"
         self.templates = Jinja2Templates(directory=str(template_dir))
-
-        logger.info(f"SSHControlWebEndpoints initialized: {name}")
 
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router with SSH control endpoints"""

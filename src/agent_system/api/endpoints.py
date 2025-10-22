@@ -136,8 +136,7 @@ async def get_plugin_ui_metadata():
     """Get UI metadata for all plugins with web interfaces."""
     try:
         from agent_system.plugins.web_adapter import get_web_plugin_registry
-        import yaml
-        from pathlib import Path
+        from agent_system.plugins.mcp_adapter import plugin_mcp_registry
         
         logger.info("Getting plugin UI metadata...")
         
@@ -148,58 +147,53 @@ async def get_plugin_ui_metadata():
             logger.warning("Registry is empty or None")
             return []
         
+        # Get the plugin registry to access already loaded schemas
+        plugin_registry = plugin_mcp_registry
+        
         ui_plugins = []
         for plugin_id, plugin_info in registry.items():
             logger.info(f"Processing plugin {plugin_id}: {plugin_info}")
             
-            # Check if plugin has web UI configuration
-            schema_path = plugin_info.get('schema_path')
-            logger.info(f"Schema path for {plugin_id}: {schema_path}")
-            
-            if schema_path:
-                schema_file = Path(schema_path)
-                logger.info(f"Checking schema file: {schema_file} (exists: {schema_file.exists()})")
+            try:
+                # Get schema from already registered plugin server instead of reloading from file
+                plugin_server = plugin_registry.get_server(plugin_id)
                 
-                if schema_file.exists():
-                    try:
-                        with open(schema_file, 'r') as f:
-                            schema = yaml.safe_load(f)
-                        logger.info(f"Loaded schema for {plugin_id}: {schema}")
+                if plugin_server and plugin_server.plugin_schema:
+                    schema = plugin_server.plugin_schema
+                    logger.info(f"Got schema for {plugin_id} from plugin server")
+                    
+                    web_ui = schema.get('web_ui') if schema else None
+                    logger.info(f"Web UI config for {plugin_id}: {web_ui}")
+                    
+                    if web_ui:
+                        # Check button.enabled
+                        button_config = web_ui.get('button', {})
+                        button_enabled = button_config.get('enabled', False)
                         
-                        web_ui = schema.get('web_ui') if schema else None
-                        logger.info(f"Web UI config for {plugin_id}: {web_ui}")
-                        
-                        if web_ui:
-                            # Check button.enabled
-                            button_config = web_ui.get('button', {})
-                            button_enabled = button_config.get('enabled', False)
+                        if button_enabled:
+                            panel_config = web_ui.get('panel', {})
                             
-                            if button_enabled:
-                                panel_config = web_ui.get('panel', {})
-                                
-                                plugin_metadata = PluginUIMetadata(
-                                    id=plugin_id,
-                                    name=plugin_info.get('name', plugin_id),
-                                    enabled=True,
-                                    button_text=button_config.get('text', plugin_id.replace('_', ' ').title()),
-                                    button_icon=button_config.get('icon'),
-                                    panel_title=panel_config.get('title', plugin_info.get('name', plugin_id)),
-                                    panel_endpoint=panel_config.get('endpoint', f'/plugins/{plugin_id}/panel'),
-                                    panel_type=panel_config.get('type', 'fetch'),
-                                    description=panel_config.get('description', plugin_info.get('description'))
-                                )
-                                ui_plugins.append(plugin_metadata)
-                                logger.info(f"Added UI plugin button: {plugin_metadata}")
-                            else:
-                                logger.info(f"Plugin {plugin_id} button disabled in schema")
+                            plugin_metadata = PluginUIMetadata(
+                                id=plugin_id,
+                                name=plugin_info.get('name', plugin_id),
+                                enabled=True,
+                                button_text=button_config.get('text', plugin_id.replace('_', ' ').title()),
+                                button_icon=button_config.get('icon'),
+                                panel_title=panel_config.get('title', plugin_info.get('name', plugin_id)),
+                                panel_endpoint=panel_config.get('endpoint', f'/plugins/{plugin_id}/panel'),
+                                panel_type=panel_config.get('type', 'fetch'),
+                                description=panel_config.get('description', plugin_info.get('description'))
+                            )
+                            ui_plugins.append(plugin_metadata)
+                            logger.info(f"Added UI plugin button: {plugin_metadata}")
                         else:
-                            logger.info(f"Plugin {plugin_id} has no web_ui config")
-                    except Exception as schema_error:
-                        logger.error(f"Error parsing schema for {plugin_id}: {schema_error}")
+                            logger.info(f"Plugin {plugin_id} button disabled in schema")
+                    else:
+                        logger.info(f"Plugin {plugin_id} has no web_ui config")
                 else:
-                    logger.warning(f"Schema file does not exist: {schema_file}")
-            else:
-                logger.info(f"No schema path for plugin {plugin_id}")
+                    logger.info(f"No plugin server or schema found for {plugin_id}")
+            except Exception as schema_error:
+                logger.error(f"Error processing plugin {plugin_id}: {schema_error}")
         
         logger.info(f"Returning {len(ui_plugins)} UI plugins: {ui_plugins}")
         return ui_plugins

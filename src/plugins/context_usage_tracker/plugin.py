@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.factory import resolve_llm_config_for_agent
+from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .tracker import UsageTracker
 from .web_endpoints import ContextUsageWebFactory
 
@@ -92,7 +93,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             return HookResult(success=True, modified=False, context=context)
 
 
-class ContextUsageTrackerPlugin:
+class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
     """Hybrid plugin combining hooks and web UI for context usage tracking."""
     
     def __init__(self, name: str, system_config: Dict[str, Any], mcp_config: Dict[str, Any]):
@@ -104,9 +105,8 @@ class ContextUsageTrackerPlugin:
             system_config: System configuration
             mcp_config: MCP configuration
         """
-        self.name = name
-        self.system_config = system_config
-        self.mcp_config = mcp_config
+        # Initialize base class (loads schema automatically)
+        super().__init__(name, system_config, mcp_config)
         
         plugin_dir = Path(__file__).parent
         

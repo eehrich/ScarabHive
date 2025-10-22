@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import httpx
 
 from agent_system.llm.clients import LLMClient
-from agent_system.utils.cancellation import CancellationToken
+from agent_system.core.cancellation import CancellationToken
 
 logger = logging.getLogger(__name__)
 

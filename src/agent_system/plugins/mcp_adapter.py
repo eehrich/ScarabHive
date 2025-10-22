@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
-import json
 from pathlib import Path
 
 from ..mcp.core import MCPServer, MCPTool, MCPCapability
 from .web_adapter import PluginWebInterface, plugin_web_registry
+from .schema_loader import load_schema_from_dir
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
@@ -113,11 +113,12 @@ class PluginMCPAdapter(MCPServer):
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """Call a tool on the underlying plugin"""
         try:
+            # Prefer call_with_status() for automatic status scope management
             if hasattr(self.plugin_server, 'call_with_status'):
                 result = await self.plugin_server.call_with_status(name, arguments)
                 return result
             elif hasattr(self.plugin_server, 'call'):
-                # Fallback for plugins that haven't been updated yet
+                # Fallback to call() for plugins without status support
                 result = await self.plugin_server.call(name, arguments)
                 return result
             else:
@@ -146,6 +147,39 @@ class PluginMCPRegistry:
                 self.plugin_factories.update(factories)
                 logger.info(f"Discovered {len(factories)} plugins from {plugin_dir}")
 
+    def register_existing_plugin_instance(self, name: str, plugin_instance, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """Register an already-instantiated plugin instance (to prevent duplicate creation).
+        
+        Used when bootstrap has already created the plugin and we want to register it
+        in the plugin_mcp_registry without creating a second instance.
+        """
+        if name in self.plugin_servers:
+            logger.debug(f"Plugin {name} already registered, skipping duplicate registration")
+            return
+            
+        # Load schema if available
+        schema = None
+        
+        # Try to get schema from plugin server
+        if hasattr(plugin_instance, 'get_schema_data'):
+            try:
+                schema = plugin_instance.get_schema_data()
+                logger.debug(f"Loaded schema for plugin {name} from existing instance")
+            except Exception as e:
+                logger.warning(f"Failed to load schema from plugin instance {name}: {e}")
+        
+        # Create MCP adapter
+        mcp_adapter = PluginMCPAdapter(name, plugin_instance, schema)
+        self.plugin_servers[name] = mcp_adapter
+        
+        # Register web capabilities if supported
+        plugin_metadata = {'name': name, 'description': getattr(plugin_instance, 'description', '')}
+        if hasattr(plugin_instance, 'get_web_router'):
+            plugin_web_registry.register_web_plugin(name, plugin_instance, plugin_metadata)
+            logger.debug(f"Registered web capabilities for existing plugin {name}")
+        
+        logger.info(f"Registered existing plugin instance {name} in plugin_mcp_registry")
+    
     async def register_plugin(self, name: str, config: Optional[Dict[str, Any]] = None, parent_config: Optional[Dict[str, Any]] = None) -> None:
         """Register a plugin as an MCP server"""
         if name not in self.plugin_factories:
@@ -263,13 +297,11 @@ class PluginMCPRegistry:
 
             if schema_file:
                 try:
-                    import yaml
-                    with open(schema_file, 'r', encoding='utf-8') as f:
-                        if schema_file.suffix == '.json':
-                            schema = json.load(f)
-                        else:
-                            schema = yaml.safe_load(f)
-                    logger.debug(f"Loaded schema for plugin {name} from file (no template support)")
+                    # Use template-aware loader for consistency
+                    plugin_dir = schema_file.parent
+                    template_vars = {'name': name}
+                    schema = load_schema_from_dir(plugin_dir, template_vars)
+                    logger.debug(f"Loaded schema for plugin {name} from file with template support")
                 except Exception as e:
                     logger.warning(f"Failed to load schema for plugin {name}: {e}")
 
@@ -414,13 +446,11 @@ class PluginMCPRegistry:
 
             if schema_file:
                 try:
-                    import yaml
-                    with open(schema_file, 'r', encoding='utf-8') as f:
-                        if schema_file.suffix == '.json':
-                            schema = json.load(f)
-                        else:
-                            schema = yaml.safe_load(f)
-                    logger.debug(f"Loaded schema for plugin {name} from file (no template support)")
+                    # Use template-aware loader for consistency
+                    plugin_dir = schema_file.parent
+                    template_vars = {'name': name}
+                    schema = load_schema_from_dir(plugin_dir, template_vars)
+                    logger.debug(f"Loaded schema for plugin {name} from file with template support")
                 except Exception as e:
                     logger.warning(f"Failed to load schema for plugin {name}: {e}")
 

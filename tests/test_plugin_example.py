@@ -107,7 +107,7 @@ class TestExampleServerTools:
 
     def test_no_manual_call_override(self):
         """Test that ExampleServer doesn't override call()."""
-        # Should not have call() in its own __dict__ (inherits from SchemaBasedMixin)
+        # Should not have call() in its own __dict__ (inherits from SchemaBasedToolMixin)
         assert 'call' not in ExampleServer.__dict__
 
 

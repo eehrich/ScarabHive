@@ -90,11 +90,6 @@ class TestUserManagementPlugin:
         assert result["status"] == "ok"
         assert result["active"] is False
     
-    def test_get_tools_returns_empty(self, plugin):
-        """Test get_tools returns empty list (web-only plugin)"""
-        tools = plugin.get_tools()
-        assert tools == []
-    
     def test_web_router_creation(self, plugin):
         """Test that plugin creates a web router"""
         router = plugin.get_web_router()

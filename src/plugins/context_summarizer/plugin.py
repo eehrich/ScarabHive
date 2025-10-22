@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Dict, Any, TYPE_CHECKING
 
+from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .hooks import ContextSummarizerPlugin
 from .web_endpoints import ContextSummarizerWebFactory
 
@@ -15,14 +16,13 @@ if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, MCPConfig
 
 
-class ContextSummarizerHybridPlugin:
+class ContextSummarizerHybridPlugin(SchemaBasedPluginWebInterface):
     """Hybrid plugin that provides both hooks and web capabilities."""
     
     def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
         """Initialize with standard hybrid plugin signature."""
-        self.name = name
-        self.system_config = system_config
-        self.mcp_config = mcp_config
+        # Initialize base class (loads schema automatically)
+        super().__init__(name, system_config, mcp_config)
         
         plugin_dir = Path(__file__).parent
         

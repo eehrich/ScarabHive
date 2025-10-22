@@ -9,7 +9,7 @@ import logging
 from typing import Any, Dict, List, Optional, Union
 
 from ...config.models import AgentSystemConfig, MCPConfig
-from ...utils.cancellation import get_cancellation_manager, configure_cancellation_manager
+from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...llm.models import ChatMessage

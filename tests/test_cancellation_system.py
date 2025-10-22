@@ -7,7 +7,7 @@ import pytest
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-from agent_system.utils.cancellation import (
+from agent_system.core.cancellation import (
     get_cancellation_manager, 
     cancellable_operation, 
     CancellationError,

@@ -29,7 +29,7 @@ async def test_check_connection_lazy_vs_active(mock_system_config, empty_mcp_con
     plugin.mcp_server.connection_manager.machines = {}
 
     # If lazy=True and machine never created, should report machine not configured
-    result_lazy = await plugin.mcp_server.ssh_control_check_connection({'machine': 'nope', 'active': False})
+    result_lazy = await plugin.mcp_server.check_connection({'machine': 'nope', 'active': False})
     assert result_lazy['total_machines'] == 1
     assert isinstance(result_lazy['statuses'], list)
     assert result_lazy['statuses'][0]['connected'] is False
@@ -67,14 +67,14 @@ async def test_check_connection_lazy_vs_active(mock_system_config, empty_mcp_con
         return {'machine': name, 'connected': True, 'latency_ms': 45, 'error': None, 'last_used': None, 'not_yet_connected': False}
 
     with patch.object(plugin.mcp_server.connection_manager, 'check_connection', AsyncMock(side_effect=mock_ping)):
-        result_active = await plugin.mcp_server.ssh_control_check_connection({'machine': 'm1', 'active': True})
+        result_active = await plugin.mcp_server.check_connection({'machine': 'm1', 'active': True})
     assert result_active['total_machines'] == 1
     assert result_active['statuses'][0].get('latency_ms') == 45
 
 
 @pytest.mark.asyncio
-async def test_ssh_control_execute_basic(mock_system_config, empty_mcp_config):
-    """Test basic execution via ssh_control_execute - success and error paths."""
+async def test_execute_basic(mock_system_config, empty_mcp_config):
+    """Test basic execution via execute - success and error paths."""
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
     from plugins.ssh_control.models import MachineConfig
 
@@ -97,14 +97,14 @@ async def test_ssh_control_execute_basic(mock_system_config, empty_mcp_config):
 
     # Patch execute_command to return a success object
     with patch.object(plugin.mcp_server.connection_manager, 'execute_command', AsyncMock(return_value=ExecResult('mexec','echo hi','ok','',0,0.05))):
-        res = await plugin.mcp_server.ssh_control_execute({'machine': 'mexec', 'command': 'echo hi'})
+        res = await plugin.mcp_server.execute({'machine': 'mexec', 'command': 'echo hi'})
     assert res['total_machines'] == 1
     assert res['successful'] == 1
     assert res['failed'] == 0
 
     # Simulate non-zero exit
     with patch.object(plugin.mcp_server.connection_manager, 'execute_command', AsyncMock(return_value=ExecResult('mexec','false','', 'err', 1, 0.05))):
-        res2 = await plugin.mcp_server.ssh_control_execute({'machine': 'mexec', 'command': 'false'})
+        res2 = await plugin.mcp_server.execute({'machine': 'mexec', 'command': 'false'})
     assert res2['failed'] == 1
     assert any('exit' in (r.get('error') or '').lower() or r.get('success') is False for r in res2['results'])
 
@@ -126,11 +126,11 @@ async def test_upload_download_skeletons(mock_system_config, empty_mcp_config):
             self.success = success
 
     with patch.object(plugin.mcp_server.connection_manager, 'upload_file', AsyncMock(return_value=FileResult('none','/tmp/a','/tmp/b', 100, 0.02))):
-        res = await plugin.mcp_server.ssh_control_upload_file({'machine':'none','local_path':'/tmp/a','remote_path':'/tmp/b'})
+        res = await plugin.mcp_server.upload_file({'machine':'none','local_path':'/tmp/a','remote_path':'/tmp/b'})
     assert res['total_machines'] == 1
     assert res['successful'] == 1
 
     # Download: mock to return FileResult
     with patch.object(plugin.mcp_server.connection_manager, 'download_file', AsyncMock(return_value=FileResult('none','/tmp/a','/tmp/b', 100, 0.02))):
-        res2 = await plugin.mcp_server.ssh_control_download_file({'machine':'none','remote_path':'/tmp/b','local_path':'/tmp/a'})
+        res2 = await plugin.mcp_server.download_file({'machine':'none','remote_path':'/tmp/b','local_path':'/tmp/a'})
     assert res2['success'] is True or res2.get('total_machines',1) >= 0

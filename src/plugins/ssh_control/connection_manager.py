@@ -318,7 +318,7 @@ class SSHConnectionManager:
                 # Store full output (up to 10KB to avoid memory issues)
                 stdout_full = result.stdout[:10000] if result.stdout else ''
                 stderr_full = result.stderr[:10000] if result.stderr else ''
-                self.command_history.append({
+                entry = {
                     'machine': machine_name,
                     'command': command,
                     'stdout_preview': stdout_full,
@@ -327,7 +327,8 @@ class SSHConnectionManager:
                     'duration': duration,
                     'timestamp': start_time,
                     'success': command_result.exit_code == 0
-                })
+                }
+                self.command_history.append(entry)
             
             # Audit log
             if self.audit_log_enabled:

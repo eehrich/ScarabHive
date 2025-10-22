@@ -60,7 +60,7 @@ class ExampleServer(SchemaBasedMCPServer):
         
         logger.info(f"Example server '{name}' initialized with precision={self.precision}, max_length={self.max_text_length}")
 
-    # Tool methods - these are automatically called by SchemaBasedMixin.call() dispatcher
+    # Tool methods - these are automatically called by SchemaBasedToolMixin.call() dispatcher
     # Method names should match tool names WITHOUT the "{name}_" prefix
     # Tool "example_calculator" → method "calculator()"
     
@@ -68,7 +68,7 @@ class ExampleServer(SchemaBasedMCPServer):
         """Handle calculator operations with high precision.
         
         This method is automatically called when the "example_calculator" tool is invoked.
-        The generic dispatcher in SchemaBasedMixin strips the "example_" prefix
+        The generic dispatcher in SchemaBasedToolMixin strips the "example_" prefix
         and routes to this method.
         
         Args:

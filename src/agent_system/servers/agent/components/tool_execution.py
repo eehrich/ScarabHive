@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from ....mcp.base import MCPRegistry
     from .status_forwarding import StatusEventForwarder
 
-from ....utils.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
+from ....core.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
 from ....mcp.integration import get_mcp_integration

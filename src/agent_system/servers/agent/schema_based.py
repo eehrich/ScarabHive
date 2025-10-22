@@ -6,7 +6,7 @@ following the same pattern as SchemaBasedMCPServer.
 Most agent plugins should inherit from this class instead of Agent directly,
 as it provides the standard tool definition mechanism via schema.yaml.
 
-This class uses SchemaBasedMixin for shared functionality with SchemaBasedMCPServer.
+This class uses SchemaBasedToolMixin for shared functionality with SchemaBasedMCPServer.
 
 Features:
 - Automatic schema.yaml loading with template variable support
@@ -21,12 +21,12 @@ from __future__ import annotations
 import logging
 
 from .server import Agent
-from ...mcp.schema_mixin import SchemaBasedMixin
+from ...mcp.schema_mixin import SchemaBasedToolMixin
 
 logger = logging.getLogger(__name__)
 
 
-class SchemaBasedAgent(SchemaBasedMixin, Agent):
+class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
     """Agent that automatically loads tools from schema.yaml.
     
     This class eliminates the need for agent plugins to implement
@@ -60,7 +60,7 @@ class SchemaBasedAgent(SchemaBasedMixin, Agent):
     
     The {{name}} template variable is automatically replaced with the agent's name.
     
-    Note: This class uses SchemaBasedMixin's call() dispatcher for tool routing,
+    Note: This class uses SchemaBasedToolMixin's call() dispatcher for tool routing,
     which differs from Agent's simplified call() interface that only handles
     "run", "execute", and "ask" actions.
     """

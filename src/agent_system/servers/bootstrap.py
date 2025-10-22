@@ -76,6 +76,12 @@ def bootstrap_servers(config: AgentSystemConfig, registry: MCPRegistry) -> None:
                 inst = factory(key, config, server_mcp_cfg)
                 registry.register(key, inst)
                 
+                # CRITICAL FIX: Also register in global plugin_mcp_registry to prevent duplicate instantiation
+                # during MCP integration initialization (which uses plugin_mcp_registry)
+                from ..plugins.mcp_adapter import plugin_mcp_registry
+                plugin_mcp_registry.register_existing_plugin_instance(key, inst, config, server_mcp_cfg)
+                logger.debug(f"Registered plugin '{key}' in both registries (MCPRegistry + PluginMCPRegistry)")
+                
                 # Agent plugins need shared registry access to call other plugins
                 from agent_system.servers.agent.server import Agent as _Agent
                 if isinstance(inst, _Agent):

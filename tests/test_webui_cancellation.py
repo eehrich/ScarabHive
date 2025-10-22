@@ -50,7 +50,7 @@ class TestWebUICancellation:
     @pytest.mark.asyncio
     async def test_cancellation_manager_integration(self):
         """Test that cancellation manager is properly integrated."""
-        from agent_system.utils.cancellation import get_cancellation_manager
+        from agent_system.core.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -66,7 +66,7 @@ class TestWebUICancellation:
     async def test_tool_execution_with_cancellation(self):
         """Test tool execution cancellation integration."""
         from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-        from agent_system.utils.cancellation import get_cancellation_manager
+        from agent_system.core.cancellation import get_cancellation_manager
         
         # Create tool manager
         tool_manager = ToolExecutionManager(registry=None, agent=None)
@@ -97,7 +97,7 @@ class TestCancellationFlow:
     @pytest.mark.asyncio
     async def test_basic_cancellation_flow(self):
         """Test basic cancellation flow."""
-        from agent_system.utils.cancellation import (
+        from agent_system.core.cancellation import (
             get_cancellation_manager, 
             cancellable_operation,
             CancellationError
@@ -142,7 +142,7 @@ class TestCancellationFlow:
     @pytest.mark.asyncio
     async def test_forced_cancellation_flow(self):
         """Test forced cancellation of stubborn tools."""
-        from agent_system.utils.cancellation import (
+        from agent_system.core.cancellation import (
             CancellationManager,
             cancellable_operation
         )
@@ -221,7 +221,7 @@ class TestAPIEndpoints:
     @pytest.mark.asyncio
     async def test_mock_api_cancellation(self):
         """Test cancellation through mocked API calls."""
-        from agent_system.utils.cancellation import get_cancellation_manager
+        from agent_system.core.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -249,7 +249,7 @@ class TestCancellationRobustness:
     @pytest.mark.asyncio
     async def test_multiple_concurrent_cancellations(self):
         """Test handling multiple concurrent cancellation requests."""
-        from agent_system.utils.cancellation import get_cancellation_manager
+        from agent_system.core.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -270,7 +270,7 @@ class TestCancellationRobustness:
     @pytest.mark.asyncio
     async def test_cancellation_of_nonexistent_request(self):
         """Test cancelling a request that doesn't exist."""
-        from agent_system.utils.cancellation import get_cancellation_manager
+        from agent_system.core.cancellation import get_cancellation_manager
         
         manager = get_cancellation_manager()
         
@@ -281,7 +281,7 @@ class TestCancellationRobustness:
     @pytest.mark.asyncio
     async def test_cleanup_after_cancellation(self):
         """Test that resources are properly cleaned up after cancellation."""
-        from agent_system.utils.cancellation import (
+        from agent_system.core.cancellation import (
             get_cancellation_manager,
             cancellable_operation,
             CancellationError

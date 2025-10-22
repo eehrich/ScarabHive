@@ -44,7 +44,7 @@ async def test_add_machine_success(mock_system_config, empty_mcp_config, mock_co
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
         
-        result = await plugin.mcp_server.ssh_control_add_machine({
+        result = await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser',
@@ -70,7 +70,7 @@ async def test_add_machine_missing_required_params(mock_system_config, empty_mcp
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
     
     # Missing 'name'
-    result = await plugin.mcp_server.ssh_control_add_machine({
+    result = await plugin.mcp_server.add_machine({
         'host': '192.168.1.100',
         'username': 'testuser'
     })
@@ -78,7 +78,7 @@ async def test_add_machine_missing_required_params(mock_system_config, empty_mcp
     assert 'required' in result['error'].lower()
     
     # Missing 'host'
-    result = await plugin.mcp_server.ssh_control_add_machine({
+    result = await plugin.mcp_server.add_machine({
         'name': 'test-machine',
         'username': 'testuser'
     })
@@ -86,7 +86,7 @@ async def test_add_machine_missing_required_params(mock_system_config, empty_mcp
     assert 'required' in result['error'].lower()
     
     # Missing 'username'
-    result = await plugin.mcp_server.ssh_control_add_machine({
+    result = await plugin.mcp_server.add_machine({
         'name': 'test-machine',
         'host': '192.168.1.100'
     })
@@ -104,7 +104,7 @@ async def test_add_machine_duplicate_name(mock_system_config, empty_mcp_config, 
     # Add first machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        result = await plugin.mcp_server.ssh_control_add_machine({
+        result = await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -112,7 +112,7 @@ async def test_add_machine_duplicate_name(mock_system_config, empty_mcp_config, 
         assert result['success'] is True
     
     # Try to add duplicate
-    result = await plugin.mcp_server.ssh_control_add_machine({
+    result = await plugin.mcp_server.add_machine({
         'name': 'test-machine',
         'host': '192.168.1.101',
         'username': 'testuser2'
@@ -134,7 +134,7 @@ async def test_add_machine_connection_test_failure(mock_system_config, empty_mcp
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                side_effect=asyncssh.PermissionDenied('Authentication failed', 'PERMISSION_DENIED')):
         
-        result = await plugin.mcp_server.ssh_control_add_machine({
+        result = await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -160,7 +160,7 @@ async def test_add_machine_connection_timeout(mock_system_config, empty_mcp_conf
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection',
                side_effect=timeout_connection):
         
-        result = await plugin.mcp_server.ssh_control_add_machine({
+        result = await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -187,7 +187,7 @@ async def test_add_machine_persistent_flag(mock_system_config, empty_mcp_config,
          patch('yaml.safe_load', return_value=mock_config), \
          patch('yaml.safe_dump') as mock_dump:
         
-        result = await plugin.mcp_server.ssh_control_add_machine({
+        result = await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser',
@@ -209,7 +209,7 @@ async def test_remove_machine_success(mock_system_config, empty_mcp_config, mock
     # First add a machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        await plugin.mcp_server.ssh_control_add_machine({
+        await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -218,7 +218,7 @@ async def test_remove_machine_success(mock_system_config, empty_mcp_config, mock
     assert 'test-machine' in plugin.mcp_server.connection_manager.machines
     
     # Now remove it
-    result = await plugin.mcp_server.ssh_control_remove_machine({
+    result = await plugin.mcp_server.remove_machine({
         'name': 'test-machine'
     })
     
@@ -233,7 +233,7 @@ async def test_remove_machine_not_found(mock_system_config, empty_mcp_config):
     
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
     
-    result = await plugin.mcp_server.ssh_control_remove_machine({
+    result = await plugin.mcp_server.remove_machine({
         'name': 'nonexistent-machine'
     })
     
@@ -248,7 +248,7 @@ async def test_remove_machine_missing_name(mock_system_config, empty_mcp_config)
     
     plugin = PLUGIN_FACTORY('ssh_control_test', mock_system_config, empty_mcp_config)
     
-    result = await plugin.mcp_server.ssh_control_remove_machine({})
+    result = await plugin.mcp_server.remove_machine({})
     
     assert result['success'] is False
     assert 'required' in result['error'].lower()
@@ -264,7 +264,7 @@ async def test_remove_machine_cleanup_connections(mock_system_config, empty_mcp_
     # Add machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        await plugin.mcp_server.ssh_control_add_machine({
+        await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -276,7 +276,7 @@ async def test_remove_machine_cleanup_connections(mock_system_config, empty_mcp_
     plugin.mcp_server.connection_manager.pools['test-machine'] = mock_pool
     
     # Remove machine
-    result = await plugin.mcp_server.ssh_control_remove_machine({
+    result = await plugin.mcp_server.remove_machine({
         'name': 'test-machine'
     })
     
@@ -296,7 +296,7 @@ async def test_remove_machine_from_config(mock_system_config, empty_mcp_config, 
     # Add machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        await plugin.mcp_server.ssh_control_add_machine({
+        await plugin.mcp_server.add_machine({
             'name': 'test-machine',
             'host': '192.168.1.100',
             'username': 'testuser'
@@ -317,7 +317,7 @@ async def test_remove_machine_from_config(mock_system_config, empty_mcp_config, 
          patch('yaml.safe_load', return_value=mock_config), \
          patch('yaml.safe_dump') as mock_dump:
         
-        result = await plugin.mcp_server.ssh_control_remove_machine({
+        result = await plugin.mcp_server.remove_machine({
             'name': 'test-machine',
             'remove_from_config': True
         })
@@ -338,7 +338,7 @@ async def test_add_remove_machine_integration(mock_system_config, empty_mcp_conf
     # Add machine
     with patch('plugins.ssh_control.auth.SSHAuthenticator.create_connection', 
                AsyncMock(return_value=mock_connection)):
-        add_result = await plugin.mcp_server.ssh_control_add_machine({
+        add_result = await plugin.mcp_server.add_machine({
             'name': 'integration-test',
             'host': '192.168.1.200',
             'username': 'admin',
@@ -355,7 +355,7 @@ async def test_add_remove_machine_integration(mock_system_config, empty_mcp_conf
     assert 'test' in machine.tags
     
     # Remove machine
-    remove_result = await plugin.mcp_server.ssh_control_remove_machine({
+    remove_result = await plugin.mcp_server.remove_machine({
         'name': 'integration-test'
     })
     
