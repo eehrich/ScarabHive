@@ -1,12 +1,13 @@
 """
-Security Utilities
+Authentication and Security Utilities
 
-Provides password hashing, JWT token generation and validation, and other security utilities.
+Provides password hashing, JWT token management, and API key handling.
 """
 
 from __future__ import annotations
 
 import secrets
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import hashlib
@@ -19,7 +20,8 @@ from agent_system.auth.models import TokenData, UserRole
 
 
 # JWT settings (will be overridden by config)
-SECRET_KEY = "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION"  # Override in config
+# Use environment variable or generate secure random key
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or secrets.token_urlsafe(64)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

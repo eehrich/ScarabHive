@@ -326,7 +326,7 @@ class AuthConfig(BaseModel):
     
     # Default admin user (created on first startup if no users exist)
     default_admin_username: str = "admin"
-    default_admin_password: str = "admin"  # CHANGE THIS IN PRODUCTION
+    default_admin_password: Optional[str] = None  # Generated randomly if not set
     default_admin_email: str = "admin@localhost"
 
 

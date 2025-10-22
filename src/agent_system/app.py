@@ -455,18 +455,47 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not users:
             logger.info("No users found, creating default admin user...")
             try:
+                # Generate secure random password if not configured
+                admin_password = config.auth.default_admin_password
+                if not admin_password:
+                    import secrets
+                    admin_password = secrets.token_urlsafe(16)
+                
                 default_admin = UserCreate(
                     username=config.auth.default_admin_username,
                     email=config.auth.default_admin_email,
-                    password=config.auth.default_admin_password,
+                    password=admin_password,
                     full_name="Default Administrator",
                     role=UserRole.ADMIN,
                     is_active=True
                 )
                 db.create_user(default_admin)
                 logger.warning(
-                    f"Default admin user created: {config.auth.default_admin_username} / "
-                    f"{config.auth.default_admin_password} - CHANGE PASSWORD IMMEDIATELY!"
+                    "╔═══════════════════════════════════════════════════════════════╗"
+                )
+                logger.warning(
+                    "║  DEFAULT ADMIN USER CREATED - SAVE THESE CREDENTIALS!        ║"
+                )
+                logger.warning(
+                    "╠═══════════════════════════════════════════════════════════════╣"
+                )
+                logger.warning(
+                    f"║  Username: {config.auth.default_admin_username:<50}║"
+                )
+                logger.warning(
+                    f"║  Password: {admin_password:<50}║"
+                )
+                logger.warning(
+                    f"║  Email:    {config.auth.default_admin_email:<50}║"
+                )
+                logger.warning(
+                    "╠═══════════════════════════════════════════════════════════════╣"
+                )
+                logger.warning(
+                    "║  ⚠️  CHANGE PASSWORD IMMEDIATELY AFTER FIRST LOGIN!          ║"
+                )
+                logger.warning(
+                    "╚═══════════════════════════════════════════════════════════════╝"
                 )
             except Exception as e:
                 logger.error(f"Failed to create default admin user: {e}")
