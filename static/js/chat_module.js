@@ -722,29 +722,6 @@
             try { global.currentSessionId = currentSessionId; } catch (e) {}
             console.log('Request started with ID:', currentRequestId, 'Session ID:', currentSessionId);
             
-            // Open status stream filtered by this request_id
-            if (currentRequestId && !currentStatusEventSource) {
-              try {
-                const statusUrl = `/status/stream?request_id=${encodeURIComponent(currentRequestId)}`;
-                const statusEs = new EventSource(statusUrl);
-                currentStatusEventSource = statusEs;
-                statusEs.onmessage = (ev) => {
-                  try {
-                    const statusData = JSON.parse(ev.data);
-                    addStatusEvent(blk.status, statusData);
-                  } catch (err) {
-                    // ignore JSON parse errors
-                  }
-                };
-                statusEs.onerror = () => {
-                  console.warn('Status stream error, will not reconnect');
-                  statusEs.close();
-                };
-              } catch (err) {
-                console.warn('Failed to open status stream:', err);
-              }
-            }
-            
             // Notify session manager about new/updated session
             if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
               window.sessionManager.onSessionUpdated(currentSessionId);
@@ -865,7 +842,22 @@
             currentStatusEventSource = null;
           }
           
-          // Status stream will be opened when we receive the 'start' event with request_id
+          // Open status stream for MCP call updates
+          let statusEs = null;
+          try {
+            statusEs = new EventSource('/status/stream');
+            currentStatusEventSource = statusEs; // Track current status event source
+            statusEs.onmessage = (ev) => {
+              try {
+                const statusData = JSON.parse(ev.data);
+                addStatusEvent(blk.status, statusData);
+              } catch (err) {
+                // ignore JSON parse errors
+              }
+            };
+          } catch (err) {
+            console.warn('Status stream not available:', err);
+          }
 
           // Stream SSE response from /run endpoint
           const response = await fetch('/run', {
@@ -978,7 +970,22 @@
         currentStatusEventSource = null;
       }
       
-      // Status stream will be opened when we receive the 'start' event with request_id
+      let statusEs = null;
+
+      try {
+        statusEs = new EventSource('/status/stream');
+        currentStatusEventSource = statusEs; // Track current status event source
+        statusEs.onmessage = (ev) => {
+          try {
+            const statusData = JSON.parse(ev.data);
+            addStatusEvent(blk.status, statusData);
+          } catch (err) {
+            // ignore JSON parse errors
+          }
+        };
+      } catch (err) {
+        console.warn('Status stream not available:', err);
+      }
 
       es.onopen = () => { sseOk = true; };
 
