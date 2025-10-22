@@ -55,53 +55,78 @@ class MCPIntegration:
 
 
     async def initialize(self, config: AgentSystemConfig) -> None:
-        """Initialize MCP integration from configuration"""
+        """Initialize MCP integration from configuration."""
         if self.initialized:
             return
 
-        # Set cache TTL on client manager (for their internal caching)
+        await self._initialize_cache_settings(config)
+        await self._discover_and_register_plugins(config)
+        await self._register_plugin_http_endpoints()
+        await self._register_plugin_hooks(config)
+        await self._connect_external_servers(config)
+
+        self.initialized = True
+        logger.info("MCP integration initialized successfully")
+
+    async def _initialize_cache_settings(self, config: AgentSystemConfig) -> None:
+        """Set cache TTL on client manager."""
         if config.external_servers and config.external_servers.cache:
             ttl = config.external_servers.cache.tool_list_ttl
             self.client_manager.set_cache_ttl(ttl)
             logger.debug(f"MCP client manager cache TTL set to {ttl}s")
 
-        # Discover and register plugins (only if not already done by another MCPIntegration instance)
-        # The plugin_registry is a global singleton, so we need to check if plugins are already registered
+    async def _discover_and_register_plugins(self, config: AgentSystemConfig) -> None:
+        """Discover and register enabled plugins."""
         plugin_dirs = ['src/plugins']  # Default plugin directory
         
-        # Check if plugins are already discovered
+        # Check if plugins are already discovered (singleton registry)
         if not self.plugin_registry.plugin_factories:
             logger.debug("Discovering plugins for the first time")
             self.plugin_registry.discover_plugins(plugin_dirs)
         else:
-            logger.debug(f"Plugins already discovered ({len(self.plugin_registry.plugin_factories)} factories available)")
+            logger.debug(
+                f"Plugins already discovered "
+                f"({len(self.plugin_registry.plugin_factories)} factories available)"
+            )
 
-        # Register enabled plugins as MCP servers
-        # Use servers from config.plugins.servers (Dict[str, MCPConfig])
+        # Get enabled servers from config
         servers_config = config.plugins.servers if config.plugins and config.plugins.servers else {}
-        enabled_servers = [name for name, server_cfg in servers_config.items() if server_cfg.enabled]
+        enabled_servers = [
+            name for name, server_cfg in servers_config.items() 
+            if server_cfg.enabled
+        ]
         
         logger.debug(f"MCP integration - enabled servers: {enabled_servers}")
-        logger.debug(f"MCP integration - already registered servers: {list(self.plugin_registry.plugin_servers.keys())}")
+        logger.debug(
+            f"MCP integration - already registered servers: "
+            f"{list(self.plugin_registry.plugin_servers.keys())}"
+        )
 
         # Only register plugins that are not already registered
-        # This prevents duplicate registration when multiple MCPIntegration instances are created
-        servers_to_register = [name for name in enabled_servers if name not in self.plugin_registry.plugin_servers]
+        servers_to_register = [
+            name for name in enabled_servers 
+            if name not in self.plugin_registry.plugin_servers
+        ]
         
         if servers_to_register:
             logger.debug(f"Registering new servers: {servers_to_register}")
-            # Pass complete AgentSystemConfig for plugin registration
-            await self.plugin_registry.register_from_config(servers_to_register, servers_config, config)
+            await self.plugin_registry.register_from_config(
+                servers_to_register, 
+                servers_config, 
+                config
+            )
         else:
             logger.debug("All enabled servers already registered, skipping re-registration")
 
-        # Register plugin servers with HTTP server
+    async def _register_plugin_http_endpoints(self) -> None:
+        """Register plugin servers with HTTP server."""
         for server_name in self.plugin_registry.list_servers():
             server = self.plugin_registry.get_server(server_name)
             if server:
                 self.http_server.register_server(server_name, server)
 
-        # Register hooks from plugins
+    async def _register_plugin_hooks(self, config: AgentSystemConfig) -> None:
+        """Register hooks from plugins."""
         from ..plugins.discovery import register_plugin_hooks
         from ..hooks import load_hooks_config
         
@@ -110,59 +135,75 @@ class MCPIntegration:
         for server_name in self.plugin_registry.list_servers():
             server = self.plugin_registry.get_server(server_name)
             
-            if server and hasattr(server, 'plugin_schema') and server.plugin_schema:
-                plugin_schema = server.plugin_schema
+            if not server or not hasattr(server, 'plugin_schema') or not server.plugin_schema:
+                continue
+            
+            plugin_schema = server.plugin_schema
+            if 'hooks' not in plugin_schema:
+                continue
+            
+            # Get the actual plugin instance (unwrap PluginMCPAdapter)
+            plugin_instance = server.plugin_server if hasattr(server, 'plugin_server') else server
+            
+            # For hybrid plugins, get the hooks_plugin attribute
+            if hasattr(plugin_instance, 'hooks_plugin'):
+                plugin_instance = plugin_instance.hooks_plugin
+            
+            try:
+                registered_hooks = await register_plugin_hooks(
+                    plugin_name=server_name,
+                    plugin_instance=plugin_instance,
+                    metadata=plugin_schema,
+                    hooks_config=hooks_config
+                )
+                if registered_hooks:
+                    logger.info(
+                        f"Registered {len(registered_hooks)} hook(s) "
+                        f"for plugin '{server_name}': {registered_hooks}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Failed to register hooks for plugin '{server_name}': {e}",
+                    exc_info=True
+                )
+
+    async def _connect_external_servers(self, config: AgentSystemConfig) -> None:
+        """Connect to external MCP servers."""
+        if not config.external_servers or not config.external_servers.remote_servers:
+            return
+
+        remote_servers = config.external_servers.remote_servers
+        
+        # Store enabled servers
+        self.configured_external_servers = {
+            name: server_config
+            for name, server_config in remote_servers.items()
+            if server_config.enabled
+        }
+        
+        # Connect to enabled servers
+        ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
+        timeout = (
+            config.external_servers.connection.timeout 
+            if config.external_servers and config.external_servers.connection
+            else 30.0
+        )
+        
+        for server_name, server_config in remote_servers.items():
+            if not server_config.enabled:
+                logger.debug(f"Skipping disabled external MCP server: {server_name}")
+                continue
                 
-                if 'hooks' in plugin_schema:
-                    # Get the actual plugin instance (unwrap PluginMCPAdapter)
-                    plugin_instance = server.plugin_server if hasattr(server, 'plugin_server') else server
-                    
-                    # For hybrid plugins, get the hooks_plugin attribute
-                    if hasattr(plugin_instance, 'hooks_plugin'):
-                        plugin_instance = plugin_instance.hooks_plugin
-                    
-                    try:
-                        registered_hooks = await register_plugin_hooks(
-                            plugin_name=server_name,
-                            plugin_instance=plugin_instance,
-                            metadata=plugin_schema,
-                            hooks_config=hooks_config
-                        )
-                        if registered_hooks:
-                            logger.info(f"Registered {len(registered_hooks)} hook(s) for plugin '{server_name}': {registered_hooks}")
-                    except Exception as e:
-                        logger.error(f"Failed to register hooks for plugin '{server_name}': {e}", exc_info=True)
-
-        # Connect to external MCP servers from new config format
-        if config.external_servers and config.external_servers.remote_servers:
-            remote_servers = config.external_servers.remote_servers
-            
-            # Only store enabled servers
-            self.configured_external_servers = {
-                name: server_config
-                for name, server_config in remote_servers.items()
-                if server_config.enabled
-            }
-            
-            # Connect to enabled servers
-            for server_name, server_config in remote_servers.items():
-                if not server_config.enabled:
-                    logger.debug(f"Skipping disabled external MCP server: {server_name}")
-                    continue
-                    
-                try:
-                    ssl_verify = self.config.network.ssl_verify if self.config and self.config.network else True
-                    timeout = config.external_servers.connection.timeout if (
-                        config.external_servers and 
-                        config.external_servers.connection
-                    ) else 30.0
-                    await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
-                    logger.info(f"Connected to external MCP server: {server_name}")
-                except Exception as e:
-                    logger.debug(f"Failed to connect to external MCP server {server_name}: {e}")
-
-        self.initialized = True
-        logger.info("MCP integration initialized successfully")
+            try:
+                await self.client_manager.add_client(
+                    server_name, 
+                    server_config, 
+                    ssl_verify=ssl_verify, 
+                    timeout=timeout
+                )
+                logger.info(f"Connected to external MCP server: {server_name}")
+            except Exception as e:
+                logger.debug(f"Failed to connect to external MCP server {server_name}: {e}")
 
     async def shutdown(self) -> None:
         """Shutdown MCP integration"""
