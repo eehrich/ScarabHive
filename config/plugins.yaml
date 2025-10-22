@@ -106,6 +106,9 @@ plugins:
           allowed:
             - "duckduckgo_search/*"
             - "web_scraper/*"
+      
+      metadata:
+        visibility: "both"  # Make available as tool for meta_web_research_agent
     
     ibkr:
       type: ibkr
