@@ -25,6 +25,7 @@ from .components.tool_execution import ToolExecutionManager
 from .components.status_forwarding import StatusEventForwarder
 from .prompt_strategies import PromptRenderer, PromptContext
 from .tool_discovery import ToolDiscoveryService
+from .tool_schema_builder import ToolSchemaBuilder
 
 
 logger = logging.getLogger(__name__)
@@ -815,88 +816,16 @@ class Agent(MCPServer):
             # Track messages for debugging
             self._current_messages = messages.copy()
 
-            # Build tool schemas and maintain mapping for external tools
-            tools_schema: List[Dict] = []
-            tool_name_mapping = {}  # Maps OpenAI-compatible names to original names
-
-            # Build schemas for external MCP tools
-            external_schemas, external_mapping = await self._mcp_integration_manager.build_tool_schemas(available_tools)
-            tools_schema.extend(external_schemas)
-            tool_name_mapping.update(external_mapping)
-
-            # Build schemas for internal tools (plugins + config agents) and update available_tools
-            internal_tools_to_add: List[str] = []  # Individual tool names to add to available_tools
+            # Build tool schemas using ToolSchemaBuilder
+            schema_builder = ToolSchemaBuilder(
+                agent_name=self.name,
+                mcp_integration_manager=self._mcp_integration_manager,
+                server_getter_func=self._get_server_from_any_registry
+            )
             
-            for tool_name in available_tools.copy():  # Use copy to avoid modifying during iteration
-                if "." in tool_name:  # External tool (e.g., "context7.resolve-library-id"), skip
-                    continue
-                
-                # Get server using central method (checks both registries)
-                server = self._get_server_from_any_registry(tool_name)
-                if not server:
-                    logger.debug(f"Server '{tool_name}' not found in any registry")
-                    continue
-                
-                # Get tools from this server
-                # Prefer list_tools() over get_tools() because list_tools() applies custom descriptions
-                if hasattr(server, 'list_tools'):
-                    # Modern multi-tool interface with custom descriptions applied
-                    try:
-                        mcp_tools = await server.list_tools()
-                        # Convert MCPTool objects back to OpenAI function format
-                        server_tools = []
-                        for mcp_tool in mcp_tools:
-                            tool_schema = {
-                                "type": "function",
-                                "function": {
-                                    "name": mcp_tool.name,
-                                    "description": mcp_tool.description,
-                                    "parameters": mcp_tool.input_schema
-                                }
-                            }
-                            server_tools.append(tool_schema)
-                        
-                        tools_schema.extend(server_tools)
-                        # Map individual tool names back to the server name
-                        for tool_schema in server_tools:
-                            if tool_schema.get("type") == "function" and "function" in tool_schema:
-                                individual_tool_name = tool_schema["function"].get("name")
-                                if individual_tool_name:
-                                    tool_name_mapping[individual_tool_name] = tool_name
-                                    internal_tools_to_add.append(individual_tool_name)
-                        logger.debug(
-                            f"Added {len(server_tools)} tools from server '{tool_name}' (via list_tools with custom descriptions): "
-                            f"{[t['function']['name'] for t in server_tools if 'function' in t]}"
-                        )
-                    except Exception as e:
-                        logger.debug(f"Failed to list tools from server '{tool_name}': {e}")
-                elif hasattr(server, 'get_tools'):
-                    # Fallback to get_tools() (doesn't apply custom descriptions)
-                    try:
-                        server_tools = server.get_tools()
-                        tools_schema.extend(server_tools)
-                        # Map individual tool names back to the server name
-                        for tool_schema in server_tools:
-                            if tool_schema.get("type") == "function" and "function" in tool_schema:
-                                individual_tool_name = tool_schema["function"].get("name")
-                                if individual_tool_name:
-                                    tool_name_mapping[individual_tool_name] = tool_name
-                                    internal_tools_to_add.append(individual_tool_name)
-                        logger.debug(
-                            f"Added {len(server_tools)} tools from server '{tool_name}' (via get_tools): "
-                            f"{[t['function']['name'] for t in server_tools if 'function' in t]}"
-                        )
-                    except Exception as e:
-                        logger.debug(f"Failed to get tools from server '{tool_name}': {e}")
-                elif hasattr(server, 'get_schema'):
-                    # Fallback to legacy single-tool interface
-                    try:
-                        tools_schema.append(server.get_schema())
-                    except Exception as e:
-                        logger.debug(f"Failed to get schema from server '{tool_name}': {e}")
-            
-            # Add individual tool names to available_tools for multi-tool servers
-            available_tools.extend(internal_tools_to_add)
+            tools_schema, tool_name_mapping, available_tools = await schema_builder.build_schemas(
+                available_tools
+            )
 
             # NOTE: self_tool_descriptions is applied in MCPServer.list_tools() for own tools,
             # not here where we collect tools from OTHER servers for the agent to use.
