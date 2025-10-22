@@ -24,6 +24,7 @@ from .components.mcp_integration import MCPIntegrationManager
 from .components.tool_execution import ToolExecutionManager
 from .components.status_forwarding import StatusEventForwarder
 from .prompt_strategies import PromptRenderer, PromptContext
+from .tool_discovery import ToolDiscoveryService
 
 
 logger = logging.getLogger(__name__)
@@ -536,100 +537,28 @@ class Agent(MCPServer):
         return matched
 
     async def list_allowed_tool_servers(self) -> list[str]:
-        """Collect all available tool server names (plugins + external + registry) applying per-agent allow list.
+        """
+        Collect all available tool server names applying per-agent allow list.
 
         This centralizes tool discovery so that both the LLM prompt construction and any
         user-facing listing endpoints / plugin helper tools obtain a consistent filtered
         view. Previously the collection logic lived inline in `_run_events`; extracting
         it here avoids divergence.
+        
+        Uses ToolDiscoveryService for clean separation of concerns (Issue #11).
         """
         # Initialize MCP integration (idempotent)
         await self._mcp_integration_manager.setup_mcp_integration()
 
-        # Determine patterns first (deny-all baseline if not configured)
-        try:
-            allowed_patterns = self.agent_config.tools.allowed if self.agent_config.tools else None
-        except Exception as e:
-            logger.warning(f"Failed to get allowed_patterns from agent config: {e}", exc_info=True)
-            allowed_patterns = None
-        # If no allow list -> deny all (explicit policy change)
-        if not allowed_patterns:
-            logger.debug("Agent %s: no tools.allowed configured -> deny-all (0 tools)", self.name)
-            return []
-
-        # Gather plugin provided tool servers
-        plugin_tools: list[str] = []
-        if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
-            plugin_tools = self._mcp_integration_manager.mcp_integration.plugin_registry.list_servers()
-
-        # External + plugin + adapter tools via integration manager helper
-        available_tools = await self._mcp_integration_manager.get_available_tools(plugin_tools)
-
-        # Local registry (directly registered servers including agents)
-        # Filter by _mcp_tool_visible to only include agents exposed as tools
-        if hasattr(self, 'registry') and self.registry:
-            registry_tools = self.registry.list()
-            
-            for tool_name in registry_tools:
-                if tool_name in available_tools:
-                    continue  # Already added from plugins/external
-                
-                # Check if this is an agent and if it's exposed as a tool
-                # Default to True if _mcp_tool_visible doesn't exist (backward compatibility)
-                try:
-                    server = self.registry.get(tool_name)
-                    if hasattr(server, '_mcp_tool_visible'):
-                        if not server._mcp_tool_visible:
-                            logger.debug(
-                                f"Skipping agent '{tool_name}' in tool discovery "
-                                f"(not exposed as tool: _mcp_tool_visible=False)"
-                            )
-                            continue
-                    # else: No _mcp_tool_visible attribute → include as tool (backward compat)
-                except Exception as e:
-                    logger.debug(f"Failed to check tool visibility for '{tool_name}': {e}")
-                
-                available_tools.append(tool_name)
-
-        # Apply allow-list (guaranteed non-empty here)
-        try:
-            blocked_patterns = self.agent_config.tools.blocked if self.agent_config.tools else None
-        except Exception as e:
-            logger.warning(f"Failed to get blocked_patterns from agent config: {e}", exc_info=True)
-            blocked_patterns = None
-
-        available_tools = self._filter_available_tools(available_tools, allowed_patterns)
-        logger.debug("Filtered available tools for agent %s (allow list) -> %s", self.name, available_tools)
-        if not available_tools:
-            logger.warning("Agent %s allow list patterns produced an empty tool set", self.name)
-            # Fallback: if a global wildcard '*' was specified but nothing matched (e.g. discovery timing)
-            # attempt a second pass pulling plugin server names directly from the MCP plugin registry.
-            try:
-                if any(p == '*' for p in allowed_patterns):
-                    if (self._mcp_integration_manager.mcp_integration and
-                            self._mcp_integration_manager.mcp_integration.initialized):
-                        plugin_registry = self._mcp_integration_manager.mcp_integration.plugin_registry
-                        plugin_names = []
-                        try:
-                            plugin_names = list(plugin_registry.list_servers())
-                        except Exception as e:
-                            logger.debug(f"Failed to list plugin servers: {e}")
-                            plugin_names = []
-                        if plugin_names:
-                            logger.debug("Wildcard fallback adding plugin servers for agent %s: %s", self.name, plugin_names)
-                            available_tools = plugin_names
-            except Exception as e:
-                logger.debug(f"Wildcard plugin fallback failed: {e}")
-
-        if blocked_patterns:
-            before_block = list(available_tools)
-            available_tools = [t for t in available_tools if not self._is_tool_allowed(t, blocked_patterns)]
-            removed = set(before_block) - set(available_tools)
-            if removed:
-                logger.debug("Agent %s blocked_tools removed: %s", self.name, sorted(removed))
-            if not available_tools:
-                logger.warning("Agent %s blocked_tools removed all tools", self.name)
-        return available_tools
+        # Use ToolDiscoveryService for clean tool filtering
+        discovery_service = ToolDiscoveryService(
+            agent_name=self.name,
+            agent_config=self.agent_config,
+            mcp_integration_manager=self._mcp_integration_manager,
+            registry=self.registry if hasattr(self, 'registry') else None
+        )
+        
+        return await discovery_service.discover_allowed_tools()
 
     async def _list_available_tools(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """List all available tools that the agent can access (simplified: only names and descriptions).
