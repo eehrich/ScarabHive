@@ -8,11 +8,12 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator
 
 if TYPE_CHECKING:
     from ..server import Agent
     from ....mcp.base import MCPRegistry
+    from .status_forwarding import StatusEventForwarder
 
 from ....utils.cancellation import get_cancellation_manager, cancellable_operation, CancellationError
 from ....llm.models import ChatMessage
@@ -25,10 +26,13 @@ logger = logging.getLogger(__name__)
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
-    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None):
+    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None, 
+                 status_forwarder: Optional[StatusEventForwarder] = None):
         self.registry = registry  # Legacy registry (empty for now)
         # Optional Agent instance for centralized counters and MCP integration access
         self._agent = agent
+        # Optional StatusEventForwarder for real-time status streaming during tool execution
+        self._status_forwarder = status_forwarder
 
     def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create a JSON-serializable copy of params by excluding non-serializable objects.
@@ -103,6 +107,11 @@ class ToolExecutionManager:
     async def execute_tools(self, tool_calls: List[Dict], tool_name_mapping: Dict[str, str],
                           available_tools: List[str], step: int, request_id: str | None = None) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
         """Execute all tool calls and return tool result messages, events, and results.
+        
+        This is a convenience wrapper around execute_tools_streaming() for backward compatibility
+        and testing. It collects all streaming results and returns them as a tuple.
+        
+        For production use with real-time status streaming, use execute_tools_streaming() directly.
 
         Returns:
             Tuple of (tool_messages, events_to_yield, results_to_add)
@@ -111,15 +120,51 @@ class ToolExecutionManager:
         events_to_yield = []
         results_to_add: List[Dict] = []
         
-        # Prepare tool executions (parse arguments and validate tools)
+        # Collect all results from the streaming version
+        async for item in self.execute_tools_streaming(tool_calls, tool_name_mapping, available_tools, step, request_id):
+            if item["type"] == "status":
+                # Status events are handled by streaming version, ignored here
+                pass
+            elif item["type"] == "tool_events":
+                events_to_yield.extend(item["events"])
+            elif item["type"] == "complete":
+                tool_messages = item["messages"]
+                results_to_add = item["results"]
+
+        return tool_messages, events_to_yield, results_to_add
+
+    async def execute_tools_streaming(
+        self,
+        tool_calls: List[Dict],
+        tool_name_mapping: Dict[str, str],
+        available_tools: List[str],
+        step: int,
+        request_id: str | None = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Execute tools in parallel while streaming status events in real-time.
+        
+        This async generator allows status events from sub-agents to be streamed
+        to the client while tools are still executing, instead of buffering them
+        until all tools complete.
+        
+        Yields:
+            Dict with either:
+            - {"type": "status", "event": {...}} - Status event to forward
+            - {"type": "tool_events", "events": [...]} - Tool execution events  
+            - {"type": "complete", "messages": [...], "results": [...]} - Final results
+        """
+        tool_messages = []
+        events_to_yield = []
+        results_to_add: List[Dict] = []
+        
+        # Prepare tool executions (same as execute_tools())
         valid_tool_executions = []
 
         for i, tc in enumerate(tool_calls):
             func = tc.get("function", {})
-            openai_tool_name = func.get("name")  # This is the OpenAI-compatible name
+            openai_tool_name = func.get("name")
             raw_args = func.get("arguments")
 
-            # Map OpenAI tool name to internal tool name
             tool_name = tool_name_mapping.get(openai_tool_name, openai_tool_name)
 
             # Parse arguments
@@ -136,7 +181,6 @@ class ToolExecutionManager:
             if not tool_name or tool_name not in available_tools:
                 logger.warning("Unknown tool requested: %s (OpenAI name: %s)", tool_name, openai_tool_name)
                 events_to_yield.append({"type": "error", "message": f"Unknown tool: {tool_name}"})
-                # Add error result for this specific tool call
                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                 tool_messages.append(ChatMessage(
                     role="tool",
@@ -146,78 +190,79 @@ class ToolExecutionManager:
                 ))
                 continue
 
-            # Store valid tool execution for parallel processing
             valid_tool_executions.append((tc, tool_name, openai_tool_name, params))
 
-        # Execute all valid tools in parallel
+        # Execute all valid tools in parallel with real-time status streaming
         if valid_tool_executions:
-            import asyncio
-
             # Create tasks for parallel execution with unique request_id suffixes
             tasks = []
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
-                # Create tool-specific request_id suffix for all tool calls to ensure unique IDs
-                # If original request_id is "abc123", tool calls become "abc123_001", "abc123_002", etc.
+                # Create tool-specific request_id (same logic as execute_tools)
                 original_request_id = params.get("request_id") or params.get("requestId") or request_id
                 if original_request_id:
-                    # Prefer the Agent counter when available so suffixes are globally unique
                     if self._agent is not None:
                         try:
                             tool_specific_request_id = await self._agent.next_internal_tool_request_id(original_request_id)
                         except Exception:
                             tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
                     else:
-                        # Local deterministic suffix if no Agent provided
                         tool_specific_request_id = f"{original_request_id}_{i+1:03d}"
 
-                    # Update params with tool-specific request_id for status tracking
                     params_with_suffix = params.copy()
                     params_with_suffix["request_id"] = tool_specific_request_id
-                    # Also set camelCase version for JS compatibility
                     params_with_suffix["requestId"] = tool_specific_request_id
                 else:
-                    # No request_id available - use original params
                     params_with_suffix = params
                     tool_specific_request_id = None
 
-                # Pass the tool-specific request_id to ensure events use the correct ID
-                tasks.append(
+                task = asyncio.create_task(
                     self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id)
                 )
+                tasks.append(task)
 
-            # Execute all tools concurrently
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Poll for completion while streaming status events
+            pending = set(tasks)
+            while pending:
+                # Wait for any task completion or timeout (50ms polling interval)
+                done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
+                
+                # Yield any pending status events from sub-agents
+                if self._status_forwarder:
+                    status_events = self._status_forwarder.get_pending_events()
+                    for status_event in status_events:
+                        yield {"type": "status", "event": status_event}
+                
+                # Process completed tasks
+                for task in done:
+                    try:
+                        result = task.result()
+                        if isinstance(result, BaseException):
+                            # Handle error (same as execute_tools)
+                            logger.exception("Tool execution failed: %s", result)
+                        else:
+                            tool_message, events, tool_results = result
+                            tool_messages.append(tool_message)
+                            events_to_yield.extend(events)
+                            results_to_add.extend(tool_results)
+                    except Exception as e:
+                        logger.exception("Error processing tool result: %s", e)
 
-            # Process results (maintain order based on original tool_calls order)
-            for i, result in enumerate(results):
-                # Check for both Exception and BaseException (e.g., GeneratorExit)
-                if isinstance(result, BaseException) and not isinstance(result, tuple):
-                    # Handle exceptions/errors from parallel execution
-                    tc, tool_name, openai_tool_name, params = valid_tool_executions[i]
-                    
-                    # Special handling for GeneratorExit (async generator tools closed prematurely)
-                    if isinstance(result, GeneratorExit):
-                        logger.warning("Tool %s closed with GeneratorExit during parallel execution", tool_name)
-                        error_msg = "Tool execution was cancelled (GeneratorExit)"
-                    else:
-                        logger.exception("Tool execution failed for %s: %s", tool_name, result)
-                        error_msg = f"Tool execution failed: {str(result)}"
-                    
-                    tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
-                    tool_messages.append(ChatMessage(
-                        role="tool",
-                        tool_call_id=tool_call_id,
-                        name=openai_tool_name,
-                        content=json.dumps({"error": error_msg})
-                    ))
-                else:
-                    # Normal result (tuple of message, events, results)
-                    tool_message, events, tool_results = result
-                    tool_messages.append(tool_message)
-                    events_to_yield.extend(events)
-                    results_to_add.extend(tool_results)
-
-        return tool_messages, events_to_yield, results_to_add
+            # Yield final status events after all tools complete
+            if self._status_forwarder:
+                status_events = self._status_forwarder.get_pending_events()
+                for status_event in status_events:
+                    yield {"type": "status", "event": status_event}
+        
+        # Yield tool execution events
+        if events_to_yield:
+            yield {"type": "tool_events", "events": events_to_yield}
+        
+        # Yield final completion with all results
+        yield {
+            "type": "complete",
+            "messages": tool_messages,
+            "results": results_to_add
+        }
 
     async def _execute_single_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:

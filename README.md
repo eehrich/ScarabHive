@@ -61,7 +61,12 @@ This README is a concise developer and user guide matching this repository layou
 * **Multimodal vision support** with image uploads via WebUI and API (see [Vision Support](docs/vision_support.md))
 * Backlog & status management
 * Context window management (summarization / truncation strategies)
-* Streaming events API (SSE)
+* **Real-time Streaming Events** (SSE): Unified `/events` endpoint streams all events including:
+  - Sub-agent status events during parallel tool execution
+  - LLM thinking process and responses
+  - Tool execution results
+  - Zero CPU overhead when idle (blocking queue pattern)
+  - See [Streaming Tool Execution](docs/streaming_tool_execution.md) for architecture details
 * Per-agent tool allow / deny lists (secure default: deny-all until explicitly allowed)
 * Configurable entry agent (no more hard-coded MainAgent; uses `entry_agent` setting)
 * Diagnostics endpoints for tool filtering (`/agents/{name}/allowed-tools[ /debug]`)
@@ -143,11 +148,11 @@ API endpoints (FastAPI):
   - `PATCH /api/sessions/{id}` — update session metadata (rename, tags)
   - `DELETE /api/sessions/{id}` — delete a session (with optional backup)
   - `POST /api/sessions/{id}/restore` — load session into active conversation
-- `GET /status/stream` — SSE stream of status events
+- `GET /events` — Unified SSE stream for all events (start, thinking, status, tool_events, final, end)
 - `GET /status/meta` — status stream metadata and statistics
 - `POST /status/publish-test` — publish a test status event
 - `GET /` — web UI home page
-- `GET /status` — web UI status page
+- `GET /status` — web UI status page (deprecated - now integrated in main UI)
 - **MCP Server Mode Endpoints** (when `server_mode.enabled: true` in `config/mcp_server_mode.yaml`):
   - `POST /mcp` — Main MCP JSON-RPC 2.0 endpoint for remote MCP clients
   - `GET /mcp/sse` — SSE stream for server-initiated messages (future)

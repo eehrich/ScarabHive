@@ -24,15 +24,23 @@ class StatusEventForwarder:
         self.status_events_to_forward = []
 
     async def start_forwarding(self, request_id: str) -> None:
-        """Start the status event forwarding task."""
+        """Start forwarding status events for a specific request"""
         self.request_id = request_id
-        # Subscribe to status events for this request
-        self.status_queue = await status_bus.subscribe(request_id=self.request_id)
-
-        # Start the status forwarding task
+        
+        # Reset all state for new request (critical for reuse)
+        self.forwarding_done.clear()
+        self.forwarding_ready.clear()
+        self.first_get_started.clear()
+        self.status_events_to_forward.clear()
+        
+        # Subscribe WITHOUT request_id filter to catch tool-specific suffixed IDs
+        # (e.g., "abc123_001", "abc123_002" when base request_id is "abc123")
+        self.status_queue = await status_bus.subscribe()
+        
+        # Start the background task to forward events
         self.forwarding_task = asyncio.create_task(self._forward_status_events())
-
-        # Wait for the forwarding task to be ready
+        
+        # Wait for the forwarding task to be ready and listening
         await self.forwarding_ready.wait()
         await self.first_get_started.wait()
         # Give the forwarding task a moment to actually reach the status_queue.get() call
@@ -54,8 +62,9 @@ class StatusEventForwarder:
                     if not self.first_get_started.is_set():
                         self.first_get_started.set()
 
-                    # Wait for status event with timeout
-                    status_event = await asyncio.wait_for(self.status_queue.get(), timeout=0.1)
+                    # Wait for status event (blocking, no CPU spin)
+                    # This efficiently blocks until an event arrives or task is cancelled
+                    status_event = await self.status_queue.get()
                     logger.debug("Forwarding received status event: %s [%s]: %s (seq: %s)",
                                status_event.server, status_event.phase, status_event.message,
                                status_event.meta.get('_seq') if status_event.meta else 'no-seq')
@@ -72,8 +81,6 @@ class StatusEventForwarder:
                         "meta": status_event.meta or {}
                     }
                     self.status_events_to_forward.append(status_sse_event)
-                except asyncio.TimeoutError:
-                    continue
                 except asyncio.CancelledError:
                     break
         except Exception as e:

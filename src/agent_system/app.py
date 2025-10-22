@@ -24,11 +24,7 @@ from .api.endpoints import router as api_router
 from .mcp.base import MCPRegistry
 from .servers.bootstrap import bootstrap_servers
 from .utils.logging import setup_logging
-from .mcp.status import (
-    status_bus,
-    StatusEvent,
-    get_status_metrics,
-)
+from .mcp.status import get_status_metrics
 from .mcp.integration import initialize_mcp, shutdown_mcp
 
 # Import services
@@ -1241,112 +1237,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logger.exception("force_optimize_all_sessions failed: %s", e)
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=str(e))
-
-    @app.get("/status/stream")
-    async def status_stream(
-        request: Request,
-        server: Optional[str] = Query(default=None, description="Filter by server name"),
-        request_id: Optional[str] = Query(default=None, description="Filter by request id"),
-        heartbeat: int = Query(default=15, ge=5, le=120, description="Heartbeat interval seconds"),
-    ):
-        """Server-Sent Events endpoint for unified status events (Task 0187).
-
-        Streams events from the in-process StatusBus. Supports optional filtering
-        by server and/or request_id. Emits periodic heartbeat comments so that
-        intermediaries keep the connection alive. Clients can simply listen for
-        'message' events and parse the JSON payload.
-        """
-        logger = logging.getLogger(__name__)
-        # Optional simple auth if AGENT_STATUS_REQUIRE_AUTH=1 and header X-Status-Token must match AGENT_STATUS_TOKEN
-        if os.getenv("AGENT_STATUS_REQUIRE_AUTH") == "1":
-            expected = os.getenv("AGENT_STATUS_TOKEN", "")
-            provided = request.headers.get("X-Status-Token", "")
-            if not expected or provided != expected:
-                from fastapi import HTTPException
-                raise HTTPException(status_code=401, detail="Unauthorized status stream")
-        
-        # Security: Verify user owns the request_id they're trying to monitor
-        if request_id:
-            current_user = await _get_current_user_optional(request)
-            requesting_user_id = current_user.username if current_user else "anonymous"
-            
-            # Check if this request_id has a registered owner
-            owner_user_id = _request_user_map.get(request_id)
-            if owner_user_id is not None and owner_user_id != requesting_user_id:
-                logger.warning(
-                    "User '%s' attempted to access status stream for request_id '%s' owned by '%s'",
-                    requesting_user_id, request_id, owner_user_id
-                )
-                from fastapi import HTTPException
-                raise HTTPException(status_code=403, detail="Cannot access other users' status streams")
-
-        logger.info("SSE /status/stream connected (server=%s request_id=%s)", server, request_id)
-        queue = await status_bus.subscribe(server=server, request_id=request_id)
-
-        async def event_gen():
-            try:
-                yield ":ok\n\n"  # initial comment
-                loop = asyncio.get_event_loop()
-                last_hb = loop.time()
-                while True:
-                    now = loop.time()
-                    if now - last_hb >= heartbeat:
-                        yield f":hb {int(now)}\n\n"
-                        last_hb = now
-
-                    try:
-                        ev: StatusEvent = await asyncio.wait_for(queue.get(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        ev = None
-                    except asyncio.CancelledError:
-                        break
-
-                    if ev is not None:
-                        try:
-                            payload = ev.to_dict()
-                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                        except Exception as e:
-                            logger.error(f"Failed to serialize status event: {e}", exc_info=True)
-
-                    if await request.is_disconnected():
-                        logger.info("Client disconnected from /status/stream")
-                        break
-            finally:
-                # Drain any remaining queued events deterministically so that
-                # terminal StatusPhase.END/StatusPhase.ERROR messages are delivered to the
-                # client even if the generator is exiting due to client
-                # disconnect or server-initiated close. This avoids races that
-                # make clients miss final events.
-                try:
-                    while not queue.empty():
-                        try:
-                            ev: StatusEvent = queue.get_nowait()
-                        except Exception as e:
-                            logger.debug(f"Failed to get event from queue during drain: {e}")
-                            break
-                        try:
-                            payload = ev.to_dict()
-                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                        except Exception as e:
-                            logger.error(f"Failed to serialize status event during drain: {e}", exc_info=True)
-                except Exception as e:
-                    # Ignore issues while draining to ensure cleanup continues
-                    logger.debug(f"Exception during status queue drain: {e}")
-                try:
-                    status_bus.unsubscribe(queue)
-                except Exception:  # pragma: no cover - defensive
-                    pass
-                if logger.handlers:  # avoid errors during interpreter shutdown
-                    logger.debug("/status/stream subscriber cleaned up")
-
-        return StreamingResponse(
-            event_gen(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):

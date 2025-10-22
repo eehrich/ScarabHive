@@ -754,6 +754,12 @@
               blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
             }
             break;
+          case 'status':
+            // Status events are now delivered through /events stream
+            if (blk && blk.status) {
+              addStatusEvent(blk.status, data);
+            }
+            break;
           case 'final':
             const content = data.summary || data.content || '';
             const contentFormat = data.content_format || 'text';
@@ -842,22 +848,7 @@
             currentStatusEventSource = null;
           }
           
-          // Open status stream for MCP call updates
-          let statusEs = null;
-          try {
-            statusEs = new EventSource('/status/stream');
-            currentStatusEventSource = statusEs; // Track current status event source
-            statusEs.onmessage = (ev) => {
-              try {
-                const statusData = JSON.parse(ev.data);
-                addStatusEvent(blk.status, statusData);
-              } catch (err) {
-                // ignore JSON parse errors
-              }
-            };
-          } catch (err) {
-            console.warn('Status stream not available:', err);
-          }
+          // Status events now come through /events SSE stream - no separate connection needed
 
           // Stream SSE response from /run endpoint
           const response = await fetch('/run', {
@@ -970,22 +961,7 @@
         currentStatusEventSource = null;
       }
       
-      let statusEs = null;
-
-      try {
-        statusEs = new EventSource('/status/stream');
-        currentStatusEventSource = statusEs; // Track current status event source
-        statusEs.onmessage = (ev) => {
-          try {
-            const statusData = JSON.parse(ev.data);
-            addStatusEvent(blk.status, statusData);
-          } catch (err) {
-            // ignore JSON parse errors
-          }
-        };
-      } catch (err) {
-        console.warn('Status stream not available:', err);
-      }
+      // Status events now come through /events SSE stream - no separate connection needed
 
       es.onopen = () => { sseOk = true; };
 

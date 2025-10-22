@@ -171,10 +171,10 @@ class TestBasicAgentIntegration:
         """Test list_tools integration with real registry."""
         agent = PLUGIN_FACTORY("list_agent", self.system_config, self.mcp_config)
         
-        # Test list_tools call
+        # Test list_available_tools call (the actual tool name from schema)
         params = {}
         
-        result = await agent.call("list_agent_list_tools", params)
+        result = await agent.call("list_agent_list_available_tools", params)
         
         # Verify result structure
         assert isinstance(result, list)
@@ -263,7 +263,7 @@ class TestBasicAgentIntegration:
         assert len(tools) == 2
         
         execute_tool = next((t for t in tools if t["function"]["name"] == "schema_agent_execute_task"), None)
-        list_tool = next((t for t in tools if t["function"]["name"] == "schema_agent_list_tools"), None)
+        list_tool = next((t for t in tools if t["function"]["name"] == "schema_agent_list_available_tools"), None)
         
         assert execute_tool is not None
         assert list_tool is not None

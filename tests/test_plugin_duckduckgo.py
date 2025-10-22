@@ -48,7 +48,7 @@ class TestDuckDuckGoSearchServer:
         
         tool = tools[0]
         assert tool["type"] == "function"
-        assert tool["function"]["name"] == "web_search"
+        assert tool["function"]["name"] == "ddg_web_search"
         assert "description" in tool["function"]
         assert tool["function"]["parameters"]["type"] == "object"
 
@@ -60,7 +60,7 @@ class TestDuckDuckGoSearchServer:
         """Test DuckDuckGo Search server tool name."""
         server = DuckDuckGoSearchServer("ddg", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
-        assert tools[0]["function"]["name"] == "web_search"
+        assert tools[0]["function"]["name"] == "ddg_web_search"
 
     @pytest.mark.asyncio
     async def test_ddg_server_missing_query(self, mock_system_config, mock_mcp_config):

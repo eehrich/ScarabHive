@@ -161,8 +161,12 @@ class Agent(MCPServer):
 
         # Initialize component managers for better code organization
         self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
-        self._tool_execution_manager = ToolExecutionManager(self.registry, self)
         self._status_event_forwarder = StatusEventForwarder()
+        self._tool_execution_manager = ToolExecutionManager(
+            self.registry, 
+            self, 
+            status_forwarder=self._status_event_forwarder
+        )
         
         # Context management now handled by hook plugins via HookIntegrationManager
         
@@ -1093,6 +1097,10 @@ class Agent(MCPServer):
                 # Emit thinking event before LLM call
                 yield {"type": "thinking", "step": step + 1}
 
+                # Yield any pending status events before LLM call
+                for status_event in yield_pending_status_events():
+                    yield status_event
+
                 # Signal LLM call using status_worker with profile info
                 # Use profile info override if provided (from API-level LLM override)
                 if llm_profile_info_override:
@@ -1149,6 +1157,10 @@ class Agent(MCPServer):
 
                 # Signal LLM call completion using status_worker
                 await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
+
+                # Yield any pending status events after LLM response
+                for status_event in yield_pending_status_events():
+                    yield status_event
 
                 assistant = llm_out.get("assistant", {})
                 logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
@@ -1303,14 +1315,23 @@ class Agent(MCPServer):
                     # Add assistant message with ALL tool calls to conversation
                     messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
 
-                    # Execute all tools using the component
-                    tool_messages, tool_events, tool_results = await self._tool_execution_manager.execute_tools(
+                    # Execute all tools using streaming to get real-time status events from sub-agents
+                    tool_messages = []
+                    tool_results = []
+                    async for item in self._tool_execution_manager.execute_tools_streaming(
                         tool_calls, tool_name_mapping, available_tools, step, request_id=request_id
-                    )
-                    
-                    # Yield the tool events
-                    for event in tool_events:
-                        yield event
+                    ):
+                        if item["type"] == "status":
+                            # Yield status events in real-time during tool execution
+                            yield item["event"]
+                        elif item["type"] == "tool_events":
+                            # Yield tool execution events
+                            for event in item["events"]:
+                                yield event
+                        elif item["type"] == "complete":
+                            # Store final results
+                            tool_messages = item["messages"]
+                            tool_results = item["results"]
                     
                     # Add tool results to the results dictionary
                     results["calls"].extend(tool_results)
