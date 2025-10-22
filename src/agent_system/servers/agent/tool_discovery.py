@@ -110,7 +110,9 @@ class ToolDiscoveryService:
         Discover all available tools from all sources.
         
         Returns:
-            List of all discovered tool names
+            List of all discovered tool names in format:
+            - Server names: "web_scraper"
+            - Individual tools: "web_scraper/scrape_webpage"
         """
         available_tools: List[str] = []
         
@@ -120,6 +122,10 @@ class ToolDiscoveryService:
         # Get external + plugin + adapter tools
         available_tools = await self.mcp_integration_manager.get_available_tools(plugin_tools)
         
+        # Expand plugin servers into servername/toolname format for filtering
+        expanded_tools = await self._expand_plugin_tools(available_tools)
+        available_tools.extend(expanded_tools)
+        
         # Add registry tools (filtered by visibility)
         registry_tools = self._get_registry_tools()
         for tool_name in registry_tools:
@@ -127,6 +133,36 @@ class ToolDiscoveryService:
                 available_tools.append(tool_name)
         
         return available_tools
+    
+    async def _expand_plugin_tools(self, server_names: List[str]) -> List[str]:
+        """
+        Expand plugin server names into individual tool names.
+        
+        Converts: ["web_scraper", "duckduckgo_search"]
+        Into: ["web_scraper/scrape_webpage", "duckduckgo_search/search", ...]
+        
+        Args:
+            server_names: List of plugin server names
+            
+        Returns:
+            List of expanded tool names in servername/toolname format
+        """
+        expanded = []
+        
+        if not (self.mcp_integration_manager.mcp_integration and
+                self.mcp_integration_manager.mcp_integration.initialized):
+            return expanded
+        
+        try:
+            all_tools_dict = await self.mcp_integration_manager.mcp_integration.list_all_tools()
+            for server_name, tools in all_tools_dict.get("plugins", {}).items():
+                for tool in tools:
+                    tool_name = f"{server_name}/{tool.name}"
+                    expanded.append(tool_name)
+        except Exception as e:
+            logger.debug(f"Failed to expand plugin tools: {e}")
+        
+        return expanded
     
     def _get_plugin_tools(self) -> List[str]:
         """Get list of plugin-provided tool servers."""
