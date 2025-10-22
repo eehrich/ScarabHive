@@ -80,6 +80,60 @@ class OpenAIAsyncClient(LLMClient):
         self._default_extra = default_extra or {}
         self._timeout = timeout
 
+    async def _execute_with_cancellation(self, llm_task: asyncio.Task, cancellation_token):
+        """Execute LLM task with efficient event-based cancellation monitoring.
+        
+        Instead of polling with timeouts (which throws exceptions every 0.5s),
+        uses asyncio.wait() to efficiently wait for either completion or cancellation.
+        
+        Returns:
+            The result of llm_task when completed
+            
+        Raises:
+            Exception: When cancelled by user
+        """
+        cancel_event = asyncio.Event()
+        
+        async def check_cancellation():
+            """Background task that monitors cancellation without polling exceptions"""
+            while not llm_task.done():
+                if cancellation_token.is_cancelled:
+                    cancel_event.set()
+                    break
+                await asyncio.sleep(0.1)  # Check every 100ms, doesn't block main task
+        
+        cancel_task = asyncio.create_task(check_cancellation())
+        
+        # Wait for either LLM completion or cancellation (efficient, no exceptions!)
+        done, pending = await asyncio.wait(
+            {llm_task, cancel_task},
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        if cancel_event.is_set():
+            # Cancellation requested - clean up LLM task
+            llm_task.cancel()
+            try:
+                await llm_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                cancel_task.cancel()
+                try:
+                    await cancel_task
+                except asyncio.CancelledError:
+                    pass
+            raise Exception("Request cancelled by user during LLM call")
+        
+        # LLM completed - clean up cancel task
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except asyncio.CancelledError:
+            pass
+        
+        return await llm_task
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         logger = logging.getLogger(__name__)
         try:
@@ -109,20 +163,7 @@ class OpenAIAsyncClient(LLMClient):
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        while not llm_task.done():
-                            try:
-                                resp = await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.5)
-                                break
-                            except asyncio.TimeoutError:
-                                if cancellation_token.is_cancelled:
-                                    llm_task.cancel()
-                                    try:
-                                        await llm_task
-                                    except asyncio.CancelledError:
-                                        pass
-                                    raise Exception("Request cancelled by user during LLM call")
-                                continue
-                        resp = await llm_task
+                        resp = await self._execute_with_cancellation(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break
@@ -298,20 +339,7 @@ class OpenAIAsyncClient(LLMClient):
                     client_any = cast(Any, self._client)
                     if cancellation_token:
                         llm_task = asyncio.create_task(client_any.chat.completions.create(**opts))
-                        while not llm_task.done():
-                            try:
-                                resp = await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.5)
-                                break
-                            except asyncio.TimeoutError:
-                                if cancellation_token.is_cancelled:
-                                    llm_task.cancel()
-                                    try:
-                                        await llm_task
-                                    except asyncio.CancelledError:
-                                        pass
-                                    raise Exception("Request cancelled by user during LLM call")
-                                continue
-                        resp = await llm_task
+                        resp = await self._execute_with_cancellation(llm_task, cancellation_token)
                     else:
                         resp = await client_any.chat.completions.create(**opts)
                     break

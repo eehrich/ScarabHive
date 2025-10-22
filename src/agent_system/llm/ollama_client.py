@@ -22,6 +22,60 @@ class OllamaNativeAsyncClient(LLMClient):
         self._timeout = timeout or 60.0
         self.verify = verify if verify is not None else True
 
+    async def _execute_with_cancellation(self, http_task: asyncio.Task, cancellation_token):
+        """Execute HTTP task with efficient event-based cancellation monitoring.
+        
+        Instead of polling with timeouts (which throws exceptions every 0.5s),
+        uses asyncio.wait() to efficiently wait for either completion or cancellation.
+        
+        Returns:
+            The result of http_task when completed
+            
+        Raises:
+            Exception: When cancelled by user
+        """
+        cancel_event = asyncio.Event()
+        
+        async def check_cancellation():
+            """Background task that monitors cancellation without polling exceptions"""
+            while not http_task.done():
+                if cancellation_token.is_cancelled:
+                    cancel_event.set()
+                    break
+                await asyncio.sleep(0.1)  # Check every 100ms, doesn't block main task
+        
+        cancel_task = asyncio.create_task(check_cancellation())
+        
+        # Wait for either HTTP completion or cancellation (efficient, no exceptions!)
+        done, pending = await asyncio.wait(
+            {http_task, cancel_task},
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        if cancel_event.is_set():
+            # Cancellation requested - clean up HTTP task
+            http_task.cancel()
+            try:
+                await http_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                cancel_task.cancel()
+                try:
+                    await cancel_task
+                except asyncio.CancelledError:
+                    pass
+            raise Exception("Request cancelled by user during Ollama call")
+        
+        # HTTP completed - clean up cancel task
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except asyncio.CancelledError:
+            pass
+        
+        return await http_task
+
     def _map_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         import json
         out: list[dict[str, Any]] = []
@@ -62,20 +116,7 @@ class OllamaNativeAsyncClient(LLMClient):
         async with self._httpx.AsyncClient(timeout=self._timeout, verify=self.verify) as client:
             if cancellation_token:
                 http_task = asyncio.create_task(client.post(url, json=body))
-                while not http_task.done():
-                    try:
-                        resp = await asyncio.wait_for(asyncio.shield(http_task), timeout=0.5)
-                        break
-                    except asyncio.TimeoutError:
-                        if cancellation_token.is_cancelled:
-                            http_task.cancel()
-                            try:
-                                await http_task
-                            except asyncio.CancelledError:
-                                pass
-                            raise Exception("Request cancelled by user during Ollama call")
-                        continue
-                resp = await http_task
+                resp = await self._execute_with_cancellation(http_task, cancellation_token)
             else:
                 resp = await client.post(url, json=body)
             resp.raise_for_status()
@@ -101,20 +142,7 @@ class OllamaNativeAsyncClient(LLMClient):
         async with self._httpx.AsyncClient(timeout=self._timeout, verify=self.verify) as client:
             if cancellation_token:
                 http_task = asyncio.create_task(client.post(url, json=body))
-                while not http_task.done():
-                    try:
-                        resp = await asyncio.wait_for(asyncio.shield(http_task), timeout=0.5)
-                        break
-                    except asyncio.TimeoutError:
-                        if cancellation_token.is_cancelled:
-                            http_task.cancel()
-                            try:
-                                await http_task
-                            except asyncio.CancelledError:
-                                pass
-                            raise Exception("Request cancelled by user during Ollama call")
-                        continue
-                resp = await http_task
+                resp = await self._execute_with_cancellation(http_task, cancellation_token)
             else:
                 resp = await client.post(url, json=body)
             
