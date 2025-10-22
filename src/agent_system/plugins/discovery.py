@@ -436,7 +436,7 @@ async def register_plugin_hooks(
             )
             
             registered_hooks.append(hook_name)
-            logger.info(
+            logger.debug(
                 f"Registered hook '{hook_name}' from plugin '{plugin_name}' "
                 f"(type={hook_type.name.lower()}, enabled={enabled}, description='{description}')"
             )

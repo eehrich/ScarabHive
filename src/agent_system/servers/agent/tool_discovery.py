@@ -45,7 +45,7 @@ class ToolDiscoveryService:
     
     async def discover_allowed_tools(self) -> List[str]:
         """
-        Discover all allowed tools for this agent.
+        Discover all available tools and apply allow-list and block-list filtering.
         
         Combines tools from:
         1. Plugin-provided tool servers
@@ -122,9 +122,8 @@ class ToolDiscoveryService:
         # Get external + plugin + adapter tools
         available_tools = await self.mcp_integration_manager.get_available_tools(plugin_tools)
         
-        # Expand plugin servers into servername/toolname format for filtering
-        expanded_tools = await self._expand_plugin_tools(available_tools)
-        available_tools.extend(expanded_tools)
+        # NOTE: Do NOT expand tools here - build_schemas() will do that when building tool schemas
+        # Expansion here causes duplicate processing and breaks schema building
         
         # Add registry tools (filtered by visibility)
         registry_tools = self._get_registry_tools()
@@ -151,16 +150,22 @@ class ToolDiscoveryService:
         
         if not (self.mcp_integration_manager.mcp_integration and
                 self.mcp_integration_manager.mcp_integration.initialized):
+            logger.warning(f"Agent {self.agent_name}: Cannot expand tools - MCP not initialized")
             return expanded
         
         try:
             all_tools_dict = await self.mcp_integration_manager.mcp_integration.list_all_tools()
+            logger.debug(f"Agent {self.agent_name}: Available plugin servers for expansion: {list(all_tools_dict.get('plugins', {}).keys())}")
+            
             for server_name, tools in all_tools_dict.get("plugins", {}).items():
                 for tool in tools:
-                    tool_name = f"{server_name}/{tool.name}"
+                    tool_name = f"{server_name}/{tool['name']}"  # tool is a dict, not object
                     expanded.append(tool_name)
+                    logger.debug(f"Agent {self.agent_name}: Expanded {server_name} -> {tool_name}")
+                    
+            logger.info(f"Agent {self.agent_name}: Expanded {len(expanded)} tools from {len(all_tools_dict.get('plugins', {}))} plugin servers")
         except Exception as e:
-            logger.debug(f"Failed to expand plugin tools: {e}")
+            logger.error(f"Agent {self.agent_name}: Failed to expand plugin tools: {e}", exc_info=True)
         
         return expanded
     
@@ -350,6 +355,7 @@ class ToolDiscoveryService:
         - Exact matches
         - Wildcards with '*'
         - Dot notation patterns
+        - Server name matching for wildcard patterns (e.g., "ssh_control" matches "ssh_control/*")
         
         Args:
             tool: Tool name to check
@@ -367,6 +373,13 @@ class ToolDiscoveryService:
             if '*' in pattern:
                 if fnmatch.fnmatch(tool, pattern):
                     return True
+                
+                # Special case: If pattern is "server_name/*", also match "server_name"
+                # This allows server names to pass through for later expansion
+                if pattern.endswith('/*'):
+                    server_name = pattern[:-2]  # Remove "/*"
+                    if tool == server_name:
+                        return True
             
             # Dot notation match (e.g., "plugin.tool" matches "plugin.*")
             if '.' in pattern and '.' in tool:

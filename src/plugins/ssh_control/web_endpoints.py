@@ -19,8 +19,7 @@ import asyncio
 from agent_system.plugins.web_adapter import PluginWebInterface
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
-    from collections import deque
+    pass
 
 logger = logging.getLogger(__name__)
 

@@ -21,7 +21,7 @@ plugins:
       hooks:        
         enabled: true 
         overrides:  # by default disable html formatting of markdown
-          format_markdown_output:
+          markdown_formatter.format_markdown_output:
              enabled: false     
 
       tools:
@@ -182,7 +182,7 @@ plugins:
       description: "Meta Agent for orchestrating other agents and managing complex tasks"
       
       agent_config:
-        llm_profile: turbo
+        llm_profile: normal
         max_steps: 10
         
         system_template: "config/prompts/meta_agent_prompt.yaml"
@@ -199,7 +199,7 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            format_markdown_output:
+            markdown_formatter.format_markdown_output:
               enabled: true    
       
       metadata:
@@ -219,7 +219,7 @@ plugins:
         financial_analyst_agent_list_available_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
       
       agent_config:
-        llm_profile: turbo
+        llm_profile: normal
         max_steps: 20
         system_template: "config/prompts/financial_analyst_prompt.yaml"
         
@@ -233,7 +233,7 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            format_markdown_output:
+            markdown_formatter.format_markdown_output:
               enabled: true             
       
       metadata:
@@ -253,7 +253,7 @@ plugins:
         code_reviewer_agent_list_available_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
       
       agent_config:
-        llm_profile: chat
+        llm_profile: normal
         max_steps: 15
         system_template: "config/prompts/code_reviewer_prompt.yaml"
         
@@ -266,7 +266,7 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            format_markdown_output:
+            markdown_formatter.format_markdown_output:
               enabled: true            
       
       metadata:
@@ -287,7 +287,7 @@ plugins:
         simple_qa_agent_list_available_tools: "List available tools (none - pure LLM-based Q&A)"
       
       agent_config:
-        llm_profile: chat
+        llm_profile: normal
         max_steps: 10
         
         system_prompt: |
@@ -330,7 +330,7 @@ plugins:
         sysadmin_agent_list_available_tools: "List all SSH and system administration tools available to the sysadmin agent"
       
       agent_config:
-        llm_profile: chat
+        llm_profile: normal
         max_steps: 100
         system_template: "config/prompts/system_admin_prompt.yaml"
         
@@ -343,7 +343,7 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            format_markdown_output:
+            markdown_formatter.format_markdown_output:
               enabled: true              
       
       metadata:
@@ -366,14 +366,14 @@ plugins:
         meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
       
       agent_config:
-        llm_profile: chat
+        llm_profile: normal
         max_steps: 10
         system_template: "config/prompts/meta_web_research_agent.yaml"
         
         hooks:
           enabled: true
           overrides:
-            format_markdown_output:
+            markdown_formatter.format_markdown_output:
               enabled: true    
         
         tools:

@@ -56,15 +56,65 @@ async def lifespan(app: FastAPI):
     logger = logging.getLogger(__name__)
     logger.info("FastAPI application starting up")
 
-    # Startup logic here if needed
+    # Startup: Initialize MCP integration
+    global _mcp_integration, _mcp_service, _tool_service, _session_manager, _session_service
+    
+    # Get config from global service
+    if _config_service is None:
+        logger.error("ConfigService not initialized before lifespan startup")
+    else:
+        config = _config_service.get_config()
+        
+        # Initialize MCP integration
+        logger.info("Starting MCP integration initialization...")
+        try:
+            from .mcp.integration import initialize_mcp
+            from .services.mcp_service import MCPService
+            from .services.tool_service import ToolService
+            from .services.session_manager import SessionManager
+            
+            mcp_integration = await initialize_mcp(config, app)
+            _mcp_integration = mcp_integration
+            
+            # Initialize services
+            _mcp_service = MCPService(mcp_integration, config)
+            _tool_service = ToolService(mcp_integration, config)
+            
+            # Initialize SessionManager
+            from pathlib import Path
+            storage_path = Path(__file__).parents[2] / "data" / "sessions"
+            _session_manager = SessionManager(storage_path=str(storage_path))
+            logger.info(f"SessionManager initialized with storage_path={storage_path}")
+            
+            # Initialize SessionService
+            from .services.session_service import SessionService
+            _session_service = SessionService(_session_manager)
+            logger.info("SessionService initialized")
+            
+            # Inject session manager into session endpoints
+            from .api.session_endpoints import set_session_manager
+            set_session_manager(_session_manager)
+            logger.info("SessionManager injected into session endpoints")
+            
+            # Make integration accessible to mcp module
+            from .mcp import integration as _mcp_mod
+            _mcp_mod.mcp_integration = mcp_integration
+            
+            logger.info("MCP integration startup complete")
+        except Exception as e:
+            logger.error(f"Failed to initialize MCP integration: {e}", exc_info=True)
+            raise
+    
     yield
 
     # Shutdown logic
     logger.info("FastAPI application shutting down gracefully")
     try:
-        # Clean up any resources here
-        # The status_bus and other components will clean themselves up
-        pass
+        # Shutdown MCP integration
+        if _mcp_integration:
+            from .mcp.integration import shutdown_mcp
+            await shutdown_mcp()
+            logger.info("MCP integration shut down")
     except Exception as e:
         logger.error("Error during shutdown cleanup: %s", e)
     finally:
@@ -991,6 +1041,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         request: Request,
         task: str, 
         session_id: Optional[str] = Query(default=None),
+        agent: Optional[str] = Query(default=None, alias="agent"),  # Accept both 'agent' and 'agent_name'
         agent_name: Optional[str] = Query(default=None),
         llm_profile: Optional[str] = Query(default=None)
     ):
@@ -999,7 +1050,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         Query parameters:
         - task: The task to execute
         - session_id: Optional session ID for conversation continuity
-        - agent_name: Optional agent to use instead of default
+        - agent or agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
         
         Authentication:
@@ -1008,6 +1059,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         logger = logging.getLogger(__name__)
         request_id = short_id()
+        
+        # Prioritize 'agent' parameter over 'agent_name' for backwards compatibility
+        agent_name = agent or agent_name
         
         # Get current user (optional authentication)
         current_user = await _get_current_user_optional(request)

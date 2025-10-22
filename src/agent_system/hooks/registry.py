@@ -122,7 +122,7 @@ class HookRegistry:
             # Register the hook with metadata
             self._hooks[hook_type].append((hook_name, hook, order_spec, metadata))
             
-            logger.info(
+            logger.debug(
                 f"Registered hook '{hook_name}' for {hook_type.value} "
                 f"(before={order_spec.get('before', [])}, after={order_spec.get('after', [])}), enabled={enabled}"
             )
@@ -143,7 +143,7 @@ class HookRegistry:
             for i, (name, _, _, _) in enumerate(hooks_list):
                 if name == hook_name:
                     hooks_list.pop(i)
-                    logger.info(f"Unregistered hook '{hook_name}' from {hook_type.value}")
+                    logger.debug(f"Unregistered hook '{hook_name}' from {hook_type.value}")
                     return True
             return False
     

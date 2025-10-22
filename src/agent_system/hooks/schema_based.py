@@ -147,6 +147,14 @@ class SchemaBasedPluginHook(PluginHook):
         """
         return self._config
     
+    def get_schema_data(self) -> dict[str, Any]:
+        """Get full schema data (hooks + config).
+        
+        Returns:
+            Complete schema dictionary from schema.yaml
+        """
+        return self._schema
+    
     async def _dispatch_hook(self, hook_name: str, context: HookContext) -> HookResult:
         """Dispatch hook execution to handler method.
         

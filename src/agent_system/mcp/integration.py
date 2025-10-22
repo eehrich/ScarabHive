@@ -157,7 +157,7 @@ class MCPIntegration:
                     hooks_config=hooks_config
                 )
                 if registered_hooks:
-                    logger.info(
+                    logger.debug(
                         f"Registered {len(registered_hooks)} hook(s) "
                         f"for plugin '{server_name}': {registered_hooks}"
                     )

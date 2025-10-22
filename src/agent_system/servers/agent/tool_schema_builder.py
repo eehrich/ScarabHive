@@ -98,7 +98,7 @@ class ToolSchemaBuilder:
         """
         internal_tools_to_add: List[str] = []
         
-        for tool_name in available_tools.copy():  # Use copy to avoid modification during iteration
+        for tool_name in available_tools.copy():
             # Skip external tools (contain dots, e.g., "context7.resolve-library-id")
             if "." in tool_name:
                 continue
