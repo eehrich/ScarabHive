@@ -13,8 +13,6 @@ from ...core.cancellation import get_cancellation_manager, configure_cancellatio
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...llm.models import ChatMessage
-from ...utils.prompt_renderer import render_prompts, get_datetime_context
-from jinja2 import Template
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...mcp.status import (
     status_scope,
@@ -25,6 +23,7 @@ from ...mcp.status import (
 from .components.mcp_integration import MCPIntegrationManager
 from .components.tool_execution import ToolExecutionManager
 from .components.status_forwarding import StatusEventForwarder
+from .prompt_strategies import PromptRenderer, PromptContext
 
 
 logger = logging.getLogger(__name__)
@@ -278,94 +277,31 @@ class Agent(MCPServer):
         return None
 
     # ------------------------------------------------------------------
-    # Central prompt rendering utilities (restored)
+    # Central prompt rendering utilities (using strategy pattern)
     # ------------------------------------------------------------------
     def _render_prompts(self, available_tools: List[str], max_steps: int) -> tuple[str, Optional[str]]:
-        """Render (system_prompt, tools_prompt) applying hook, raw prompt, or template.
+        """
+        Render (system_prompt, tools_prompt) using strategy pattern.
 
         Order of precedence:
           1. Subclass hook `get_custom_system_prompt`
           2. In-memory raw `agent_config.system_prompt`
-          3. File/template based `agent_config.system_template` (render_prompts)
+          3. File/template based `agent_config.system_template`
+          4. Default fallback
 
         Returns:
             (system_prompt, tools_prompt_or_None)
         """
-        context_vals = {"tools": available_tools, "max_steps": max_steps-1}
-
-        # Get datetime context from system_config.context, not agent_config
-        if hasattr(self.system_config, 'context') and self.system_config.context.auto_datetime:
-            dt_ctx = get_datetime_context(self.system_config.context.timezone, self.system_config.context.location)
-            context_vals.update(dt_ctx)
-
-        # Subclass custom hook
-        try:
-            custom_prompt = self.get_custom_system_prompt(context_vals)
-        except Exception as e:  # pragma: no cover
-            logger.warning("Custom system prompt hook failed for agent %s: %s", self.name, e)
-            custom_prompt = None
-
-        if custom_prompt:
-            logger.debug("Agent %s using subclass custom system prompt (len=%d)", self.name, len(custom_prompt))
-            return custom_prompt, None
-
-        # Check for an in-memory raw prompt
-        system_prompt_raw = getattr(self.agent_config, 'system_prompt', None)
-        if system_prompt_raw:
-            logger.debug("Agent %s using in-memory system_prompt (length=%s)", self.name, len(system_prompt_raw or ''))
-            try:
-                rendered_system = Template(system_prompt_raw).render(**context_vals)
-            except Exception as e:
-                logger.warning(f"Failed to render system prompt template: {e}", exc_info=True)
-                rendered_system = "You are an assistant agent."
-            return rendered_system, None
-
-        # Template based
-        system_template_path = getattr(self.agent_config, 'system_template', None)
-        if not system_template_path:
-            logger.debug("Agent %s has no prompts config, using default system prompt", self.name)
-            return "You are an assistant agent.", None
-
-        logger.debug(
-            "Agent %s rendering system_template from path: %s",
-            self.name, system_template_path)
-        rendered_sections = render_prompts(
-            system_template_path,
-            context_vals,
-            auto_datetime=self.system_config.context.auto_datetime if hasattr(self.system_config, 'context') else False,
-            timezone=self.system_config.context.timezone if hasattr(self.system_config, 'context') else None,
-            location=self.system_config.context.location if hasattr(self.system_config, 'context') else None
+        renderer = PromptRenderer()
+        context = PromptContext(
+            agent_name=self.name,
+            agent_config=self.agent_config,
+            system_config=self.system_config,
+            available_tools=available_tools,
+            max_steps=max_steps,
+            agent_instance=self  # Pass self for hook access
         )
-        
-        # Merge all sections into a single prompt (priority-based ordering)
-        # This matches the behavior of config_agent_factory._load_system_prompt()
-        section_order = [
-            'system_prompt',
-            'tools_prompt',
-            'general_instructions_prompt',
-        ]
-        
-        def sort_key(item):
-            section_name, _ = item
-            try:
-                return (0, section_order.index(section_name))
-            except ValueError:
-                return (1, section_name)  # Unknown sections come last, sorted alphabetically
-        
-        sorted_sections = sorted(rendered_sections.items(), key=sort_key)
-        
-        # Concatenate sections with separators
-        merged_prompt = "\n\n".join(
-            f"# {section_name}\n{content}" if section_name != "system_prompt" else content
-            for section_name, content in sorted_sections
-        )
-        
-        logger.debug(
-            f"Agent {self.name} assembled prompt from {len(rendered_sections)} sections: "
-            f"{[name for name, _ in sorted_sections]}"
-        )
-        
-        return merged_prompt, None
+        return renderer.render(context)
 
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
