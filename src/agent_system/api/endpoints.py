@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
 
-from .dependencies import get_agent_optional, get_config_optional
+from .dependencies import get_agent_optional
 
 # Create an APIRouter instead of a full FastAPI app
 router = APIRouter()

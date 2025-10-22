@@ -41,6 +41,9 @@ plugins:
         tools:
           allowed:
             - "*"
+      
+      metadata:
+        visibility: "both"  # Make available as tool for meta_agent
     
     duckduckgo_search:
       type: duckduckgo_search
@@ -183,12 +186,12 @@ plugins:
         
         tools:
           allowed:
-            - "sysadmin_agent/*"
-            - "meta_web_research_agent/*"
+            - "sysadmin_agent*"
+            - "meta_web_research_agent*"
             #- "financial_analyst_agent/*"
             #- "code_reviewer_agent/*"
-            - "basic_agent/*"
-            - "basic_operations/*"
+            - "basic_agent*"
+            - "basic_operations*"
         
         hooks:
           enabled: true
