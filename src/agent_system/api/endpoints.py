@@ -1,7 +1,9 @@
-from fastapi import HTTPException, APIRouter
+from fastapi import HTTPException, APIRouter, Depends
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
+
+from .dependencies import get_agent_optional, get_config_optional
 
 # Create an APIRouter instead of a full FastAPI app
 router = APIRouter()
@@ -36,34 +38,33 @@ class PluginUIMetadata(BaseModel):
 
 
 # Helper functions
+# Deprecated - use dependency injection instead
+
+
 def get_agent():
-    """Get the current agent instance from the global registry."""
-    try:
-        from ..agent_system.agent.interface_api import _app_registry
-        if _app_registry and hasattr(_app_registry, 'get'):
-            return _app_registry.get('agent')
-    except ImportError:
-        pass
+    """
+    DEPRECATED: Get the current agent instance from the global registry.
+    Use dependency injection with get_agent_optional() instead.
+    """
+    logger.warning("Deprecated get_agent() called - use dependency injection")
     return None
 
 
 def get_config():
-    """Get the current system configuration."""
-    try:
-        from agent_system.config.settings import load_settings
-        return load_settings()
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}")
-        return None
+    """
+    DEPRECATED: Get the current system configuration.
+    Use dependency injection with get_config_optional() instead.
+    """
+    logger.warning("Deprecated get_config() called - use dependency injection")
+    return None
 
 
 # Existing endpoints
 
 @router.get("/api/debug/messages", response_model=MessageResponse)
-async def get_debug_messages():
+async def get_debug_messages(agent=Depends(get_agent_optional)):
     """Get current conversation messages for debugging."""
     try:
-        agent = get_agent()
         if not agent:
             logger.warning("No agent available for debug messages")
             return {
