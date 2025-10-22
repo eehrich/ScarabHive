@@ -437,7 +437,7 @@ class Agent(MCPServer):
                         agent_cancelled = True
             
             if not agent_cancelled:
-                logger.warning("Request %s not found in active requests", request_id)
+                logger.debug("Request %s not found in active requests (already completed or cleaned up)", request_id)
             
             # Return True if any system found and cancelled something
             return tool_cancelled or agent_cancelled or (task_cancelled_count > 0)

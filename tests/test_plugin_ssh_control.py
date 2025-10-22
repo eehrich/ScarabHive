@@ -81,13 +81,14 @@ def test_ssh_control_get_tools(mock_system_config, empty_mcp_config):
         elif 'function' in tool and 'name' in tool['function']:
             tool_names.append(tool['function']['name'])
     
-    assert 'ssh_control_list_machines' in tool_names
-    assert 'ssh_control_execute' in tool_names
-    assert 'ssh_control_upload_file' in tool_names
-    assert 'ssh_control_download_file' in tool_names
-    assert 'ssh_control_check_connection' in tool_names
-    assert 'ssh_control_add_machine' in tool_names
-    assert 'ssh_control_remove_machine' in tool_names
+    # Tools are prefixed with plugin name in tests
+    assert 'ssh_control_test_list_machines' in tool_names
+    assert 'ssh_control_test_execute' in tool_names
+    assert 'ssh_control_test_upload_file' in tool_names
+    assert 'ssh_control_test_download_file' in tool_names
+    assert 'ssh_control_test_check_connection' in tool_names
+    assert 'ssh_control_test_add_machine' in tool_names
+    assert 'ssh_control_test_remove_machine' in tool_names
     
     # Verify we have exactly 7 tools (simplified schema)
     assert len(tools) == 7
@@ -99,7 +100,7 @@ async def test_ssh_control_list_machines_empty(mock_system_config, empty_mcp_con
     plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, empty_mcp_config)
     
     # Call list_machines tool
-    result = await plugin_instance.mcp_server.ssh_control_list_machines({})
+    result = await plugin_instance.mcp_server.list_machines({})
     
     assert 'machines' in result
     assert 'count' in result
@@ -137,15 +138,15 @@ async def test_ssh_control_list_machines_with_tags(mock_system_config, populated
     plugin_instance = ssh_control_factory('ssh_control_test', mock_system_config, populated_mcp_config)
     
     # List all machines
-    result = await plugin_instance.mcp_server.ssh_control_list_machines({})
+    result = await plugin_instance.mcp_server.list_machines({})
     assert result['count'] == 2
     
     # Filter by production tag
-    result = await plugin_instance.mcp_server.ssh_control_list_machines({'tags': ['production']})
+    result = await plugin_instance.mcp_server.list_machines({'tags': ['production']})
     assert result['count'] == 1
     assert result['machines'][0]['name'] == 'test-server1'
     
     # Filter by staging tag
-    result = await plugin_instance.mcp_server.ssh_control_list_machines({'tags': ['staging']})
+    result = await plugin_instance.mcp_server.list_machines({'tags': ['staging']})
     assert result['count'] == 1
     assert result['machines'][0]['name'] == 'test-server2'

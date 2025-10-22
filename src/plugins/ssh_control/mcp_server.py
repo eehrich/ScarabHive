@@ -61,7 +61,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
     
     # MCP Tool Handlers - auto-dispatched by SchemaBasedMCPServer
     
-    async def ssh_control_list_machines(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def list_machines(self, params: dict[str, Any]) -> dict[str, Any]:
         """List all configured SSH machines.
         
         Args:
@@ -102,7 +102,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             'count': len(machines)
         }
     
-    async def ssh_control_execute(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute command on one or more remote machines.
         
         Args:
@@ -217,7 +217,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             'failed': sum(1 for r in responses if not r.get('success', False))
         }
     
-    async def ssh_control_upload_file(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def upload_file(self, params: dict[str, Any]) -> dict[str, Any]:
         """Upload file to remote machine(s).
         
         Args:
@@ -329,7 +329,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             'failed': sum(1 for r in responses if not r.get('success', False))
         }
     
-    async def ssh_control_download_file(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def download_file(self, params: dict[str, Any]) -> dict[str, Any]:
         """Download file from remote machine.
         
         Args:
@@ -416,7 +416,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                 'success': False
             }
     
-    async def ssh_control_check_connection(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def check_connection(self, params: dict[str, Any]) -> dict[str, Any]:
         """Check SSH connection health for machine(s).
         
         Args:
@@ -496,7 +496,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
             'disconnected': sum(1 for s in statuses if not s.get('connected', False))
         }
     
-    async def ssh_control_add_machine(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def add_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         """Dynamically add a new SSH machine to the connection manager.
         
         Args:
@@ -712,7 +712,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                 await status.error(error_msg)
             return {'success': False, 'error': error_msg}
     
-    async def ssh_control_remove_machine(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def remove_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         """Remove a dynamically added SSH machine from the connection manager.
         
         Args:

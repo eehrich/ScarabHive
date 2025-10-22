@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: ssh_control_list_machines
+      name: "{{ name }}_list_machines"
       description: "List all configured SSH machines with optional tag filtering"
       parameters:
         type: object
@@ -15,7 +15,7 @@ tools:
     
   - type: function
     function:
-      name: ssh_control_execute
+      name: "{{ name }}_execute"
       description: "Execute a command on one or more remote machines via SSH. Use this for any shell command including file operations (cat, ls, echo, etc.)"
       parameters:
         type: object
@@ -38,7 +38,7 @@ tools:
     
   - type: function
     function:
-      name: ssh_control_upload_file
+      name: "{{ name }}_upload_file"
       description: "Upload a local file to one or more remote machines via SFTP"
       parameters:
         type: object
@@ -62,7 +62,7 @@ tools:
     
   - type: function
     function:
-      name: ssh_control_download_file
+      name: "{{ name }}_download_file"
       description: "Download a file from a remote machine via SFTP to local filesystem"
       parameters:
         type: object
@@ -83,7 +83,7 @@ tools:
     
   - type: function
     function:
-      name: ssh_control_check_connection
+      name: "{{ name }}_check_connection"
       description: "Check SSH connection health for one or more machines"
       parameters:
         type: object
@@ -95,7 +95,7 @@ tools:
   
   - type: function
     function:
-      name: ssh_control_add_machine
+      name: "{{ name }}_add_machine"
       description: "Dynamically add a new SSH machine to the connection manager at runtime. Optionally persist to config file. Connection is tested before adding."
       parameters:
         type: object
@@ -162,7 +162,7 @@ tools:
   
   - type: function
     function:
-      name: ssh_control_remove_machine
+      name: "{{ name }}_remove_machine"
       description: "Remove an SSH machine from runtime and optionally from config. Closes all active connections and cleans up connection pools."
       parameters:
         type: object
@@ -202,7 +202,7 @@ web_ui:
   panel:
     enabled: true
     title: "SSH Machine Control"
-    endpoint: "/plugins/ssh_control/panel"
+    endpoint: "/plugins/{{ name }}/panel"
     type: "iframe"
     description: "Control and monitor SSH-connected machines"
   
@@ -218,7 +218,7 @@ web_ui:
       description: "Get detailed status for specific machine"
     - path: "/api/machines/add"
       method: "POST"
-      description: "Dynamically add a new SSH machine (calls ssh_control_add_machine tool)"
+      description: "Dynamically add a new SSH machine (calls {{ name }}_add_machine tool)"
       body_schema:
         type: object
         properties:
@@ -255,7 +255,7 @@ web_ui:
         required: ["name", "host", "username"]
     - path: "/api/machines/{name}"
       method: "DELETE"
-      description: "Remove an SSH machine (calls ssh_control_remove_machine tool)"
+      description: "Remove an SSH machine (calls {{ name }}_remove_machine tool)"
       query_parameters:
         remove_from_config:
           type: boolean
