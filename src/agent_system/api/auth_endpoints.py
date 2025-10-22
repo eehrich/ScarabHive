@@ -145,9 +145,9 @@ async def login(
     response.set_cookie(
         key="access_token",
         value=access_token,
-        httponly=True,   # Prevent JavaScript access (XSS protection)
-        secure=True,     # HTTPS only (MITM protection)
-        samesite="strict",  # Strict CSRF protection
+        httponly=False,  # Allow JavaScript access for development
+        secure=False,    # Allow HTTP for local development
+        samesite="lax",  # Relaxed for development (use "strict" in production)
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Same as token expiry
     )
     
@@ -182,9 +182,9 @@ async def logout(
     # Delete the cookie
     response.delete_cookie(
         key="access_token",
-        httponly=True,
-        secure=True,
-        samesite="strict"
+        httponly=False,
+        secure=False,
+        samesite="lax"
     )
     
     logger.info(f"User logged out: {current_user.username}")
