@@ -59,12 +59,17 @@ class ToolDiscoveryService:
         """
         # Get allow/block patterns
         allowed_patterns = self._get_allowed_patterns()
-        if not allowed_patterns:
+        # None means not configured (deny-all), but [] (empty list) means allow-all
+        if allowed_patterns is None:
             logger.debug(
                 "Agent %s: no tools.allowed configured -> deny-all (0 tools)",
                 self.agent_name
             )
             return []
+        
+        # Empty list means allow all tools
+        if isinstance(allowed_patterns, list) and len(allowed_patterns) == 0:
+            allowed_patterns = ["*"]  # Wildcard = allow all
         
         # Discover all available tools
         available_tools = await self._discover_all_tools()
