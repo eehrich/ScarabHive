@@ -16,16 +16,16 @@ tools:
   - type: function
     function:
       name: "{{ name }}_execute"
-      description: "Execute a command on one or more remote machines via SSH. Use this for any shell command including file operations (cat, ls, echo, etc.)"
+      description: "Execute a command on one remote machine via SSH."
       parameters:
         type: object
         properties:
           machine:
             type: string
-            description: "Machine name or comma-separated list of machine names"
+            description: "Single machine name."
           command:
             type: string
-            description: "Command to execute on the remote machine(s)"
+            description: "Command to execute on the remote machine"
           timeout:
             type: integer
             description: "Command timeout in seconds (optional, uses machine default)"
@@ -39,13 +39,13 @@ tools:
   - type: function
     function:
       name: "{{ name }}_upload_file"
-      description: "Upload a local file to one or more remote machines via SFTP"
+      description: "Upload a local file to one remote machine via SFTP."
       parameters:
         type: object
         properties:
           machine:
             type: string
-            description: "Machine name or comma-separated list of machine names"
+            description: "Single machine name."
           local_path:
             type: string
             description: "Local file path to upload"
@@ -69,7 +69,7 @@ tools:
         properties:
           machine:
             type: string
-            description: "Machine name"
+            description: "Single machine name"
           remote_path:
             type: string
             description: "Remote file path to download"
@@ -84,13 +84,13 @@ tools:
   - type: function
     function:
       name: "{{ name }}_check_connection"
-      description: "Check SSH connection health for one or more machines"
+      description: "Check SSH connection health for one machine."
       parameters:
         type: object
         properties:
           machine:
             type: string
-            description: "Machine name or comma-separated list of names (omit to check all)"
+            description: "Single machine name."
         required: []
   
   - type: function
