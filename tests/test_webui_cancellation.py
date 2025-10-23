@@ -4,12 +4,10 @@ Tests cancellation through the web API endpoints.
 """
 import asyncio
 import pytest
-import aiohttp
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.servers.agent.server import Agent
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import MCPConfig
 
 
 class TestWebUICancellation:
@@ -18,11 +16,19 @@ class TestWebUICancellation:
     @pytest.fixture
     async def mock_agent(self):
         """Create a mock agent for testing."""
-        from tests.test_utils import create_test_config
+        from agent_system.config.models import AgentConfig, AgentSystemConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
         
-        system_config = create_test_config()
-        from agent_system.config.models import AgentConfig
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=AgentConfig())
+        # Create proper AgentSystemConfig (not AgentConfig)
+        system_config = AgentSystemConfig(
+            llm_system=LLMSystemConfig(
+                models={"test-model": LLMModelConfig(provider="mock", model="test-model")},
+                profiles={"normal": LLMProfile(model_ref="test-model")},
+                default_profile="normal"
+            )
+        )
+        
+        agent_config = AgentConfig(llm_profile="normal")
+        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
 
         agent = Agent(
             "test_agent",
