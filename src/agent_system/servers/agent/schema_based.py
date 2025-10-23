@@ -74,3 +74,30 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
         # Initialize schema mixin
         self._init_schema_mixin()
 
+    async def list_tools(self) -> list:
+        """Return tools defined in schema.yaml (MCPServer interface).
+        
+        Override base Agent.list_tools() to return multiple tools from schema.yaml
+        instead of just a single agent tool.
+        
+        Returns:
+            List[MCPTool] - Tools defined in this agent's schema.yaml
+        """
+        from agent_system.mcp.core import MCPTool
+        
+        # Get tools from schema.yaml
+        tools_defs = self.get_tools()
+        
+        # Convert to MCPTool format
+        mcp_tools = []
+        for tool_def in tools_defs:
+            func = tool_def.get("function", {})
+            tool = MCPTool(
+                name=func.get("name", "unknown"),
+                description=func.get("description", ""),
+                input_schema=func.get("parameters", {})
+            )
+            mcp_tools.append(tool)
+        
+        return mcp_tools
+

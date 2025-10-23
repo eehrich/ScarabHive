@@ -328,7 +328,7 @@ class Agent(MCPServer):
     # ------------------------------------------------------------------
     # Central prompt rendering utilities (using strategy pattern)
     # ------------------------------------------------------------------
-    def _render_prompts(self, available_tools: List[str], max_steps: int) -> tuple[str, Optional[str]]:
+    def _render_prompts(self, usable_tools: List[str], max_steps: int) -> tuple[str, Optional[str]]:
         """
         Render (system_prompt, tools_prompt) using strategy pattern.
 
@@ -346,7 +346,7 @@ class Agent(MCPServer):
             agent_name=self.name,
             agent_config=self.agent_config,
             system_config=self.system_config,
-            available_tools=available_tools,
+            available_tools=usable_tools,
             max_steps=max_steps,
             agent_instance=self  # Pass self for hook access
         )
@@ -355,12 +355,12 @@ class Agent(MCPServer):
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
         try:
-            available_tools = await self.list_usable_tools()
+            usable_tools = await self.list_usable_tools()
         except Exception as e:
-            logger.warning(f"Failed to list available tools for system prompt: {e}", exc_info=True)
-            available_tools = []
+            logger.warning(f"Failed to list usable tools for system prompt: {e}", exc_info=True)
+            usable_tools = []
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
-        system_msg, _ = self._render_prompts(available_tools, max_steps)
+        system_msg, _ = self._render_prompts(usable_tools, max_steps)
         return system_msg
 
 
@@ -569,7 +569,7 @@ class Agent(MCPServer):
                 return True
         return False
 
-    def _filter_available_tools(self, tools: list[str], patterns: list[str]) -> list[str]:
+    def _filter_usable_tools(self, tools: list[str], patterns: list[str]) -> list[str]:
         """Filter list of tools by allow patterns.
 
         Logs any pattern that matches nothing for visibility, but continues.
@@ -823,12 +823,12 @@ class Agent(MCPServer):
             await self._mcp_integration_manager.setup_mcp_integration()
 
             # Get tools this agent can use (filtered by agent_config)
-            available_tools = await self.list_usable_tools()
+            usable_tools = await self.list_usable_tools()
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
             # Centralized prompt rendering (system + optional tools) using helper.
-            system_msg, tools_msg = self._render_prompts(available_tools, max_steps)
+            system_msg, tools_msg = self._render_prompts(usable_tools, max_steps)
 
             # Initialize conversation from persisted session history
             async with self._request_lock:
@@ -884,8 +884,8 @@ class Agent(MCPServer):
                 server_getter_func=self._get_server_from_any_registry
             )
             
-            tools_schema, tool_name_mapping, available_tools = await schema_builder.build_schemas(
-                available_tools
+            tools_schema, tool_name_mapping, usable_tools = await schema_builder.build_schemas(
+                usable_tools
             )
 
             # NOTE: self_tool_descriptions is applied in MCPServer.list_tools() for own tools,
@@ -1174,7 +1174,7 @@ class Agent(MCPServer):
                     tool_messages = []
                     tool_results = []
                     async for item in self._tool_execution_manager.execute_tools_streaming(
-                        tool_calls, tool_name_mapping, available_tools, step, request_id=request_id
+                        tool_calls, tool_name_mapping, usable_tools, step, request_id=request_id
                     ):
                         if item["type"] == "status":
                             # Yield status events in real-time during tool execution
