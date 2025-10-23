@@ -65,8 +65,8 @@ class TestAgentSanitizationIntegration:
         # Test with problematic input containing null bytes and control characters
         problematic_input = "Hello\x00world\x01test\u200Bdata"
         
-        # Call the agent
-        await agent.call("run", {"task": problematic_input})
+        # Call the agent (tool param is agent name, task in params)
+        await agent.call(agent.name, {"task": problematic_input})
         
         # Verify the user message was sanitized
         user_messages = [msg for msg in captured_messages if msg.role == "user"]

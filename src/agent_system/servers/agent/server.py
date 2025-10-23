@@ -1334,28 +1334,16 @@ class Agent(MCPServer):
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """
         MCPServer interface: Handle tool calls from other agents.
+        
+        An agent is a tool that executes tasks. No special "actions" needed.
 
         Args:
-            tool: The tool/action to execute. Can be:
-                 - The agent's own name (defaults to "run" action)
-                 - An explicit action: "run", "execute", or "ask"
-            params: Parameters including the task to execute
+            tool: The tool name (should be agent's name when called via MCP)
+            params: Parameters including task/query/prompt (required)
 
         Returns:
             The agent's execution result
         """
-        # If tool is the agent's own name, default to "run" action
-        # This handles the case where LLM calls the agent by name
-        if tool == self.name:
-            tool = "run"
-        
-        # Validate action
-        if tool not in ["run", "execute", "ask"]:
-            return {
-                "status": "error",
-                "error": f"Unknown action '{tool}'. Available actions: run, execute, ask"
-            }
-
         # Extract task from parameters
         task = params.get("task") or params.get("query") or params.get("prompt")
         if not task:
@@ -1403,11 +1391,6 @@ class Agent(MCPServer):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["run", "execute", "ask"],
-                            "description": "Action to perform (run/execute/ask the agent)"
-                        },
                         "task": {
                             "type": "string",
                             "description": "The task/query/prompt to execute"
