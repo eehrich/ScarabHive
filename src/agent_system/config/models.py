@@ -57,7 +57,7 @@ class ModelCapabilitiesConfig(BaseModel):
 
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
-    provider: Literal["ollama", "openai", "openai_httpx"] = "ollama"
+    provider: Literal["ollama", "openai", "openai_httpx", "mock"] = "ollama"
     model: str
     openai_api_key: Optional[str] = None
     ollama_url: Optional[str] = None  # e.g. http://remote-host:11434
