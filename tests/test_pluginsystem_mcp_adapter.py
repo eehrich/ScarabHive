@@ -62,11 +62,12 @@ class TestPluginMCPAdapter:
         tools = await plugin_adapter.list_tools()
 
         assert len(tools) == 1
-        assert tools[0].name == "default_action"
+        # Plugin exposes itself with its own name (like agents do)
+        assert tools[0].name == "test_plugin"
         # Adapter may choose to name the tool after the plugin's default action
         # while preserving the function description — accept either behavior.
         desc = tools[0].description or ""
-        assert ("a test tool" in desc.lower()) or ("default action" in desc.lower())
+        assert ("a test tool" in desc.lower()) or ("generic action" in desc.lower()) or ("default action" in desc.lower())
         schema = tools[0].input_schema or {}
         assert schema.get("type") == "object"
         props = schema.get("properties") or {}
@@ -124,8 +125,10 @@ class TestPluginMCPAdapterWithoutSchema:
         tools = await plugin_without_schema.list_tools()
 
         assert len(tools) == 1
-        assert tools[0].name == "default"
-        assert tools[0].description == "Default action for no_schema_plugin"
+        # Plugin exposes itself with its own name
+        assert tools[0].name == "no_schema_plugin"
+        # Description changed from "Default" to "Generic"
+        assert "action for no_schema_plugin" in tools[0].description
         assert tools[0].input_schema["type"] == "object"
 
 
@@ -255,7 +258,8 @@ class TestPluginMCPRegistry:
 
         assert "test_plugin" in all_tools
         assert len(all_tools["test_plugin"]) == 1
-        assert all_tools["test_plugin"][0].name == "default_action"
+        # Plugin exposes itself with its own name
+        assert all_tools["test_plugin"][0].name == "test_plugin"
 
     @pytest.mark.asyncio
     async def test_plugins_mcp_registry_call_plugin_tool(self, registry):
