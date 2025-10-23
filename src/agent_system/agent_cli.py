@@ -1543,6 +1543,13 @@ def main() -> None:
                     if _supports_color():
                         err = _colorize(err, "31")
                     print(err)
+                elif t == "cancelled":
+                    # Agent was cancelled (Ctrl-C or timeout)
+                    msg = "\n✋ Cancelled by user"
+                    if _supports_color():
+                        msg = _colorize(msg, "33")  # yellow
+                    print(msg)
+                    final_result["cancelled"] = True
                 elif t == "done":
                     # run_events may emit a final aggregated result
                     fr = ev.get("result")
@@ -1551,6 +1558,13 @@ def main() -> None:
                 # keep looping until 'end'
 
             return final_result
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # User pressed Ctrl-C: provide clean exit message
+            msg = "\n✋ Cancelled by user"
+            if _supports_color():
+                msg = _colorize(msg, "33")  # yellow
+            print(msg)
+            return {"task": task, "cancelled": True, "summary": final_result.get("summary", "")}
         except Exception as e:
             # Fallback: surface exception as result
             return {"task": task, "errors": [str(e)]}
@@ -1657,10 +1671,16 @@ def main() -> None:
             result = asyncio.run(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
         else:
             result = asyncio.run(_stream_and_run_with_status(agent, task_input, actual_session_id, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
-        vprint("[cli] done")
-        logger.info("Task completed")
         
-        # Save session after successful task execution
+        # Check if request was cancelled
+        if result.get("cancelled", False):
+            vprint("[cli] cancelled by user")
+            logger.info("Request cancelled by user")
+        else:
+            vprint("[cli] done")
+            logger.info("Task completed")
+        
+        # Save session after successful task execution (skip if cancelled)
         async def save_session_after_task():
             try:
                 # Use the actual agent name that was requested (entry_name from args)
@@ -1692,7 +1712,9 @@ def main() -> None:
                 logger.error(f"Failed to save session: {e}", exc_info=True)
                 print(f"Warning: Failed to save session: {e}", file=sys.stderr)
         
-        asyncio.run(save_session_after_task())
+        # Only save session if not cancelled
+        if not result.get("cancelled", False):
+            asyncio.run(save_session_after_task())
         
     finally:
         # Ensure MCP integration is properly shut down to close aiohttp sessions

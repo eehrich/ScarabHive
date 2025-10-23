@@ -252,6 +252,21 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         logger.info("Executing request...")
         try:
             result = await run_agent_request(agent, request, actual_session_id, llm_override, llm_profile_info)
+            # Check if agent was cancelled and print message
+            if result.get("cancelled", False):
+                msg = "\n✋ Cancelled by user"
+                from .cli_utils.common import supports_color, colorize
+                if supports_color():
+                    msg = colorize(msg, "33")  # yellow
+                print(msg)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # Direct Ctrl-C (rare, usually caught by agent)
+            msg = "\n✋ Cancelled by user"
+            from .cli_utils.common import supports_color, colorize
+            if supports_color():
+                msg = colorize(msg, "33")  # yellow
+            print(msg)
+            result = {"task": request, "cancelled": True, "summary": ""}
         finally:
             # Cancel status subscriber
             if status_task:
@@ -263,51 +278,53 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             if status_queue:
                 status_bus.unsubscribe(status_queue)  # Not async!
         
-        # Save session after successful request execution
-        try:
-            # Use the actual agent name that was requested (from parameter or config.default_agent)
-            # instead of agent.agent_name which may not exist or be "default"
-            agent_name_used = agent_name  # Already determined from args or config.default_agent at line 172-174
-            llm_profile_used = llm_profile or "normal"
-            
-            # Save the session
-            success = await session_service.save_session(
-                agent=agent,
-                user_id=session_user,
-                session_id=actual_session_id,
-                agent_name=agent_name_used,
-                llm_profile=llm_profile_used,
-                was_new_session=was_new_session
-            )
-            
-            if success:
-                if session_id:
-                    logger.info(f"Updated session {session_id}")
+        # Save session after successful request execution (skip if cancelled)
+        if not result.get("cancelled", False):
+            try:
+                # Use the actual agent name that was requested (from parameter or config.default_agent)
+                # instead of agent.agent_name which may not exist or be "default"
+                agent_name_used = agent_name  # Already determined from args or config.default_agent at line 172-174
+                llm_profile_used = llm_profile or "normal"
+                
+                # Save the session
+                success = await session_service.save_session(
+                    agent=agent,
+                    user_id=session_user,
+                    session_id=actual_session_id,
+                    agent_name=agent_name_used,
+                    llm_profile=llm_profile_used,
+                    was_new_session=was_new_session
+                )
+                
+                if success:
+                    if session_id:
+                        logger.info(f"Updated session {session_id}")
+                    else:
+                        logger.info(f"Created new session {actual_session_id}")
+                        print(f"\nSession saved: {actual_session_id}")
                 else:
-                    logger.info(f"Created new session {actual_session_id}")
-                    print(f"\nSession saved: {actual_session_id}")
-            else:
-                logger.warning("Session save returned False")
-        except Exception as e:
-            logger.error(f"Failed to save session: {e}", exc_info=True)
-            print(f"Warning: Failed to save session: {e}", file=sys.stderr)
+                    logger.warning("Session save returned False")
+            except Exception as e:
+                logger.error(f"Failed to save session: {e}", exc_info=True)
+                print(f"Warning: Failed to save session: {e}", file=sys.stderr)
         
-        # Print the result with formatting based on --color setting
-        # Extract summary from result
-        summary = result.get("summary", "") if isinstance(result, dict) else str(result)
-        
-        if summary:
-            formatted_summary, content_format = await format_output_with_hooks(
-                output=summary,
-                agent_instance=agent,
-                session_id=actual_session_id,
-                request_id="agent_run"
-            )
+        # Print the result with formatting based on --color setting (skip if cancelled)
+        if not result.get("cancelled", False):
+            # Extract summary from result
+            summary = result.get("summary", "") if isinstance(result, dict) else str(result)
             
-            print_agent_response(formatted_summary, content_format)
-        else:
-            import json
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            if summary:
+                formatted_summary, content_format = await format_output_with_hooks(
+                    output=summary,
+                    agent_instance=agent,
+                    session_id=actual_session_id,
+                    request_id="agent_run"
+                )
+                
+                print_agent_response(formatted_summary, content_format)
+            else:
+                import json
+                print(json.dumps(result, indent=2, ensure_ascii=False))
         
     except ValueError as e:
         # User-friendly error for common issues (agent not found, etc.)

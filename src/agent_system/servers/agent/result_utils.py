@@ -49,32 +49,44 @@ async def collect_final_result(
     
     result = {"task": task_text, "calls": []}
     
-    async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
-        event_type = event.get("type")
-        
-        # Collect MCP calls for the result
-        if event_type == "mcp_call":
-            # Initialize the call entry
-            call_entry = {
-                "server": event.get("server"),
-                "action": event.get("action"), 
-                "params": event.get("params", {})
-            }
-            result["calls"].append(call_entry)
-        
-        elif event_type == "mcp_result":
-            # Find matching call and add result
-            server = event.get("server")
-            action = event.get("action")
-            for call in reversed(result["calls"]):
-                if call.get("server") == server and call.get("action") == action and "result" not in call:
-                    call["result"] = event.get("result")
-                    break
-        
-        elif event_type == "final":
-            result["summary"] = event.get("summary")
-        
-        elif event_type == "error":
-            result.setdefault("errors", []).append(event.get("message"))
+    try:
+        async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
+            event_type = event.get("type")
+            
+            # Collect MCP calls for the result
+            if event_type == "mcp_call":
+                # Initialize the call entry
+                call_entry = {
+                    "server": event.get("server"),
+                    "action": event.get("action"), 
+                    "params": event.get("params", {})
+                }
+                result["calls"].append(call_entry)
+            
+            elif event_type == "mcp_result":
+                # Find matching call and add result
+                server = event.get("server")
+                action = event.get("action")
+                for call in reversed(result["calls"]):
+                    if call.get("server") == server and call.get("action") == action and "result" not in call:
+                        call["result"] = event.get("result")
+                        break
+            
+            elif event_type == "final":
+                result["summary"] = event.get("summary")
+            
+            elif event_type == "cancelled":
+                result["cancelled"] = True
+            
+            elif event_type == "error":
+                result.setdefault("errors", []).append(event.get("message"))
+    
+    except (KeyboardInterrupt, Exception) as e:
+        # Handle cancellation gracefully
+        import asyncio
+        if isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
+            result["cancelled"] = True
+        else:
+            result.setdefault("errors", []).append(str(e))
     
     return result
