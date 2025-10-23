@@ -338,7 +338,7 @@ async def test_exception_logging_includes_traceback(
             task="This will fail",
             request_id="test-exception"
         ):
-        pass
+            pass
     except Exception:
         pass  # Expected to fail
     

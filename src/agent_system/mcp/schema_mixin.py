@@ -168,6 +168,16 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
         Raises:
             ValueError: If tool is not found or not callable
         """
+        # Special case: If this is an Agent and tool name equals agent name,
+        # delegate to Agent.call() which handles run/execute/ask actions
+        if tool == self.name and hasattr(super(), 'call'):
+            # Check if parent class has a different call() implementation (Agent class)
+            # This allows agents to be called by their name as a tool
+            from ..servers.agent.server import Agent
+            if isinstance(self, Agent):
+                # Call Agent.call() directly, skipping SchemaBasedToolMixin
+                return await Agent.call(self, tool, params)
+        
         # Convert tool name to method name
         method_name = self._get_method_name(tool)
         
