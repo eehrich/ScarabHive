@@ -98,11 +98,12 @@ async def test_no_unexpected_errors_during_normal_execution(
         llm=mock_llm
     )
     
-    # Run agent successfully
-    await agent.run_events(
+    # Run agent successfully - consume all events
+    async for _ in agent.run_events(
         task="Simple test task",
         request_id="test-no-errors"
-    )
+    ):
+        pass
     
     # Check for ERROR level logs
     error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -136,11 +137,12 @@ async def test_no_unexpected_warnings_during_normal_execution(
         llm=mock_llm
     )
     
-    # Run agent successfully
-    await agent.run_events(
+    # Run agent successfully - consume all events
+    async for _ in agent.run_events(
         task="Simple test task",
         request_id="test-no-warnings"
-    )
+    ):
+        pass
     
     # Check for WARNING level logs
     warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -180,10 +182,11 @@ async def test_logging_includes_request_id(
     request_id = "test-request-12345"
     
     # Run agent with specific request ID
-    await agent.run_events(
+    async for _ in agent.run_events(
         task="Test with request ID",
         request_id=request_id
-    )
+    ):
+        pass
     
     # Check if request_id appears in logs
     logs_with_request_id = [
@@ -222,10 +225,11 @@ async def test_logging_has_proper_levels(
     )
     
     # Run agent
-    await agent.run_events(
+    async for _ in agent.run_events(
         task="Test logging levels",
         request_id="test-levels"
-    )
+    ):
+        pass
     
     # Analyze log levels
     level_counts = {
@@ -279,10 +283,11 @@ async def test_component_logging_is_scoped(
     )
     
     # Run agent
-    await agent.run_events(
+    async for _ in agent.run_events(
         task="Test component logging",
         request_id="test-scoped"
-    )
+    ):
+        pass
     
     # Collect unique logger names
     logger_names = set(r.name for r in caplog.records)
@@ -329,10 +334,11 @@ async def test_exception_logging_includes_traceback(
     
     # Run agent (should fail)
     try:
-        await agent.run_events(
+        async for _ in agent.run_events(
             task="This will fail",
             request_id="test-exception"
-        )
+        ):
+        pass
     except Exception:
         pass  # Expected to fail
     
@@ -371,10 +377,11 @@ async def test_no_duplicate_log_messages(
     )
     
     # Run agent
-    await agent.run_events(
+    async for _ in agent.run_events(
         task="Test for duplicate logs",
         request_id="test-duplicates"
-    )
+    ):
+        pass
     
     # Check for consecutive duplicate messages
     messages = [r.message for r in caplog.records]
@@ -416,10 +423,11 @@ async def test_logging_performance_overhead(
     # Measure execution time with logging
     start_time = time.time()
     
-    await agent.run_events(
+    async for _ in agent.run_events(
         task="Performance test",
         request_id="test-perf"
-    )
+    ):
+        pass
     
     elapsed_time = time.time() - start_time
     
@@ -476,10 +484,11 @@ async def test_sensitive_data_not_logged(
     )
     
     # Run agent
-    await agent.run_events(
+    async for _ in agent.run_events(
         task="Test sensitive data logging",
         request_id="test-sensitive"
-    )
+    ):
+        pass
     
     # Check all log messages for sensitive patterns
     sensitive_patterns = [
@@ -528,10 +537,11 @@ async def test_structured_logging_format(
     )
     
     # Run agent
-    await agent.run_events(
+    async for _ in agent.run_events(
         task="Test log structure",
         request_id="test-structure"
-    )
+    ):
+        pass
     
     # Check log records have expected attributes
     for record in caplog.records:

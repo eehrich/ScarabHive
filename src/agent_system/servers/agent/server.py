@@ -1336,12 +1336,19 @@ class Agent(MCPServer):
         MCPServer interface: Handle tool calls from other agents.
 
         Args:
-            tool: The tool/action to execute (should be "run" or "execute")
+            tool: The tool/action to execute. Can be:
+                 - The agent's own name (defaults to "run" action)
+                 - An explicit action: "run", "execute", or "ask"
             params: Parameters including the task to execute
 
         Returns:
             The agent's execution result
         """
+        # If tool is the agent's own name, default to "run" action
+        # This handles the case where LLM calls the agent by name
+        if tool == self.name:
+            tool = "run"
+        
         # Validate action
         if tool not in ["run", "execute", "ask"]:
             return {

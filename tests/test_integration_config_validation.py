@@ -284,7 +284,8 @@ async def test_hook_disablement_config(base_system_config):
         )
         
         # Run agent
-        await agent.run_events(task="Test", request_id="test-hooks-disabled")
+        async for _ in agent.run_events(task="Test", request_id="test-hooks-disabled"):
+            pass
         
         # Verify hook1 was NOT called (disabled)
         # Note: This assumes the agent respects disabled_hooks
@@ -324,7 +325,8 @@ async def test_system_prompt_override(base_system_config):
     with patch.object(mock_llm, 'chat_tools', new_callable=AsyncMock) as mock_chat:
         mock_chat.return_value = {"assistant": {"content": "Test response"}}
         
-        await agent.run_events(task="Test task", request_id="test-prompt")
+        async for _ in agent.run_events(task="Test task", request_id="test-prompt"):
+            pass
         
         # Get messages passed to LLM
         call_args = mock_chat.call_args
@@ -363,7 +365,7 @@ async def test_output_format_config(base_system_config):
     
     # Test different output formats
     for fmt in ["text", "json", "markdown"]:
-        result = await agent.run_events(
+        result = async for _ in agent.run_events(
             task="Test",
             request_id=f"test-format-{fmt}",
             output_format=fmt
@@ -466,7 +468,7 @@ async def test_config_with_all_tools_disabled(base_system_config, mock_registry_
     assert len(tools) == 0
     
     # Should still be able to run (without tools)
-    result = await agent.run_events(
+    result = async for _ in agent.run_events(
         task="Simple task without tools",
         request_id="test-no-tools"
     )
