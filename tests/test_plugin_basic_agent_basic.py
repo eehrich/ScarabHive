@@ -167,17 +167,12 @@ class TestBasicAgentServer:
         assert "test_agent_execute_task" in tool_names
         assert "test_agent_list_available_tools" in tool_names
 
-    def test_get_default_action(self):
-        """Test default action returns 'run'."""
-        default_action = self.agent.get_default_action()
-        assert default_action == "run"
-
     @pytest.mark.asyncio
     async def test_list_available_tools_success(self):
         """Test successful listing of available tools."""
         params = {}
         
-        result = await self.agent._list_available_tools(params)
+        result = await self.agent._list_usable_tools_with_details(params)
         
         assert isinstance(result, list)
         assert len(result) == 2  # datetime and script_interpreter
@@ -215,7 +210,7 @@ class TestBasicAgentServer:
         
         agent = BasicAgent("empty_agent", system_config, mcp_config, empty_registry)
         
-        result = await agent._list_available_tools({})
+        result = await agent._list_usable_tools_with_details({})
         
         assert isinstance(result, list)
         assert result == []

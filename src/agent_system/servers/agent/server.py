@@ -32,10 +32,31 @@ logger = logging.getLogger(__name__)
 
 
 class Agent(MCPServer):
-    """
-    Enhanced Agent that executes ALL tool calls per LLM conversation turn.
-    Also serves as an MCP Server that can be used by other agents as a tool.
-    This enables direct agent-to-agent communication without wrapper classes.
+    """Enhanced Agent with dual interface: execution engine + callable tool.
+    
+    TOOL INTERFACE CLARITY:
+    ----------------------
+    Agent has TWO distinct tool interfaces that are easily confused:
+    
+    1. EXTERNAL (what this agent OFFERS to others):
+       - list_tools() → List[MCPTool] - Returns this agent as a callable tool
+       - MCPServer interface: What OTHER agents see when they query our tools
+       - Used by: ToolSchemaBuilder when other agents discover available tools
+    
+    2. INTERNAL (what this agent CAN USE):
+       - list_usable_tools() → List[str] - Tool names this agent can call
+       - Filtered by agent_config.tools.allowed patterns
+       - Used by: _run_events() to build LLM prompt with available tools
+       - Example: ["datetime", "web_search", "other_agent"]
+    
+    3. UTILITY (detailed info for user-facing endpoints):
+       - _list_usable_tools_with_details() → List[Dict] - Name + description
+       - Used by: BasicAgent's list_available_tools tool
+       - For debugging/introspection, not for execution
+    
+    REMEMBER:
+    - list_tools() = what I OFFER (MCPServer standard)
+    - list_usable_tools() = what I CAN USE (internal execution)
     """
 
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
@@ -85,6 +106,19 @@ class Agent(MCPServer):
         # Initialize LLM if not provided
         # Store LLM profile information for status display
         self.llm_profile_info = None
+        
+        # Extract profile info even if LLM is provided externally
+        if self.llm is not None and self.agent_config and system_config.llm_system:
+            try:
+                # Build llm_kwargs from config for profile info extraction
+                llm_kwargs = {
+                    "profile_name": self.agent_config.llm_profile,
+                    "provider": getattr(self.llm, "provider", "external"),
+                    "model": getattr(self.llm, "model", "external-model")
+                }
+                self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
+            except Exception as e:
+                logger.debug(f"Could not extract profile info for external LLM: {e}")
         
         if self.llm is None:
             # If a factory is provided, use it to create the client.
@@ -308,7 +342,7 @@ class Agent(MCPServer):
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
         try:
-            available_tools = await self.list_allowed_tool_servers()
+            available_tools = await self.list_usable_tools()
         except Exception as e:
             logger.warning(f"Failed to list available tools for system prompt: {e}", exc_info=True)
             available_tools = []
@@ -537,16 +571,16 @@ class Agent(MCPServer):
             logger.debug("Agent %s tools.allowed patterns with no matches: %s", self.name, unmatched)
         return matched
 
-    async def list_allowed_tool_servers(self) -> list[str]:
-        """
-        Collect all available tool server names applying per-agent allow list.
-
-        This centralizes tool discovery so that both the LLM prompt construction and any
-        user-facing listing endpoints / plugin helper tools obtain a consistent filtered
-        view. Previously the collection logic lived inline in `_run_events`; extracting
-        it here avoids divergence.
+    async def list_usable_tools(self) -> list[str]:
+        """Return list of tool names this agent CAN USE (filtered by agent config).
         
-        Uses ToolDiscoveryService for clean separation of concerns (Issue #11).
+        This is the INTERNAL interface - tools available for this agent's execution.
+        Filtered by agent_config.tools.allowed patterns.
+        
+        Contrast with list_tools() which returns what this agent OFFERS to others.
+        
+        Returns:
+            List of tool server names this agent is allowed to use
         """
         # Initialize MCP integration (idempotent)
         await self._mcp_integration_manager.setup_mcp_integration()
@@ -561,17 +595,17 @@ class Agent(MCPServer):
         
         return await discovery_service.discover_allowed_tools()
 
-    async def _list_available_tools(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
-        """List all available tools that the agent can access (simplified: only names and descriptions).
+    async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
+        """Return detailed info about tools this agent CAN USE (name + description).
         
-        This is a utility method for agent subclasses that provide tool listing functionality.
-        Returns a list of tool dictionaries with 'name' and 'description' keys.
+        Internal utility for agent subclasses (e.g., BasicAgent's list_available_tools).
+        Like list_usable_tools() but includes descriptions for user-facing output.
         
         Args:
             params: Parameters including optional '_status' for progress reporting
             
         Returns:
-            List of tool dictionaries with 'name' and 'description' keys
+            List of dicts with 'name' and 'description' keys
         """
         try:
             status = params.get("_status")
@@ -761,8 +795,8 @@ class Agent(MCPServer):
             # Initialize MCP integration
             await self._mcp_integration_manager.setup_mcp_integration()
 
-            # Unified tool server discovery (filtered)
-            available_tools = await self.list_allowed_tool_servers()
+            # Get tools this agent can use (filtered by agent_config)
+            available_tools = await self.list_usable_tools()
 
             max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -1377,9 +1411,31 @@ class Agent(MCPServer):
             },
         }
 
-    def get_default_action(self) -> str:
-        """MCPServer interface: Return the default action for this agent."""
-        return "run"
+    async def list_tools(self) -> List:
+        """Return tools this agent OFFERS to other agents (MCPServer interface).
+        
+        EXTERNAL INTERFACE - What this agent exposes as callable tools.
+        When other agents query available tools, they get this agent's schema.
+        
+        Contrast with list_usable_tools() which returns tools this agent CAN USE.
+        
+        Returns:
+            List[MCPTool] - Single MCPTool representing this agent
+        """
+        from agent_system.mcp.core import MCPTool
+        
+        # Get the agent's schema (what it offers as a callable tool)
+        schema = self.get_schema()
+        func = schema.get("function", {})
+        
+        # Convert to MCPTool format
+        tool = MCPTool(
+            name=func.get("name", self.name),
+            description=func.get("description", f"Agent: {self.name}"),
+            input_schema=func.get("parameters", {})
+        )
+        
+        return [tool]
 
     def _extract_summary(self, result: Dict[str, Any]) -> str:
         """

@@ -124,10 +124,10 @@ agent._mcp_tool_visible: bool   # Available in tool discovery
 
 ### Tool Discovery Filtering
 
-When an agent queries `list_allowed_tool_servers()`, the registry is filtered:
+When an agent queries `list_usable_tools()`, the registry is filtered:
 
 ```python
-# In Agent.list_allowed_tool_servers()
+# In Agent.list_usable_tools()
 for tool_name in self.registry.list():
     server = self.registry.get(tool_name)
     if hasattr(server, '_mcp_tool_visible'):
@@ -332,7 +332,7 @@ Invalid values will be rejected during config validation.
 Returns list of agents with `_mcp_public=True` (visibility: "ui" or "both")
 
 ### Tool Discovery (Internal)
-`list_allowed_tool_servers()` returns agents with `_mcp_tool_visible=True` (visibility: "tool" or "both")
+`list_usable_tools()` returns agents with `_mcp_tool_visible=True` (visibility: "tool" or "both")
 
 ## Future Enhancements
 

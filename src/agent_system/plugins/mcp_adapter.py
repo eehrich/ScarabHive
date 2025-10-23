@@ -77,24 +77,6 @@ class PluginMCPAdapter(MCPServer):
                     )
                     tools.append(tool)
 
-        # Final fallback: Create tool from default action
-        if not tools and hasattr(self.plugin_server, 'get_default_action'):
-            try:
-                default_action = self.plugin_server.get_default_action()
-                tool = MCPTool(
-                    name=default_action,
-                    description=f"Default action for {self.name}",
-                    input_schema={
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": True
-                    }
-                )
-                tools.append(tool)
-            except (NotImplementedError, AttributeError):
-                pass
-
-        # If still no tools, create a generic one
         if not tools:
             tool = MCPTool(
                 name=self.name,

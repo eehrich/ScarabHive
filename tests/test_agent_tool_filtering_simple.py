@@ -22,7 +22,7 @@ async def test_filter_no_patterns_all_available(monkeypatch):
     agent = Agent("test_agent", system_config, mcp_config, registry)
 
     # Neue Policy: Keine tools.allowed -> keine Tools erlaubt
-    filtered = await agent.list_allowed_tool_servers()  # type: ignore[attr-defined]
+    filtered = await agent.list_usable_tools()  # type: ignore[attr-defined]
     assert filtered == []
 
 @pytest.mark.asyncio

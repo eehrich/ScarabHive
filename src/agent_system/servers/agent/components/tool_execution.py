@@ -54,8 +54,12 @@ class ToolExecutionManager:
                 continue
         return serializable_params
 
-    async def _invoke_tool(self, tool_name: str, params: Dict[str, Any], action_name: Optional[str] = None):
-        """Execute a tool call against the registry and return results."""
+    async def _invoke_tool(self, tool_name: str, params: Dict[str, Any]):
+        """Execute a tool call against the registry and return results.
+        
+        Modern interface: tool_name IS the function/method to call.
+        No separate action_name needed - the tool name identifies the exact operation.
+        """
 
         # First, try to get plugin adapter (important for status forwarding)
         plugin_adapter = None
@@ -67,11 +71,9 @@ class ToolExecutionManager:
 
         if plugin_adapter:
             # Use the PluginMCPAdapter which handles tool routing and status forwarding correctly
-            if not action_name:  # type: ignore[unreachable]
-                action_name = params.get("action") or plugin_adapter.plugin_server.get_default_action()
             try:
-                # Call through the PluginMCPAdapter which will route to the correct tool
-                result = await plugin_adapter.call_tool(action_name, params)
+                # Call through the PluginMCPAdapter with the tool name directly
+                result = await plugin_adapter.call_tool(tool_name, params)
                 return result
             except Exception as e:
                 logger.exception("Plugin tool %s invocation failed: %s", tool_name, e)
@@ -88,17 +90,14 @@ class ToolExecutionManager:
 
         if not server:
             raise RuntimeError(f"Unknown tool: {tool_name}")
-
-        if not action_name:
-            action_name = params.get("action") or server.get_default_action()
         
         try:
             # Check if server has call_with_status (MCP server interface)
             if hasattr(server, 'call_with_status'):
-                result = await server.call_with_status(action_name, params)
+                result = await server.call_with_status(tool_name, params)
             else:
                 # Fallback to regular call method
-                result = await server.call(action_name, params)
+                result = await server.call(tool_name, params)
             return result
         except Exception as e:
             logger.exception("Tool %s invocation failed: %s", tool_name, e)
@@ -461,72 +460,35 @@ class ToolExecutionManager:
         if not server:
             raise RuntimeError(f"Server not found for tool: {tool_name}")
 
-        # For multi-tool plugins, the openai_tool_name contains the actual tool name to call
-        # The tool_name is the plugin registry name that was mapped back
-        # So we should call the server with the original tool name, not an action
-        if hasattr(server, 'get_tools'):
-            # Multi-tool plugin: call with the specific tool name (regardless of name equality)
-            action_name = openai_tool_name
-        else:
-            # Legacy single-tool plugin: use action parameter
-            action_name = params.get("action") or params.get("tool") or server.get_default_action()
-
-            # Validate action against server schema for legacy plugins
-            if hasattr(server, 'get_schema'):
-                try:
-                    schema = server.get_schema()
-                    valid_actions = []
-                    if "function" in schema and "parameters" in schema["function"]:
-                        action_prop = schema["function"]["parameters"].get("properties", {}).get("action", {})
-                        valid_actions = action_prop.get("enum", [])
-
-                    if valid_actions and action_name not in valid_actions:
-                        logger.warning("Invalid action '%s' for tool %s, valid actions: %s. Using default action.",
-                                     action_name, tool_name, valid_actions)
-                        action_name = server.get_default_action()
-                        params["action"] = action_name
-                except Exception as e:
-                    logger.debug("Could not validate action for tool %s: %s", tool_name, e)
-
-        # Create serializable params for events (exclude non-JSON-serializable objects like StatusScope)
         serializable_params = self._make_params_serializable(params)
-
-        # Emit MCP call event (include request_id for correlation)
-        # Prefer tool-specific request_id from params over the general request_id
         event_request_id = serializable_params.get('request_id') or request_id
-        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": action_name, "params": serializable_params, "request_id": event_request_id}
+        call_event = {"type": "mcp_call", "step": step + 1, "server": tool_name, "action": openai_tool_name, "params": serializable_params, "request_id": event_request_id}
         events = [call_event]
         results = []
 
         try:
-            logger.info("Invoking tool %s action %s with params %s", tool_name, action_name, params)
+            logger.info("Invoking tool %s with params %s", openai_tool_name, params)
             
-            # CRITICAL FIX: If we already have the server (e.g., for own tools), call it directly
-            # instead of going through _invoke_tool() which tries to look up the server again
             if hasattr(server, 'call_with_status'):
-                tool_result = await server.call_with_status(action_name, params)
+                tool_result = await server.call_with_status(openai_tool_name, params)
             else:
-                # Fallback to regular call method
-                tool_result = await server.call(action_name, params)
+                tool_result = await server.call(openai_tool_name, params)
                 
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
             results.append({
                 "server": tool_name,
-                "action": action_name,
+                "action": openai_tool_name,
                 "params": serializable_params,
                 "result": tool_result
             })
 
-            # Emit MCP result event (include request_id for correlation)
-            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": action_name, "result": tool_result, "request_id": event_request_id}
+            result_event = {"type": "mcp_result", "step": step + 1, "server": tool_name, "action": openai_tool_name, "result": tool_result, "request_id": event_request_id}
             events.append(result_event)
 
             # Create tool result message
             tool_call_id = tc.get("id") or f"{tool_name}-call-{int(time.time()*1000)}"
-            tool_msg_content = json.dumps(tool_result, ensure_ascii=False)
-            # Sanitize tool result content before adding to messages
-            tool_msg_content = sanitize_json_content(tool_msg_content)
+            tool_msg_content = sanitize_json_content(json.dumps(tool_result, ensure_ascii=False))
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,
@@ -536,15 +498,12 @@ class ToolExecutionManager:
             return message, events, results
 
         except (Exception, GeneratorExit) as e:
-            # Handle both normal exceptions and GeneratorExit (when async generator tools are closed)
             if isinstance(e, GeneratorExit):
                 logger.warning("Tool %s closed with GeneratorExit (request_id: %s)", tool_name, request_id)
-                # Treat GeneratorExit as cancellation
                 tool_call_id = tc.get("id") or f"{tool_name}-cancelled-{int(time.time()*1000)}"
                 error_content = json.dumps({"error": "Tool execution was cancelled (GeneratorExit)"})
             else:
                 logger.exception("Tool %s invocation failed: %s", tool_name, e)
-                # Add error result for this specific tool call
                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                 error_content = json.dumps({"error": sanitize_for_llm(str(e))})
             

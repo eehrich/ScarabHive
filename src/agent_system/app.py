@@ -733,9 +733,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from .servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
-        # Use unified discovery so API shows same filtered set as runtime
         try:
-            available = await srv.list_allowed_tool_servers()
+            available = await srv.list_usable_tools()
             patterns = getattr(srv.agent_config, 'allowed_tools', None)
             return {"agent": agent_name, "patterns": patterns or [], "available": sorted(available), "effective": sorted(available)}
         except Exception as e:
@@ -758,7 +757,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return {"error": "not an agent", "agent": agent_name}
         try:
             patterns = getattr(srv.agent_config, 'allowed_tools', None)
-            available = await srv.list_allowed_tool_servers() if patterns else await srv.list_allowed_tool_servers()
+            available = await srv.list_usable_tools()
             diagnostics = []
             if patterns:
                 for tool in available:

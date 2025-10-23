@@ -119,4 +119,4 @@ class BasicAgent(SchemaBasedAgent):
         
         This method is automatically called for the "basic_agent_list_available_tools" tool.
         """
-        return await self._list_available_tools(params)
+        return await self._list_usable_tools_with_details(params)

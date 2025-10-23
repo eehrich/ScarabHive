@@ -569,7 +569,7 @@ Examples:
 |--------|--------------|
 | `MainAgent` class | Removed; use `entry_agent` selection |
 | Implicit all tools available | Default deny-all until explicitly allowed |
-| Ad-hoc tool filtering in code | Centralized in `Agent.list_allowed_tool_servers()` |
+| Ad-hoc tool filtering in code | Centralized in `Agent.list_usable_tools()` |
 
 To migrate existing deployments:
 1. Add an explicit `entry_agent` if you relied on a custom main agent.
