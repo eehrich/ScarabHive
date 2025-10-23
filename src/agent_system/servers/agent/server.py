@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 from ...config.models import AgentSystemConfig, MCPConfig
-from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager
+from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager, CancellationToken
 from ...mcp.base import MCPRegistry, MCPServer
 from ...utils.id import short_id
 from ...llm.models import ChatMessage
@@ -29,6 +30,18 @@ from .tool_schema_builder import ToolSchemaBuilder
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ConversationContext:
+    """Context for agent conversation execution."""
+    messages: List[ChatMessage]
+    available_tools: List[str]
+    tools_schema: List[Dict[str, Any]]
+    tool_name_mapping: Dict[str, str]
+    max_steps: int
+    main_token: CancellationToken
+    context_reset_token: Any  # Token for resetting contextvars
 
 
 class Agent(MCPServer):
@@ -375,9 +388,11 @@ class Agent(MCPServer):
 
     async def cancel_request(self, request_id: str) -> bool:
         """
-        Cancel an active request by setting its cancellation event.
-        Also uses the new cancellation manager for graceful/forced tool cancellation.
-        Uses prefix matching to cancel all related tool requests.
+        Cancel an active request.
+        
+        Uses dual cancellation: global CancellationManager for tools + 
+        per-agent events for request loop. See docs/cancellation_architecture.md
+        for design details.
 
         Args:
             request_id: The unique ID of the request to cancel
@@ -728,17 +743,25 @@ class Agent(MCPServer):
         llm_override: Optional[object] = None,
         llm_profile_info_override: Optional[str] = None
     ):
-        """Internal implementation of run_events with optional multimodal message.
+        """
+        Core agent execution loop - orchestrates LLM conversation with tool usage.
+        
+        Three phases: Initialize conversation → Run LLM loop → Finalize/cleanup.
+        Checks cancellation at step boundaries, prevents infinite loops with max_steps
+        and consecutive response guards. Yields streaming events for UI updates.
         
         Args:
             task: Text task description (may be empty if initial_message is provided)
-            request_id: Request ID for tracking
-            session_id: Session ID for conversation history
-            status_coordinator: Status scope for coordinator
-            status_worker: Status scope for worker
-            initial_message: Optional ChatMessage with multimodal content to use instead of task
-            llm_override: Optional LLM client to use instead of self.llm
-            llm_profile_info_override: Optional profile info string for status display
+            request_id: Request ID for tracking and cancellation
+            session_id: Session ID for conversation history persistence
+            status_coordinator: Status scope for coordinator-level events
+            status_worker: Status scope for worker-level events
+            initial_message: Optional ChatMessage with multimodal content
+            llm_override: Optional LLM client override
+            llm_profile_info_override: Optional profile info for status display
+            
+        Yields:
+            Dict events: start, heartbeat, thinking, status, tool_*, final, error, cancelled, end
         """
         # Determine which LLM to use for this request
         active_llm = llm_override if llm_override is not None else self.llm
