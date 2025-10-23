@@ -366,7 +366,11 @@ class Agent(MCPServer):
     @property
     def description(self) -> str:
         """Get the agent description."""
-        # No description field in AgentConfig, use agent name
+        # Try to get description from mcp_config
+        if hasattr(self, 'mcp_config') and self.mcp_config:
+            desc = getattr(self.mcp_config, 'description', None)
+            if desc:
+                return desc
         return f"Agent: {self.name}"
 
     async def cancel_request(self, request_id: str) -> bool:
@@ -1383,11 +1387,18 @@ class Agent(MCPServer):
         Returns:
             OpenAI function schema dict
         """
+        # Try to get description from: mcp_config.description -> fallback to agent name
+        description = None
+        if hasattr(self, 'mcp_config') and self.mcp_config:
+            description = getattr(self.mcp_config, 'description', None)
+        if not description:
+            description = getattr(self, '_agent_description', f"Agent: {self.name}")
+        
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": getattr(self.agent_config, 'description', None) or getattr(self, '_agent_description', f"Agent: {self.name}"),
+                "description": description,
                 "parameters": {
                     "type": "object",
                     "properties": {

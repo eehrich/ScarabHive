@@ -180,7 +180,7 @@ Tests now use `provider="ollama"` with mock LLM clients, which works but is sema
 
 ## Test Execution Status
 
-**Last Updated**: 2025-01-XX  
+**Last Updated**: 2025-10-24  
 **Total Tests**: 28/28 passing ✅  
 **Overall Status**: ALL TESTS PASSING - Zero regressions
 
@@ -190,7 +190,83 @@ Tests now use `provider="ollama"` with mock LLM clients, which works but is sema
 | test_integration_config_validation.py | ✅ Passing | 10 | 0 | All config scenarios validated |
 | test_integration_logging_validation.py | ✅ Passing | 10 | 0 | All logging tests passing |
 
-**Full Test Suite Status**: 775/775 tests passing (100%) ✅
+**Full Test Suite Status**: 101/101 agent+integration tests passing (100%) ✅
+
+---
+
+## Critical Fixes Applied
+
+### Fix #7: Agent.call() Legacy "Action" Parameter ✅ **REMOVED**
+**Date**: 2025-10-24  
+**Severity**: High - Architectural inconsistency  
+**Commit**: b98e288
+
+**Problem**:
+- Agent.call() had legacy "action" parameter (run/execute/ask) from old design
+- Schema exposed both agent name AND action parameter
+- Conceptually wrong - agents should be called like any other tool
+- Special case handling `if tool == self.name` was a workaround for bad API
+
+**Root Cause**:
+Legacy architecture where agents had multiple "actions" instead of being uniform tools.
+
+**Solution**:
+- ✅ Removed entire "action" concept from Agent.call()
+- ✅ Simplified schema to only require "task" parameter
+- ✅ Agents now called exactly like any other tool
+- ✅ No special handling needed
+
+**Code Changes**:
+1. `Agent.call()`: Removed action validation, simplified to just execute task
+2. `Agent.get_schema()`: Removed "action" from parameters
+3. Updated test to use simplified API
+
+**Impact**:
+- ✅ Cleaner, more consistent API
+- ✅ Agents truly uniform with other tools
+- ✅ All 101 tests passing
+
+---
+
+## API Changes Discovered During Testing
+
+### 1. Async Generator Pattern
+**Issue**: Tests used `await agent.run_events()` but it's an async generator  
+**Fix**: Changed to `async for _ in agent.run_events(): pass`  
+**Affected**: 10 tests in test_integration_logging_validation.py
+
+### 2. Interface Naming Confusion
+**Issue**: Methods named ambiguously (list_tools could mean two things)  
+**Fix**: 
+- `list_tools()` → what agent OFFERS to others (EXTERNAL)
+- `list_usable_tools()` → what agent CAN USE (INTERNAL)  
+**Affected**: 4 tests across integration suites
+
+### 3. Empty tools.allowed Semantics
+**Issue**: Empty list `[]` treated as "deny all" instead of "allow all"  
+**Fix**: 
+- `None` → deny all (no tools available)
+- `[]` → allow all (convert to `["*"]`)  
+**Affected**: test_empty_allowed_tools_means_all
+
+### 4. LLM Profile Info Format
+**Issue**: Changed from dict to string format  
+**Old**: `{"profile": "default", "provider": "mock"}`  
+**New**: `"default:mock/mock-model"`  
+**Affected**: 2 tests checking llm_profile_info
+
+### 5. Agent Configuration Field Renames
+**Issue**: Parameter names changed during refactoring  
+**Changes**:
+- `max_iterations` → `max_steps`
+- `output_format` parameter removed
+- Hook config structure updated  
+**Affected**: 3 tests in test_integration_config_validation.py
+
+### 6. MCPTool Field Access
+**Issue**: Tests used dict subscript `tool["name"]` but MCPTool is now Pydantic model  
+**Fix**: Use attribute access `tool.name`  
+**Affected**: Multiple tests accessing tool schemas
 
 ## Fixes Applied
 
