@@ -718,56 +718,65 @@ class Agent(MCPServer):
         coordinator_request_id = await self.next_internal_tool_request_id(request_id) if request_id else None
         worker_request_id = await self.next_internal_tool_request_id(request_id) if request_id else None
 
-        async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
-                   status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
-            async for event in self._run_events(
-                task_text, 
-                request_id=request_id, 
-                session_id=session_id, 
-                status_coordinator=status_coordinator, 
-                status_worker=status_worker,
-                initial_message=initial_message,
-                llm_override=llm_override,
-                llm_profile_info_override=llm_profile_info_override
-            ):
-                yield event
+        try:
+            async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
+                       status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
+                async for event in self._run_events(
+                    task_text, 
+                    request_id=request_id, 
+                    session_id=session_id, 
+                    status_coordinator=status_coordinator, 
+                    status_worker=status_worker,
+                    initial_message=initial_message,
+                    llm_override=llm_override,
+                    llm_profile_info_override=llm_profile_info_override
+                ):
+                    yield event
+        except GeneratorExit:
+            # Generator is being closed early - clean exit without error
+            raise
 
-    async def _run_events(
-        self, 
-        task: str, 
-        request_id: str, 
-        session_id: str, 
-        status_coordinator: StatusScope, 
-        status_worker: StatusScope,
+    async def _initialize_request_and_conversation(
+        self,
+        task: str,
+        request_id: str,
+        session_id: str,
         initial_message: Optional[ChatMessage] = None,
-        llm_override: Optional[object] = None,
-        llm_profile_info_override: Optional[str] = None
-    ):
-        """
-        Core agent execution loop - orchestrates LLM conversation with tool usage.
+        llm_override: Optional[object] = None
+    ) -> ConversationContext:
+        """Initialize request tracking and build initial conversation context.
         
-        Three phases: Initialize conversation → Run LLM loop → Finalize/cleanup.
-        Checks cancellation at step boundaries, prevents infinite loops with max_steps
-        and consecutive response guards. Yields streaming events for UI updates.
+        Phase 1 of agent execution: Setup all state needed for the LLM loop.
+        
+        Steps:
+        1. Create cancellation token
+        2. Register request for cancellation/appends
+        3. Set context vars
+        4. Initialize session storage
+        5. Start status event forwarding
+        6. Validate LLM availability
+        7. Initialize MCP integration
+        8. Discover usable tools
+        9. Render system prompts
+        10. Load session history
+        11. Execute session start hooks
+        12. Build tool schemas
         
         Args:
-            task: Text task description (may be empty if initial_message is provided)
-            request_id: Request ID for tracking and cancellation
-            session_id: Session ID for conversation history persistence
-            status_coordinator: Status scope for coordinator-level events
-            status_worker: Status scope for worker-level events
-            initial_message: Optional ChatMessage with multimodal content
+            task: User task description
+            request_id: Unique request identifier
+            session_id: Session identifier for history
+            initial_message: Optional multimodal message
             llm_override: Optional LLM client override
-            llm_profile_info_override: Optional profile info for status display
             
-        Yields:
-            Dict events: start, heartbeat, thinking, status, tool_*, final, error, cancelled, end
+        Returns:
+            ConversationContext with all initialized state
+            
+        Raises:
+            RuntimeError: If no LLM is available
         """
-        # Determine which LLM to use for this request
+        # Determine which LLM to use
         active_llm = llm_override if llm_override is not None else self.llm
-        
-        # Initialize step counter at function level so it's accessible in finally blocks and cleanup
-        step = 0
         
         # Create cancellation token for the main request
         cancellation_manager = get_cancellation_manager()
@@ -784,546 +793,200 @@ class Agent(MCPServer):
 
         # Set the ContextVar so any publish_status() calls without explicit request_id
         # will inherit the current request id. Store token for reset in finally.
-        token = None
         try:
-            try:
-                token = current_request_id.set(request_id)
-            except Exception as e:
-                logger.debug(f"Failed to set current_request_id context var: {e}")
-                token = None
-            async with self._request_lock:
-                # ensure session exists
-                self._sessions.setdefault(session_id, [])
-                # map request to session
-                self._request_to_session[request_id] = session_id
-                
-                # Reset emergency context management counter for new conversations
-                # Only reset if this is a new session (empty history)
-                if not self._sessions[session_id]:
-                    self._emergency_context_attempts = 0
-                    logger.debug("Reset emergency context counter for new session")
-            
-            yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
-
-            # Start status event forwarding
-            await self._status_event_forwarder.start_forwarding(request_id)
-
-            # Helper function to yield any pending status events
-            def yield_pending_status_events():
-                for event in self._status_event_forwarder.get_pending_events():
-                    yield event
-
-            # If no LLM is configured, emit an immediate error event and end the stream
-            if active_llm is None:
-                yield {"type": "error", "message": "No LLM available; agent requires an LLM to run", "request_id": request_id}
-                yield {"type": "end"}
-                return
-
-            # Initialize MCP integration
-            await self._mcp_integration_manager.setup_mcp_integration()
-
-            # Get tools this agent can use (filtered by agent_config)
-            usable_tools = await self.list_usable_tools()
-
-            max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
-
-            # Centralized prompt rendering (system + optional tools) using helper.
-            system_msg, tools_msg = self._render_prompts(usable_tools, max_steps)
-
-            # Initialize conversation from persisted session history
-            async with self._request_lock:
-                session_msgs = list(self._sessions.get(session_id, []))
-
-            # Create initial system messages
-            messages = [ChatMessage(role="system", content=system_msg)]
-            if tools_msg:
-                messages.append(ChatMessage(role="system", content=tools_msg))
-            
-            # Execute session start hooks for new sessions AFTER creating system messages
-            # This allows hooks like markdown_formatter to inject additional system prompts
-            # Check if session is empty (new session), not just if it exists (setdefault creates it above)
-            is_new_session = len(session_msgs) == 0
-            if is_new_session:
-                modified_messages = await self._hook_manager.execute_session_start_hooks(
-                    session_id, request_id, messages=messages
-                )
-                if modified_messages is not None:
-                    messages = modified_messages
-                    logger.debug(f"Session start hooks modified messages: {len(messages)} total messages")
-            # include persisted session messages
-            if session_msgs:
-                # Convert dicts to ChatMessage objects if needed
-                for msg in session_msgs:
-                    if isinstance(msg, dict):
-                        messages.append(ChatMessage(**msg))
-                    else:
-                        messages.append(msg)
-            # add the new user input as last message
-            # Use initial_message if provided (for multimodal input), otherwise create from task
-            if initial_message:
-                messages.append(initial_message)
-            else:
-                messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
-
-            # Also include any appended messages already queued for this request
-            async with self._request_lock:
-                entry = self._active_requests.get(request_id)
-                if isinstance(entry, dict):
-                    appended = entry.get('appended', [])
-                    if appended:
-                        messages.extend(appended)
-                        entry['appended'] = []
-
-            # Track messages for debugging
-            self._current_messages = messages.copy()
-
-            # Build tool schemas using ToolSchemaBuilder
-            schema_builder = ToolSchemaBuilder(
-                agent_name=self.name,
-                mcp_integration_manager=self._mcp_integration_manager,
-                server_getter_func=self._get_server_from_any_registry
-            )
-            
-            tools_schema, tool_name_mapping, usable_tools = await schema_builder.build_schemas(
-                usable_tools
-            )
-
-            # NOTE: self_tool_descriptions is applied in MCPServer.list_tools() for own tools,
-            # not here where we collect tools from OTHER servers for the agent to use.
-            # Applying it here would try to customize tool descriptions from other servers,
-            # which is incorrect (we want to customize OUR tools when OTHERS call us).
-
-            max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
-            results: Dict[str, Any] = {"task": task, "calls": []}
-
-            # Now that everything is set up and the forwarding task is definitely running,
-
-
-            # Add safeguards against infinite loops
-            consecutive_no_tool_calls = 0
-            consecutive_empty_responses = 0
-            max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
-            max_consecutive_empty = 2    # Break after 2 consecutive empty responses
-
-            for step in range(max_steps):
-                # Drain any appended user messages before each step
-                messages = await self._drain_appended_messages(request_id, messages)
-                
-                # Context management is now handled by hook plugins
-                
-                # Check for cancellation at the start of each step
-                if self._is_cancelled(request_id):
-                    logger.info("Request %s cancelled at step %d", request_id, step + 1)
-                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
-                    # Signal cancellation using status contexts
-                    await status_worker.error(f"cancelled at step {step + 1}", 
-                                          meta={"step": step + 1, "reason": "cancelled"})
-                    await status_coordinator.error(f"cancelled at step {step + 1}",
-                                                meta={"step": step + 1, "reason": "cancelled"})
-                    yield {"type": "end"}
-                    return
-
-                # Progress heartbeat using status_coordinator
-                await status_coordinator.progress(
-                    f"running step {step + 1}/{max_steps}",
-                    meta={"step": step + 1, "max_steps": max_steps}
-                )
-
-                try:
-                    yield {
-                        "type": "heartbeat",
-                        "message": f"{self.name}: running step {step + 1}/{max_steps}",
-                        "step": step + 1,
-                        "max_steps": max_steps,
-                        "request_id": request_id,
-                    }
-                except Exception as e:
-                    # If the consumer isn't expecting heartbeat, ignore
-                    logger.debug(f"Failed to yield heartbeat: {e}")
-
-                # Yield any pending status events
-                for status_event in yield_pending_status_events():
-                    yield status_event
-
-                # Enhanced context management and token tracking
-                # Context management now handled by hook plugins
-                estimated_tokens = sum(len(str(msg.content or "")) for msg in messages) // 4
-
-                # Emit thinking event before LLM call
-                yield {"type": "thinking", "step": step + 1}
-
-                # Yield any pending status events before LLM call
-                for status_event in yield_pending_status_events():
-                    yield status_event
-
-                # Signal LLM call using status_worker with profile info
-                # Use profile info override if provided (from API-level LLM override)
-                if llm_profile_info_override:
-                    llm_display = f" ({llm_profile_info_override})"
-                else:
-                    llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
-                await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
-
-                # Execute pre-LLM hooks (includes message validation via llm_message_validator plugin)
-                messages = await self._hook_manager.execute_pre_llm_hooks(
-                    messages, step, request_id, session_id, active_llm
-                )
-                
-                # Log messages AFTER hooks have modified them
-                logger.debug("LLM messages (after hooks): %s", [m.model_dump() for m in messages])
-
-                # Message validation is now handled by llm_message_validator hook plugin
-
-                # Get LLM response - handle context length exceeded errors
-                try:
-                    llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
-                except asyncio.CancelledError:  # pragma: no cover - explicit cancellation path
-                    # Treat as graceful cancellation (user cancel or upstream timeout cancellation)
-                    logger.info("Request %s received asyncio.CancelledError during LLM call at step %d", request_id, step + 1)
-                    # Signal cancellation using status contexts
-                    await status_worker.error("cancelled during LLM call (asyncio.CancelledError)", meta={"step": step + 1, "reason": "cancelled"})
-                    await status_coordinator.error("cancelled during LLM call", meta={"step": step + 1, "reason": "cancelled"})
-                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": "asyncio.CancelledError"}
-                    yield {"type": "end"}
-                    return
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if "cancelled" in error_str or "timeout" in error_str:
-                        logger.info(f"Request {request_id} cancelled during LLM call: {e}")
-                        # Signal cancellation using status contexts
-                        await status_worker.error(f"cancelled during LLM call: {e}", 
-                                                meta={"step": step + 1, "reason": "cancelled"})
-                        await status_coordinator.error("cancelled during LLM call", 
-                                                     meta={"step": step + 1, "reason": "cancelled"})
-                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
-                        yield {"type": "end"}
-                        return
-                    
-                    # Re-raise other exceptions
-                    raise
-                
-                # Drain any messages that arrived during LLM call
-                messages = await self._drain_appended_messages(request_id, messages)
-
-                # Execute post-LLM hooks
-                llm_out = await self._hook_manager.execute_post_llm_hooks(
-                    messages, llm_out, step, request_id, session_id, active_llm
-                )
-
-                # Signal LLM call completion using status_worker
-                await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
-
-                # Yield any pending status events after LLM response
-                for status_event in yield_pending_status_events():
-                    yield status_event
-
-                assistant = llm_out.get("assistant", {})
-                logger.debug("LLM assistant message (step %d): %s", step + 1, assistant)
-
-                # Track actual token usage for streamed events if available
-
-                # Emit thinking event with LLM response content
-                yield {"type": "thinking", "step": step + 1, "assistant": assistant}
-
-                tool_calls = assistant.get("tool_calls") or []
-                assistant_error = assistant.get("error") if isinstance(assistant, dict) else None
-                content = assistant.get("content")
-
-                # Normalize content variants for empty detection
-                def _is_effectively_empty(c) -> tuple[bool, str]:  # (empty?, reason)
-                    if c is None:
-                        return True, "content=None"
-                    # Text string
-                    if isinstance(c, str):
-                        if c.strip() == "":
-                            return True, "content=empty-string"
-                        return False, "non-empty-string"
-                    # OpenAI style list of segments
-                    if isinstance(c, list):
-                        if len(c) == 0:
-                            return True, "content=list-empty"
-                        # Collect any non-empty text segments
-                        has_text = False
-                        for seg in c:
-                            try:
-                                if isinstance(seg, dict):
-                                    # Accept either {type: 'text', text: '...'} or {type:'...','content': '...'}
-                                    txt = seg.get("text") or seg.get("content")
-                                    if isinstance(txt, str) and txt.strip():
-                                        has_text = True
-                                        break
-                                elif isinstance(seg, str) and seg.strip():
-                                    has_text = True
-                                    break
-                            except Exception as e:
-                                logger.debug(f"Failed to check content segment: {e}")
-                                continue
-                        if has_text:
-                            return False, "list-has-text"
-                        return True, "list-only-empty-segments"
-                    # Fallback for unexpected structure
-                    return False, f"unexpected-type-{type(c).__name__}"
-
-                is_empty_content, empty_reason = _is_effectively_empty(content)
-
-                # Track consecutive responses without progress to prevent infinite loops
-                # If LLM client surfaced a structured error, emit error event and break immediately
-                if assistant_error:
-                    # Structured error propagated by LLM client (e.g. invalid tool schema, 400 request error).
-                    # Treat as hard failure instead of counting toward empty-response heuristic.
-                    consecutive_empty_responses = 0
-                    consecutive_no_tool_calls = 0
-                    logger.error("LLM returned error payload (step %d): %s", step + 1, assistant_error)
-                    results.setdefault("errors", []).append(f"LLM error: {assistant_error.get('message')}")
-                    
-                    # Check if this is a cancellation error and send status messages
-                    error_message = assistant_error.get('message', '')
-                    if 'cancelled' in error_message.lower() or 'timeout' in error_message.lower():
-                        logger.info(f"Request {request_id} cancelled (from LLM error payload): {error_message}")
-                        # Signal cancellation using status contexts
-                        await status_worker.error(f"cancelled during LLM call: {error_message}", 
-                                                meta={"step": step + 1, "reason": "cancelled"})
-                        await status_coordinator.error("cancelled during LLM call", 
-                                                     meta={"step": step + 1, "reason": "cancelled"})
-                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": error_message}
-                    else:
-                        yield {"type": "error", "message": assistant_error.get("message", "LLM error"), "llm_error": assistant_error}
-                    break
-
-                if not tool_calls and is_empty_content:
-                    consecutive_empty_responses += 1
-                    consecutive_no_tool_calls += 1
-                    logger.warning(
-                        "LLM returned empty response (step %d), consecutive empty: %d (reason=%s)",
-                        step + 1,
-                        consecutive_empty_responses,
-                        empty_reason,
-                    )
-                elif not tool_calls:
-                    consecutive_no_tool_calls += 1
-                    consecutive_empty_responses = 0  # Reset empty counter if we have content
-                    logger.debug(
-                        "LLM returned content without tool calls (step %d), consecutive no-tools: %d (reason=%s)",
-                        step + 1,
-                        consecutive_no_tool_calls,
-                        empty_reason,
-                    )
-                else:
-                    # Reset counters when we get tool calls (making progress)
-                    consecutive_no_tool_calls = 0
-                    consecutive_empty_responses = 0
-
-                # Emergency break conditions to prevent infinite loops
-                if consecutive_empty_responses >= max_consecutive_empty:
-                    logger.warning(
-                        "Breaking agent loop: %d consecutive empty responses (last_empty_reason=%s)",
-                        consecutive_empty_responses,
-                        empty_reason,
-                    )
-                    diagnostic = {
-                        "empty_reason": empty_reason,
-                        "assistant_keys": list(assistant.keys()) if isinstance(assistant, dict) else None,
-                        "has_tool_calls": bool(tool_calls),
-                        "raw_content_repr": repr(content)[:400],
-                    }
-                    # Keep legacy phrasing 'consecutive empty' for test compatibility while adding reason detail
-                    results.setdefault("errors", []).append(
-                        f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses (reason={empty_reason})"
-                    )
-                    yield {
-                        "type": "error",
-                        "message": f"Agent stopped due to {consecutive_empty_responses} consecutive empty LLM responses (reason={empty_reason})",
-                        "diagnostic": diagnostic,
-                    }
-                    break
-                
-                if consecutive_no_tool_calls >= max_consecutive_no_tools:
-                    logger.warning("Breaking agent loop: %d consecutive responses without tool calls", consecutive_no_tool_calls)
-                    # If we have content in the last response, treat it as final
-                    if content:
-                        messages.append(ChatMessage(role="assistant", content=content or ""))
-                        results["summary"] = content
-                        self._current_messages = messages.copy()
-                        
-                        # Return raw markdown - formatting happens in API/CLI layer
-                        yield {"type": "final", "summary": content, "content_format": "markdown"}
-                    else:
-                        results.setdefault("errors", []).append(f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls")
-                        yield {"type": "error", "message": f"Agent stopped due to {consecutive_no_tool_calls} consecutive responses without tool calls"}
-                    break
-
-                # Execute ALL tool calls with immediate streaming
-                if tool_calls:
-                    # Check for cancellation before executing tools
-                    if self._is_cancelled(request_id):
-                        logger.info("Request %s cancelled before tool execution at step %d", request_id, step + 1)
-                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
-                        await status_worker.error(f"cancelled before tool execution at step {step + 1}", 
-                                              meta={"step": step + 1, "reason": "cancelled"})
-                        await status_coordinator.error(f"cancelled before tool execution at step {step + 1}",
-                                                    meta={"step": step + 1, "reason": "cancelled"})
-                        yield {"type": "end"}
-                        return
-
-                    await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
-
-                    # Add assistant message with ALL tool calls to conversation
-                    messages.append(ChatMessage(role="assistant", content=content or "", tool_calls=tool_calls))
-
-                    # Execute all tools using streaming to get real-time status events from sub-agents
-                    tool_messages = []
-                    tool_results = []
-                    async for item in self._tool_execution_manager.execute_tools_streaming(
-                        tool_calls, tool_name_mapping, usable_tools, step, request_id=request_id
-                    ):
-                        if item["type"] == "status":
-                            # Yield status events in real-time during tool execution
-                            yield item["event"]
-                        elif item["type"] == "tool_events":
-                            # Yield tool execution events
-                            for event in item["events"]:
-                                yield event
-                        elif item["type"] == "complete":
-                            # Store final results
-                            tool_messages = item["messages"]
-                            tool_results = item["results"]
-                    
-                    # Add tool results to the results dictionary
-                    results["calls"].extend(tool_results)
-                    
-                    # Add tool messages to conversation
-                    messages.extend(tool_messages)
-
-                # Check for final content
-                elif content:
-                    # Filter out OpenAI's meta-messages that should be ignored
-                    content_str = content.strip() if isinstance(content, str) else str(content)
-                    if content_str.startswith("(Note: last assistant message duplicated"):
-                        # OpenAI detected a duplicate message - this typically means the LLM
-                        # has nothing new to add. We should prompt it to summarize the tool results.
-                        logger.debug("OpenAI duplicate message warning at step %d - prompting for summary", step + 1)
-                        consecutive_no_tool_calls += 1
-                        
-                        # Add a user message to explicitly ask for a summary
-                        messages.append(ChatMessage(
-                            role="user",
-                            content="Please provide a brief summary of the results from the tool execution above."
-                        ))
-                        # Continue to next iteration to let LLM respond
-                    else:
-                        # Append assistant final message to conversation history
-                        messages.append(ChatMessage(role="assistant", content=content or ""))
-                        results["summary"] = content
-                        # Update tracked messages with final response
-                        self._current_messages = messages.copy()
-                        
-                        # Return raw markdown - formatting happens in API/CLI layer
-                        yield {"type": "final", "summary": content, "content_format": "markdown"}
-                        break
-                # If we had tool calls, continue to next iteration to let LLM respond to tool results
-                # Don't add extra assistant messages here as it creates invalid conversation flow
-
-                # Update tracked messages at end of each step
-                self._current_messages = messages.copy()
-                
-                # Drain any final appended messages before next step  
-                messages = await self._drain_appended_messages(request_id, messages)
-
-            else:
-                # Max steps reached - get final answer
-                try:
-                    # Message validation handled by llm_message_validator hook (already applied in pre-LLM hooks)
-                    
-                    final_llm_out = await active_llm.chat_tools(messages, [], cancellation_token=main_token)
-                    final_assistant = final_llm_out.get("assistant", {})
-                    final_content = final_assistant.get("content")
-                    if final_content:
-                        # Append final assistant message to conversation history
-                        messages.append(ChatMessage(role="assistant", content=final_content or ""))
-                        results["summary"] = final_content
-                        # Update tracked messages and emit final event
-                        self._current_messages = messages.copy()
-                        
-                        # Return raw markdown - formatting happens in API/CLI layer
-                        yield {"type": "final", "summary": final_content, "content_format": "markdown"}
-                    else:
-                        results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
-                        yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
-                except Exception as e:
-                    # Check if this is a cancellation exception in final answer
-                    final_error_str = str(e).lower()
-                    if "cancelled" in final_error_str or "timeout" in final_error_str:
-                        logger.info(f"Request {request_id} cancelled during final LLM call: {e}")
-                        # Signal cancellation using status contexts
-                        await status_worker.error(f"cancelled during final LLM call: {e}", 
-                                                meta={"step": step + 1, "reason": "cancelled"})
-                        await status_coordinator.error("cancelled during final LLM call", 
-                                                     meta={"step": step + 1, "reason": "cancelled"})
-                        yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
-                        yield {"type": "end"}
-                        return
-                    
-                    logger.exception("Failed to get final answer: %s", e)
-                    results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
-                    yield {"type": "error", "message": f"Failed to get final answer: {e}"}
-
+            context_reset_token = current_request_id.set(request_id)
         except Exception as e:
-            logger.exception("Agent execution failed with exception:")
-            yield {"type": "error", "message": f"Agent execution failed: {e}"}
-        finally:
-            # Execute session end hooks
-            try:
-                await self._hook_manager.execute_session_end_hooks(
-                    session_id, request_id, messages=messages if 'messages' in locals() else None
-                )
-            except Exception as e:
-                logger.warning(f"Session end hooks failed: {e}", exc_info=True)
+            logger.debug(f"Failed to set current_request_id context var: {e}")
+            context_reset_token = None
             
-            # Clean up cancellation token
-            cancellation_manager = get_cancellation_manager()
-            cancellation_manager.unregister_request(request_id)
+        async with self._request_lock:
+            # ensure session exists
+            self._sessions.setdefault(session_id, [])
+            # map request to session
+            self._request_to_session[request_id] = session_id
             
-            # Clean up request tracking but preserve session data
-            async with self._request_lock:
-                if request_id in self._active_requests:
-                    del self._active_requests[request_id]
-                    logger.debug("Cleaned up request tracking for %s", request_id)
-                
-                # Persist session messages and keep the request->session mapping for a while
-                sid = self._request_to_session.get(request_id)
-                if sid and 'messages' in locals() and messages:
-                    try:
-                        # Filter out system messages - only persist conversation history
-                        conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                        # Update the persistent session with conversation state (no system messages)
-                        self._sessions[sid] = conversation_msgs.copy()
-                        logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
-                        # Keep the request->session mapping (don't pop it immediately)
-                        # This allows append requests that arrive shortly after completion to find the session
-                    except Exception as e:
-                        logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+            # Reset emergency context management counter for new conversations
+            # Only reset if this is a new session (empty history)
+            if not self._sessions[session_id]:
+                self._emergency_context_attempts = 0
+                logger.debug("Reset emergency context counter for new session")
 
-            # Clean up MCP integration if we initialized it locally
-            await self._mcp_integration_manager.shutdown()
-            # Reset the current_request_id ContextVar so it doesn't leak to other tasks
+        # Start status event forwarding
+        await self._status_event_forwarder.start_forwarding(request_id)
+
+        # If no LLM is configured, raise error
+        if active_llm is None:
+            raise RuntimeError("No LLM available; agent requires an LLM to run")
+
+        # Initialize MCP integration
+        await self._mcp_integration_manager.setup_mcp_integration()
+
+        # Get tools this agent can use (filtered by agent_config)
+        usable_tools = await self.list_usable_tools()
+
+        max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
+
+        # Centralized prompt rendering (system + optional tools) using helper.
+        system_msg, tools_msg = self._render_prompts(usable_tools, max_steps)
+
+        # Initialize conversation from persisted session history
+        async with self._request_lock:
+            session_msgs = list(self._sessions.get(session_id, []))
+
+        # Create initial system messages
+        messages = [ChatMessage(role="system", content=system_msg)]
+        if tools_msg:
+            messages.append(ChatMessage(role="system", content=tools_msg))
+        
+        # Execute session start hooks for new sessions AFTER creating system messages
+        # This allows hooks like markdown_formatter to inject additional system prompts
+        # Check if session is empty (new session), not just if it exists (setdefault creates it above)
+        is_new_session = len(session_msgs) == 0
+        if is_new_session:
+            modified_messages = await self._hook_manager.execute_session_start_hooks(
+                session_id, request_id, messages=messages
+            )
+            if modified_messages is not None:
+                messages = modified_messages
+                logger.debug(f"Session start hooks modified messages: {len(messages)} total messages")
+        
+        # include persisted session messages
+        if session_msgs:
+            # Convert dicts to ChatMessage objects if needed
+            for msg in session_msgs:
+                if isinstance(msg, dict):
+                    messages.append(ChatMessage(**msg))
+                else:
+                    messages.append(msg)
+        
+        # add the new user input as last message
+        # Use initial_message if provided (for multimodal input), otherwise create from task
+        if initial_message:
+            messages.append(initial_message)
+        else:
+            messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
+
+        # Also include any appended messages already queued for this request
+        async with self._request_lock:
+            entry = self._active_requests.get(request_id)
+            if isinstance(entry, dict):
+                appended = entry.get('appended', [])
+                if appended:
+                    messages.extend(appended)
+                    entry['appended'] = []
+
+        # Track messages for debugging
+        self._current_messages = messages.copy()
+
+        # Build tool schemas using ToolSchemaBuilder
+        schema_builder = ToolSchemaBuilder(
+            agent_name=self.name,
+            mcp_integration_manager=self._mcp_integration_manager,
+            server_getter_func=self._get_server_from_any_registry
+        )
+        
+        tools_schema, tool_name_mapping, usable_tools = await schema_builder.build_schemas(
+            usable_tools
+        )
+
+        # Return initialized context
+        return ConversationContext(
+            messages=messages,
+            available_tools=usable_tools,
+            tools_schema=tools_schema,
+            tool_name_mapping=tool_name_mapping,
+            max_steps=max_steps,
+            main_token=main_token,
+            context_reset_token=context_reset_token
+        )
+
+    async def _finalize_request(
+        self,
+        request_id: str,
+        session_id: str,
+        status_coordinator: StatusScope,
+        status_worker: StatusScope,
+        context: Optional[ConversationContext],
+        messages: Optional[List[ChatMessage]],
+        results: Dict[str, Any],
+        step: int
+    ) -> None:
+        """Finalize request and clean up resources.
+        
+        Phase 3 of agent execution: Cleanup and persistence.
+        
+        Steps:
+        1. Execute session end hooks
+        2. Unregister cancellation token
+        3. Clean up request tracking
+        4. Persist session messages (conversation history only)
+        5. Shutdown MCP integration
+        6. Reset context vars
+        7. Publish final status events
+        8. Stop status forwarding
+        9. Yield final pending status events
+        
+        Args:
+            request_id: Request identifier
+            session_id: Session identifier
+            status_coordinator: Coordinator status scope
+            status_worker: Worker status scope
+            context: Conversation context (if initialized)
+            messages: Final conversation messages
+            results: Execution results dictionary
+            step: Final step number
+        """
+        # Execute session end hooks
+        try:
+            await self._hook_manager.execute_session_end_hooks(
+                session_id, request_id, messages=messages
+            )
+        except Exception as e:
+            logger.warning(f"Session end hooks failed: {e}", exc_info=True)
+        
+        # Clean up cancellation token
+        cancellation_manager = get_cancellation_manager()
+        cancellation_manager.unregister_request(request_id)
+        
+        # Clean up request tracking but preserve session data
+        async with self._request_lock:
+            if request_id in self._active_requests:
+                del self._active_requests[request_id]
+                logger.debug("Cleaned up request tracking for %s", request_id)
+            
+            # Persist session messages and keep the request->session mapping for a while
+            sid = self._request_to_session.get(request_id)
+            if sid and messages:
+                try:
+                    # Filter out system messages - only persist conversation history
+                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                    # Update the persistent session with conversation state (no system messages)
+                    self._sessions[sid] = conversation_msgs.copy()
+                    logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
+                    # Keep the request->session mapping (don't pop it immediately)
+                    # This allows append requests that arrive shortly after completion to find the session
+                except Exception as e:
+                    logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+
+        # Clean up MCP integration if we initialized it locally
+        await self._mcp_integration_manager.shutdown()
+        
+        # Reset the current_request_id ContextVar so it doesn't leak to other tasks
+        if context and context.context_reset_token is not None:
             try:
-                if token is not None:
-                    current_request_id.reset(token)
+                current_request_id.reset(context.context_reset_token)
             except Exception:
                 pass
-        # Signal completion using status contexts
-        final_msg = "completed" if not ('results' in locals() and results.get('errors')) else "completed with errors"
         
-        if 'results' in locals() and results.get('errors'):
-            await status_worker.error(final_msg, 
-                                    meta={"summary": results.get('summary') if 'results' in locals() else None})
-            await status_coordinator.error(f"{final_msg} ({step+1} steps)",
-                                         meta={"summary": results.get('summary') if 'results' in locals() else None})
+        # Signal completion using status contexts
+        final_msg = "completed" if not results.get('errors') else "completed with errors"
+        
+        if results.get('errors'):
+            await status_worker.error(final_msg, meta={"summary": results.get('summary')})
+            await status_coordinator.error(f"{final_msg} ({step+1} steps)", meta={"summary": results.get('summary')})
         else:
-            await status_worker.end(final_msg,
-                                  meta={"summary": results.get('summary') if 'results' in locals() else None})
-            await status_coordinator.end(f"{final_msg} ({step+1} steps)",
-                                       meta={"summary": results.get('summary') if 'results' in locals() else None})
+            await status_worker.end(final_msg, meta={"summary": results.get('summary')})
+            await status_coordinator.end(f"{final_msg} ({step+1} steps)", meta={"summary": results.get('summary')})
 
         # Give a small delay to allow final status events to be processed by the forwarding task
         await asyncio.sleep(0.01)
@@ -1331,12 +994,431 @@ class Agent(MCPServer):
         # Clean up status forwarding task AFTER publishing final status
         await self._status_event_forwarder.stop_forwarding()
 
-        # Yield any final pending status events before ending
+    async def _execute_llm_loop(
+        self,
+        context: ConversationContext,
+        request_id: str,
+        session_id: str,
+        status_coordinator: StatusScope,
+        status_worker: StatusScope,
+        llm_override: Optional[object] = None,
+        llm_profile_info_override: Optional[str] = None
+    ):
+        """Execute the main LLM conversation loop with tool execution.
+        
+        Phase 2 of agent execution: Iterative LLM calls with tool execution.
+        
+        Loops up to max_steps:
+        1. Check cancellation
+        2. Drain appended messages
+        3. Call LLM with tools
+        4. Handle thinking/status events
+        5. Execute tool calls (if any)
+        6. Check loop guards (empty responses, no tool calls)
+        7. Update messages with results
+        
+        Args:
+            context: Conversation context with messages and tools
+            request_id: Request identifier
+            session_id: Session identifier
+            status_coordinator: Coordinator status scope
+            status_worker: Worker status scope
+            llm_override: Optional LLM client override
+            llm_profile_info_override: Optional profile info for status
+            
+        Yields:
+            Dict events: heartbeat, thinking, status, tool_*, final, error, cancelled
+            
+        Returns:
+            Tuple of (messages, results, step) after loop completion
+        """
+        # Determine which LLM to use
+        active_llm = llm_override if llm_override is not None else self.llm
+        
+        # Extract from context
+        messages = context.messages
+        tools_schema = context.tools_schema
+        tool_name_mapping = context.tool_name_mapping
+        max_steps = context.max_steps
+        main_token = context.main_token
+        
+        # Initialize results
+        results: Dict[str, Any] = {"task": "", "calls": []}
+        
+        # Add safeguards against infinite loops
+        consecutive_no_tool_calls = 0
+        consecutive_empty_responses = 0
+        max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
+        max_consecutive_empty = 2    # Break after 2 consecutive empty responses
+        
+        # Helper function to yield any pending status events
+        def yield_pending_status_events():
+            for event in self._status_event_forwarder.get_pending_events():
+                yield event
+
+        for step in range(max_steps):
+            # Drain any appended user messages before each step
+            messages = await self._drain_appended_messages(request_id, messages)
+            
+            # Check for cancellation at the start of each step
+            if self._is_cancelled(request_id):
+                logger.info("Request %s cancelled at step %d", request_id, step + 1)
+                yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                # Signal cancellation using status contexts
+                await status_worker.error(f"cancelled at step {step + 1}", 
+                                      meta={"step": step + 1, "reason": "cancelled"})
+                await status_coordinator.error(f"cancelled at step {step + 1}",
+                                            meta={"step": step + 1, "reason": "cancelled"})
+                return
+
+            # Progress heartbeat using status_coordinator
+            await status_coordinator.progress(
+                f"step {step + 1}/{max_steps}",
+                meta={"step": step + 1, "max_steps": max_steps}
+            )
+
+            # Yield a heartbeat for UI responsiveness (non-blocking)
+            yield {"type": "heartbeat", "step": step + 1, "max_steps": max_steps}
+
+            # Yield pending status events before LLM call
+            for status_event in yield_pending_status_events():
+                yield status_event
+
+            # Execute pre-LLM hooks to transform messages
+            try:
+                modified_messages = await self._hook_manager.execute_pre_llm_hooks(
+                    messages=messages,
+                    step=step,
+                    request_id=request_id,
+                    session_id=session_id,
+                    llm=active_llm
+                )
+                if modified_messages is not None:
+                    messages = modified_messages
+            except Exception as e:
+                logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
+            
+            # LLM call - no status context needed, just call directly
+            try:
+                llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
+            except Exception as e:
+                # Check if this is a cancellation exception
+                error_str = str(e).lower()
+                if "cancelled" in error_str or "timeout" in error_str:
+                    logger.info(f"Request {request_id} cancelled during LLM call: {e}")
+                    # Signal cancellation using status contexts
+                    await status_worker.error(f"cancelled at step {step + 1}: {e}", 
+                                          meta={"step": step + 1, "reason": "cancelled"})
+                    await status_coordinator.error(f"cancelled at step {step + 1}",
+                                                meta={"step": step + 1, "reason": "cancelled"})
+                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
+                    return
+                
+                # Propagate other exceptions
+                raise
+
+            assistant = llm_out.get("assistant", {})
+            content = assistant.get("content")
+            tool_calls = assistant.get("tool_calls", [])
+
+            # Execute post-LLM hooks to transform the response
+            try:
+                modified_response = await self._hook_manager.execute_post_llm_hooks(
+                    messages=messages,
+                    llm_response={"content": content, "tool_calls": tool_calls},
+                    step=step,
+                    request_id=request_id,
+                    session_id=session_id,
+                    llm=active_llm
+                )
+                if modified_response is not None:
+                    content = modified_response.get("content", content)
+                    tool_calls = modified_response.get("tool_calls", tool_calls)
+            except Exception as e:
+                logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
+
+            # Emit thinking event if we have content and no tool calls (final answer)
+            if content and not tool_calls:
+                yield {"type": "thinking", "content": content}
+
+            # Yield pending status events after LLM response
+            for status_event in yield_pending_status_events():
+                yield status_event
+
+            # Infinite loop guard: Track consecutive responses without tool calls
+            if not tool_calls:
+                consecutive_no_tool_calls += 1
+                if consecutive_no_tool_calls >= max_consecutive_no_tools:
+                    logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls")
+                    # Treat final content as answer
+                    messages.append(ChatMessage(role="assistant", content=content or ""))
+                    results["summary"] = content
+                    self._current_messages = messages.copy()
+                    yield {"type": "final", "summary": content, "content_format": "markdown"}
+                    return
+            else:
+                consecutive_no_tool_calls = 0  # Reset counter when we get tool calls
+
+            # Infinite loop guard: Track consecutive empty responses
+            if not content and not tool_calls:
+                consecutive_empty_responses += 1
+                if consecutive_empty_responses >= max_consecutive_empty:
+                    logger.warning(f"Breaking loop: {consecutive_empty_responses} consecutive empty responses")
+                    error_msg = "LLM returned empty responses repeatedly"
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg}
+                    return
+            else:
+                consecutive_empty_responses = 0  # Reset counter
+
+            # If we have tool calls, execute them
+            if tool_calls:
+                # Add assistant message with tool calls to conversation
+                messages.append(ChatMessage(
+                    role="assistant",
+                    content=content or "",
+                    tool_calls=tool_calls
+                ))
+                
+                # Update tracked messages
+                self._current_messages = messages.copy()
+                
+                # Stream tool execution and results
+                async for tool_event in self._tool_execution_manager.execute_tools_streaming(
+                    tool_calls=tool_calls,
+                    tool_name_mapping=tool_name_mapping,
+                    available_tools=context.available_tools,
+                    step=step,
+                    request_id=request_id
+                ):
+                    yield tool_event
+                    
+                    # Collect tool results to add to messages
+                    if tool_event.get("type") == "tool_result":
+                        tool_result_msg = ChatMessage(
+                            role="tool",
+                            content=tool_event.get("content", ""),
+                            tool_call_id=tool_event.get("tool_call_id"),
+                            name=tool_event.get("name")
+                        )
+                        messages.append(tool_result_msg)
+                        results["calls"].append(tool_event)
+                
+                # Update tracked messages after tool execution
+                self._current_messages = messages.copy()
+                
+                # Yield pending status events after tool execution
+                for status_event in yield_pending_status_events():
+                    yield status_event
+                
+                # Continue to next iteration to let LLM respond to tool results
+                continue
+            
+            # No tool calls - this is the final answer
+            if content:
+                # Check if we need emergency context management
+                emergency_trim_occurred = False
+                if hasattr(self, '_emergency_context_attempts'):
+                    # Check if LLM response mentions context or length issues
+                    lower_content = content.lower()
+                    context_keywords = ['context', 'length', 'token', 'limit', 'truncat', 'shorten']
+                    if any(keyword in lower_content for keyword in context_keywords):
+                        if self._emergency_context_attempts < self._max_emergency_attempts:
+                            self._emergency_context_attempts += 1
+                            logger.warning(f"Emergency context management triggered (attempt {self._emergency_context_attempts}/{self._max_emergency_attempts})")
+                            
+                            # Execute emergency hooks
+                            try:
+                                emergency_messages = await self._hook_manager.execute_emergency_context_hooks(
+                                    session_id, request_id, messages=messages, error_info={"reason": "context_mention"}
+                                )
+                                if emergency_messages is not None and len(emergency_messages) < len(messages):
+                                    messages = emergency_messages
+                                    emergency_trim_occurred = True
+                                    logger.info(f"Emergency trimmed conversation from {len(messages)} to {len(emergency_messages)} messages")
+                            except Exception as e:
+                                logger.warning(f"Emergency context hooks failed: {e}", exc_info=True)
+                
+                # If emergency trim occurred, ask for summary again
+                if emergency_trim_occurred:
+                    # Add a user message to explicitly ask for a summary
+                    messages.append(ChatMessage(
+                        role="user",
+                        content="Please provide a brief summary of the results from the tool execution above."
+                    ))
+                    # Continue to next iteration to let LLM respond
+                else:
+                    # Append assistant final message to conversation history
+                    messages.append(ChatMessage(role="assistant", content=content or ""))
+                    results["summary"] = content
+                    # Update tracked messages with final response
+                    self._current_messages = messages.copy()
+                    
+                    # Return raw markdown - formatting happens in API/CLI layer
+                    yield {"type": "final", "summary": content, "content_format": "markdown"}
+                    return
+            
+            # Update tracked messages at end of each step
+            self._current_messages = messages.copy()
+            
+            # Drain any final appended messages before next step  
+            messages = await self._drain_appended_messages(request_id, messages)
+
+        # Max steps reached - get final answer
+        try:
+            final_llm_out = await active_llm.chat_tools(messages, [], cancellation_token=main_token)
+            final_assistant = final_llm_out.get("assistant", {})
+            final_content = final_assistant.get("content")
+            if final_content:
+                # Append final assistant message to conversation history
+                messages.append(ChatMessage(role="assistant", content=final_content or ""))
+                results["summary"] = final_content
+                # Update tracked messages and emit final event
+                self._current_messages = messages.copy()
+                
+                # Return raw markdown - formatting happens in API/CLI layer
+                yield {"type": "final", "summary": final_content, "content_format": "markdown"}
+            else:
+                results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
+                yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
+        except Exception as e:
+            # Check if this is a cancellation exception in final answer
+            final_error_str = str(e).lower()
+            if "cancelled" in final_error_str or "timeout" in final_error_str:
+                logger.info(f"Request {request_id} cancelled during final LLM call: {e}")
+                # Signal cancellation using status contexts
+                await status_worker.error(f"cancelled during final LLM call: {e}", 
+                                        meta={"step": step + 1, "reason": "cancelled"})
+                await status_coordinator.error("cancelled during final LLM call", 
+                                             meta={"step": step + 1, "reason": "cancelled"})
+                yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
+                return
+            
+            logger.exception("Failed to get final answer: %s", e)
+            results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
+            yield {"type": "error", "message": f"Failed to get final answer: {e}"}
+        
+        return
+
+    async def _run_events(
+        self, 
+        task: str, 
+        request_id: str, 
+        session_id: str, 
+        status_coordinator: StatusScope, 
+        status_worker: StatusScope,
+        initial_message: Optional[ChatMessage] = None,
+        llm_override: Optional[object] = None,
+        llm_profile_info_override: Optional[str] = None
+    ):
+        """
+        Core agent execution loop - orchestrates LLM conversation with tool usage.
+        
+        Now refactored into three focused phases (see REFACTORING_PLAN.md):
+        1. Initialize: _initialize_request_and_conversation() - Setup and context building
+        2. Execute: _execute_llm_loop() - Main LLM interaction loop with tool execution
+        3. Finalize: _finalize_request() - Cleanup and persistence
+        
+        This orchestration method is now <150 LOC, delegating complex logic to focused helpers.
+        
+        Args:
+            task: Text task description (may be empty if initial_message is provided)
+            request_id: Request ID for tracking and cancellation
+            session_id: Session ID for conversation history persistence
+            status_coordinator: Status scope for coordinator-level events
+            status_worker: Status scope for worker-level events
+            initial_message: Optional ChatMessage with multimodal content
+            llm_override: Optional LLM client override
+            llm_profile_info_override: Optional profile info for status display
+            
+        Yields:
+            Dict events: start, heartbeat, thinking, status, tool_*, final, error, cancelled, end
+        """
+        # Initialize state variables for access in finally block
+        step = 0
+        context = None
+        messages = None
+        results: Dict[str, Any] = {"task": task, "calls": []}
+        
+        # Emit start event first (even if initialization fails)
+        yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+        
+        try:
+            # Phase 1: Initialize request and build conversation context
+            try:
+                context = await self._initialize_request_and_conversation(
+                    task=task,
+                    request_id=request_id,
+                    session_id=session_id,
+                    initial_message=initial_message,
+                    llm_override=llm_override
+                )
+            except RuntimeError as e:
+                # LLM not available - emit error and end stream
+                yield {"type": "error", "message": str(e), "request_id": request_id}
+                yield {"type": "end"}
+                return
+            
+            # Helper function to yield any pending status events
+            def yield_pending_status_events():
+                for event in self._status_event_forwarder.get_pending_events():
+                    yield event
+            
+            # Track messages from context for updates during loop
+            messages = context.messages
+            
+            # Phase 2: Execute main LLM loop with tool execution
+            loop_generator = self._execute_llm_loop(
+                context=context,
+                request_id=request_id,
+                session_id=session_id,
+                status_coordinator=status_coordinator,
+                status_worker=status_worker,
+                llm_override=llm_override,
+                llm_profile_info_override=llm_profile_info_override
+            )
+            
+            async for event in loop_generator:
+                yield event
+                
+                # Track messages updates from context during loop execution
+                if context:
+                    messages = context.messages
+                
+                # Capture summary and errors from events
+                if event.get("type") == "final" and "summary" in event:
+                    results["summary"] = event["summary"]
+                elif event.get("type") == "error":
+                    results.setdefault("errors", []).append(event.get("message", "Unknown error"))
+                elif event.get("type") == "cancelled":
+                    # Loop was cancelled, update step from event
+                    step = event.get("step", 0) - 1  # Convert to 0-indexed
+            
+        except Exception as e:
+            logger.exception("Agent execution failed with exception:")
+            yield {"type": "error", "message": f"Agent execution failed: {e}"}
+        finally:
+            # Phase 3: Finalize and cleanup
+            # Note: This runs even if generator is closed early, but we can't yield in that case
+            await self._finalize_request(
+                request_id=request_id,
+                session_id=session_id,
+                status_coordinator=status_coordinator,
+                status_worker=status_worker,
+                context=context,
+                messages=messages if messages else (context.messages if context else None),
+                results=results,
+                step=step
+            )
+        
+        # Yield final status events and end marker
+        # These won't execute if generator was closed early (GeneratorExit), which is fine
         if 'yield_pending_status_events' in locals():
             for status_event in yield_pending_status_events():
                 yield status_event
         
         yield {"type": "end"}
+
 
     async def shutdown(self) -> None:
         """Shutdown the agent and clean up resources"""
