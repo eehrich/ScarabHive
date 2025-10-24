@@ -28,8 +28,8 @@ from agent_system.config.models import HooksConfig
 from agent_system.servers.agent.components.hook_integration import HookIntegrationManager
 
 
-class TestHookPlugin(PluginHook):
-    """Test plugin with hooks for integration testing."""
+class MockHookPlugin(PluginHook):
+    """Mock plugin with hooks for integration testing."""
     
     def __init__(self, name: str, config: Dict[str, Any] = None):
         super().__init__(name, config or {})
@@ -70,7 +70,7 @@ def clean_registry():
 @pytest.mark.asyncio
 async def test_hook_registered_with_full_name(clean_registry):
     """Test that hooks are registered with plugin.hook_name format."""
-    plugin = TestHookPlugin("test_plugin", {})
+    plugin = MockHookPlugin("test_plugin", {})
     metadata = {
         'hooks': [
             {
@@ -95,7 +95,7 @@ async def test_hook_registered_with_full_name(clean_registry):
 @pytest.mark.asyncio
 async def test_agent_override_enables_globally_disabled_hook(clean_registry):
     """Test that agent can enable a globally disabled hook via override."""
-    plugin = TestHookPlugin("todo_management", {})
+    plugin = MockHookPlugin("todo_management", {})
     metadata = {
         'hooks': [
             {
@@ -134,7 +134,7 @@ async def test_agent_override_enables_globally_disabled_hook(clean_registry):
 @pytest.mark.asyncio
 async def test_agent_override_disables_globally_enabled_hook(clean_registry):
     """Test that agent can disable a globally enabled hook via override."""
-    plugin = TestHookPlugin("markdown_formatter", {})
+    plugin = MockHookPlugin("markdown_formatter", {})
     metadata = {
         'hooks': [
             {
@@ -171,7 +171,7 @@ async def test_agent_override_disables_globally_enabled_hook(clean_registry):
 @pytest.mark.asyncio
 async def test_agent_without_override_uses_global_state(clean_registry):
     """Test that agent without override uses global enabled state."""
-    plugin = TestHookPlugin("test_plugin", {})
+    plugin = MockHookPlugin("test_plugin", {})
     metadata = {
         'hooks': [
             {
@@ -204,7 +204,7 @@ async def test_agent_without_override_uses_global_state(clean_registry):
 @pytest.mark.asyncio
 async def test_hook_execution_with_agent_filter(clean_registry):
     """Test that hooks execute correctly with agent-specific filter."""
-    plugin = TestHookPlugin("test_plugin", {})
+    plugin = MockHookPlugin("test_plugin", {})
     metadata = {
         'hooks': [
             {
@@ -284,8 +284,8 @@ async def test_hook_execution_with_agent_filter(clean_registry):
 @pytest.mark.asyncio
 async def test_multiple_plugins_with_same_hook_name(clean_registry):
     """Test that different plugins can have hooks with same name (namespaced)."""
-    plugin_a = TestHookPlugin("plugin_a", {})
-    plugin_b = TestHookPlugin("plugin_b", {})
+    plugin_a = MockHookPlugin("plugin_a", {})
+    plugin_b = MockHookPlugin("plugin_b", {})
     
     metadata_a = {
         'hooks': [
