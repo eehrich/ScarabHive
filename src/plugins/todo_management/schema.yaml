@@ -1,4 +1,18 @@
-# TODO Management Plugin - Schema (Tools, Hooks, Config)
+# TODO Management Plugin - Schema (Tools, Hooks, Config, Web UI)
+
+web_ui:
+  button:
+    enabled: true
+    text: "TODOs"
+    icon: "✅"
+  
+  panel:
+    enabled: true
+    title: "TODO Manager"
+    endpoint: "/plugins/todo_management/panel"
+    type: "iframe"
+    width: "1000px"
+    height: "800px"
 
 hooks:
   - name: inject_todo_tasks
