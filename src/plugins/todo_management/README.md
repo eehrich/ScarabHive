@@ -79,7 +79,39 @@ await agent.todo(
     tags=["tag1", "tag2"],
     depends_on=["task_001"],  # Blocking dependencies
     thinking_session_id="abc123",  # Link to sequential_thinking
-    thought_number=5
+    thought_number=5,
+    allow_duplicates=False,  # Prevent duplicates (default)
+    idempotency_key="unique-operation-id"  # Prevent retries creating duplicates
+)
+```
+
+**Duplicate Detection (CREATE mode only):**
+- **Default behavior** (`allow_duplicates=False`): Checks for similar titles before creating
+  * 95%+ similarity → Returns existing task (`status='exists'`, `reason='duplicate_title'`)
+  * 80-95% similarity → Warns but creates new task
+  * <80% similarity → Creates new task without warning
+  * Completed tasks are excluded from duplicate check
+- **Override:** Set `allow_duplicates=True` to always create new task
+- **Idempotency:** Use `idempotency_key` to prevent duplicates on retries (returns existing if key matches)
+
+**Examples:**
+```python
+# Duplicate prevention (default)
+result = await agent.todo(operation="create", title="Fix login bug")
+# Returns existing if similar task exists
+
+# Allow duplicates
+result = await agent.todo(
+    operation="create",
+    title="Fix login bug",
+    allow_duplicates=True  # Always creates new
+)
+
+# Idempotency (safe retries)
+result = await agent.todo(
+    operation="create",
+    title="Deploy v2.1.0",
+    idempotency_key="deploy-v2.1.0-20251025"  # Same key returns existing
 )
 ```
 
@@ -189,6 +221,81 @@ await agent.todo(operation="create", title="Integration tests", depends_on=["tas
 # Sub-agents filter by tag
 backend_tasks = await agent.todo(operation="list", filter_tags=["backend-team"], only_unblocked=True)
 frontend_tasks = await agent.todo(operation="list", filter_tags=["frontend-team"], only_unblocked=True)
+```
+
+## Best Practices
+
+### Avoiding Duplicate Tasks
+
+**Problem:** LLMs may accidentally create duplicate tasks when checking status or listing tasks.
+
+**Solutions:**
+
+1. **Use explicit operations** (prevents accidental creation):
+   ```python
+   # ✅ GOOD: Explicit list operation
+   tasks = await agent.todo(operation="list", filter_status=["in-progress"])
+   
+   # ❌ BAD (old implicit mode): Could accidentally create if title provided
+   # tasks = await agent.todo(title="...", filter_status=["in-progress"])
+   ```
+
+2. **Rely on automatic duplicate detection** (default behavior):
+   ```python
+   # First call creates task
+   result1 = await agent.todo(operation="create", title="Fix bug #123")
+   # task_001 created
+   
+   # Second call with same/similar title returns existing
+   result2 = await agent.todo(operation="create", title="Fix bug #123")
+   # Returns task_001 (status='exists', reason='duplicate_title')
+   ```
+
+3. **Use idempotency keys for critical operations**:
+   ```python
+   # Safe to retry - same key returns existing task
+   await agent.todo(
+       operation="create",
+       title="Deploy production v1.2.3",
+       idempotency_key="deploy-prod-v1.2.3-20251025",
+       priority="critical"
+   )
+   ```
+
+4. **Check for existing tasks before creating**:
+   ```python
+   # List similar tasks first
+   existing = await agent.todo(
+       operation="list",
+       filter_tags=["authentication"],
+       filter_status=["not-started", "in-progress"]
+   )
+   
+   # Only create if none found
+   if not existing["tasks"]:
+       await agent.todo(
+           operation="create",
+           title="Implement OAuth2",
+           tags=["authentication"]
+       )
+   ```
+
+### When to Override Duplicate Detection
+
+Use `allow_duplicates=True` when:
+- Creating intentionally similar tasks (e.g., "Code review PR #123", "Code review PR #124")
+- Tasks have same title but different context (different sessions, agents, or time periods)
+- Testing or debugging scenarios
+
+```python
+# Allow multiple similar tasks
+for pr_num in [123, 124, 125]:
+    await agent.todo(
+        operation="create",
+        title=f"Code review PR #{pr_num}",
+        allow_duplicates=True,  # Creates separate task for each PR
+        tags=[f"pr-{pr_num}"]
+    )
 ```
 
 ## Task Lifecycle
