@@ -1084,7 +1084,8 @@ class Agent(MCPServer):
                     tool_name_mapping=tool_name_mapping,
                     available_tools=context.available_tools,
                     step=step,
-                    request_id=request_id
+                    request_id=request_id,
+                    session_id=session_id
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution

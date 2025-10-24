@@ -81,6 +81,10 @@ class MCPServer(ABC):
             # Inject request_id into status for plugins to check cancellation
             if request_id:
                 params_with_status["_request_id"] = request_id
+            
+            # Inject session_id if provided by agent (for session-aware plugins)
+            if "_session_id" in params:
+                params_with_status["_session_id"] = params["_session_id"]
 
             return await self.call(action, params_with_status)
 

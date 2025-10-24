@@ -2,20 +2,27 @@ name: todo_management
 version: "1.0.0"
 description: "Task lifecycle tracking and workflow orchestration for agent systems"
 author: "AgentSystem"
-type: mcp_server
+entrypoint: server:TodoManagementServer
+type: mcp_only
+category: productivity
 
-# Server configuration
-server:
-  class: "TodoManagementServer"
-  module: "plugins.todo_management.server"
-  schema_file: "schema.yaml"
-
-# Plugin settings (passed to server constructor)
-server_config:
-  storage_path: "data/todos"
-  max_tasks_per_session: 1000
-  enable_dependencies: true
-  auto_save: true
+config_schema:
+  storage_path:
+    type: string
+    default: "data/todos"
+    description: Directory path for storing TODO sessions
+  max_tasks_per_session:
+    type: integer
+    default: 1000
+    description: Maximum tasks allowed per session
+  enable_dependencies:
+    type: boolean
+    default: true
+    description: Enable task dependency tracking
+  auto_save:
+    type: boolean
+    default: true
+    description: Automatically save after each operation
 
 # Metadata
 metadata:

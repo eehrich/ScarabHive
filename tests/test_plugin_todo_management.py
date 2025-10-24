@@ -17,6 +17,7 @@ import json
 import pytest
 from pathlib import Path
 from typing import Dict, Any
+from unittest.mock import MagicMock
 
 from plugins.todo_management.server import (
     TodoManagementServer,
@@ -44,20 +45,30 @@ def temp_storage(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def server_config(temp_storage: Path) -> Dict[str, Any]:
-    """Server configuration for testing"""
-    return {
-        "storage_path": str(temp_storage),
-        "max_tasks_per_session": 100,
-        "enable_dependencies": True,
-        "auto_save": True,
-    }
+def mock_system_config() -> MagicMock:
+    """Mock AgentSystemConfig for testing"""
+    return MagicMock()
 
 
 @pytest.fixture
-def server(server_config: Dict[str, Any]) -> TodoManagementServer:
+def mock_mcp_config(temp_storage: Path) -> MagicMock:
+    """Mock MCPConfig with TODO plugin settings"""
+    config = MagicMock()
+    config.storage_path = str(temp_storage)
+    config.max_tasks_per_session = 100
+    config.enable_dependencies = True
+    config.auto_save = True
+    return config
+
+
+@pytest.fixture
+def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock) -> TodoManagementServer:
     """TodoManagementServer instance"""
-    return TodoManagementServer(config=server_config)
+    return TodoManagementServer(
+        name="todo_management",
+        system_config=mock_system_config,
+        mcp_config=mock_mcp_config,
+    )
 
 
 @pytest.fixture
@@ -67,7 +78,6 @@ def mock_context() -> Dict[str, Any]:
         "session_id": "test_session_001",
         "agent_name": "test_agent",
     }
-
 
 # =============================================================================
 # Test: Task Creation
@@ -354,7 +364,7 @@ async def test_cascade_delete(server: TodoManagementServer, mock_context: Dict[s
     child_id = child["task_id"]
     
     # Delete parent with cascade
-    result = await server.delete_todo(
+    result = await server._delete_todo_impl(
         task_id=parent_id,
         cascade=True,
         context=mock_context,
@@ -382,7 +392,7 @@ async def test_delete_without_cascade(server: TodoManagementServer, mock_context
     
     # Try to delete parent without cascade
     with pytest.raises(DependencyError, match="depend on it"):
-        await server.delete_todo(
+        await server._delete_todo_impl(
             task_id=parent_id,
             cascade=False,
             context=mock_context,
@@ -548,12 +558,12 @@ async def test_get_progress_summary(server: TodoManagementServer, mock_context: 
 @pytest.mark.asyncio
 async def test_todo_mode_create(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test todo() CREATE mode"""
-    result = await server.todo(
-        title="New Task",
-        description="Description",
-        priority="high",
-        context=mock_context,
-    )
+    result = await server.todo({
+        "title": "New Task",
+        "description": "Description",
+        "priority": "high",
+        "context": mock_context,
+    })
     
     assert result["status"] == "created"
     assert "task_id" in result
@@ -562,15 +572,15 @@ async def test_todo_mode_create(server: TodoManagementServer, mock_context: Dict
 @pytest.mark.asyncio
 async def test_todo_mode_update(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test todo() UPDATE mode"""
-    created = await server.todo(title="Task", context=mock_context)
+    created = await server.todo({"title": "Task", "context": mock_context})
     task_id = created["task_id"]
     
-    result = await server.todo(
-        task_id=task_id,
-        status="in-progress",
-        progress=50,
-        context=mock_context,
-    )
+    result = await server.todo({
+        "task_id": task_id,
+        "status": "in-progress",
+        "progress": 50,
+        "context": mock_context,
+    })
     
     assert result["status"] == "updated"
     assert result["task"]["progress"] == 50
@@ -579,13 +589,13 @@ async def test_todo_mode_update(server: TodoManagementServer, mock_context: Dict
 @pytest.mark.asyncio
 async def test_todo_mode_list(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test todo() LIST mode"""
-    await server.todo(title="Task 1", priority="high", context=mock_context)
-    await server.todo(title="Task 2", priority="low", context=mock_context)
+    await server.todo({"title": "Task 1", "priority": "high", "context": mock_context})
+    await server.todo({"title": "Task 2", "priority": "low", "context": mock_context})
     
-    result = await server.todo(
-        filter_priority=["high"],  # Correct parameter name
-        context=mock_context,
-    )
+    result = await server.todo({
+        "filter_priority": ["high"],
+        "context": mock_context,
+    })
     
     assert "tasks" in result
     assert result["returned_count"] == 1
@@ -594,10 +604,10 @@ async def test_todo_mode_list(server: TodoManagementServer, mock_context: Dict[s
 @pytest.mark.asyncio
 async def test_todo_mode_get(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test todo() GET mode"""
-    created = await server.todo(title="Task", context=mock_context)
+    created = await server.todo({"title": "Task", "context": mock_context})
     task_id = created["task_id"]
     
-    result = await server.todo(task_id=task_id, context=mock_context)
+    result = await server.todo({"task_id": task_id, "context": mock_context})
     
     assert result["task"]["task_id"] == task_id
 
@@ -605,10 +615,10 @@ async def test_todo_mode_get(server: TodoManagementServer, mock_context: Dict[st
 @pytest.mark.asyncio
 async def test_todo_mode_summary(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test todo() SUMMARY mode"""
-    await server.todo(title="Task 1", context=mock_context)
-    await server.todo(title="Task 2", context=mock_context)
+    await server.todo({"title": "Task 1", "context": mock_context})
+    await server.todo({"title": "Task 2", "context": mock_context})
     
-    result = await server.todo(task_id="SUMMARY", context=mock_context)
+    result = await server.todo({"task_id": "SUMMARY", "context": mock_context})
     
     assert "total_tasks" in result
     assert result["total_tasks"] == 2
@@ -617,8 +627,9 @@ async def test_todo_mode_summary(server: TodoManagementServer, mock_context: Dic
 @pytest.mark.asyncio
 async def test_todo_invalid_args(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test todo() with invalid arguments"""
-    with pytest.raises(ValidationError, match="Invalid arguments"):
-        await server.todo(context=mock_context)  # No args at all
+    # Default mode (empty params) should return summary
+    result = await server.todo({"context": mock_context})
+    assert "total_tasks" in result
 
 
 # =============================================================================
@@ -644,15 +655,28 @@ async def test_session_persistence(server: TodoManagementServer, mock_context: D
 
 
 @pytest.mark.asyncio
-async def test_session_reload(server_config: Dict[str, Any], mock_context: Dict[str, Any]):
+async def test_session_reload(
+    temp_storage: Path,
+    mock_system_config: MagicMock,
+    mock_mcp_config: MagicMock,
+    mock_context: Dict[str, Any],
+):
     """Test session reloads from disk"""
     # Create tasks with first server instance
-    server1 = TodoManagementServer(config=server_config)
+    server1 = TodoManagementServer(
+        name="todo_management",
+        system_config=mock_system_config,
+        mcp_config=mock_mcp_config,
+    )
     await server1.create_todo(title="Task 1", context=mock_context)
     await server1.create_todo(title="Task 2", context=mock_context)
     
     # Create new server instance (simulates restart)
-    server2 = TodoManagementServer(config=server_config)
+    server2 = TodoManagementServer(
+        name="todo_management",
+        system_config=mock_system_config,
+        mcp_config=mock_mcp_config,
+    )
     
     # Load tasks
     result = await server2.list_todos(context=mock_context)

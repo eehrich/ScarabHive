@@ -65,13 +65,12 @@ plugins:
       max_summary_thoughts: 10
     
     todo_management:
-      type: mcp_server
+      type: todo_management
       enabled: true
-      server_config:
-        storage_path: data/todos
-        max_tasks_per_session: 1000
-        enable_dependencies: true
-        auto_save: true
+      storage_path: data/todos
+      max_tasks_per_session: 1000
+      enable_dependencies: true
+      auto_save: true
     
     http_server:
       type: http_server
@@ -215,6 +214,7 @@ plugins:
             - "basic_operations/*"
             - "datetime/*"
             - "sequential_thinking/*"
+            - "todo_management/*"
         
         hooks:
           enabled: true
@@ -405,6 +405,7 @@ plugins:
             - "datetime/*"
             - "basic_operations/*"
             - "sequential_thinking/*"
+            - "todo_management/*"
 
       metadata:
         author: "AgentSystem"

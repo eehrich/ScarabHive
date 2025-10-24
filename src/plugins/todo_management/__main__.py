@@ -19,8 +19,7 @@ import argparse
 import asyncio
 import json
 import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from plugins.todo_management.server import TodoManagementServer
 
@@ -98,7 +97,7 @@ async def cli_create(server: TodoManagementServer, args: argparse.Namespace) -> 
             task = result["task"]
             print(f"✓ Created {result['task_id']}: {task['title']}")
             if result.get("is_blocked"):
-                print(f"  ⚠ Task is BLOCKED by incomplete dependencies")
+                print("  ⚠ Task is BLOCKED by incomplete dependencies")
         
         return 0
     
@@ -242,7 +241,7 @@ async def cli_get(server: TodoManagementServer, args: argparse.Namespace) -> int
 async def cli_delete(server: TodoManagementServer, args: argparse.Namespace) -> int:
     """Handle 'delete' command"""
     try:
-        result = await server.delete_todo(
+        result = await server._delete_todo_impl(
             task_id=args.task_id,
             cascade=args.cascade,
             context={"session_id": args.session},
@@ -333,7 +332,7 @@ async def cli_clear(server: TodoManagementServer, args: argparse.Namespace) -> i
         # Delete all tasks
         task_ids = list(collection.tasks.keys())
         for task_id in task_ids:
-            await server.delete_todo(
+            await server._delete_todo_impl(
                 task_id=task_id,
                 cascade=True,
                 context={"session_id": session_id},
@@ -506,7 +505,7 @@ def cli_main():
     )
     
     # summary
-    summary_parser = subparsers.add_parser("summary", help="Get progress summary")
+    subparsers.add_parser("summary", help="Get progress summary")
     
     # clear
     clear_parser = subparsers.add_parser("clear", help="Delete all tasks")
@@ -529,14 +528,21 @@ def cli_main():
         parser.print_help()
         sys.exit(1)
     
-    # Create server instance
-    config = {
-        "storage_path": "data/todos",
-        "max_tasks_per_session": 1000,
-        "enable_dependencies": True,
-        "auto_save": True,
-    }
-    server = TodoManagementServer(config=config)
+    # Create server instance with proper config objects
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(
+        type="todo_management",
+        enabled=True,
+        storage_path="data/todos",
+        max_tasks_per_session=1000,
+        enable_dependencies=True,
+        auto_save=True,
+    )
+    
+    from .plugin import PLUGIN_FACTORY
+    server = PLUGIN_FACTORY("todo_management", system_config, mcp_config)
     
     # Dispatch command
     handlers = {

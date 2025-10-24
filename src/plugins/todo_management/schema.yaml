@@ -1,74 +1,154 @@
-# TODO Management Plugin - MCP Tool Schema Definitions
+# TODO Management Plugin - Tool Schema (OpenAI Function Format)
 # ULTRA-MINIMAL: Only 2 tools total
 
 tools:
-  - name: todo
-    description: |
-      Universal task manager. Auto-detects operation from parameters:
-      
-      CREATE: title only → new task
-      UPDATE: task_id + fields → modify task  
-      LIST: filter_status/priority/tags → query tasks
-      GET: task_id → details, OR task_id="SUMMARY" → stats
-      
-      Tasks: not-started → in-progress → completed
-      Link to sequential_thinking via thinking_session_id
-    inputSchema:
-      type: object
-      properties:
-        task_id:
-          type: string
-          description: For UPDATE/GET. Use "SUMMARY" for stats. Omit for CREATE/LIST.
-        title:
-          type: string
-          description: Required for CREATE
-          maxLength: 200
-        description:
-          type: string
-          maxLength: 2000
-        status:
-          type: string
-          enum: [not-started, in-progress, completed, blocked, cancelled]
-        progress:
-          type: integer
-          minimum: 0
-          maximum: 100
-        priority:
-          type: string
-          enum: [low, medium, high, critical]
-          default: medium
-        tags:
-          type: array
-          items: {type: string}
-        depends_on:
-          type: array
-          description: Blocking task IDs
-          items: {type: string}
-        note:
-          type: string
-          description: For UPDATE - append timestamped note
-        thinking_session_id:
-          type: string
-        thought_number:
-          type: integer
-        # LIST filters
-        filter_status:
-          type: array
-          items: {type: string}
-        filter_priority:
-          type: array
-          items: {type: string}
-        only_unblocked:
-          type: boolean
-          default: false
-        limit:
-          type: integer
+  - type: function
+    function:
+      name: "todo"
+      description: |
+        Universal task manager. Auto-detects operation from parameters:
+        
+        MODES:
+        1. GET SUMMARY: task_id="SUMMARY" → Get session statistics
+        2. GET: task_id="task_XXX" → Get single task details
+        3. LIST: filter_status/filter_priority/only_unblocked → Query tasks
+        4. CREATE: title (required) → Create new task
+        5. UPDATE: task_id + fields → Modify existing task
+        
+        STATUSES: not-started → in-progress → completed
+        Auto-blocked: When depends_on tasks incomplete
+        
+        PRIORITIES: low, medium, high, critical
+        
+        INTEGRATION: Link to sequential_thinking via thinking_session_id + thought_number
+        
+        Examples:
+        - Create: {"title": "Fix bug #42", "priority": "high"}
+        - Update: {"task_id": "task_001", "progress": 50, "status": "in-progress"}
+        - List high priority: {"filter_priority": ["high", "critical"]}
+        - Add dependency: {"task_id": "task_002", "depends_on": ["task_001"]}
+        - Get summary: {"task_id": "SUMMARY"}
+      parameters:
+        type: object
+        properties:
+          # Identification
+          task_id:
+            type: string
+            description: "Task ID (task_001, task_002, ...) or 'SUMMARY' for stats. Required for GET/UPDATE."
+          
+          # CREATE/UPDATE fields
+          title:
+            type: string
+            minLength: 1
+            maxLength: 200
+            description: "Task title (required for CREATE)"
+          
+          description:
+            type: string
+            maxLength: 2000
+            description: "Detailed task description"
+          
+          status:
+            type: string
+            enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
+            description: "Task status (auto-set to blocked if dependencies incomplete)"
+          
+          progress:
+            type: integer
+            minimum: 0
+            maximum: 100
+            description: "Completion percentage (0-100)"
+          
+          priority:
+            type: string
+            enum: ["low", "medium", "high", "critical"]
+            default: "medium"
+            description: "Task priority level"
+          
+          tags:
+            type: array
+            items:
+              type: string
+              maxLength: 50
+            maxItems: 20
+            description: "Task tags for categorization"
+          
+          depends_on:
+            type: array
+            items:
+              type: string
+              pattern: "^task_\\d{3}$"
+            maxItems: 50
+            description: "List of task IDs this task depends on (creates blocking relationship)"
+          
+          note:
+            type: string
+            maxLength: 1000
+            description: "Add timestamped note to task (for UPDATE)"
+          
+          thinking_session_id:
+            type: string
+            description: "Link to sequential_thinking session"
+          
+          thought_number:
+            type: integer
+            minimum: 1
+            description: "Link to specific thought in sequential_thinking session"
+          
+          # LIST filters
+          filter_status:
+            type: array
+            items:
+              type: string
+              enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
+            description: "Filter by status values (LIST mode)"
+          
+          filter_priority:
+            type: array
+            items:
+              type: string
+              enum: ["low", "medium", "high", "critical"]
+            description: "Filter by priority values (LIST mode)"
+          
+          only_unblocked:
+            type: boolean
+            default: false
+            description: "Show only unblocked tasks (LIST mode)"
+          
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+            description: "Maximum tasks to return (LIST mode)"
+        
+        additionalProperties: false
 
-  - name: delete_todo
-    description: Delete task (cascade=true deletes dependents too)
-    inputSchema:
-      type: object
-      required: [task_id]
-      properties:
-        task_id: {type: string}
-        cascade: {type: boolean, default: false}
+  - type: function
+    function:
+      name: "delete_todo"
+      description: |
+        Delete task by ID. Supports cascade deletion of dependent tasks.
+        
+        CASCADE BEHAVIOR:
+        - cascade=false (default): Fails if other tasks depend on this one
+        - cascade=true: Recursively deletes all dependent tasks
+        
+        Examples:
+        - Delete single: {"task_id": "task_001"}
+        - Delete with dependents: {"task_id": "task_001", "cascade": true}
+      parameters:
+        type: object
+        properties:
+          task_id:
+            type: string
+            pattern: "^task_\\d{3}$"
+            description: "Task ID to delete (task_001, task_002, ...)"
+          
+          cascade:
+            type: boolean
+            default: false
+            description: "Recursively delete dependent tasks (WARNING: destructive)"
+        
+        required: ["task_id"]
+        additionalProperties: false

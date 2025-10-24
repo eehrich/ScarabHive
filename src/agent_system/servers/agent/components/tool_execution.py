@@ -33,6 +33,8 @@ class ToolExecutionManager:
         self._agent = agent
         # Optional StatusEventForwarder for real-time status streaming during tool execution
         self._status_forwarder = status_forwarder
+        # Current session ID for tool execution context
+        self._current_session_id: Optional[str] = None
 
     def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create a JSON-serializable copy of params by excluding non-serializable objects.
@@ -138,7 +140,8 @@ class ToolExecutionManager:
         tool_name_mapping: Dict[str, str],
         available_tools: List[str],
         step: int,
-        request_id: str | None = None
+        request_id: str | None = None,
+        session_id: str | None = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
         
@@ -146,12 +149,18 @@ class ToolExecutionManager:
         to the client while tools are still executing, instead of buffering them
         until all tools complete.
         
+        Args:
+            session_id: Agent session ID to inject into tool params for session-aware tools
+        
         Yields:
             Dict with either:
             - {"type": "status", "event": {...}} - Status event to forward
             - {"type": "tool_events", "events": [...]} - Tool execution events  
             - {"type": "complete", "messages": [...], "results": [...]} - Final results
         """
+        # Store session_id for use in tool execution
+        self._current_session_id = session_id
+        
         tool_messages = []
         events_to_yield = []
         results_to_add: List[Dict] = []
@@ -468,6 +477,13 @@ class ToolExecutionManager:
 
         try:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
+            
+            # Inject session_id from current execution context if available
+            if self._current_session_id:
+                # Add session_id to params so session-aware plugins can use it
+                params = params.copy()  # Don't mutate original
+                params["_session_id"] = self._current_session_id
+                logger.debug(f"✓ Injected session_id '{self._current_session_id}' into tool params")
             
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)

@@ -18,19 +18,15 @@ import logging
 from datetime import datetime, UTC
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-try:
-    from agent_system.servers.schema_based_mcp_server import SchemaBasedMCPServer
-    from agent_system.status import StatusScope
-    _BASE_CLASS = SchemaBasedMCPServer
-except ImportError:
-    # Fallback for development/testing
-    _BASE_CLASS = object  # type: ignore
-    StatusScope = object  # type: ignore
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
+
+if TYPE_CHECKING:
+    from agent_system.config import AgentSystemConfig, MCPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -151,35 +147,35 @@ class StorageError(TodoError):
 # TODO Management Server
 # =============================================================================
 
-class TodoManagementServer(_BASE_CLASS):
+class TodoManagementServer(SchemaBasedMCPServer):
     """
     TODO Management MCP Server
     
     Provides task lifecycle tracking with dependency management and persistence.
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
         """
         Initialize TODO Management server.
         
         Args:
-            config: Plugin configuration with:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration with:
                 - storage_path: Path to JSON storage directory
                 - max_tasks_per_session: Limit on tasks per session
                 - enable_dependencies: Whether to enforce dependencies
                 - auto_save: Auto-save on modifications
         """
-        if _BASE_CLASS != object:
-            super().__init__(name="todo_management", config=config)
+        super().__init__(name, system_config, mcp_config)
         
-        # Configuration
-        self._config = config or {}
+        # Configuration (using getattr like sequential_thinking)
         self._storage_path = Path(
-            self._config.get("storage_path", "data/todos")
+            getattr(mcp_config, "storage_path", "data/todos")
         )
-        self._max_tasks = self._config.get("max_tasks_per_session", 1000)
-        self._enable_deps = self._config.get("enable_dependencies", True)
-        self._auto_save = self._config.get("auto_save", True)
+        self._max_tasks = int(getattr(mcp_config, "max_tasks_per_session", 1000))
+        self._enable_deps = bool(getattr(mcp_config, "enable_dependencies", True))
+        self._auto_save = bool(getattr(mcp_config, "auto_save", True))
 
         # In-memory cache: session_id → TaskCollection
         self._sessions: Dict[str, TaskCollection] = {}
@@ -209,8 +205,14 @@ class TodoManagementServer(_BASE_CLASS):
         Returns:
             Session ID string
         """
-        if context and "session_id" in context:
-            return context["session_id"]
+        if context:
+            # Priority 1: Agent-provided session ID (internal, from agent's session tracker)
+            if "_session_id" in context:
+                return context["_session_id"]
+            
+            # Priority 2: Explicit session_id (from CLI or direct calls)
+            if "session_id" in context:
+                return context["session_id"]
 
         # Fallback: generate session ID
         return f"session_{uuid4().hex[:12]}"
@@ -289,7 +291,7 @@ class TodoManagementServer(_BASE_CLASS):
 
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(
-                    collection.model_dump(),
+                    collection.model_dump(mode='json'),
                     f,
                     indent=2,
                     default=str,  # Handle datetime serialization
@@ -320,6 +322,21 @@ class TodoManagementServer(_BASE_CLASS):
         Returns:
             Task ID (e.g., "task_042")
         """
+        # Initialize counter from existing tasks if not set
+        if session_id not in self._task_counters and session_id in self._sessions:
+            collection = self._sessions[session_id]
+            if collection.tasks:
+                # Find highest task number
+                max_num = 0
+                for task_id in collection.tasks.keys():
+                    if task_id.startswith("task_"):
+                        try:
+                            num = int(task_id.split("_")[1])
+                            max_num = max(max_num, num)
+                        except (IndexError, ValueError):
+                            pass
+                self._task_counters[session_id] = max_num
+        
         counter = self._task_counters.get(session_id, 0)
         counter += 1
         self._task_counters[session_id] = counter
@@ -510,32 +527,7 @@ class TodoManagementServer(_BASE_CLASS):
     # Tool Implementations (Multi-Mode)
     # =========================================================================
 
-    async def todo(
-        self,
-        # Core fields
-        title: Optional[str] = None,
-        task_id: Optional[str] = None,
-        description: Optional[str] = None,
-        # Status & Progress
-        status: Optional[str] = None,
-        progress: Optional[int] = None,
-        priority: str = "medium",
-        # Metadata
-        tags: Optional[List[str]] = None,
-        depends_on: Optional[List[str]] = None,
-        note: Optional[str] = None,
-        # Integration
-        thinking_session_id: Optional[str] = None,
-        thought_number: Optional[int] = None,
-        # Query filters
-        filter_status: Optional[List[str]] = None,
-        filter_priority: Optional[List[str]] = None,
-        only_unblocked: bool = False,
-        limit: Optional[int] = None,
-        # System
-        status_scope: Optional[StatusScope] = None,
-        context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    async def todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Multi-mode task management tool (CREATE/UPDATE/LIST/GET).
         
@@ -546,26 +538,56 @@ class TodoManagementServer(_BASE_CLASS):
         - GET/SUMMARY: Provide task_id="SUMMARY" → progress stats, else task details
         
         Args:
-            title: Task title (required for CREATE)
-            task_id: For UPDATE/GET, or "SUMMARY" for stats
-            description, status, progress, priority, tags, depends_on, note: Task fields
-            thinking_session_id, thought_number: Integration fields
-            filter_status, filter_priority, only_unblocked, limit: LIST query filters
-            status_scope, context: System parameters
+            params: Tool parameters dict containing:
+                - title: Task title (required for CREATE)
+                - task_id: For UPDATE/GET, or "SUMMARY" for stats
+                - description, status, progress, priority, tags, depends_on, note: Task fields
+                - thinking_session_id, thought_number: Integration fields
+                - filter_status, filter_priority, only_unblocked, limit: LIST query filters
+                - context: System parameters (includes _status for progress reporting)
             
         Returns:
             Dict with operation type and result (task/tasks/summary)
         """
-        session_id = self._get_session_id(context)
+        # Extract parameters
+        title = params.get("title")
+        task_id = params.get("task_id")
+        description = params.get("description")
+        status = params.get("status")  # Renamed from status_param
+        progress = params.get("progress")
+        priority = params.get("priority", "medium")
+        tags = params.get("tags")
+        depends_on = params.get("depends_on")
+        note = params.get("note")
+        thinking_session_id = params.get("thinking_session_id")
+        thought_number = params.get("thought_number")
+        filter_status = params.get("filter_status")
+        filter_priority = params.get("filter_priority")
+        only_unblocked = params.get("only_unblocked", False)
+        limit = params.get("limit")
+        context = params.get("context") or {}
+        
+        # Extract session_id from params and inject into context
+        # Priority 1: _session_id (internal, from agent)
+        if "_session_id" in params:
+            context["_session_id"] = params["_session_id"]
+        # Priority 2: session_id (from tool parameter or CLI)
+        elif "session_id" in params:
+            context["session_id"] = params["session_id"]
         
         # ============================================================
         # Mode detection
         # ============================================================
         
-        # Mode 1: GET SUMMARY
+        # Mode 0: DEFAULT (no params) → GET SUMMARY
+        if not any([task_id, title, status, progress, note, filter_status, filter_priority, tags, only_unblocked]):
+            return await self.get_progress_summary(
+                context=context,
+            )
+        
+        # Mode 1: GET SUMMARY (explicit)
         if task_id == "SUMMARY":
             return await self.get_progress_summary(
-                status=status_scope,
                 context=context,
             )
         
@@ -575,7 +597,6 @@ class TodoManagementServer(_BASE_CLASS):
         ]):
             return await self.get_todo(
                 task_id=task_id,
-                status=status_scope,
                 context=context,
             )
         
@@ -590,7 +611,6 @@ class TodoManagementServer(_BASE_CLASS):
                 only_unblocked=only_unblocked,
                 thinking_session_id=thinking_session_id,
                 limit=limit,
-                status=status_scope,
                 context=context,
             )
         
@@ -604,7 +624,6 @@ class TodoManagementServer(_BASE_CLASS):
                 depends_on=depends_on,
                 thinking_session_id=thinking_session_id,
                 thought_number=thought_number,
-                status=status_scope,
                 context=context,
             )
         
@@ -617,7 +636,6 @@ class TodoManagementServer(_BASE_CLASS):
                 priority=priority if priority != "medium" else None,
                 add_note=note,
                 add_tags=tags,
-                status=status_scope,
                 context=context,
             )
         
@@ -639,7 +657,6 @@ class TodoManagementServer(_BASE_CLASS):
         depends_on: Optional[List[str]] = None,
         thinking_session_id: Optional[str] = None,
         thought_number: Optional[int] = None,
-        status: Optional[StatusScope] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -653,7 +670,6 @@ class TodoManagementServer(_BASE_CLASS):
             depends_on: List of task IDs this task depends on
             thinking_session_id: Link to sequential_thinking session
             thought_number: Associated thought number
-            status: StatusScope for progress reporting
             context: MCP tool call context
             
         Returns:
@@ -665,6 +681,9 @@ class TodoManagementServer(_BASE_CLASS):
             StorageError: If save fails
         """
         session_id = self._get_session_id(context)
+        
+        # Get status for progress reporting
+        status = context.get("_status") if context else None
 
         try:
             if status:
@@ -736,7 +755,7 @@ class TodoManagementServer(_BASE_CLASS):
                 "task_id": task_id,
                 "status": "created",
                 "is_blocked": is_blocked,
-                "task": task.model_dump(),
+                "task": task.model_dump(mode='json'),
             }
 
         except (ValidationError, DependencyError) as e:
@@ -759,7 +778,6 @@ class TodoManagementServer(_BASE_CLASS):
         add_note: Optional[str] = None,
         add_tags: Optional[List[str]] = None,
         remove_tags: Optional[List[str]] = None,
-        status: Optional[StatusScope] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -773,7 +791,6 @@ class TodoManagementServer(_BASE_CLASS):
             add_note: Append note to task history
             add_tags: Tags to add
             remove_tags: Tags to remove
-            status: StatusScope for progress reporting
             context: MCP tool call context
             
         Returns:
@@ -784,6 +801,9 @@ class TodoManagementServer(_BASE_CLASS):
             StorageError: If save fails
         """
         session_id = self._get_session_id(context)
+        
+        # Get status for progress reporting
+        status = context.get("_status") if context else None
 
         try:
             if status:
@@ -862,14 +882,14 @@ class TodoManagementServer(_BASE_CLASS):
                     if tag not in task.tags:
                         task.tags.append(tag)
                 task.updated_at = datetime.now(UTC)
-                changes["tags_added"] = add_tags
+                changes["tags_added"] = ", ".join(add_tags)  # type: ignore[assignment]
 
             if remove_tags:
                 for tag in remove_tags:
                     if tag in task.tags:
                         task.tags.remove(tag)
                 task.updated_at = datetime.now(UTC)
-                changes["tags_removed"] = remove_tags
+                changes["tags_removed"] = ", ".join(remove_tags)  # type: ignore[assignment]
 
             # Save
             if self._auto_save:
@@ -883,7 +903,7 @@ class TodoManagementServer(_BASE_CLASS):
                 "task_id": task_id,
                 "status": "updated",
                 "changes": changes,
-                "task": task.model_dump(),
+                "task": task.model_dump(mode='json'),
             }
 
         except ValidationError as e:
@@ -908,7 +928,6 @@ class TodoManagementServer(_BASE_CLASS):
         thought_number: Optional[int] = None,
         sort_by: str = "created_at",
         limit: Optional[int] = None,
-        status: Optional[StatusScope] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -924,13 +943,15 @@ class TodoManagementServer(_BASE_CLASS):
             thought_number: Filter by thought number
             sort_by: Sort field (priority/created_at/updated_at/progress)
             limit: Max results to return
-            status: StatusScope for progress reporting
             context: MCP tool call context
             
         Returns:
             Filtered task list with metadata
         """
         session_id = self._get_session_id(context)
+        
+        # Get status for progress reporting
+        status = context.get("_status") if context else None
 
         try:
             if status:
@@ -1043,7 +1064,6 @@ class TodoManagementServer(_BASE_CLASS):
     async def get_todo(
         self,
         task_id: str,
-        status: Optional[StatusScope] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1051,7 +1071,6 @@ class TodoManagementServer(_BASE_CLASS):
         
         Args:
             task_id: Task identifier
-            status: StatusScope for progress reporting
             context: MCP tool call context
             
         Returns:
@@ -1061,6 +1080,9 @@ class TodoManagementServer(_BASE_CLASS):
             ValidationError: If task not found
         """
         session_id = self._get_session_id(context)
+        
+        # Get status for progress reporting
+        status = context.get("_status") if context else None
 
         try:
             if status:
@@ -1102,7 +1124,7 @@ class TodoManagementServer(_BASE_CLASS):
 
             return {
                 "task_id": task_id,
-                "task": task.model_dump(),
+                "task": task.model_dump(mode='json'),
                 "dependency_info": {
                     "blocked_by": blocked_by,
                     "blocking": blocking,
@@ -1121,20 +1143,41 @@ class TodoManagementServer(_BASE_CLASS):
                 await status.error(f"Internal error: {e}")
             raise TodoError(f"Failed to get task: {e}") from e
 
-    async def delete_todo(
+    async def delete_todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        MCP Tool wrapper for delete_todo.
+        
+        Args:
+            params: Tool parameters dict containing:
+                - task_id: Task identifier (required)
+                - cascade: If true, also delete dependent tasks (default: False)
+                - context: MCP tool call context
+            
+        Returns:
+            Deletion summary with cascade list
+        """
+        # Extract parameters
+        task_id = params.get("task_id")
+        cascade = params.get("cascade", False)
+        context = params.get("context") or {}
+        
+        if not task_id:
+            raise ValidationError("task_id is required for delete_todo")
+        
+        return await self._delete_todo_impl(task_id, cascade, context)
+    
+    async def _delete_todo_impl(
         self,
         task_id: str,
         cascade: bool = False,
-        status: Optional[StatusScope] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Delete a task.
+        Internal implementation for delete_todo.
         
         Args:
             task_id: Task identifier
             cascade: If true, also delete dependent tasks
-            status: StatusScope for progress reporting
             context: MCP tool call context
             
         Returns:
@@ -1146,6 +1189,9 @@ class TodoManagementServer(_BASE_CLASS):
             StorageError: If save fails
         """
         session_id = self._get_session_id(context)
+        
+        # Get status for progress reporting
+        status = context.get("_status") if context else None
 
         try:
             if status:
@@ -1172,9 +1218,11 @@ class TodoManagementServer(_BASE_CLASS):
             if cascade and task.blocks:
                 for block_id in list(task.blocks):
                     if block_id in collection.tasks:
-                        # Recursive cascade
-                        sub_result = await self.delete_todo(
-                            block_id, cascade=True, status=None, context=context
+                        # Recursive cascade (call implementation directly)
+                        sub_result = await self._delete_todo_impl(
+                            task_id=block_id,
+                            cascade=True,
+                            context=context
                         )
                         cascade_deleted.append(block_id)
                         cascade_deleted.extend(sub_result.get("cascade_deleted", []))
@@ -1219,7 +1267,6 @@ class TodoManagementServer(_BASE_CLASS):
     async def get_progress_summary(
         self,
         group_by: str = "status",
-        status: Optional[StatusScope] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1227,13 +1274,15 @@ class TodoManagementServer(_BASE_CLASS):
         
         Args:
             group_by: Grouping field (status/priority)
-            status: StatusScope for progress reporting
             context: MCP tool call context
             
         Returns:
             Progress summary with completion metrics
         """
         session_id = self._get_session_id(context)
+        
+        # Get status for progress reporting
+        status = context.get("_status") if context else None
 
         try:
             if status:
