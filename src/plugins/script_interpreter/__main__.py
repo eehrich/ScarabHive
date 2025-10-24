@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-def main_entry():
+def cli_main():
     """Main entry point."""
     # Add src to path for imports
     src_path = Path(__file__).parent.parent.parent
@@ -24,4 +24,4 @@ def main_entry():
 
 
 if __name__ == "__main__":
-    main_entry()
+    cli_main()
