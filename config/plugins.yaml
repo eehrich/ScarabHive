@@ -189,12 +189,13 @@ plugins:
         
         tools:
           allowed:
-            - "sysadmin_agent*"
-            - "meta_web_research_agent*"
+            - "sysadmin_agent/*"
+            - "meta_web_research_agent/*"
             #- "financial_analyst_agent/*"
             #- "code_reviewer_agent/*"
-            - "basic_agent*"
-            - "basic_operations*"
+            - "basic_agent/*"
+            - "basic_operations/*"
+            - "datetime/*"
         
         hooks:
           enabled: true
@@ -382,6 +383,8 @@ plugins:
             - "weather/*"
             - "web_scraper/*"
             - "duckduckgo_search/*"
+            - "datetime/*"
+            - "basic_operations/*"
 
       metadata:
         author: "AgentSystem"
