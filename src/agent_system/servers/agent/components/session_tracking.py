@@ -30,14 +30,23 @@ class SessionTracker:
     - Drain pending appended messages during execution loops
     
     Thread-safety: All public methods use asyncio.Lock for concurrent access.
+    
+    Note: The _active_requests dict is shared with AgentRequestManager to ensure
+    both components work with the same request entries.
     """
 
-    def __init__(self):
-        """Initialize the session tracker."""
+    def __init__(self, active_requests: Optional[Dict[str, Dict[str, Any]]] = None):
+        """Initialize the session tracker.
+        
+        Args:
+            active_requests: Shared active requests dict (from AgentRequestManager).
+                           If None, creates its own dict (for testing).
+        """
         # Active requests: request_id -> {'cancel': Event(), 'message_event': Event(), 'appended': List[ChatMessage]}
         # Note: We only manage the 'appended' list and 'message_event' here
         # The 'cancel' event is managed by AgentRequestManager
-        self._active_requests: Dict[str, Dict[str, Any]] = {}
+        # This dict is SHARED with AgentRequestManager for coordination
+        self._active_requests: Dict[str, Dict[str, Any]] = active_requests if active_requests is not None else {}
         
         # Persisted sessions: session_id -> List[ChatMessage]
         self._sessions: Dict[str, List[ChatMessage]] = {}
@@ -133,15 +142,25 @@ class SessionTracker:
 
     def register_request(self, request_id: str, session_id: str, request_entry: Dict[str, Any]) -> None:
         """
-        Register a new active request.
+        Register a new active request's session mapping.
         
         Args:
             request_id: The request ID
             session_id: The associated session ID
-            request_entry: The request entry dict (from AgentRequestManager)
+            request_entry: The request entry dict (should already be in shared _active_requests)
+        
+        Note: The request_entry should already be registered in the shared _active_requests
+        dict by AgentRequestManager. This method only sets up the session mapping.
         """
-        # Note: This is called synchronously during initialization, no lock needed
-        self._active_requests[request_id] = request_entry
+        # Verify the entry exists in shared dict (defensive check)
+        if request_id not in self._active_requests:
+            # If not already there, add it (shouldn't happen in normal flow)
+            self._active_requests[request_id] = request_entry
+            logger.debug("Request entry added to shared dict for %s (unexpected)", request_id)
+        
+        # Ensure session exists
+        self._sessions.setdefault(session_id, [])
+        # Map request to session
         self._request_to_session[request_id] = session_id
 
     def unregister_request(self, request_id: str) -> None:
@@ -200,3 +219,21 @@ class SessionTracker:
             True if session exists, False otherwise
         """
         return session_id in self._sessions
+
+    def get_all_session_ids(self) -> List[str]:
+        """
+        Get all session IDs.
+        
+        Returns:
+            List of session IDs
+        """
+        return list(self._sessions.keys())
+
+    def clear(self) -> None:
+        """
+        Clear all sessions and request mappings.
+        Used during shutdown or reset operations.
+        """
+        self._sessions.clear()
+        self._request_to_session.clear()
+        self._appended_messages.clear()

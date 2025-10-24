@@ -201,8 +201,10 @@ class Agent(MCPServer):
         self._current_messages: List[ChatMessage] = []
 
         # Initialize component managers for better code organization
-        self._session_tracker = SessionTracker()
+        # Create request manager first (owns _active_requests dict)
         self._request_manager = AgentRequestManager(self.name)
+        # Session tracker shares the same _active_requests dict for coordination
+        self._session_tracker = SessionTracker(self._request_manager._active_requests)
         self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
         self._status_event_forwarder = StatusEventForwarder()
         self._tool_execution_manager = ToolExecutionManager(
@@ -219,14 +221,6 @@ class Agent(MCPServer):
         
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
-
-        # Legacy compatibility: expose session tracker's internal dictionaries
-        # This allows existing code to work while we transition
-        # TODO: Remove these after full migration
-        self._active_requests = self._request_manager._active_requests
-        self._request_lock = self._session_tracker._lock
-        self._sessions = self._session_tracker._sessions
-        self._request_to_session = self._session_tracker._request_to_session
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
@@ -687,14 +681,6 @@ class Agent(MCPServer):
         cancellation_manager = get_cancellation_manager()
         main_token = cancellation_manager.create_token(request_id)
         logger.debug("Created main cancellation token for request %s", request_id)
-        
-        # Register this request for potential cancellation and appended messages
-        async with self._request_lock:
-            self._active_requests[request_id] = {
-                "cancel": asyncio.Event(),
-                "message_event": asyncio.Event(),
-                "appended": []
-            }
 
         # Set the ContextVar so any publish_status() calls without explicit request_id
         # will inherit the current request id. Store token for reset in finally.
@@ -704,13 +690,6 @@ class Agent(MCPServer):
             logger.debug(f"Failed to set current_request_id context var: {e}")
             context_reset_token = None
             
-        async with self._request_lock:
-            # ensure session exists
-            self._sessions.setdefault(session_id, [])
-            # map request to session
-            self._request_to_session[request_id] = session_id
-            
-            # Reset emergency context management counter for new conversations
         # Start status event forwarding
         await self._status_event_forwarder.start_forwarding(request_id)
 
@@ -730,8 +709,7 @@ class Agent(MCPServer):
         system_msg, tools_msg = self._render_prompts(usable_tools, max_steps)
 
         # Initialize conversation from persisted session history
-        async with self._request_lock:
-            session_msgs = list(self._sessions.get(session_id, []))
+        session_msgs = self._session_tracker.get_session_messages(session_id)
 
         # Create initial system messages
         messages = [ChatMessage(role="system", content=system_msg)]
@@ -767,13 +745,7 @@ class Agent(MCPServer):
             messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
 
         # Also include any appended messages already queued for this request
-        async with self._request_lock:
-            entry = self._active_requests.get(request_id)
-            if isinstance(entry, dict):
-                appended = entry.get('appended', [])
-                if appended:
-                    messages.extend(appended)
-                    entry['appended'] = []
+        messages = await self._session_tracker.drain_appended_messages(request_id, messages)
 
         # Track messages for debugging
         self._current_messages = messages.copy()
@@ -849,24 +821,22 @@ class Agent(MCPServer):
         cancellation_manager.unregister_request(request_id)
         
         # Clean up request tracking but preserve session data
-        async with self._request_lock:
-            if request_id in self._active_requests:
-                del self._active_requests[request_id]
-                logger.debug("Cleaned up request tracking for %s", request_id)
-            
-            # Persist session messages and keep the request->session mapping for a while
-            sid = self._request_to_session.get(request_id)
-            if sid and messages:
-                try:
-                    # Filter out system messages - only persist conversation history
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    # Update the persistent session with conversation state (no system messages)
-                    self._sessions[sid] = conversation_msgs.copy()
-                    logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
-                    # Keep the request->session mapping (don't pop it immediately)
-                    # This allows append requests that arrive shortly after completion to find the session
-                except Exception as e:
-                    logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+        self._request_manager.unregister_active_request(request_id)
+        logger.debug("Cleaned up request tracking for %s", request_id)
+        
+        # Persist session messages and keep the request->session mapping for a while
+        sid = self._session_tracker.get_session_for_request(request_id)
+        if sid and messages:
+            try:
+                # Filter out system messages - only persist conversation history
+                conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                # Update the persistent session with conversation state (no system messages)
+                self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
+                logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
+                # Keep the request->session mapping (don't pop it immediately)
+                # This allows append requests that arrive shortly after completion to find the session
+            except Exception as e:
+                logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
 
         # Clean up MCP integration if we initialized it locally
         await self._mcp_integration_manager.shutdown()
@@ -1228,7 +1198,16 @@ class Agent(MCPServer):
         messages = None
         results: Dict[str, Any] = {"task": task, "calls": []}
         
-        # Emit start event first (even if initialization fails)
+        # Register this request BEFORE emitting start event so appends work immediately
+        request_entry = {
+            "cancel": asyncio.Event(),
+            "message_event": asyncio.Event(),
+            "appended": []
+        }
+        self._request_manager.register_active_request(request_id, request_entry)
+        self._session_tracker.register_request(request_id, session_id, request_entry)
+        
+        # Emit start event (even if initialization fails later)
         yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
         
         try:
@@ -1322,8 +1301,7 @@ class Agent(MCPServer):
                 logger.warning(f"Error during MCP integration shutdown: {e}")
         
         # Clear sessions and request mappings
-        self._sessions.clear()
-        self._request_to_session.clear()
+        self._session_tracker.clear()
         
         logger.info("Agent shutdown completed")
 

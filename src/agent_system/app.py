@@ -1201,8 +1201,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return {"status": "appended", "request_id": request_id}
 
         # If request not found/finished, try to append into the persisted session for this request
-        async with agent._request_lock:
-            sid = agent._request_to_session.get(request_id)
+        sid = agent._session_tracker.get_session_for_request(request_id)
         if sid:
             logger.debug("Request %s already finished; appending to session %s", request_id, sid)
             success = await agent.append_to_session(sid, content)
@@ -1215,11 +1214,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def create_session():
         """Create a new session id for multi-turn conversations."""
         sid = short_id()
-        # Pre-create empty session in agent
-        async def _create():
-            async with agent._request_lock:
-                agent._sessions.setdefault(sid, [])
-        await _create()
+        # Pre-create empty session in agent using the component API
+        agent._session_tracker.set_session_messages(sid, [])
         return {"session_id": sid}
 
     @app.post("/sessions/{session_id}/append")
@@ -1251,10 +1247,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger = logging.getLogger(__name__)
         try:
             # Ensure session exists
-            async with agent._request_lock:
-                if session_id not in agent._sessions:
-                    from fastapi import HTTPException
-                    raise HTTPException(status_code=404, detail="Session not found")
+            if not agent._session_tracker.has_session(session_id):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="Session not found")
 
             # Run optimizer and summarizer
             actions = {"optimizer": False, "summarizer": False}
@@ -1262,13 +1257,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if getattr(agent, 'token_optimizer', None):
                 try:
                     # token_optimizer.optimize_messages expects messages list; retrieve session messages
-                    async with agent._request_lock:
-                        msgs = list(agent._sessions.get(session_id, []))
+                    msgs = agent._session_tracker.get_session_messages(session_id)
                     # Run optimizer
                     new_msgs = await agent.token_optimizer.optimize_messages(msgs)
                     # Persist optimized messages
-                    async with agent._request_lock:
-                        agent._sessions[session_id] = new_msgs
+                    agent._session_tracker.set_session_messages(session_id, new_msgs)
                     actions['optimizer'] = True
                 except Exception as e:
                     logger.exception("Failed to run token optimizer for session %s: %s", session_id, e)
@@ -1290,17 +1283,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger = logging.getLogger(__name__)
         try:
             results = {}
-            async with agent._request_lock:
-                sids = list(agent._sessions.keys())
+            sids = agent._session_tracker.get_all_session_ids()
 
             for sid in sids:
                 actions = {"optimizer": False, "summarizer": False}
                 try:
                     if getattr(agent, 'token_optimizer', None):
-                        msgs = list(agent._sessions.get(sid, []))
+                        msgs = agent._session_tracker.get_session_messages(sid)
                         new_msgs = await agent.token_optimizer.optimize_messages(msgs)
-                        async with agent._request_lock:
-                            agent._sessions[sid] = new_msgs
+                        agent._session_tracker.set_session_messages(sid, new_msgs)
                         actions['optimizer'] = True
                 except Exception as e:
                     logger.debug("Optimizer failed for session %s: %s", sid, e)
