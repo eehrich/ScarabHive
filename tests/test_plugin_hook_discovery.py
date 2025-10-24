@@ -91,10 +91,11 @@ async def test_register_single_hook(clean_registry):
     registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
-    assert 'test_hook' in registered
+    # Hook should be registered with full plugin.hook_name format
+    assert 'test_plugin.test_hook' in registered
     
-    # Verify hook is registered in registry
-    hook_info = clean_registry.get_hook_info('test_hook')
+    # Verify hook is registered in registry with full name
+    hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
     assert hook_info is not None
     assert hook_info['enabled'] is True
 
@@ -114,7 +115,7 @@ async def test_register_multiple_hooks(clean_registry):
                 'name': 'hook_post',
                 'type': 'post_llm_call',
                 'enabled': True,
-                'order': {'after': ['hook_pre']}
+                'order': {'after': ['test_plugin.hook_pre']}  # Full name in ordering
             }
         ]
     }
@@ -122,8 +123,8 @@ async def test_register_multiple_hooks(clean_registry):
     registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 2
-    assert 'hook_pre' in registered
-    assert 'hook_post' in registered
+    assert 'test_plugin.hook_pre' in registered
+    assert 'test_plugin.hook_post' in registered
 
 
 @pytest.mark.asyncio
@@ -234,7 +235,7 @@ async def test_hook_with_self_reference(clean_registry):
                 'type': 'pre_llm_call',
                 'enabled': True,
                 'order': {
-                    'before': ['self_ref_hook'],  # Self-reference
+                    'before': ['test_plugin.self_ref_hook'],  # Self-reference with full name
                     'after': ['begin']
                 }
             }
@@ -245,7 +246,7 @@ async def test_hook_with_self_reference(clean_registry):
     registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
-    assert 'self_ref_hook' in registered
+    assert 'test_plugin.self_ref_hook' in registered
 
 
 @pytest.mark.asyncio
@@ -266,7 +267,7 @@ async def test_hook_with_custom_timeout(clean_registry):
     registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
-    hook_info = clean_registry.get_hook_info('timeout_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.timeout_hook')
     assert hook_info['timeout'] == 5.0
 
 
@@ -287,7 +288,7 @@ async def test_hook_disabled_by_default(clean_registry):
     registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
-    hook_info = clean_registry.get_hook_info('disabled_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.disabled_hook')
     assert hook_info['enabled'] is False
 
 
@@ -342,7 +343,7 @@ async def test_hook_metadata_attached(clean_registry):
     
     await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
-    hook_info = clean_registry.get_hook_info('meta_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.meta_hook')
     hook_meta = hook_info['metadata']
     assert hook_meta['plugin'] == 'test_plugin'
     assert hook_meta['description'] == 'Test description'
@@ -360,8 +361,8 @@ async def test_hook_with_complex_ordering(clean_registry):
                 'type': 'pre_llm_call',
                 'enabled': True,
                 'order': {
-                    'before': ['end', 'other_hook'],
-                    'after': ['begin', 'first_hook']
+                    'before': ['end', 'other_plugin.other_hook'],
+                    'after': ['begin', 'first_plugin.first_hook']
                 }
             }
         ]
@@ -370,12 +371,12 @@ async def test_hook_with_complex_ordering(clean_registry):
     registered = await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 1
-    hook_info = clean_registry.get_hook_info('ordered_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.ordered_hook')
     order = hook_info['order']
     assert 'end' in order['before']
-    assert 'other_hook' in order['before']
+    assert 'other_plugin.other_hook' in order['before']
     assert 'begin' in order['after']
-    assert 'first_hook' in order['after']
+    assert 'first_plugin.first_hook' in order['after']
 
 
 @pytest.mark.asyncio
@@ -405,6 +406,6 @@ async def test_multiple_hook_types_same_plugin(clean_registry):
     registered = await register_plugin_hooks("multi_hook_plugin", plugin, metadata, clean_registry)
     
     assert len(registered) == 3
-    assert clean_registry.get_hook_info('pre_hook') is not None
-    assert clean_registry.get_hook_info('post_hook') is not None
-    assert clean_registry.get_hook_info('format_hook') is not None
+    assert clean_registry.get_hook_info('multi_hook_plugin.pre_hook') is not None
+    assert clean_registry.get_hook_info('multi_hook_plugin.post_hook') is not None
+    assert clean_registry.get_hook_info('multi_hook_plugin.format_hook') is not None

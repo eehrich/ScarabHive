@@ -2,48 +2,6 @@ name: todo_management
 version: "1.0.0"
 description: "Task lifecycle tracking and workflow orchestration for agent systems"
 author: "AgentSystem"
-entrypoint: server:TodoManagementServer
-type: mcp_only
+entrypoint: plugin:PLUGIN_FACTORY
+type: hybrid
 category: productivity
-
-config_schema:
-  storage_path:
-    type: string
-    default: "data/todos"
-    description: Directory path for storing TODO sessions
-  max_tasks_per_session:
-    type: integer
-    default: 1000
-    description: Maximum tasks allowed per session
-  enable_dependencies:
-    type: boolean
-    default: true
-    description: Enable task dependency tracking
-  auto_save:
-    type: boolean
-    default: true
-    description: Automatically save after each operation
-
-# Metadata
-metadata:
-  category: "productivity"
-  tags:
-    - "task-management"
-    - "workflow"
-    - "todo"
-    - "planning"
-  synergizes_with:
-    - "sequential_thinking"
-  use_cases:
-    - "Multi-step agent workflows"
-    - "Sub-agent task coordination"
-    - "Progress tracking across sessions"
-    - "Dependency orchestration"
-
-# Documentation
-documentation:
-  readme: "README.md"
-  examples:
-    - "JWT authentication implementation"
-    - "Multi-step data pipeline"
-    - "Code refactoring workflow"

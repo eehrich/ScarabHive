@@ -378,6 +378,76 @@ for task in orchestrator_tasks["tasks"].values():
 - Filter early with `only_unblocked` for actionable tasks
 - Archive completed sessions periodically
 
+## Automatic Task Injection (Hook)
+
+The TODO plugin automatically injects active tasks into the agent's system prompt before every LLM call, providing seamless task awareness without explicit tool calls.
+
+### How It Works
+
+**Pre-LLM Hook:**
+- Executes before each LLM call
+- Queries active tasks from current session
+- Formats as markdown and injects into system messages
+- Agent sees tasks automatically in context
+
+**Configuration:**
+
+```yaml
+# In config/plugins.yaml
+todo_management:
+  type: todo_management
+  enabled: true
+  
+  agent_config:
+    hooks:
+      enabled: true
+      overrides:
+        todo_management.inject_todo_tasks:
+          enabled: true
+          max_tasks: 20
+          filter_status: ["not-started", "in-progress", "blocked"]
+          include_completed: false
+          format: "markdown"
+```
+
+**Default Behavior:**
+- **Max tasks**: 20 (most recent active tasks)
+- **Filter**: Not-started, in-progress, blocked
+- **Excludes**: Completed, cancelled
+- **Format**: Markdown with emojis
+
+**Injected Format:**
+
+```markdown
+## Active TODO Tasks
+
+- ☐ **task_001**: Implement authentication [🟠 HIGH, 0%]
+  - Depends on: task_000
+- ⏳ **task_002**: Write tests [🟡 MED, 50%]
+- 🚫 **task_003**: Deploy to prod [🔴 CRIT, 0%]
+  - Blocks: task_004
+
+Use `todo()` tool to update task status as you complete work.
+```
+
+**Benefits:**
+- No need to call `todo()` to see tasks
+- Agent maintains task awareness across turns
+- Automatic context without token overhead
+- Session-isolated (only current session's tasks)
+
+**Disabling:**
+
+```yaml
+# Per-agent override
+meta_agent:
+  agent_config:
+    hooks:
+      overrides:
+        todo_management.inject_todo_tasks:
+          enabled: false
+```
+
 ## Troubleshooting
 
 **Task stuck in BLOCKED:**

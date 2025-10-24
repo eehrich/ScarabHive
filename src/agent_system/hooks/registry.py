@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import logging
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set
@@ -198,14 +199,47 @@ class HookRegistry:
         # Execute hooks in order
         current_context = context
         for hook_name, hook_instance, metadata in ordered_hooks:
-            if not metadata.get("enabled", True):
-                logger.debug(f"Skipping disabled hook '{hook_name}'")
-                continue
+            # Get default enabled state from hook metadata
+            hook_enabled_by_default = metadata.get("enabled", True)
             
             # Apply agent-specific hook filter if provided
-            if hook_filter and not hook_filter(hook_name):
-                logger.debug(f"Skipping hook '{hook_name}' (filtered by agent config)")
-                continue
+            # Pass default state so filter can make informed decision
+            if hook_filter:
+                # Try calling filter with default_enabled parameter (new signature)
+                # Fall back to old signature if filter doesn't accept it
+                try:
+                    sig = inspect.signature(hook_filter)
+                    if len(sig.parameters) >= 2:
+                        # New signature: hook_filter(hook_name, default_enabled)
+                        should_execute = hook_filter(hook_name, hook_enabled_by_default)
+                    else:
+                        # Old signature: hook_filter(hook_name)
+                        # Filter will handle override logic internally
+                        agent_wants_hook = hook_filter(hook_name)
+                        
+                        if agent_wants_hook and not hook_enabled_by_default:
+                            logger.debug(f"Enabling hook '{hook_name}' (enabled by agent config override)")
+                            should_execute = True
+                        elif not agent_wants_hook and hook_enabled_by_default:
+                            logger.debug(f"Skipping hook '{hook_name}' (disabled by agent config override)")
+                            should_execute = False
+                        elif not agent_wants_hook:
+                            logger.debug(f"Skipping disabled hook '{hook_name}'")
+                            should_execute = False
+                        else:
+                            should_execute = True
+                except Exception as e:
+                    # Fallback: assume new signature and log error
+                    logger.warning(f"Error inspecting hook_filter signature: {e}. Assuming new signature.")
+                    should_execute = hook_filter(hook_name, hook_enabled_by_default)
+                
+                if not should_execute:
+                    continue
+            else:
+                # No filter - use default enabled state
+                if not hook_enabled_by_default:
+                    logger.debug(f"Skipping disabled hook '{hook_name}'")
+                    continue
             
             # Use hook-specific timeout if available, otherwise use registry default
             hook_timeout = metadata.get("timeout", timeout)

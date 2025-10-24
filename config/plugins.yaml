@@ -67,11 +67,7 @@ plugins:
     todo_management:
       type: todo_management
       enabled: true
-      storage_path: data/todos
-      max_tasks_per_session: 1000
-      enable_dependencies: true
-      auto_save: true
-    
+
     http_server:
       type: http_server
       enabled: false
@@ -220,7 +216,9 @@ plugins:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: true    
+              enabled: true
+            todo_management.inject_todo_tasks:
+              enabled: true
       
       metadata:
         author: "AgentSystem"
@@ -394,7 +392,9 @@ plugins:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: true    
+              enabled: true
+            todo_management.inject_todo_tasks:
+              enabled: true
         
         tools:
           allowed:

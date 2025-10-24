@@ -48,23 +48,29 @@ class HookIntegrationManager:
             return self._hooks_config.enabled
         return self._enabled
     
-    def is_hook_enabled(self, hook_name: str) -> bool:
-        """Check if a specific hook is enabled for this agent.
+    def is_hook_enabled(self, hook_name: str, default_enabled: bool = True) -> bool:
+        """Check if a specific hook should execute for this agent.
+        
+        This method properly handles per-agent hook overrides:
+        - If agent has explicit override: use it (ignores global state)
+        - If no override: use global enabled state from metadata
         
         Args:
-            hook_name: Full hook name (e.g., 'markdown_formatter.format_markdown_output')
+            hook_name: Full hook name (e.g., 'todo_management.inject_todo_tasks')
+            default_enabled: Global enabled state from hook metadata (registry passes this)
             
         Returns:
             True if hook should execute, False otherwise
         """
-        # Check per-hook override first (highest priority)
+        # Check for agent-specific override (highest priority)
         if self._hooks_config and hook_name in self._hooks_config.overrides:
             override = self._hooks_config.overrides[hook_name]
             if 'enabled' in override:
+                # Agent has explicit override - use it regardless of global state
                 return override.get('enabled', True)
         
-        # Fall back to global enabled setting
-        return self.is_enabled()
+        # No override - use global enabled state from metadata
+        return default_enabled
     
     async def execute_pre_llm_hooks(
         self,

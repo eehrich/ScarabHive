@@ -909,5 +909,248 @@ async def test_large_session_performance(server: TodoManagementServer, mock_cont
     assert filtered["returned_count"] == 25
 
 
+# =============================================================================
+# Hook Integration Tests
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_hook_inject_tasks_into_prompt(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test that hook injects tasks into system prompt"""
+    from agent_system.hooks.plugin_hook import HookContext, HookType
+    from agent_system.llm.models import ChatMessage
+    
+    # Create some tasks
+    await server.create_todo(
+        title="Task 1: Implement feature",
+        priority="high",
+        context=mock_context,
+    )
+    
+    result2 = await server.create_todo(
+        title="Task 2: Write tests",
+        priority="medium",
+        context=mock_context,
+    )
+    
+    # Update one to in-progress
+    await server.update_todo(
+        task_id=result2["task_id"],
+        new_status="in-progress",
+        context=mock_context,
+    )
+    
+    # Create hook context
+    messages = [
+        ChatMessage(role="system", content="You are a helpful assistant."),
+        ChatMessage(role="user", content="Hello"),
+    ]
+    
+    hook_context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id="test_req_001",
+        messages=messages,
+        session_id=mock_context["session_id"],
+        agent=None,
+    )
+    
+    # Execute hook
+    result = await server.on_pre_llm_call(hook_context)
+    
+    assert result.success is True
+    assert result.modified is True
+    assert len(result.context.messages) == 3  # system + injected + user
+    
+    # Check injected message
+    injected_msg = result.context.messages[1]
+    assert injected_msg.role == "system"
+    assert "Active TODO Tasks" in injected_msg.content
+    assert "Task 1: Implement feature" in injected_msg.content
+    assert "Task 2: Write tests" in injected_msg.content
+    assert "HIGH" in injected_msg.content
+
+
+@pytest.mark.asyncio
+async def test_hook_no_tasks_no_injection(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test that hook does not modify when no tasks exist"""
+    from agent_system.hooks.plugin_hook import HookContext, HookType
+    from agent_system.llm.models import ChatMessage
+    
+    messages = [
+        ChatMessage(role="system", content="You are a helpful assistant."),
+        ChatMessage(role="user", content="Hello"),
+    ]
+    
+    hook_context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id="test_req_002",
+        messages=messages,
+        session_id=mock_context["session_id"],
+        agent=None,
+    )
+    
+    result = await server.on_pre_llm_call(hook_context)
+    
+    assert result.success is True
+    assert result.modified is False
+    assert len(result.context.messages) == 2  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_hook_filter_status_config(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test that hook respects filter_status config"""
+    from agent_system.hooks.plugin_hook import HookContext, HookType
+    from agent_system.llm.models import ChatMessage
+    
+    # Create tasks with different statuses
+    await server.create_todo(title="Not started", context=mock_context)
+    task2 = await server.create_todo(title="In progress", context=mock_context)
+    task3 = await server.create_todo(title="Completed", context=mock_context)
+    
+    await server.update_todo(task2["task_id"], new_status="in-progress", context=mock_context)
+    await server.update_todo(task3["task_id"], new_status="completed", context=mock_context)
+    
+    # Hook should only show not-started and in-progress (default filter)
+    messages = [ChatMessage(role="system", content="Test")]
+    hook_context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id="test_req_003",
+        messages=messages,
+        session_id=mock_context["session_id"],
+        agent=None,
+    )
+    
+    result = await server.on_pre_llm_call(hook_context)
+    
+    assert result.modified is True
+    injected = result.context.messages[1].content
+    assert "Not started" in injected
+    assert "In progress" in injected
+    assert "Completed" not in injected  # Filtered out
+
+
+@pytest.mark.asyncio
+async def test_hook_config_from_schema(server: TodoManagementServer):
+    """Test that hook config is loaded from schema.yaml"""
+    # Server should have loaded config from schema.yaml
+    assert hasattr(server, 'config')
+    
+    # Check default values from schema.yaml
+    assert server.config.get("max_tasks") == 20
+    assert server.config.get("filter_status") == ["not-started", "in-progress", "blocked"]
+    assert server.config.get("include_completed") is False
+    assert server.config.get("format") == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_hook_no_session_id_skips(server: TodoManagementServer):
+    """Test that hook skips when no session_id in context"""
+    from agent_system.hooks.plugin_hook import HookContext, HookType
+    from agent_system.llm.models import ChatMessage
+    
+    messages = [ChatMessage(role="system", content="Test")]
+    hook_context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id="test_req_004",
+        messages=messages,
+        session_id=None,  # No session
+        agent=None,
+    )
+    
+    result = await server.on_pre_llm_call(hook_context)
+    
+    assert result.success is True
+    assert result.modified is False
+
+
+@pytest.mark.asyncio
+async def test_hook_format_markdown(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test markdown formatting of injected tasks"""
+    from agent_system.hooks.plugin_hook import HookContext, HookType
+    from agent_system.llm.models import ChatMessage
+    
+    # Create task with dependencies
+    task1 = await server.create_todo(title="Parent task", priority="high", context=mock_context)
+    task2 = await server.create_todo(
+        title="Child task",
+        priority="low",
+        depends_on=[task1["task_id"]],
+        context=mock_context,
+    )
+    
+    messages = [ChatMessage(role="system", content="Test")]
+    hook_context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id="test_req_005",
+        messages=messages,
+        session_id=mock_context["session_id"],
+        agent=None,
+    )
+    
+    result = await server.on_pre_llm_call(hook_context)
+    injected = result.context.messages[1].content
+    
+    # Check markdown formatting
+    assert "## Active TODO Tasks" in injected
+    assert "**task_" in injected  # Bold task IDs
+    assert "Use `todo()` tool" in injected
+
+
+@pytest.mark.asyncio
+async def test_hook_session_isolation(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test that hook only injects tasks from current session"""
+    from agent_system.hooks.plugin_hook import HookContext, HookType
+    from agent_system.llm.models import ChatMessage
+    
+    # Create task in session 1
+    await server.create_todo(title="Session 1 task", context={"session_id": "session_1"})
+    
+    # Create task in session 2
+    await server.create_todo(title="Session 2 task", context={"session_id": "session_2"})
+    
+    # Hook for session 1
+    messages = [ChatMessage(role="system", content="Test")]
+    hook_context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id="test_req_006",
+        messages=messages,
+        session_id="session_1",
+        agent=None,
+    )
+    
+    result = await server.on_pre_llm_call(hook_context)
+    injected = result.context.messages[1].content
+    
+    assert "Session 1 task" in injected
+    assert "Session 2 task" not in injected  # Different session
+
+
+@pytest.mark.asyncio
+async def test_hook_max_tasks_limit(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test that hook respects max_tasks config"""
+    from agent_system.hooks.plugin_hook import HookContext, HookType
+    from agent_system.llm.models import ChatMessage
+    
+    # Create more than max_tasks (20) tasks
+    for i in range(25):
+        await server.create_todo(title=f"Task {i}", context=mock_context)
+    
+    messages = [ChatMessage(role="system", content="Test")]
+    hook_context = HookContext(
+        hook_type=HookType.PRE_LLM_CALL,
+        request_id="test_req_007",
+        messages=messages,
+        session_id=mock_context["session_id"],
+        agent=None,
+    )
+    
+    result = await server.on_pre_llm_call(hook_context)
+    injected = result.context.messages[1].content
+    
+    # Count task entries (should be limited to 20)
+    task_count = injected.count("**task_")
+    assert task_count <= 20
+
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=plugins.todo_management.server", "--cov-report=html"])

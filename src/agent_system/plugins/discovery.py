@@ -424,7 +424,7 @@ async def register_plugin_hooks(
             # Register with HookRegistry (it expects a PluginHook instance)
             await registry.register_hook(
                 hook_type=hook_type,
-                hook_name=hook_name,
+                hook_name=full_hook_name,  # Use full name with plugin prefix
                 hook=plugin_instance,  # Pass the PluginHook instance
                 order_spec=order,
                 enabled=enabled,
@@ -435,10 +435,10 @@ async def register_plugin_hooks(
                 source="plugin_discovery"
             )
             
-            registered_hooks.append(hook_name)
+            registered_hooks.append(full_hook_name)  # Track full name
             logger.debug(
-                f"Registered hook '{hook_name}' from plugin '{plugin_name}' "
-                f"(type={hook_type.name.lower()}, enabled={enabled}, description='{description}')"
+                f"Registered hook '{full_hook_name}' from plugin '{plugin_name}' "
+                f"(type={hook_type.value}, enabled={enabled}, description='{description}')"
             )
             
         except Exception as e:

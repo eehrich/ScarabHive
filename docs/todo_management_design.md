@@ -87,17 +87,29 @@ Sequential thinking generates the **reasoning**, TODO plugin tracks the **work i
 │  ├─ Tool routing                                            │
 │  ├─ Schema validation                                       │
 │  └─ Status event handling                                   │
+│                                                             │
+│  PluginHook (Base Class)                                    │
+│  ├─ Hook lifecycle management                               │
+│  ├─ Context modification                                    │
+│  └─ Hook ordering and filtering                             │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              TodoManagementServer (Plugin)                  │
+│       TodoManagementServer (Hybrid: MCP + Hook)             │
 ├─────────────────────────────────────────────────────────────┤
 │  Tools:                                                     │
 │  └─ todo (universal: CREATE/UPDATE/DELETE/LIST/GET modes)  │
 │                                                             │
+│  Hooks:                                                     │
+│  └─ inject_todo_tasks (PRE_LLM_CALL)                       │
+│      ├─ Filters: not-started, in-progress, blocked         │
+│      ├─ Max tasks: 20 (configurable)                       │
+│      ├─ Format: Markdown with emojis                       │
+│      └─ Session-isolated injection                         │
+│                                                             │
 │  Task Manager:                                              │
-│  ├─ In-memory task store (MVP)                             │
+│  ├─ In-memory task store (session-scoped)                  │
 │  ├─ Task ID generation (sequential)                        │
 │  ├─ Unrestricted status transitions (no state machine)     │
 │  ├─ Priority & dependency tracking                         │
@@ -106,29 +118,77 @@ Sequential thinking generates the **reasoning**, TODO plugin tracks the **work i
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   Persistence Layer (MVP)                   │
+│                   Persistence Layer                         │
 ├─────────────────────────────────────────────────────────────┤
 │  - JSON file storage: data/todos/{session_id}.json         │
 │  - Auto-save on every modification                          │
-│  - TTL-based cleanup (optional)                             │
+│  - Session-scoped files (no cross-session access)           │
 │  - Future: SQLite/PostgreSQL for multi-user                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Hook Integration Architecture
+
+```
+Agent LLM Call Flow:
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Agent prepares messages for LLM                         │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. HookRegistry.execute_pre_llm_hooks()                     │
+│    ├─ Context: {messages, session_id, agent}               │
+│    └─ Calls all enabled PRE_LLM_CALL hooks                 │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. TodoManagementServer.on_pre_llm_call()                   │
+│    ├─ list_todos(filter_status=[...], limit=20)            │
+│    ├─ _format_tasks_for_prompt(tasks, "markdown")          │
+│    ├─ ChatMessage(role="system", content=formatted)        │
+│    └─ Insert after first system message                    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Modified context returned to agent                      │
+│    └─ Messages now include injected TODO tasks             │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. Agent sends messages to LLM                             │
+│    └─ LLM sees tasks automatically in context              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Class Hierarchy
 
 ```python
-SchemaBasedMCPServer
+SchemaBasedMCPServer + PluginHook
   └─ TodoManagementServer
+       # MCP Tool Interface
        ├─ _tasks: Dict[str, Dict[str, Task]]  # session_id → task_id → Task
        ├─ _config: PluginConfig
        │    ├─ storage_path: Path = "data/todos"
        │    ├─ auto_save: bool = True
        │    ├─ max_tasks_per_session: int = 1000
        │    └─ enable_dependencies: bool = True
+       │
+       # Hook Interface (from schema.yaml config)
+       ├─ hook_config: Dict
+       │    ├─ max_tasks: int = 20
+       │    ├─ filter_status: List = ["not-started", "in-progress", "blocked"]
+       │    ├─ include_completed: bool = False
+       │    └─ format: str = "markdown"
+       │
+       # Methods
        ├─ _load_session(session_id: str) → Dict[str, Task]
        ├─ _save_session(session_id: str, tasks: Dict[str, Task]) → None
-       └─ _generate_task_id() → str
+       ├─ _generate_task_id() → str
+       └─ on_pre_llm_call(context: HookContext) → HookResult  # Hook handler
 ```
 
 ---

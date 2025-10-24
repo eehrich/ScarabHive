@@ -5,11 +5,12 @@ Provides persistent task tracking and lifecycle management for agent workflows.
 Complements sequential_thinking plugin: tracks WHAT to do (vs HOW to think).
 
 Key features:
-- 6 core tools: create/update/list/get/delete/summary
-- Task status lifecycle with validation
-- Dependency tracking (depends_on, blocks, circular detection)
+- Ultra-minimal design: 1 tool (todo) with multi-mode detection
+- Unrestricted status transitions (no state machine)
+- DELETE mode integrated (via delete=true parameter)
+- Task dependency tracking (depends_on, blocks, circular detection)
 - JSON file persistence (data/todos/{session_id}.json)
-- Integration with sequential_thinking (thinking_session_id linkage)
+- System prompt injection hook (auto-inject tasks before LLM calls)
 - Progress metrics and filtering
 """
 
@@ -24,6 +25,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -129,11 +131,13 @@ class StorageError(TodoError):
 # TODO Management Server
 # =============================================================================
 
-class TodoManagementServer(SchemaBasedMCPServer):
+class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
     """
-    TODO Management MCP Server
+    TODO Management MCP Server with Hook Integration
     
     Provides task lifecycle tracking with dependency management and persistence.
+    Implements PluginHook to inject tasks into system prompts (hooks defined in schema.yaml).
+    Hook configuration is loaded from schema.yaml config section.
     """
 
     def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
@@ -149,7 +153,13 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 - enable_dependencies: Whether to enforce dependencies
                 - auto_save: Auto-save on modifications
         """
-        super().__init__(name, system_config, mcp_config)
+        # Initialize MCP server (loads schema.yaml for tools)
+        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+        
+        # Initialize PluginHook with hook config from schema.yaml
+        # Extract hook config defaults from loaded schema
+        hook_config = self._extract_hook_config_from_schema()
+        PluginHook.__init__(self, name, config=hook_config)
         
         # Configuration (using getattr like sequential_thinking)
         self._storage_path = Path(
@@ -172,6 +182,30 @@ class TodoManagementServer(SchemaBasedMCPServer):
             f"TodoManagementServer initialized (storage={self._storage_path}, "
             f"max_tasks={self._max_tasks})"
         )
+
+    def _extract_hook_config_from_schema(self) -> Dict[str, Any]:
+        """
+        Extract hook configuration defaults from schema.yaml.
+        
+        SchemaBasedMCPServer already loaded schema.yaml via SchemaBaseMixin.
+        This method extracts the config section and converts it to runtime values.
+        
+        Returns:
+            Dict with hook config values (defaults from schema.yaml)
+        """
+        schema_data = self.get_schema_data()
+        schema_config = schema_data.get("config", {})
+        hook_config = {}
+        
+        for key, value in schema_config.items():
+            if isinstance(value, dict) and 'default' in value:
+                # Schema format: {key: {type: ..., default: value}}
+                hook_config[key] = value['default']
+            else:
+                # Already a simple value
+                hook_config[key] = value
+        
+        return hook_config
 
     # =========================================================================
     # Session Management
@@ -1267,3 +1301,137 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if status:
                 await status.error(f"Internal error: {e}")
             raise TodoError(f"Failed to calculate progress: {e}") from e
+
+    # =========================================================================
+    # Hook Implementation (PluginHook interface)
+    # =========================================================================
+
+    async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+        """
+        Inject TODO tasks into system prompt before LLM call.
+        
+        This hook (defined in schema.yaml as inject_todo_tasks) automatically 
+        adds active tasks from the current session to the agent's context, 
+        providing task awareness without explicit tool calls.
+        
+        Configuration is loaded from schema.yaml config section.
+        
+        Args:
+            context: Hook context with messages, session_id, agent
+            
+        Returns:
+            HookResult with modified=True if tasks were injected
+        """
+        if not context.messages:
+            logger.debug("TodoHook: No messages in context, skipping")
+            return HookResult(success=True, modified=False, context=context)
+        
+        if not context.session_id:
+            logger.debug("TodoHook: No session_id in context, skipping")
+            return HookResult(success=True, modified=False, context=context)
+        
+        try:
+            # Get hook config from PluginHook (loaded from schema.yaml via _extract_hook_config_from_schema)
+            max_tasks = self.config.get("max_tasks", 20)
+            filter_status = self.config.get("filter_status", [
+                "not-started", "in-progress", "blocked"
+            ])
+            include_completed = self.config.get("include_completed", False)
+            format_type = self.config.get("format", "markdown")
+            
+            # Query tasks from current session
+            result = await self.list_todos(
+                filter_status=filter_status if not include_completed else None,
+                limit=max_tasks,
+                context={"session_id": context.session_id}
+            )
+            
+            if not result or not result.get("tasks"):
+                logger.debug(f"TodoHook: No active tasks for session {context.session_id}")
+                return HookResult(success=True, modified=False, context=context)
+            
+            # Format task list
+            from agent_system.llm.models import ChatMessage
+            task_prompt = self._format_tasks_for_prompt(result["tasks"], format_type)
+            
+            # Insert after first system message
+            insert_pos = self._find_system_message_position(context.messages)
+            context.messages.insert(insert_pos, ChatMessage(
+                role="system",
+                content=task_prompt
+            ))
+            
+            logger.info(
+                f"TodoHook: Injected {len(result['tasks'])} tasks "
+                f"into session {context.session_id}"
+            )
+            
+            return HookResult(success=True, modified=True, context=context)
+            
+        except Exception as e:
+            logger.error(f"TodoHook failed: {e}", exc_info=True)
+            # Don't fail the entire LLM call if hook fails
+            return HookResult(success=True, modified=False, context=context)
+    
+    def _format_tasks_for_prompt(self, tasks: list, format_type: str = "markdown") -> str:
+        """Format task list for injection into prompt."""
+        if format_type == "markdown":
+            lines = ["## Active TODO Tasks\n"]
+            for task in tasks:
+                status_icon = self._get_status_icon(task["status"])
+                priority_label = self._get_priority_label(task["priority"])
+                
+                lines.append(
+                    f"- {status_icon} **{task['task_id']}**: {task['title']} "
+                    f"[{priority_label}, {task['progress']}%]"
+                )
+                
+                if task.get("depends_on"):
+                    lines.append(f"  - Depends on: {', '.join(task['depends_on'])}")
+                
+                if task.get("blocks"):
+                    lines.append(f"  - Blocks: {', '.join(task['blocks'])}")
+            
+            lines.append("\nUse `todo()` tool to update task status as you complete work.")
+            return "\n".join(lines)
+        
+        else:  # text format
+            lines = ["=== Active TODO Tasks ===\n"]
+            for task in tasks:
+                lines.append(
+                    f"{task['task_id']}: {task['title']} "
+                    f"[{task['status']}, {task['priority']}, {task['progress']}%]"
+                )
+            
+            lines.append("\nUse todo() tool to update tasks.")
+            return "\n".join(lines)
+    
+    def _get_status_icon(self, status: str) -> str:
+        """Map status to emoji/icon."""
+        icons = {
+            "not-started": "☐",
+            "in-progress": "⏳",
+            "completed": "✅",
+            "blocked": "🚫",
+            "cancelled": "❌"
+        }
+        return icons.get(status, "•")
+    
+    def _get_priority_label(self, priority: str) -> str:
+        """Map priority to short label."""
+        labels = {
+            "critical": "🔴 CRIT",
+            "high": "🟠 HIGH",
+            "medium": "🟡 MED",
+            "low": "🟢 LOW"
+        }
+        return labels.get(priority, priority.upper())
+    
+    def _find_system_message_position(self, messages: list) -> int:
+        """Find position to insert task list (after first system message)."""
+        for i, msg in enumerate(messages):
+            if msg.role == "system":
+                return i + 1
+        
+        # No system message found, insert at beginning
+        return 0

@@ -1,4 +1,37 @@
-# TODO Management Plugin - Tool Schema (OpenAI Function Format)
+# TODO Management Plugin - Schema (Tools, Hooks, Config)
+
+hooks:
+  - name: inject_todo_tasks
+    type: pre_llm_call
+    enabled: false # default is disabled
+    timeout: 5.0
+    description: "Inject active TODO tasks into system prompt before LLM calls"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
+config:
+  max_tasks:
+    type: integer
+    default: 20
+    description: "Maximum number of tasks to inject into system prompt"
+    minimum: 1
+    maximum: 100
+  
+  filter_status:
+    type: array
+    default: ["not-started", "in-progress", "blocked"]
+    description: "Task statuses to include in injection (active tasks)"
+  
+  include_completed:
+    type: boolean
+    default: false
+    description: "Include completed tasks in injection"
+  
+  format:
+    type: string
+    default: "markdown"
+    description: "Format for task injection: 'markdown' or 'text'"
 
 tools:
   - type: function
