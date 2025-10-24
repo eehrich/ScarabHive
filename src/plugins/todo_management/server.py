@@ -17,9 +17,10 @@ Key features:
 import json
 import logging
 from datetime import datetime, UTC
+from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -453,6 +454,46 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
         return False
 
+    def _find_similar_tasks(
+        self,
+        title: str,
+        collection: TaskCollection,
+        threshold: float = 0.80,
+        exclude_completed: bool = True,
+    ) -> List[Tuple[str, float, Task]]:
+        """
+        Find tasks with similar titles using fuzzy string matching.
+        
+        Args:
+            title: Title to search for
+            collection: Task collection to search in
+            threshold: Minimum similarity ratio (0.0-1.0, default: 0.80)
+            exclude_completed: Skip completed tasks (default: True)
+            
+        Returns:
+            List of (task_id, similarity_ratio, task) tuples, sorted by similarity (highest first)
+        """
+        title_normalized = title.lower().strip()
+        similar: List[Tuple[str, float, Task]] = []
+        
+        for task_id, task in collection.tasks.items():
+            # Skip completed tasks if requested
+            if exclude_completed and task.status == TaskStatus.COMPLETED:
+                continue
+            
+            # Calculate similarity ratio
+            task_title_normalized = task.title.lower().strip()
+            ratio = SequenceMatcher(None, title_normalized, task_title_normalized).ratio()
+            
+            # Add to results if above threshold
+            if ratio >= threshold:
+                similar.append((task_id, ratio, task))
+        
+        # Sort by similarity (highest first)
+        similar.sort(key=lambda x: x[1], reverse=True)
+        
+        return similar
+
     def _update_blocked_status(
         self, task_id: str, collection: TaskCollection
     ) -> None:
@@ -569,6 +610,8 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         only_unblocked = params.get("only_unblocked", False)
         limit = params.get("limit")
         cascade = params.get("cascade", False)
+        allow_duplicates = params.get("allow_duplicates", False)
+        idempotency_key = params.get("idempotency_key")
         context = params.get("context") or {}
         
         # Extract session_id from params and inject into context
@@ -600,6 +643,8 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 priority=priority,
                 tags=tags,
                 depends_on=depends_on,
+                allow_duplicates=allow_duplicates,
+                idempotency_key=idempotency_key,
                 context=context,
             )
         
@@ -661,10 +706,12 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         priority: str = "medium",
         tags: Optional[List[str]] = None,
         depends_on: Optional[List[str]] = None,
+        allow_duplicates: bool = False,
+        idempotency_key: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Create a new task.
+        Create a new task with optional duplicate detection.
         
         Args:
             title: Task title (required, max 200 chars)
@@ -672,13 +719,15 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             priority: Priority level (low/medium/high/critical)
             tags: List of tags for categorization
             depends_on: List of task IDs this task depends on
+            allow_duplicates: Allow creating duplicate tasks (default: False)
+            idempotency_key: Optional key to prevent duplicate creation on retries
             context: MCP tool call context
             
         Returns:
-            Created task details with task_id
+            Created task details with task_id OR existing task if duplicate found
             
         Raises:
-            ValidationError: If validation fails
+            ValidationError: If validation fails or duplicate found (when allow_duplicates=False)
             DependencyError: If dependencies invalid
             StorageError: If save fails
         """
@@ -690,6 +739,62 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         try:
             # Load session
             collection = self._load_session(session_id)
+
+            # Check for idempotency key
+            if idempotency_key:
+                # Search for existing task with this idempotency key
+                for task_id, task in collection.tasks.items():
+                    if task.tags and f"idempotency:{idempotency_key}" in task.tags:
+                        if status:
+                            await status.end(f"Returned existing {task_id} (idempotency key)")
+                        return {
+                            "task_id": task_id,
+                            "status": "exists",
+                            "reason": "idempotency_key",
+                            "is_blocked": self._is_blocked(task, collection),
+                            "task": task.model_dump(mode='json'),
+                        }
+
+            # Check for duplicate titles (if not allowed)
+            if not allow_duplicates:
+                similar = self._find_similar_tasks(
+                    title=title,
+                    collection=collection,
+                    threshold=0.80,  # 80% similarity
+                    exclude_completed=True,
+                )
+                
+                if similar:
+                    # Found similar task(s)
+                    best_match_id, similarity, best_match = similar[0]
+                    
+                    # Exact match (100%) or very high similarity (>= 95%)
+                    if similarity >= 0.95:
+                        if status:
+                            await status.end(
+                                f"Returned existing {best_match_id} "
+                                f"(title {similarity*100:.0f}% similar)"
+                            )
+                        return {
+                            "task_id": best_match_id,
+                            "status": "exists",
+                            "reason": "duplicate_title",
+                            "similarity": similarity,
+                            "is_blocked": self._is_blocked(best_match, collection),
+                            "task": best_match.model_dump(mode='json'),
+                        }
+                    
+                    # High similarity (80-95%) - inform but allow creation
+                    elif similarity >= 0.80:
+                        logger.warning(
+                            f"Creating task similar to existing {best_match_id}: "
+                            f"'{title}' vs '{best_match.title}' ({similarity*100:.0f}% similar)"
+                        )
+                        if status:
+                            await status.update(
+                                f"⚠️  Similar task exists: {best_match_id} "
+                                f"({similarity*100:.0f}% match)"
+                            )
 
             # Check task limit
             if len(collection.tasks) >= self._max_tasks:
@@ -709,13 +814,18 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                     f"Must be: low, medium, high, critical"
                 )
 
+            # Prepare tags (add idempotency key if provided)
+            task_tags = tags or []
+            if idempotency_key:
+                task_tags.append(f"idempotency:{idempotency_key}")
+
             # Create task
             task = Task(
                 task_id=task_id,
                 title=title,
                 description=description,
                 priority=priority_enum,
-                tags=tags or [],
+                tags=task_tags,
                 depends_on=depends_on or [],
                 session_id=session_id,
                 agent_name=context.get("agent_name") if context else None,
@@ -1391,8 +1501,8 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 
                 if task.get("blocks"):
                     lines.append(f"  - Blocks: {', '.join(task['blocks'])}")
-            
-            lines.append("\nUse `todo()` tool to update task status as you complete work.")
+
+            lines.append("\nUse `todo()` tool for your own task planning to keep track and use it to update task status as you complete work.")
             return "\n".join(lines)
         
         else:  # text format

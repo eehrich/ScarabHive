@@ -623,6 +623,147 @@ async def test_todo_invalid_args(server: TodoManagementServer, mock_context: Dic
 
 
 # =============================================================================
+# Test: Duplicate Detection
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_duplicate_exact_title(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test exact duplicate title returns existing task"""
+    # Create first task
+    result1 = await server.create_todo(
+        title="Implement authentication",
+        priority="high",
+        context=mock_context,
+    )
+    task_id1 = result1["task_id"]
+    
+    # Try to create duplicate (exact same title)
+    result2 = await server.create_todo(
+        title="Implement authentication",
+        priority="medium",  # Different priority but same title
+        context=mock_context,
+    )
+    
+    # Should return existing task
+    assert result2["status"] == "exists"
+    assert result2["reason"] == "duplicate_title"
+    assert result2["task_id"] == task_id1
+    assert result2["similarity"] >= 0.95
+
+
+@pytest.mark.asyncio
+async def test_duplicate_similar_title(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test very similar titles (95%+) return existing task"""
+    # Create first task
+    result1 = await server.create_todo(
+        title="Implement user authentication",
+        context=mock_context,
+    )
+    task_id1 = result1["task_id"]
+    
+    # Try with very similar title (one word different)
+    result2 = await server.create_todo(
+        title="Implement user authentification",  # Typo: authentification vs authentication
+        context=mock_context,
+    )
+    
+    # Should return existing task (high similarity)
+    assert result2["status"] == "exists"
+    assert result2["task_id"] == task_id1
+
+
+@pytest.mark.asyncio
+async def test_allow_duplicates_flag(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test allow_duplicates=True creates new task despite similarity"""
+    # Create first task
+    result1 = await server.create_todo(
+        title="Write tests",
+        context=mock_context,
+    )
+    task_id1 = result1["task_id"]
+    
+    # Create duplicate with allow_duplicates=True
+    result2 = await server.create_todo(
+        title="Write tests",
+        allow_duplicates=True,
+        context=mock_context,
+    )
+    
+    # Should create new task (not return existing)
+    assert result2["status"] == "created"
+    assert result2["task_id"] != task_id1
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test idempotency key prevents duplicate creation"""
+    # Create task with idempotency key
+    result1 = await server.create_todo(
+        title="Deploy to production",
+        idempotency_key="deploy-v1.2.3",
+        context=mock_context,
+    )
+    task_id1 = result1["task_id"]
+    
+    # Retry with same idempotency key (simulates retry)
+    result2 = await server.create_todo(
+        title="Deploy to production (retry)",  # Different title
+        idempotency_key="deploy-v1.2.3",  # Same key
+        context=mock_context,
+    )
+    
+    # Should return existing task (idempotency key match)
+    assert result2["status"] == "exists"
+    assert result2["reason"] == "idempotency_key"
+    assert result2["task_id"] == task_id1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ignores_completed(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test duplicate detection ignores completed tasks"""
+    # Create and complete task
+    result1 = await server.create_todo(
+        title="Fix bug #123",
+        context=mock_context,
+    )
+    task_id1 = result1["task_id"]
+    await server.update_todo(
+        task_id=task_id1,
+        new_status="completed",
+        context=mock_context,
+    )
+    
+    # Create new task with same title (should create, not return completed)
+    result2 = await server.create_todo(
+        title="Fix bug #123",
+        context=mock_context,
+    )
+    
+    # Should create new task (completed tasks excluded from duplicate check)
+    assert result2["status"] == "created"
+    assert result2["task_id"] != task_id1
+
+
+@pytest.mark.asyncio
+async def test_similar_but_different_tasks(server: TodoManagementServer, mock_context: Dict[str, Any]):
+    """Test tasks with <80% similarity create separate tasks"""
+    # Create first task
+    await server.create_todo(
+        title="Implement JWT authentication",
+        context=mock_context,
+    )
+    
+    # Create different task (< 80% similar)
+    result2 = await server.create_todo(
+        title="Write unit tests",
+        context=mock_context,
+    )
+    
+    # Should create new task (different enough)
+    assert result2["status"] == "created"
+
+
+# =============================================================================
 # Test: Persistence
 # =============================================================================
 

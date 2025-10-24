@@ -108,6 +108,16 @@ tools:
             maxItems: 50
             description: "Task dependencies - other task IDs (optional)"
           
+          allow_duplicates:
+            type: boolean
+            default: false
+            description: "Allow creating duplicate tasks (for create operation). When false (default), tasks with 80%+ title similarity return existing task instead of creating duplicate."
+          
+          idempotency_key:
+            type: string
+            maxLength: 100
+            description: "Idempotency key to prevent duplicate creation on retries (for create operation). Tasks with same key return existing instead of creating new."
+          
           note:
             type: string
             maxLength: 1000
