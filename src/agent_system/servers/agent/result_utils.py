@@ -6,6 +6,38 @@ from .server import Agent
 from ...llm.models import ChatMessage
 
 
+def extract_summary(result: Dict[str, Any]) -> str:
+    """
+    Extract a summary from the agent result for easier consumption.
+
+    Args:
+        result: The agent execution result dict
+
+    Returns:
+        A summary string describing the execution outcome
+    """
+    if isinstance(result, dict):
+        # Look for summary in result
+        if "summary" in result:
+            return str(result["summary"])
+
+        # If there are successful tool calls, summarize them
+        calls = result.get("calls", [])
+        if calls:
+            successful_calls = [c for c in calls if "error" not in str(c.get("result", ""))]
+            if successful_calls:
+                return f"Executed {len(successful_calls)} tool(s) successfully"
+
+        # Check for errors
+        errors = result.get("errors", [])
+        if errors:
+            return f"Failed with {len(errors)} error(s): {errors[0]}"
+
+        return "Task completed"
+
+    return str(result)[:200]  # Fallback to string representation
+
+
 async def collect_final_result(
     agent: Agent, 
     task: Union[str, ChatMessage], 
