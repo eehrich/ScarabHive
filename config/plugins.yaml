@@ -64,6 +64,15 @@ plugins:
       enable_revisions: true
       max_summary_thoughts: 10
     
+    todo_management:
+      type: mcp_server
+      enabled: true
+      server_config:
+        storage_path: data/todos
+        max_tasks_per_session: 1000
+        enable_dependencies: true
+        auto_save: true
+    
     http_server:
       type: http_server
       enabled: false

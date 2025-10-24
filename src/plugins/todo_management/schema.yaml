@@ -1,0 +1,74 @@
+# TODO Management Plugin - MCP Tool Schema Definitions
+# ULTRA-MINIMAL: Only 2 tools total
+
+tools:
+  - name: todo
+    description: |
+      Universal task manager. Auto-detects operation from parameters:
+      
+      CREATE: title only → new task
+      UPDATE: task_id + fields → modify task  
+      LIST: filter_status/priority/tags → query tasks
+      GET: task_id → details, OR task_id="SUMMARY" → stats
+      
+      Tasks: not-started → in-progress → completed
+      Link to sequential_thinking via thinking_session_id
+    inputSchema:
+      type: object
+      properties:
+        task_id:
+          type: string
+          description: For UPDATE/GET. Use "SUMMARY" for stats. Omit for CREATE/LIST.
+        title:
+          type: string
+          description: Required for CREATE
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        status:
+          type: string
+          enum: [not-started, in-progress, completed, blocked, cancelled]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          default: medium
+        tags:
+          type: array
+          items: {type: string}
+        depends_on:
+          type: array
+          description: Blocking task IDs
+          items: {type: string}
+        note:
+          type: string
+          description: For UPDATE - append timestamped note
+        thinking_session_id:
+          type: string
+        thought_number:
+          type: integer
+        # LIST filters
+        filter_status:
+          type: array
+          items: {type: string}
+        filter_priority:
+          type: array
+          items: {type: string}
+        only_unblocked:
+          type: boolean
+          default: false
+        limit:
+          type: integer
+
+  - name: delete_todo
+    description: Delete task (cascade=true deletes dependents too)
+    inputSchema:
+      type: object
+      required: [task_id]
+      properties:
+        task_id: {type: string}
+        cascade: {type: boolean, default: false}

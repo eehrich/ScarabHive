@@ -1,0 +1,42 @@
+name: todo_management
+version: "1.0.0"
+description: "Task lifecycle tracking and workflow orchestration for agent systems"
+author: "AgentSystem"
+type: mcp_server
+
+# Server configuration
+server:
+  class: "TodoManagementServer"
+  module: "plugins.todo_management.server"
+  schema_file: "schema.yaml"
+
+# Plugin settings (passed to server constructor)
+server_config:
+  storage_path: "data/todos"
+  max_tasks_per_session: 1000
+  enable_dependencies: true
+  auto_save: true
+
+# Metadata
+metadata:
+  category: "productivity"
+  tags:
+    - "task-management"
+    - "workflow"
+    - "todo"
+    - "planning"
+  synergizes_with:
+    - "sequential_thinking"
+  use_cases:
+    - "Multi-step agent workflows"
+    - "Sub-agent task coordination"
+    - "Progress tracking across sessions"
+    - "Dependency orchestration"
+
+# Documentation
+documentation:
+  readme: "README.md"
+  examples:
+    - "JWT authentication implementation"
+    - "Multi-step data pipeline"
+    - "Code refactoring workflow"
