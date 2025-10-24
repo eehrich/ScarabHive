@@ -479,8 +479,9 @@ async def test_concurrent_session_access(agent_service, mock_agent):
     # Run concurrently
     await asyncio.gather(*[create_and_access() for _ in range(10)])
     
-    # All should complete without errors
-    assert len(mock_agent._sessions) == 0  # All cleaned up
+    # All should complete without errors - check using component API
+    all_sessions = mock_agent._session_tracker.get_all_session_ids()
+    assert len(all_sessions) == 0  # All cleaned up
 
 
 @pytest.mark.asyncio
