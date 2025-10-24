@@ -218,9 +218,8 @@ class AgentService:
         logger.info("Creating new session: session_id=%s", session_id)
         
         try:
-            # Pre-create empty session in agent
-            async with self._agent._request_lock:
-                self._agent._sessions.setdefault(session_id, [])
+            # Pre-create empty session in agent using component API
+            self._agent._session_tracker.set_session_messages(session_id, [])
             
             logger.debug("Session created successfully: session_id=%s", session_id)
             return session_id
@@ -241,8 +240,8 @@ class AgentService:
         logger.debug("Retrieving session: session_id=%s", session_id)
         
         try:
-            async with self._agent._request_lock:
-                messages = self._agent._sessions.get(session_id)
+            # Get messages from agent using component API
+            messages = self._agent._session_tracker.get_session_messages(session_id)
             
             if messages is None:
                 logger.warning("Session not found: session_id=%s", session_id)
@@ -267,14 +266,14 @@ class AgentService:
         logger.info("Deleting session: session_id=%s", session_id)
         
         try:
-            async with self._agent._request_lock:
-                if session_id in self._agent._sessions:
-                    del self._agent._sessions[session_id]
-                    logger.debug("Session deleted: session_id=%s", session_id)
-                    return True
-                else:
-                    logger.warning("Session not found for deletion: session_id=%s", session_id)
-                    return False
+            # Delete session using component API
+            deleted = self._agent._session_tracker.delete_session(session_id)
+            if deleted:
+                logger.debug("Session deleted: session_id=%s", session_id)
+                return True
+            else:
+                logger.warning("Session not found for deletion: session_id=%s", session_id)
+                return False
                     
         except Exception as e:
             logger.exception("Failed to delete session: session_id=%s, error=%s", session_id, e)
@@ -338,18 +337,17 @@ class AgentService:
         logger.info("Optimizing session: session_id=%s", session_id)
         
         try:
-            # Check session exists
-            async with self._agent._request_lock:
-                if session_id not in self._agent._sessions:
-                    logger.warning("Cannot optimize non-existent session: session_id=%s", session_id)
-                    return {
-                        "success": False,
-                        "error": f"Session {session_id} not found"
-                    }
-                
-                # Get token count before
-                session_messages = self._agent._sessions[session_id]
-                original_count = len(session_messages)
+            # Check session exists using component API
+            if not self._agent._session_tracker.has_session(session_id):
+                logger.warning("Cannot optimize non-existent session: session_id=%s", session_id)
+                return {
+                    "success": False,
+                    "error": f"Session {session_id} not found"
+                }
+            
+            # Get token count before
+            session_messages = self._agent._session_tracker.get_session_messages(session_id)
+            original_count = len(session_messages)
 
             # Trigger optimization
             if hasattr(self._agent, 'optimize_context'):
@@ -363,9 +361,8 @@ class AgentService:
                 }
 
             # Get token count after
-            async with self._agent._request_lock:
-                optimized_messages = self._agent._sessions.get(session_id, [])
-                optimized_count = len(optimized_messages)
+            optimized_messages = self._agent._session_tracker.get_session_messages(session_id)
+            optimized_count = len(optimized_messages)
 
             reduction = original_count - optimized_count
             reduction_percent = (reduction / original_count * 100) if original_count > 0 else 0
@@ -405,14 +402,15 @@ class AgentService:
         logger.debug("Listing all sessions")
         
         try:
-            async with self._agent._request_lock:
-                sessions = [
-                    {
-                        "session_id": sid,
-                        "message_count": len(messages)
-                    }
-                    for sid, messages in self._agent._sessions.items()
-                ]
+            # Get all session IDs using component API
+            session_ids = self._agent._session_tracker.get_all_session_ids()
+            sessions = [
+                {
+                    "session_id": sid,
+                    "message_count": len(self._agent._session_tracker.get_session_messages(sid))
+                }
+                for sid in session_ids
+            ]
             
             logger.debug("Listed %d sessions", len(sessions))
             return sessions

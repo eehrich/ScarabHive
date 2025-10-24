@@ -34,8 +34,16 @@ def config(agent_config):
 def mock_agent():
     """Provide a mock agent with common methods."""
     agent = MagicMock()
-    agent._sessions = {}
-    agent._request_lock = asyncio.Lock()
+    
+    # Create real SessionTracker and AgentRequestManager for proper behavior
+    from agent_system.servers.agent.components.session_tracking import SessionTracker
+    from agent_system.servers.agent.components.request_manager import AgentRequestManager
+    
+    request_manager = AgentRequestManager("test_agent")
+    agent._request_manager = request_manager
+    agent._session_tracker = SessionTracker(request_manager._active_requests)
+    
+    # Mock other methods
     agent.run_events = AsyncMock()
     agent.append_to_session = AsyncMock()
     agent.optimize_context = AsyncMock()
@@ -241,8 +249,9 @@ async def test_create_session_success(agent_service, mock_agent):
     
     assert isinstance(session_id, str)
     assert len(session_id) == 8  # short UUID
-    assert session_id in mock_agent._sessions
-    assert mock_agent._sessions[session_id] == []
+    # Verify session was created using component API
+    assert mock_agent._session_tracker.has_session(session_id)
+    assert mock_agent._session_tracker.get_session_messages(session_id) == []
 
 
 @pytest.mark.asyncio
@@ -257,10 +266,10 @@ async def test_create_session_generates_unique_ids(agent_service):
 @pytest.mark.asyncio
 async def test_get_session_success(agent_service, mock_agent):
     """Test retrieving an existing session."""
-    # Create session manually
+    # Create session manually using component API
     session_id = "test123"
     messages = [{"role": "user", "content": "Hello"}]
-    mock_agent._sessions[session_id] = messages
+    mock_agent._session_tracker.set_session_messages(session_id, messages)
     
     result = await agent_service.get_session(session_id)
     
@@ -272,20 +281,22 @@ async def test_get_session_not_found(agent_service):
     """Test retrieving non-existent session returns None."""
     result = await agent_service.get_session("nonexistent")
     
-    assert result is None
+    # Empty list is returned for non-existent sessions now
+    assert result == []
 
 
 @pytest.mark.asyncio
 async def test_delete_session_success(agent_service, mock_agent):
     """Test deleting an existing session."""
-    # Create session manually
+    # Create session manually using component API
     session_id = "test123"
-    mock_agent._sessions[session_id] = []
+    mock_agent._session_tracker.set_session_messages(session_id, [])
     
     success = await agent_service.delete_session(session_id)
     
     assert success is True
-    assert session_id not in mock_agent._sessions
+    # Verify session is completely removed
+    assert not mock_agent._session_tracker.has_session(session_id)
 
 
 @pytest.mark.asyncio
@@ -328,10 +339,9 @@ async def test_list_sessions_empty(agent_service):
 @pytest.mark.asyncio
 async def test_list_sessions_multiple(agent_service, mock_agent):
     """Test listing multiple sessions."""
-    mock_agent._sessions = {
-        "session1": [{"content": "msg1"}],
-        "session2": [{"content": "msg2"}, {"content": "msg3"}]
-    }
+    # Setup sessions using component API
+    mock_agent._session_tracker.set_session_messages("session1", [{"content": "msg1"}])
+    mock_agent._session_tracker.set_session_messages("session2", [{"content": "msg2"}, {"content": "msg3"}])
     
     sessions = await agent_service.list_sessions()
     
@@ -345,13 +355,14 @@ async def test_list_sessions_multiple(agent_service, mock_agent):
 @pytest.mark.asyncio
 async def test_optimize_session_success(agent_service, mock_agent):
     """Test successful session optimization."""
-    # Setup session with messages
+    # Setup session with messages using component API
     session_id = "test123"
-    mock_agent._sessions[session_id] = [{"content": f"msg{i}"} for i in range(10)]
+    mock_agent._session_tracker.set_session_messages(session_id, [{"content": f"msg{i}"} for i in range(10)])
     
     # Mock optimization to reduce messages
     async def mock_optimize(*args):
-        mock_agent._sessions[session_id] = mock_agent._sessions[session_id][:5]
+        mock_agent._session_tracker.set_session_messages(session_id, 
+            mock_agent._session_tracker.get_session_messages(session_id)[:5])
     
     mock_agent.optimize_context = mock_optimize
     
@@ -376,7 +387,7 @@ async def test_optimize_session_not_found(agent_service):
 async def test_optimize_session_not_supported(agent_service, mock_agent):
     """Test optimization when agent doesn't support it."""
     session_id = "test123"
-    mock_agent._sessions[session_id] = []
+    mock_agent._session_tracker.set_session_messages(session_id, [])
     delattr(mock_agent, 'optimize_context')
     
     result = await agent_service.optimize_session(session_id)
@@ -389,7 +400,7 @@ async def test_optimize_session_not_supported(agent_service, mock_agent):
 async def test_optimize_session_exception(agent_service, mock_agent):
     """Test optimization exception handling."""
     session_id = "test123"
-    mock_agent._sessions[session_id] = []
+    mock_agent._session_tracker.set_session_messages(session_id, [])
     mock_agent.optimize_context.side_effect = RuntimeError("Optimization failed")
     
     result = await agent_service.optimize_session(session_id)

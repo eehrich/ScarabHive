@@ -1356,8 +1356,8 @@ def main() -> None:
                     logger.warning(f"Session {session_id} not found")
                     # Initialize empty session for new session ID
                 # Initialize session in agent if it doesn't exist
-                if hasattr(agent, '_sessions'):
-                    agent._sessions[actual_session_id] = []
+                if hasattr(agent, '_session_tracker'):
+                    agent._session_tracker.set_session_messages(actual_session_id, [])
             except Exception as e:
                 logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
                 print(f"Error loading session: {e}", file=sys.stderr)
@@ -1365,8 +1365,8 @@ def main() -> None:
         else:
             # For new sessions, initialize empty session list
             logger.debug(f"Creating new session: {actual_session_id}")
-            if hasattr(agent, '_sessions'):
-                agent._sessions[actual_session_id] = []
+            if hasattr(agent, '_session_tracker'):
+                agent._session_tracker.set_session_messages(actual_session_id, [])
         
         return True  # Continue with task execution
     

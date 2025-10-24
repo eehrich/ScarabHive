@@ -229,6 +229,21 @@ class SessionTracker:
         """
         return list(self._sessions.keys())
 
+    def delete_session(self, session_id: str) -> bool:
+        """
+        Delete a session completely.
+        
+        Args:
+            session_id: The session ID to delete
+            
+        Returns:
+            True if session was deleted, False if it didn't exist
+        """
+        if session_id in self._sessions:
+            del self._sessions[session_id]
+            return True
+        return False
+
     def clear(self) -> None:
         """
         Clear all sessions and request mappings.

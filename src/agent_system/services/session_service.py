@@ -65,8 +65,8 @@ class SessionService:
                 except Exception as e:
                     logger.warning(f"Failed to convert message to ChatMessage: {e}, skipping")
             
-            # Restore conversation history to agent
-            agent._sessions[session_id] = messages_objects
+            # Restore conversation history to agent using component API
+            agent._session_tracker.set_session_messages(session_id, messages_objects)
             
             logger.info(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
@@ -103,8 +103,8 @@ class SessionService:
             return False
         
         try:
-            # Get messages from agent
-            messages_list = agent._sessions.get(session_id)
+            # Get messages from agent using component API
+            messages_list = agent._session_tracker.get_session_messages(session_id)
             if not messages_list:
                 logger.debug(f"[SESSION] No messages in session {session_id}, skipping save")
                 return False

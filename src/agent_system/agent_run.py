@@ -197,7 +197,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     print(f"Warning: Session '{session_id}' not found, creating new session", file=sys.stderr)
                     logger.warning(f"Session {session_id} not found")
                     # Initialize empty session for new session ID
-                    agent._sessions[actual_session_id] = []
+                    agent._session_tracker.set_session_messages(actual_session_id, [])
             except Exception as e:
                 logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
                 print(f"Error loading session: {e}", file=sys.stderr)
@@ -205,7 +205,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         else:
             # For new sessions, initialize empty session list
             logger.debug(f"Creating new session: {actual_session_id}")
-            agent._sessions[actual_session_id] = []
+            agent._session_tracker.set_session_messages(actual_session_id, [])
         
         # Create LLM override if profile specified
         llm_override = None
