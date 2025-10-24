@@ -94,17 +94,12 @@ Sequential thinking generates the **reasoning**, TODO plugin tracks the **work i
 │              TodoManagementServer (Plugin)                  │
 ├─────────────────────────────────────────────────────────────┤
 │  Tools:                                                     │
-│  ├─ create_todo (add new task)                             │
-│  ├─ update_todo (modify task state/fields)                 │
-│  ├─ list_todos (query tasks with filters)                  │
-│  ├─ get_todo (fetch single task details)                   │
-│  ├─ delete_todo (remove task)                              │
-│  └─ get_progress_summary (statistics & completion %)       │
+│  └─ todo (universal: CREATE/UPDATE/DELETE/LIST/GET modes)  │
 │                                                             │
 │  Task Manager:                                              │
 │  ├─ In-memory task store (MVP)                             │
 │  ├─ Task ID generation (sequential)                        │
-│  ├─ Status lifecycle validation                            │
+│  ├─ Unrestricted status transitions (no state machine)     │
 │  ├─ Priority & dependency tracking                         │
 │  └─ Metadata linkage (session_id, agent_name)              │
 └─────────────────────────────────────────────────────────────┘
@@ -211,29 +206,26 @@ class TaskCollection(BaseModel):
 
 ### Status Transitions
 
-Valid state transitions:
+**Unrestricted:** All status transitions are allowed. Any status can change to any other status at any time.
 
-```
-NOT_STARTED → IN_PROGRESS
-NOT_STARTED → CANCELLED
+This design decision was made because:
+- LLMs should have full control over task lifecycle
+- Real workflows often need to revert/skip states
+- Removes unnecessary validation complexity
+- Agents can model their own workflows flexibly
 
-IN_PROGRESS → COMPLETED
-IN_PROGRESS → BLOCKED
-IN_PROGRESS → CANCELLED
-IN_PROGRESS → NOT_STARTED (rollback)
-
-BLOCKED → IN_PROGRESS
-BLOCKED → CANCELLED
-
-COMPLETED → (terminal - no transitions)
-CANCELLED → NOT_STARTED (reopen)
-```
+Examples:
+- `completed` → `not-started` (rework needed)
+- `blocked` → `completed` (blocker resolved differently)
+- `cancelled` → `in-progress` (decision reversed)
 
 ---
 
-## API Specification
+## API Specification (Internal Methods)
 
-### Tool 1: create_todo
+These methods are called internally by the `todo()` universal tool:
+
+### Internal: create_todo
 
 **Purpose:** Add a new task to the current session.
 
@@ -244,9 +236,7 @@ CANCELLED → NOT_STARTED (reopen)
   "description": "Add JWT-based auth with refresh tokens",
   "priority": "high",
   "tags": ["backend", "security"],
-  "depends_on": ["task_001"],
-  "thinking_session_id": "abc123-session",
-  "thought_number": 3
+  "depends_on": ["task_001"]
 }
 ```
 
@@ -277,7 +267,7 @@ CANCELLED → NOT_STARTED (reopen)
 
 ---
 
-### Tool 2: update_todo
+### Internal: update_todo
 
 **Purpose:** Modify task fields (status, progress, priority, etc.).
 
@@ -306,14 +296,13 @@ CANCELLED → NOT_STARTED (reopen)
 ```
 
 **Validation:**
-- Status transitions must be valid
 - Progress must be 0-100
 - Auto-updates timestamps (updated_at, started_at, completed_at)
 - Notes append chronologically
 
 ---
 
-### Tool 3: list_todos
+### Internal: list_todos
 
 **Purpose:** Query tasks with filters (status, priority, tags, dependencies).
 
@@ -363,9 +352,9 @@ CANCELLED → NOT_STARTED (reopen)
 
 ---
 
-### Tool 4: get_todo
+### Internal: get_todo
 
-**Purpose:** Fetch complete details of a single task.
+**Purpose:** Fetch complete details for a single task.
 
 **Input Schema:**
 ```json
@@ -389,74 +378,86 @@ CANCELLED → NOT_STARTED (reopen)
 
 ---
 
-### Tool 5: delete_todo
+## Tool Design: Universal `todo()` Tool
 
-**Purpose:** Remove a task from the session.
+The plugin exposes a **single ultra-minimal tool** with mode detection:
 
-**Input Schema:**
+### Mode Detection Logic
+
+```python
+# Mode 1: GET SUMMARY
+if task_id == "SUMMARY":
+    return get_progress_summary()
+
+# Mode 2: DELETE
+if delete == True and task_id:
+    return delete_todo_impl(task_id, cascade)
+
+# Mode 3: GET task
+if task_id and no_other_params:
+    return get_todo(task_id)
+
+# Mode 4: LIST tasks
+if any(filters) or tags_without_title:
+    return list_todos(filters)
+
+# Mode 5: CREATE
+if title and not task_id:
+    return create_todo(title, ...)
+
+# Mode 6: UPDATE
+if task_id:
+    return update_todo(task_id, fields)
+```
+
+### Example Usage
+
+**CREATE:**
+```json
+{
+  "title": "Implement JWT authentication",
+  "priority": "high",
+  "tags": ["security", "backend"]
+}
+```
+
+**UPDATE:**
+```json
+{
+  "task_id": "task_001",
+  "status": "completed",
+  "progress": 100
+}
+```
+
+**DELETE:**
 ```json
 {
   "task_id": "task_042",
+  "delete": true,
   "cascade": false
 }
 ```
 
-**Parameters:**
-- `cascade`: If true, also delete tasks that depend on this task
-
-**Output Schema:**
+**LIST:**
 ```json
 {
-  "task_id": "task_042",
-  "status": "deleted",
-  "cascade_deleted": ["task_050", "task_051"]
+  "filter_status": ["in-progress", "not-started"],
+  "filter_priority": ["high", "critical"]
 }
 ```
 
-**Validation:**
-- Warns if deleting task with dependents (unless cascade=true)
-- Cannot delete if other tasks depend on it (unless cascade)
-
----
-
-### Tool 6: get_progress_summary
-
-**Purpose:** Get statistics and completion metrics for the session.
-
-**Input Schema:**
+**GET:**
 ```json
 {
-  "group_by": "status"
+  "task_id": "task_001"
 }
 ```
 
-**Output Schema:**
+**SUMMARY:**
 ```json
 {
-  "total_tasks": 42,
-  "by_status": {
-    "not-started": 10,
-    "in-progress": 5,
-    "completed": 25,
-    "blocked": 2,
-    "cancelled": 0
-  },
-  "by_priority": {
-    "critical": 3,
-    "high": 8,
-    "medium": 20,
-    "low": 11
-  },
-  "overall_progress": 68.5,
-  "completion_rate": "25/42 (59.5%)",
-  "blocked_count": 2,
-  "next_unblocked": [
-    {
-      "task_id": "task_015",
-      "title": "Add unit tests",
-      "priority": "high"
-    }
-  ]
+  "task_id": "SUMMARY"
 }
 ```
 
@@ -499,7 +500,7 @@ async def _save_session(self, session_id: str) -> None:
 
 ### Session Lifecycle
 
-1. **Creation:** First `create_todo` call creates session file
+1. **Creation:** First `todo()` call (with title) creates session file
 2. **Loading:** Lazy load from disk on first access
 3. **Caching:** Keep in memory during server lifetime
 4. **Persistence:** Write to disk after every modification
@@ -509,27 +510,29 @@ async def _save_session(self, session_id: str) -> None:
 
 ## Integration with Sequential Thinking
 
-### Cross-Plugin Linkage
+### Workflow Synergy
 
-Tasks can reference sequential_thinking sessions:
+The TODO plugin complements sequential_thinking:
+- **sequential_thinking**: Structures HOW to think (reasoning steps)
+- **TODO plugin**: Tracks WHAT to do (action items)
 
 ```python
 # Agent workflow example
 1. User: "Design a JWT auth system"
 
-2. Agent calls sequential_thinking:
-   - Creates session: "thinking_abc123"
-   - Thought 1: Requirements
-   - Thought 2: Architecture
-   - Thought 3: Security
+2. Agent uses sequential_thinking:
+   - Thought 1: Requirements analysis
+   - Thought 2: Architecture design
+   - Thought 3: Security considerations
 
-3. Agent calls create_todo for each implementation step:
-   - Task 1: "Define user model" (thinking_session_id="thinking_abc123", thought_number=1)
-   - Task 2: "Implement JWT signing" (thinking_session_id="thinking_abc123", thought_number=2)
-   - Task 3: "Add rate limiting" (thinking_session_id="thinking_abc123", thought_number=3)
+3. Agent uses todo() to create action items:
+   - Task 1: "Define user model" (tag: "architecture")
+   - Task 2: "Implement JWT signing" (tag: "security", depends_on: task_001)
+   - Task 3: "Add rate limiting" (tag: "security", depends_on: task_002)
 
-4. Agent can query: "Show me tasks from thought 2"
-   - Filter: thinking_session_id="thinking_abc123", thought_number=2
+4. Agent executes and updates:
+   - todo(task_id="task_001", status="completed", progress=100)
+   - todo(task_id="task_002", status="in-progress", progress=60)
 ```
 
 ### Recommended Workflow Pattern
@@ -577,12 +580,12 @@ Tasks can reference sequential_thinking sessions:
    - Thoughts = analysis steps
    - Tasks = work items
 
-2. **Link tasks to thoughts via metadata**
-   - Store `thinking_session_id` + `thought_number`
-   - Enable "which tasks came from this thought?" queries
+2. **Use tags for categorization**
+   - Tags like "architecture", "security", "testing"
+   - Filter tasks by workflow phase
 
 3. **Update TODO status as work progresses**
-   - Agents should call `update_todo` after completing work
+   - Agents call `todo(task_id=..., status=..., progress=...)`
    - Add notes with progress/blockers
 
 4. **Use dependencies for sequencing**
@@ -678,7 +681,6 @@ class TodoValidationError(Exception):
     pass
 
 # Examples:
-- Invalid status transition: "Cannot move from COMPLETED to IN_PROGRESS"
 - Missing dependency: "Task 'task_999' referenced in depends_on does not exist"
 - Circular dependency: "Dependency cycle detected: task_001 → task_002 → task_001"
 - Title too long: "Title exceeds 200 character limit"
@@ -728,9 +730,9 @@ await status.error(f"Failed to create task: {error_message}")
 
 1. **Task Lifecycle Tests**
    - Create task → verify fields
-   - Update status → verify transitions
+   - Update status → verify any transition allowed
    - Complete task → verify timestamps
-   - Delete task → verify removal
+   - Delete task → verify removal (via delete=true mode)
 
 2. **Dependency Tests**
    - Add dependency → verify constraint

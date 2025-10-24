@@ -52,19 +52,7 @@ class TaskPriority(str, Enum):
     CRITICAL = "critical"
 
 
-# Valid status transitions
-STATUS_TRANSITIONS = {
-    TaskStatus.NOT_STARTED: {TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED},
-    TaskStatus.IN_PROGRESS: {
-        TaskStatus.COMPLETED,
-        TaskStatus.BLOCKED,
-        TaskStatus.CANCELLED,
-        TaskStatus.NOT_STARTED,  # Rollback
-    },
-    TaskStatus.BLOCKED: {TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED},
-    TaskStatus.COMPLETED: set(),  # Terminal state
-    TaskStatus.CANCELLED: {TaskStatus.NOT_STARTED},  # Reopen
-}
+# Status transitions are unrestricted - any status can transition to any other status
 
 
 class Task(BaseModel):
@@ -92,12 +80,6 @@ class Task(BaseModel):
     # Integration
     session_id: Optional[str] = Field(default=None)
     agent_name: Optional[str] = Field(default=None)
-    thinking_session_id: Optional[str] = Field(
-        default=None, description="Link to sequential_thinking session"
-    )
-    thought_number: Optional[int] = Field(
-        default=None, description="Associated thought number"
-    )
 
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -475,30 +457,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
     # Status Transition Validation
     # =========================================================================
 
-    def _validate_status_transition(
-        self, task: Task, new_status: TaskStatus
-    ) -> None:
-        """
-        Validate status transition is allowed.
-        
-        Args:
-            task: Task to update
-            new_status: Desired new status
-            
-        Raises:
-            ValidationError: If transition invalid
-        """
-        if task.status == new_status:
-            return  # No-op
-
-        allowed = STATUS_TRANSITIONS.get(task.status, set())
-
-        if new_status not in allowed:
-            raise ValidationError(
-                f"Invalid transition: {task.status.value} → {new_status.value}. "
-                f"Allowed: {', '.join(s.value for s in allowed)}"
-            )
-
     def _update_timestamps(self, task: Task, new_status: TaskStatus) -> None:
         """
         Update task timestamps based on status change.
@@ -559,12 +517,12 @@ class TodoManagementServer(SchemaBasedMCPServer):
         tags = params.get("tags")
         depends_on = params.get("depends_on")
         note = params.get("note")
-        thinking_session_id = params.get("thinking_session_id")
-        thought_number = params.get("thought_number")
         filter_status = params.get("filter_status")
         filter_priority = params.get("filter_priority")
         only_unblocked = params.get("only_unblocked", False)
         limit = params.get("limit")
+        delete = params.get("delete", False)  # NEW: delete mode flag
+        cascade = params.get("cascade", False)  # NEW: cascade delete flag
         context = params.get("context") or {}
         
         # Extract session_id from params and inject into context
@@ -574,6 +532,10 @@ class TodoManagementServer(SchemaBasedMCPServer):
         # Priority 2: session_id (from tool parameter or CLI)
         elif "session_id" in params:
             context["session_id"] = params["session_id"]
+        
+        # Inject agent_name from params into context
+        if "_agent_name" in params:
+            context["agent_name"] = params["_agent_name"]
         
         # Inject _status from params into context for helper methods
         if "_status" in params:
@@ -595,7 +557,15 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 context=context,
             )
         
-        # Mode 2: GET task details
+        # Mode 2: DELETE task
+        if delete and task_id:
+            return await self._delete_todo_impl(
+                task_id=task_id,
+                cascade=cascade,
+                context=context,
+            )
+        
+        # Mode 3: GET task details
         if task_id and not any([
             title, status, progress, note, filter_status, filter_priority
         ]):
@@ -604,7 +574,7 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 context=context,
             )
         
-        # Mode 3: LIST tasks
+        # Mode 4: LIST tasks
         if any([filter_status, filter_priority, only_unblocked]) or (
             tags and not task_id and not title
         ):
@@ -613,7 +583,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 filter_priority=filter_priority,
                 filter_tags=tags,
                 only_unblocked=only_unblocked,
-                thinking_session_id=thinking_session_id,
                 limit=limit,
                 context=context,
             )
@@ -626,8 +595,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 priority=priority,
                 tags=tags,
                 depends_on=depends_on,
-                thinking_session_id=thinking_session_id,
-                thought_number=thought_number,
                 context=context,
             )
         
@@ -648,6 +615,7 @@ class TodoManagementServer(SchemaBasedMCPServer):
             "Invalid arguments. Modes:\n"
             "- CREATE: provide title\n"
             "- UPDATE: provide task_id + fields\n"
+            "- DELETE: provide task_id + delete=True\n"
             "- LIST: provide filter_status/filter_priority/tags\n"
             "- GET: provide task_id or task_id='SUMMARY'"
         )
@@ -659,8 +627,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
         priority: str = "medium",
         tags: Optional[List[str]] = None,
         depends_on: Optional[List[str]] = None,
-        thinking_session_id: Optional[str] = None,
-        thought_number: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -672,8 +638,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
             priority: Priority level (low/medium/high/critical)
             tags: List of tags for categorization
             depends_on: List of task IDs this task depends on
-            thinking_session_id: Link to sequential_thinking session
-            thought_number: Associated thought number
             context: MCP tool call context
             
         Returns:
@@ -719,8 +683,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 priority=priority_enum,
                 tags=tags or [],
                 depends_on=depends_on or [],
-                thinking_session_id=thinking_session_id,
-                thought_number=thought_number,
                 session_id=session_id,
                 agent_name=context.get("agent_name") if context else None,
             )
@@ -746,11 +708,9 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if self._auto_save:
                 self._save_session(session_id)
 
-            # Update end status with meaningful info
+            # Short status message
             if status:
-                task_title = title[:40] + "..." if len(title) > 40 else title
-                status_info = "blocked" if is_blocked else f"{priority_enum.value} priority"
-                await status.end(f"Created {task_id}: {task_title} ({status_info})")
+                await status.end(f"Created {task_id}")
 
             return {
                 "task_id": task_id,
@@ -827,8 +787,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
                         f"Must be: not-started, in-progress, completed, blocked, cancelled"
                     )
 
-                self._validate_status_transition(task, new_status_enum)
-
                 old_status = task.status
                 task.status = new_status_enum
                 self._update_timestamps(task, new_status_enum)
@@ -893,14 +851,9 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if self._auto_save:
                 self._save_session(session_id)
 
-            # Create meaningful end status
+            # Short status message
             if status:
-                if changes:
-                    change_parts = [f"{k}={v}" for k, v in list(changes.items())[:2]]  # Max 2 changes
-                    change_str = ", ".join(change_parts)
-                    await status.end(f"Updated {task_id}: {change_str}")
-                else:
-                    await status.end(f"No changes to {task_id}")
+                await status.end(f"Updated {task_id}")
 
             return {
                 "task_id": task_id,
@@ -926,9 +879,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
         filter_priority: Optional[List[str]] = None,
         filter_tags: Optional[List[str]] = None,
         only_unblocked: bool = False,
-        has_thinking_session: Optional[bool] = None,
-        thinking_session_id: Optional[str] = None,
-        thought_number: Optional[int] = None,
         sort_by: str = "created_at",
         limit: Optional[int] = None,
         context: Optional[Dict[str, Any]] = None,
@@ -941,9 +891,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
             filter_priority: Filter by priority (can be list)
             filter_tags: Filter by tags (OR logic)
             only_unblocked: Exclude tasks with incomplete dependencies
-            has_thinking_session: Filter by presence of thinking_session_id
-            thinking_session_id: Filter by specific thinking session
-            thought_number: Filter by thought number
             sort_by: Sort field (priority/created_at/updated_at/progress)
             limit: Max results to return
             context: MCP tool call context
@@ -980,20 +927,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if only_unblocked:
                 tasks = [t for t in tasks if not self._is_blocked(t, collection)]
 
-            if has_thinking_session is not None:
-                if has_thinking_session:
-                    tasks = [t for t in tasks if t.thinking_session_id is not None]
-                else:
-                    tasks = [t for t in tasks if t.thinking_session_id is None]
-
-            if thinking_session_id:
-                tasks = [
-                    t for t in tasks if t.thinking_session_id == thinking_session_id
-                ]
-
-            if thought_number is not None:
-                tasks = [t for t in tasks if t.thought_number == thought_number]
-
             # Sort
             sort_key = {
                 "priority": lambda t: (
@@ -1024,24 +957,13 @@ class TodoManagementServer(SchemaBasedMCPServer):
                     "created_at": t.created_at.isoformat(),
                     "updated_at": t.updated_at.isoformat(),
                     "tags": t.tags,
-                    "thinking_session_id": t.thinking_session_id,
-                    "thought_number": t.thought_number,
                 }
                 for t in tasks
             ]
 
-            # Create meaningful end status
+            # Short status message
             if status:
-                status_filters = []
-                if filter_status:
-                    status_filters.append(f"status={','.join(filter_status)}")
-                if filter_priority:
-                    status_filters.append(f"priority={','.join(filter_priority)}")
-                if only_unblocked:
-                    status_filters.append("unblocked")
-                
-                filter_desc = f" ({', '.join(status_filters)})" if status_filters else ""
-                await status.end(f"Found {len(task_summaries)}/{filtered_count} tasks{filter_desc}")
+                await status.end(f"Listed {len(task_summaries)} task(s)")
 
             return {
                 "total_count": len(collection.tasks),
@@ -1055,8 +977,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
                         "priority": filter_priority,
                         "tags": filter_tags,
                         "only_unblocked": only_unblocked,
-                        "thinking_session_id": thinking_session_id,
-                        "thought_number": thought_number,
                     }.items()
                     if v is not None and v is not False
                 },
@@ -1123,10 +1043,9 @@ class TodoManagementServer(SchemaBasedMCPServer):
                         "status": block_task.status.value,
                     })
 
-            # Create meaningful end status
+            # Short status message
             if status:
-                task_title = task.title[:30] + "..." if len(task.title) > 30 else task.title
-                await status.end(f"Retrieved {task_id}: {task_title} ({task.status.value})")
+                await status.end(f"Got {task_id}")
 
             return {
                 "task_id": task_id,
@@ -1149,29 +1068,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 await status.error(f"Internal error: {e}")
             raise TodoError(f"Failed to get task: {e}") from e
 
-    async def delete_todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        MCP Tool wrapper for delete_todo.
-        
-        Args:
-            params: Tool parameters dict containing:
-                - task_id: Task identifier (required)
-                - cascade: If true, also delete dependent tasks (default: False)
-                - context: MCP tool call context
-            
-        Returns:
-            Deletion summary with cascade list
-        """
-        # Extract parameters
-        task_id = params.get("task_id")
-        cascade = params.get("cascade", False)
-        context = params.get("context") or {}
-        
-        if not task_id:
-            raise ValidationError("task_id is required for delete_todo")
-        
-        return await self._delete_todo_impl(task_id, cascade, context)
-    
     async def _delete_todo_impl(
         self,
         task_id: str,
@@ -1179,7 +1075,8 @@ class TodoManagementServer(SchemaBasedMCPServer):
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Internal implementation for delete_todo.
+        Internal implementation for delete_todo (called by todo() wrapper).
+
         
         Args:
             task_id: Task identifier
@@ -1244,12 +1141,9 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if self._auto_save:
                 self._save_session(session_id)
 
-            # Create meaningful end status
+            # Short status message
             if status:
-                if cascade_deleted:
-                    await status.end(f"Deleted {task_id} + {len(cascade_deleted)} dependent task(s)")
-                else:
-                    await status.end(f"Deleted {task_id}")
+                await status.end(f"Deleted {task_id}")
 
             return {
                 "task_id": task_id,
@@ -1294,7 +1188,7 @@ class TodoManagementServer(SchemaBasedMCPServer):
 
             if not collection.tasks:
                 if status:
-                    await status.end("Empty session - no tasks")
+                    await status.end("No tasks")
                 return {
                     "total_tasks": 0,
                     "by_status": {},
@@ -1354,18 +1248,9 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 for t in unblocked_tasks[:5]  # Top 5
             ]
 
-            # Create meaningful end status
+            # Short status message
             if status:
-                in_progress = by_status.get("in-progress", 0)
-                blocked = by_status.get("blocked", 0)
-                
-                status_parts = [f"{completed_count}/{total_count} done"]
-                if in_progress > 0:
-                    status_parts.append(f"{in_progress} active")
-                if blocked > 0:
-                    status_parts.append(f"{blocked} blocked")
-                
-                await status.end(f"Summary: {', '.join(status_parts)}")
+                await status.end(f"Summary: {completed_count}/{total_count} done")
 
             return {
                 "total_tasks": total_count,

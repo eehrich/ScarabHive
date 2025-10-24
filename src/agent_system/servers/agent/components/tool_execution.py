@@ -478,12 +478,17 @@ class ToolExecutionManager:
         try:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
             
-            # Inject session_id from current execution context if available
-            if self._current_session_id:
-                # Add session_id to params so session-aware plugins can use it
+            # Inject session_id and agent_name from current execution context if available
+            if self._current_session_id or (self._agent and hasattr(self._agent, 'name')):
                 params = params.copy()  # Don't mutate original
-                params["_session_id"] = self._current_session_id
-                logger.debug(f"✓ Injected session_id '{self._current_session_id}' into tool params")
+                
+                if self._current_session_id:
+                    params["_session_id"] = self._current_session_id
+                    logger.debug(f"✓ Injected session_id '{self._current_session_id}' into tool params")
+                
+                if self._agent and hasattr(self._agent, 'name'):
+                    params["_agent_name"] = self._agent.name
+                    logger.debug(f"✓ Injected agent_name '{self._agent.name}' into tool params")
             
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)

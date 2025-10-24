@@ -1,69 +1,44 @@
 # TODO Management Plugin - Tool Schema (OpenAI Function Format)
-# ULTRA-MINIMAL: Only 2 tools total
 
 tools:
   - type: function
     function:
       name: "todo"
-      description: |
-        Universal task manager. Auto-detects operation from parameters:
-        
-        MODES:
-        1. GET SUMMARY: task_id="SUMMARY" → Get session statistics
-        2. GET: task_id="task_XXX" → Get single task details
-        3. LIST: filter_status/filter_priority/only_unblocked → Query tasks
-        4. CREATE: title (required) → Create new task
-        5. UPDATE: task_id + fields → Modify existing task
-        
-        STATUSES: not-started → in-progress → completed
-        Auto-blocked: When depends_on tasks incomplete
-        
-        PRIORITIES: low, medium, high, critical
-        
-        INTEGRATION: Link to sequential_thinking via thinking_session_id + thought_number
-        
-        Examples:
-        - Create: {"title": "Fix bug #42", "priority": "high"}
-        - Update: {"task_id": "task_001", "progress": 50, "status": "in-progress"}
-        - List high priority: {"filter_priority": ["high", "critical"]}
-        - Add dependency: {"task_id": "task_002", "depends_on": ["task_001"]}
-        - Get summary: {"task_id": "SUMMARY"}
+      description: "TODO task manager. CREATE: title required. UPDATE: task_id+fields. DELETE: task_id+delete=true. LIST: use filters. GET: task_id only. SUMMARY: task_id='SUMMARY'"
       parameters:
         type: object
         properties:
-          # Identification
           task_id:
             type: string
-            description: "Task ID (task_001, task_002, ...) or 'SUMMARY' for stats. Required for GET/UPDATE."
+            description: "Task ID or 'SUMMARY'"
           
-          # CREATE/UPDATE fields
           title:
             type: string
             minLength: 1
             maxLength: 200
-            description: "Task title (required for CREATE)"
+            description: "Task title"
           
           description:
             type: string
             maxLength: 2000
-            description: "Detailed task description"
+            description: "Task description"
           
           status:
             type: string
             enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
-            description: "Task status (auto-set to blocked if dependencies incomplete)"
+            description: "Task status"
           
           progress:
             type: integer
             minimum: 0
             maximum: 100
-            description: "Completion percentage (0-100)"
+            description: "Completion %"
           
           priority:
             type: string
             enum: ["low", "medium", "high", "critical"]
             default: "medium"
-            description: "Task priority level"
+            description: "Priority"
           
           tags:
             type: array
@@ -71,7 +46,7 @@ tools:
               type: string
               maxLength: 50
             maxItems: 20
-            description: "Task tags for categorization"
+            description: "Tags"
           
           depends_on:
             type: array
@@ -79,76 +54,47 @@ tools:
               type: string
               pattern: "^task_\\d{3}$"
             maxItems: 50
-            description: "List of task IDs this task depends on (creates blocking relationship)"
+            description: "Task dependencies"
           
           note:
             type: string
             maxLength: 1000
-            description: "Add timestamped note to task (for UPDATE)"
+            description: "Add note"
           
-          thinking_session_id:
-            type: string
-            description: "Link to sequential_thinking session"
+          delete:
+            type: boolean
+            default: false
+            description: "Delete task mode"
           
-          thought_number:
-            type: integer
-            minimum: 1
-            description: "Link to specific thought in sequential_thinking session"
+          cascade:
+            type: boolean
+            default: false
+            description: "Also delete dependents"
           
-          # LIST filters
           filter_status:
             type: array
             items:
               type: string
               enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
-            description: "Filter by status values (LIST mode)"
+            description: "Filter by status"
           
           filter_priority:
             type: array
             items:
               type: string
               enum: ["low", "medium", "high", "critical"]
-            description: "Filter by priority values (LIST mode)"
+            description: "Filter by priority"
           
           only_unblocked:
             type: boolean
             default: false
-            description: "Show only unblocked tasks (LIST mode)"
+            description: "Only unblocked tasks"
           
           limit:
             type: integer
             minimum: 1
             maximum: 1000
             default: 100
-            description: "Maximum tasks to return (LIST mode)"
+            description: "Max results"
         
-        additionalProperties: false
-
-  - type: function
-    function:
-      name: "delete_todo"
-      description: |
-        Delete task by ID. Supports cascade deletion of dependent tasks.
-        
-        CASCADE BEHAVIOR:
-        - cascade=false (default): Fails if other tasks depend on this one
-        - cascade=true: Recursively deletes all dependent tasks
-        
-        Examples:
-        - Delete single: {"task_id": "task_001"}
-        - Delete with dependents: {"task_id": "task_001", "cascade": true}
-      parameters:
-        type: object
-        properties:
-          task_id:
-            type: string
-            pattern: "^task_\\d{3}$"
-            description: "Task ID to delete (task_001, task_002, ...)"
-          
-          cascade:
-            type: boolean
-            default: false
-            description: "Recursively delete dependent tasks (WARNING: destructive)"
-        
-        required: ["task_id"]
         additionalProperties: false

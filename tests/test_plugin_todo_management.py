@@ -156,20 +156,6 @@ async def test_create_todo_max_tasks_limit(server: TodoManagementServer, mock_co
         )
 
 
-@pytest.mark.asyncio
-async def test_create_todo_with_thinking_session(server: TodoManagementServer, mock_context: Dict[str, Any]):
-    """Test integration with sequential_thinking"""
-    result = await server.create_todo(
-        title="Task from Thought",
-        thinking_session_id="thinking_abc123",
-        thought_number=5,
-        context=mock_context,
-    )
-    
-    assert result["task"]["thinking_session_id"] == "thinking_abc123"
-    assert result["task"]["thought_number"] == 5
-
-
 # =============================================================================
 # Test: Task Updates
 # =============================================================================
@@ -208,13 +194,13 @@ async def test_update_todo_invalid_transition(server: TodoManagementServer, mock
     await server.update_todo(task_id=task_id, new_status="in-progress", context=mock_context)
     await server.update_todo(task_id=task_id, new_status="completed", context=mock_context)
     
-    # Try to set to in-progress (invalid from completed)
-    with pytest.raises(ValidationError, match="Invalid transition"):
-        await server.update_todo(
-            task_id=task_id,
-            new_status="in-progress",
-            context=mock_context,
-        )
+    # Status transitions are unrestricted - can move from completed to in-progress
+    result = await server.update_todo(
+        task_id=task_id,
+        new_status="in-progress",
+        context=mock_context,
+    )
+    assert result["task"]["status"] == "in-progress"
 
 
 @pytest.mark.asyncio
@@ -846,13 +832,13 @@ async def test_task_lifecycle_complete_flow(server: TodoManagementServer, mock_c
     assert updated["task"]["progress"] == 100
     assert updated["task"]["completed_at"] is not None
     
-    # Cannot transition from completed
-    with pytest.raises(ValidationError):
-        await server.update_todo(
-            task_id=task_id,
-            new_status="in-progress",
-            context=mock_context,
-        )
+    # Status transitions are unrestricted - can move from completed back to in-progress
+    result = await server.update_todo(
+        task_id=task_id,
+        new_status="in-progress",
+        context=mock_context,
+    )
+    assert result["task"]["status"] == TaskStatus.IN_PROGRESS.value
 
 
 # =============================================================================

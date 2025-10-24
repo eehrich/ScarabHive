@@ -109,14 +109,22 @@ await agent.todo(task_id="task_001")  # Full task details
 await agent.todo(task_id="SUMMARY")  # Progress statistics
 ```
 
-### `delete_todo`
+### DELETE Mode
 
-Delete tasks with optional cascade.
+Delete tasks with optional cascade using the `todo()` tool.
 
 ```python
-await agent.delete_todo(
+# Delete single task
+await agent.todo(
     task_id="task_001",
-    cascade=True  # Also delete dependent tasks
+    delete=True
+)
+
+# Delete with cascade (also delete dependent tasks)
+await agent.todo(
+    task_id="task_001",
+    delete=True,
+    cascade=True
 )
 ```
 
@@ -267,8 +275,7 @@ meta_agent:
 
 basic_agent:
   tools:
-    - todo_management/todo
-    - todo_management/delete_todo
+    - todo_management/todo  # Single tool with all operations
 ```
 
 ## Storage Format
