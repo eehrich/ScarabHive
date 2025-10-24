@@ -86,3 +86,39 @@ async def get_config_optional(request: Request) -> Optional[AgentSystemConfig]:
         System configuration or None if not available
     """
     return getattr(request.app.state, 'config', None)
+
+
+async def get_session_manager(request: Request):
+    """
+    Get the session manager from application state.
+    
+    Args:
+        request: FastAPI request containing app state
+        
+    Returns:
+        SessionManager instance
+        
+    Raises:
+        HTTPException: If session manager not initialized
+    """
+    manager = getattr(request.app.state, 'session_manager', None)
+    if not manager:
+        logger.warning("Session manager not available in application state")
+        raise HTTPException(
+            status_code=503,
+            detail="Session manager not initialized"
+        )
+    return manager
+
+
+async def get_mcp_registry(request: Request):
+    """
+    Get the MCP registry from application state.
+    
+    Args:
+        request: FastAPI request containing app state
+        
+    Returns:
+        MCP registry instance or None if not available
+    """
+    return getattr(request.app.state, 'mcp_registry', None)

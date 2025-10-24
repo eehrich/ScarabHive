@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
+from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_mcp_registry
 
 logger = logging.getLogger(__name__)
 
@@ -48,26 +49,27 @@ class SessionResponse(BaseModel):
     tags: List[str] = []
 
 
-# Global session manager reference (injected by build_app)
+# DEPRECATED: Legacy global references (kept for backward compatibility)
+# Use dependency injection instead: Depends(get_session_manager), etc.
 _session_manager = None
 _default_agent = None
-_app_registry = None  # Registry to get agents by name
+_app_registry = None
 
 
 def set_session_manager(manager):
-    """Set global session manager instance."""
+    """DEPRECATED: Set global session manager. Use app.state.session_manager instead."""
     global _session_manager
     _session_manager = manager
 
 
 def set_default_agent(agent):
-    """Set global default agent instance for formatting."""
+    """DEPRECATED: Set global default agent. Use app.state.agent instead."""
     global _default_agent
     _default_agent = agent
 
 
 def set_app_registry(registry):
-    """Set global app registry for agent lookup."""
+    """DEPRECATED: Set global app registry. Use app.state.mcp_registry instead."""
     global _app_registry
     _app_registry = registry
 
@@ -76,19 +78,16 @@ def set_app_registry(registry):
 async def create_session(
     request: CreateSessionRequest,
     current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
 ):
     """Create a new conversation session (authenticated or anonymous)."""
-    if not _session_manager:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Session manager not initialized"
-        )
+    # session_manager injected via dependency
     
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
     
     try:
-        session = await _session_manager.create_session(
+        session = await session_manager.create_session(
             user_id=user_id,
             title=request.title,
             agent_name=request.agent_name,
@@ -108,19 +107,16 @@ async def create_session(
 @session_router.get("", response_model=List[SessionResponse])
 async def list_sessions(
     current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
 ):
     """List all sessions for the current user (or anonymous if not authenticated)."""
-    if not _session_manager:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Session manager not initialized"
-        )
+    # session_manager injected via dependency
     
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
     
     try:
-        sessions = await _session_manager.list_sessions(user_id)
+        sessions = await session_manager.list_sessions(user_id)
         
         # Transform to response models
         return [
@@ -144,25 +140,21 @@ async def list_sessions(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@session_router.get("/{session_id}")
-async def get_session(
+@session_router.get("/{session_id}/messages")
+async def get_session_messages(
     session_id: str,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_active_user),
+    session_manager=Depends(get_session_manager),
+    default_agent=Depends(get_agent_optional),
+    mcp_registry=Depends(get_mcp_registry),
 ):
-    """Get a specific session with full conversation history (authenticated or anonymous)."""
-    if not _session_manager:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Session manager not initialized"
-        )
-    
-    # Determine user_id: use username if authenticated, otherwise "anonymous"
-    user_id = current_user.username if current_user else "anonymous"
+    """Get messages from a session (authenticated only)."""
+    # session_manager, default_agent, mcp_registry injected via dependency
     
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
         
-        session = await _session_manager.load_session(user_id, session_id)
+        session = await session_manager.load_session(current_user.username, session_id)
         
         # Format assistant messages to HTML for frontend display using the CORRECT agent from session
         if session.get("messages"):
@@ -171,10 +163,10 @@ async def get_session(
             formatting_agent = None
             
             # Try to get the specific agent from the session
-            if session_agent_name and _app_registry:
+            if session_agent_name and mcp_registry:
                 try:
                     from agent_system.servers.agent.server import Agent as _Agent
-                    session_agent = _app_registry.get(session_agent_name)
+                    session_agent = mcp_registry.get(session_agent_name)
                     if isinstance(session_agent, _Agent):
                         formatting_agent = session_agent
                     else:
@@ -186,7 +178,7 @@ async def get_session(
             
             # Fallback to default agent if session agent not available
             if not formatting_agent:
-                formatting_agent = _default_agent
+                formatting_agent = default_agent
             
             # Format messages using the correct agent's hooks
             if formatting_agent:
@@ -224,18 +216,15 @@ async def get_session(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@session_router.patch("/{session_id}")
+@session_router.put("/{session_id}")
 async def update_session(
     session_id: str,
     request: UpdateSessionRequest,
     current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
 ):
-    """Update session metadata (title, tags, etc.) - works for authenticated and anonymous users."""
-    if not _session_manager:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Session manager not initialized"
-        )
+    """Update session metadata (title, agent, LLM profile, or tags)."""
+    # session_manager injected via dependency
     
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
@@ -245,7 +234,7 @@ async def update_session(
         
         # Update title if provided
         if request.title is not None:
-            await _session_manager.rename_session(
+            await session_manager.rename_session(
                 user_id,
                 session_id,
                 request.title
@@ -259,10 +248,10 @@ async def update_session(
             metadata_updates.update(request.metadata)
         
         if metadata_updates:
-            await _session_manager.update_session_metadata(
+            await session_manager.update_session_metadata(
                 user_id,
                 session_id,
-                **metadata_updates
+                metadata_updates
             )
         
         return {"status": "updated", "session_id": session_id}
@@ -280,14 +269,11 @@ async def update_session(
 async def delete_session(
     session_id: str,
     current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
     create_backup: bool = True
 ):
     """Delete a session (with optional backup) - works for authenticated and anonymous users."""
-    if not _session_manager:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Session manager not initialized"
-        )
+    # session_manager injected via dependency
     
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
@@ -295,7 +281,7 @@ async def delete_session(
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
         
-        await _session_manager.delete_session(
+        await session_manager.delete_session(
             user_id,
             session_id,
             create_backup=create_backup
@@ -316,18 +302,15 @@ async def delete_session(
 async def restore_session(
     session_id: str,
     current_user: User = Depends(get_current_active_user),
+    session_manager=Depends(get_session_manager),
 ):
     """Restore a session to the agent for continuation."""
-    if not _session_manager:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Session manager not initialized"
-        )
+    # session_manager injected via dependency
     
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
         
-        session = await _session_manager.load_session(current_user.username, session_id)
+        session = await session_manager.load_session(current_user.username, session_id)
         
         # Return session data for frontend to use in /events call
         return {
