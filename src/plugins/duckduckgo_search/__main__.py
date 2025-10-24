@@ -20,7 +20,12 @@ async def async_main():
     parser.add_argument("--port", type=int, default=9001, help="Server port")
     args = parser.parse_args()
 
-    server = DuckDuckGoSearchServer("duckduckgo_search")
+    # Create minimal config for CLI usage
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="duckduckgo_search", enabled=True)
+    
+    server = DuckDuckGoSearchServer("duckduckgo_search", system_config, mcp_config)
 
     if args.server:
         from agent_system.http_server import serve_mcp_server
@@ -28,7 +33,13 @@ async def async_main():
         serve_mcp_server(server, port=args.port)
     else:
         try:
-            result = await server.call("search", {"query": args.query, "max_results": args.max_results})
+            from unittest.mock import AsyncMock
+            mock_status = AsyncMock()
+            result = await server.call("duckduckgo_search_web_search", {
+                "query": args.query, 
+                "max_results": args.max_results,
+                "_status": mock_status
+            })
             print(f"DuckDuckGo search results for '{args.query}':")
             if isinstance(result, dict) and "results" in result:
                 for i, item in enumerate(result["results"], 1):

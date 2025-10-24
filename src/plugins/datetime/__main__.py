@@ -35,8 +35,14 @@ async def async_main():
     parser = build_parser()
     args = parser.parse_args()
 
-    from .server import DateTimeServer
-    server = DateTimeServer()
+    from .plugin import PLUGIN_FACTORY
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    
+    # Create minimal config for CLI usage
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="datetime", enabled=True)
+    
+    server = PLUGIN_FACTORY("datetime", system_config, mcp_config)
 
     if args.server:
         print(f"Starting DateTime MCP Server on port {args.port}")
@@ -50,12 +56,17 @@ async def async_main():
         await serve_mcp_server(server, port=args.port)
     else:
         try:
+            from unittest.mock import AsyncMock
+            mock_status = AsyncMock()
+            
             # Show current time
-            result = await server.call("current", {
+            result = await server.call("datetime_operations", {
+                "operation": "current",
                 "timezone": args.timezone,
-                "format": args.format
+                "_status": mock_status
             })
-            print(f"Current time ({args.timezone}): {result}")
+            print(f"Current time ({args.timezone}):")
+            print(json.dumps(result, indent=2, ensure_ascii=False))
 
             # Show available functions via schema
             schema = server.get_schema()

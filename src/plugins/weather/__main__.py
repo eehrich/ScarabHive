@@ -1,12 +1,8 @@
-"""CLI entrypoint for the weather plugin: python -m plugins.weather
-
-This provides a minimal, standalone CLI surface used by tests. It intentionally
-does not start servers — it only validates and displays CLI arguments and help
-text so test harnesses can import/execute the module.
-"""
+"""CLI entrypoint for the weather plugin: python -m plugins.weather"""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from typing import Any
 
@@ -15,7 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="plugins.weather", description="Weather MCP Server")
 
     # Core weather parameters
-    parser.add_argument("--location", help="Location name (city, address, coordinates)")
+    parser.add_argument("--location", default="Munich", help="Location name (city, address, coordinates)")
     parser.add_argument("--source", help="Weather data source (wttr.in, weather.gov, met.no, marine.weather.gov)")
     parser.add_argument("--days", type=int, default=3, help="Number of forecast days (1-7)")
     parser.add_argument("--units", choices=["metric", "imperial"], default="metric", help="Temperature units")
@@ -33,7 +29,49 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+async def async_main():
+    """Async main function for actual execution."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    # Lazy imports
+    from .plugin import PLUGIN_FACTORY
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.servers.http_server import serve_mcp_server
+
+    # Create minimal config for CLI usage
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="weather", enabled=True)
+    
+    server = PLUGIN_FACTORY("weather", system_config, mcp_config)
+
+    if args.server:
+        print(f"Starting Weather MCP Server on port {args.port}")
+        await serve_mcp_server(server, port=args.port)
+    else:
+        # Direct test (async)
+        from unittest.mock import AsyncMock
+        mock_status = AsyncMock()
+        
+        params = {
+            "location": args.location,
+            "days": args.days,
+            "units": args.units,
+            "include_marine": args.include_marine,
+            "summary_format": args.summary_format,
+            "include_radiation": args.include_radiation,
+            "_status": mock_status,
+        }
+        if args.source:
+            params["source"] = args.source
+            
+        result = await server.call("get_weather", params)
+        print(f"Weather for {args.location}:")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
 def main(argv: list[str] | None = None) -> None:
+    """Synchronous main for backward compatibility with tests."""
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -54,7 +92,8 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def cli_main():
-    main()
+    """Synchronous entry point for console script."""
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
