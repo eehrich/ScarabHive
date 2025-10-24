@@ -20,6 +20,7 @@ This README is a concise developer and user guide matching this repository layou
   - [Log Viewer](src/plugins/log_viewer/README.md) — Log file management with web interface
   - [Markdown Formatter](src/plugins/markdown_formatter/README.md) — Multi-format output rendering (HTML, ANSI, text)
   - [Script Interpreter](src/plugins/script_interpreter/README.md) — Sandboxed Python code execution
+  - [Sequential Thinking](src/plugins/sequential_thinking/README.md) — Step-by-step reasoning with branching and revision
   - [SSH Control](src/plugins/ssh_control/README.md) — Multi-machine SSH management with web UI
   - [Twitter Search](src/plugins/twitter_search/README.md) — Twitter/X public content search
   - [User Management](src/plugins/user_management/) — Web-based user administration and role management
