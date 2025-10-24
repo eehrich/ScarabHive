@@ -91,10 +91,9 @@ async def lifespan(app: FastAPI):
             _session_service = SessionService(_session_manager)
             logger.info("SessionService initialized")
             
-            # Inject session manager into session endpoints
-            from .api.session_endpoints import set_session_manager
-            set_session_manager(_session_manager)
-            logger.info("SessionManager injected into session endpoints")
+            # Store session manager in app state for dependency injection
+            app.state.session_manager = _session_manager
+            logger.info("SessionManager stored in app.state for dependency injection")
             
             # Make integration accessible to mcp module
             from .mcp import integration as _mcp_mod
@@ -186,10 +185,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             _session_service = SessionService(_session_manager)
             logger.info("SessionService initialized")
             
-            # Inject session manager into session endpoints NOW (after initialization)
-            from .api.session_endpoints import set_session_manager
-            set_session_manager(_session_manager)
-            logger.info("SessionManager injected into session endpoints")
+            # Store session manager in app state for dependency injection (after initialization)
+            app.state.session_manager = _session_manager
+            logger.info("SessionManager stored in app.state for dependency injection")
             
             # Agent will be initialized later when needed
             # (requires agent instance from bootstrap_servers)
@@ -448,11 +446,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     agent = selected_agent
 
-    # Inject agent and registry into session endpoints for message formatting
-    from .api.session_endpoints import set_default_agent, set_app_registry
-    set_default_agent(agent)
-    set_app_registry(registry)
-    logger.info("Default agent and registry injected into session endpoints for formatting")
+    # Store agent and registry in app state for dependency injection
+    app.state.agent = agent
+    app.state.mcp_registry = registry
+    logger.info("Default agent and registry stored in app.state for dependency injection")
 
     # Store registry and config globally
     global _app_registry, _app_config, _mcp_server_handler
@@ -580,8 +577,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         app.include_router(menu_router)
         app.include_router(session_router)
         
-        # Note: set_session_manager() is called later in async lifespan startup
-        # after SessionManager is actually initialized
+        # Note: SessionManager is stored in app.state during async lifespan startup
         
         logger.info("Authentication system initialized successfully")
     else:

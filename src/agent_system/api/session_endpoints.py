@@ -49,31 +49,6 @@ class SessionResponse(BaseModel):
     tags: List[str] = []
 
 
-# DEPRECATED: Legacy global references (kept for backward compatibility)
-# Use dependency injection instead: Depends(get_session_manager), etc.
-_session_manager = None
-_default_agent = None
-_app_registry = None
-
-
-def set_session_manager(manager):
-    """DEPRECATED: Set global session manager. Use app.state.session_manager instead."""
-    global _session_manager
-    _session_manager = manager
-
-
-def set_default_agent(agent):
-    """DEPRECATED: Set global default agent. Use app.state.agent instead."""
-    global _default_agent
-    _default_agent = agent
-
-
-def set_app_registry(registry):
-    """DEPRECATED: Set global app registry. Use app.state.mcp_registry instead."""
-    global _app_registry
-    _app_registry = registry
-
-
 @session_router.post("", response_model=Dict[str, str], status_code=status.HTTP_201_CREATED)
 async def create_session(
     request: CreateSessionRequest,
