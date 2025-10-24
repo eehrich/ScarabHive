@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: datetime_operations
+      name: "{{ name }}_operations"
       description: Comprehensive date/time operations including current time, formatting, calculations, timezone conversions, and calendar functions.
       parameters:
         type: object
