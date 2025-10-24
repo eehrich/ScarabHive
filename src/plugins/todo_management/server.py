@@ -575,6 +575,10 @@ class TodoManagementServer(SchemaBasedMCPServer):
         elif "session_id" in params:
             context["session_id"] = params["session_id"]
         
+        # Inject _status from params into context for helper methods
+        if "_status" in params:
+            context["_status"] = params["_status"]
+        
         # ============================================================
         # Mode detection
         # ============================================================
@@ -686,9 +690,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
         status = context.get("_status") if context else None
 
         try:
-            if status:
-                await status.progress(f"Creating task in session {session_id[:8]}...")
-
             # Load session
             collection = self._load_session(session_id)
 
@@ -745,11 +746,11 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if self._auto_save:
                 self._save_session(session_id)
 
+            # Update end status with meaningful info
             if status:
-                await status.end(
-                    f"Task {task_id} created: {title[:50]}... "
-                    f"({'blocked' if is_blocked else 'ready'})"
-                )
+                task_title = title[:40] + "..." if len(title) > 40 else title
+                status_info = "blocked" if is_blocked else f"{priority_enum.value} priority"
+                await status.end(f"Created {task_id}: {task_title} ({status_info})")
 
             return {
                 "task_id": task_id,
@@ -806,9 +807,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
         status = context.get("_status") if context else None
 
         try:
-            if status:
-                await status.progress(f"Updating task {task_id}...")
-
             # Load session
             collection = self._load_session(session_id)
 
@@ -895,9 +893,14 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if self._auto_save:
                 self._save_session(session_id)
 
+            # Create meaningful end status
             if status:
-                change_summary = ", ".join(f"{k}: {v}" for k, v in changes.items())
-                await status.end(f"Task {task_id} updated ({change_summary})")
+                if changes:
+                    change_parts = [f"{k}={v}" for k, v in list(changes.items())[:2]]  # Max 2 changes
+                    change_str = ", ".join(change_parts)
+                    await status.end(f"Updated {task_id}: {change_str}")
+                else:
+                    await status.end(f"No changes to {task_id}")
 
             return {
                 "task_id": task_id,
@@ -954,9 +957,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
         status = context.get("_status") if context else None
 
         try:
-            if status:
-                await status.progress(f"Querying tasks in session {session_id[:8]}...")
-
             # Load session
             collection = self._load_session(session_id)
 
@@ -1030,11 +1030,18 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 for t in tasks
             ]
 
+            # Create meaningful end status
             if status:
-                await status.end(
-                    f"Found {len(task_summaries)} tasks "
-                    f"(filtered from {filtered_count})"
-                )
+                status_filters = []
+                if filter_status:
+                    status_filters.append(f"status={','.join(filter_status)}")
+                if filter_priority:
+                    status_filters.append(f"priority={','.join(filter_priority)}")
+                if only_unblocked:
+                    status_filters.append("unblocked")
+                
+                filter_desc = f" ({', '.join(status_filters)})" if status_filters else ""
+                await status.end(f"Found {len(task_summaries)}/{filtered_count} tasks{filter_desc}")
 
             return {
                 "total_count": len(collection.tasks),
@@ -1085,9 +1092,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
         status = context.get("_status") if context else None
 
         try:
-            if status:
-                await status.progress(f"Fetching task {task_id}...")
-
             # Load session
             collection = self._load_session(session_id)
 
@@ -1119,8 +1123,10 @@ class TodoManagementServer(SchemaBasedMCPServer):
                         "status": block_task.status.value,
                     })
 
+            # Create meaningful end status
             if status:
-                await status.end(f"Retrieved task {task_id}")
+                task_title = task.title[:30] + "..." if len(task.title) > 30 else task.title
+                await status.end(f"Retrieved {task_id}: {task_title} ({task.status.value})")
 
             return {
                 "task_id": task_id,
@@ -1194,9 +1200,6 @@ class TodoManagementServer(SchemaBasedMCPServer):
         status = context.get("_status") if context else None
 
         try:
-            if status:
-                await status.progress(f"Deleting task {task_id}...")
-
             # Load session
             collection = self._load_session(session_id)
 
@@ -1241,11 +1244,12 @@ class TodoManagementServer(SchemaBasedMCPServer):
             if self._auto_save:
                 self._save_session(session_id)
 
+            # Create meaningful end status
             if status:
-                await status.end(
-                    f"Deleted task {task_id}" +
-                    (f" + {len(cascade_deleted)} dependents" if cascade_deleted else "")
-                )
+                if cascade_deleted:
+                    await status.end(f"Deleted {task_id} + {len(cascade_deleted)} dependent task(s)")
+                else:
+                    await status.end(f"Deleted {task_id}")
 
             return {
                 "task_id": task_id,
@@ -1285,15 +1289,12 @@ class TodoManagementServer(SchemaBasedMCPServer):
         status = context.get("_status") if context else None
 
         try:
-            if status:
-                await status.progress("Calculating progress summary...")
-
             # Load session
             collection = self._load_session(session_id)
 
             if not collection.tasks:
                 if status:
-                    await status.end("No tasks in session")
+                    await status.end("Empty session - no tasks")
                 return {
                     "total_tasks": 0,
                     "by_status": {},
@@ -1353,11 +1354,18 @@ class TodoManagementServer(SchemaBasedMCPServer):
                 for t in unblocked_tasks[:5]  # Top 5
             ]
 
+            # Create meaningful end status
             if status:
-                await status.end(
-                    f"Progress: {overall_progress:.1f}% "
-                    f"({completed_count}/{total_count} complete)"
-                )
+                in_progress = by_status.get("in-progress", 0)
+                blocked = by_status.get("blocked", 0)
+                
+                status_parts = [f"{completed_count}/{total_count} done"]
+                if in_progress > 0:
+                    status_parts.append(f"{in_progress} active")
+                if blocked > 0:
+                    status_parts.append(f"{blocked} blocked")
+                
+                await status.end(f"Summary: {', '.join(status_parts)}")
 
             return {
                 "total_tasks": total_count,
