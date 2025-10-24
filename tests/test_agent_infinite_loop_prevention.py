@@ -75,7 +75,7 @@ async def test_agent_prevents_infinite_loop_empty_responses():
     # Should have an error event about empty responses
     error_events = [e for e in events if e.get("type") == "error"]
     assert len(error_events) > 0
-    assert "consecutive empty" in error_events[-1]["message"]
+    assert "empty responses repeatedly" in error_events[-1]["message"]
 
 
 @pytest.mark.asyncio

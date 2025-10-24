@@ -225,10 +225,6 @@ class Agent(MCPServer):
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
 
-        # Track emergency context management attempts to prevent loops
-        self._emergency_context_attempts = 0
-        self._max_emergency_attempts = 2  # Maximum emergency attempts per conversation
-
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
         model = llm_kwargs.get("model", "unknown")
@@ -806,11 +802,6 @@ class Agent(MCPServer):
             self._request_to_session[request_id] = session_id
             
             # Reset emergency context management counter for new conversations
-            # Only reset if this is a new session (empty history)
-            if not self._sessions[session_id]:
-                self._emergency_context_attempts = 0
-                logger.debug("Reset emergency context counter for new session")
-
         # Start status event forwarding
         await self._status_event_forwarder.start_forwarding(request_id)
 
@@ -1084,6 +1075,13 @@ class Agent(MCPServer):
             for status_event in yield_pending_status_events():
                 yield status_event
 
+            # Signal LLM call start
+            if llm_profile_info_override:
+                llm_display = f" ({llm_profile_info_override})"
+            else:
+                llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
+            await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
+
             # Execute pre-LLM hooks to transform messages
             try:
                 modified_messages = await self._hook_manager.execute_pre_llm_hooks(
@@ -1098,7 +1096,7 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
             
-            # LLM call - no status context needed, just call directly
+            # LLM call
             try:
                 llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
             except Exception as e:
@@ -1116,6 +1114,9 @@ class Agent(MCPServer):
                 
                 # Propagate other exceptions
                 raise
+
+            # Signal LLM call completion
+            await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
 
             assistant = llm_out.get("assistant", {})
             content = assistant.get("content")
@@ -1173,7 +1174,10 @@ class Agent(MCPServer):
 
             # If we have tool calls, execute them
             if tool_calls:
-                # Add assistant message with tool calls to conversation
+                # Signal tool execution start
+                await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
+                
+                # Add assistant message with ALL tool calls to conversation
                 messages.append(ChatMessage(
                     role="assistant",
                     content=content or "",
@@ -1183,26 +1187,33 @@ class Agent(MCPServer):
                 # Update tracked messages
                 self._current_messages = messages.copy()
                 
-                # Stream tool execution and results
-                async for tool_event in self._tool_execution_manager.execute_tools_streaming(
+                # Execute all tools using streaming to get real-time status events from sub-agents
+                tool_messages = []
+                tool_results = []
+                async for item in self._tool_execution_manager.execute_tools_streaming(
                     tool_calls=tool_calls,
                     tool_name_mapping=tool_name_mapping,
                     available_tools=context.available_tools,
                     step=step,
                     request_id=request_id
                 ):
-                    yield tool_event
-                    
-                    # Collect tool results to add to messages
-                    if tool_event.get("type") == "tool_result":
-                        tool_result_msg = ChatMessage(
-                            role="tool",
-                            content=tool_event.get("content", ""),
-                            tool_call_id=tool_event.get("tool_call_id"),
-                            name=tool_event.get("name")
-                        )
-                        messages.append(tool_result_msg)
-                        results["calls"].append(tool_event)
+                    if item.get("type") == "status":
+                        # Yield status events in real-time during tool execution
+                        yield item["event"]
+                    elif item.get("type") == "tool_events":
+                        # Yield tool execution events
+                        for event in item["events"]:
+                            yield event
+                    elif item.get("type") == "complete":
+                        # Store final results
+                        tool_messages = item["messages"]
+                        tool_results = item["results"]
+                
+                # Add tool results to the results dictionary
+                results["calls"].extend(tool_results)
+                
+                # Add tool messages to conversation
+                messages.extend(tool_messages)
                 
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
@@ -1216,47 +1227,15 @@ class Agent(MCPServer):
             
             # No tool calls - this is the final answer
             if content:
-                # Check if we need emergency context management
-                emergency_trim_occurred = False
-                if hasattr(self, '_emergency_context_attempts'):
-                    # Check if LLM response mentions context or length issues
-                    lower_content = content.lower()
-                    context_keywords = ['context', 'length', 'token', 'limit', 'truncat', 'shorten']
-                    if any(keyword in lower_content for keyword in context_keywords):
-                        if self._emergency_context_attempts < self._max_emergency_attempts:
-                            self._emergency_context_attempts += 1
-                            logger.warning(f"Emergency context management triggered (attempt {self._emergency_context_attempts}/{self._max_emergency_attempts})")
-                            
-                            # Execute emergency hooks
-                            try:
-                                emergency_messages = await self._hook_manager.execute_emergency_context_hooks(
-                                    session_id, request_id, messages=messages, error_info={"reason": "context_mention"}
-                                )
-                                if emergency_messages is not None and len(emergency_messages) < len(messages):
-                                    messages = emergency_messages
-                                    emergency_trim_occurred = True
-                                    logger.info(f"Emergency trimmed conversation from {len(messages)} to {len(emergency_messages)} messages")
-                            except Exception as e:
-                                logger.warning(f"Emergency context hooks failed: {e}", exc_info=True)
+                # Append assistant final message to conversation history
+                messages.append(ChatMessage(role="assistant", content=content or ""))
+                results["summary"] = content
+                # Update tracked messages with final response
+                self._current_messages = messages.copy()
                 
-                # If emergency trim occurred, ask for summary again
-                if emergency_trim_occurred:
-                    # Add a user message to explicitly ask for a summary
-                    messages.append(ChatMessage(
-                        role="user",
-                        content="Please provide a brief summary of the results from the tool execution above."
-                    ))
-                    # Continue to next iteration to let LLM respond
-                else:
-                    # Append assistant final message to conversation history
-                    messages.append(ChatMessage(role="assistant", content=content or ""))
-                    results["summary"] = content
-                    # Update tracked messages with final response
-                    self._current_messages = messages.copy()
-                    
-                    # Return raw markdown - formatting happens in API/CLI layer
-                    yield {"type": "final", "summary": content, "content_format": "markdown"}
-                    return
+                # Return raw markdown - formatting happens in API/CLI layer
+                yield {"type": "final", "summary": content, "content_format": "markdown"}
+                return
             
             # Update tracked messages at end of each step
             self._current_messages = messages.copy()
