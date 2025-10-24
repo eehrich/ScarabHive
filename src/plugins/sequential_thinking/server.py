@@ -271,13 +271,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Get or create session first (for session_id in status messages)
             session = self._get_or_create_session(session_id)
             
-            # START status
-            await status.start(
-                f"Adding thought {thought_number}/{total_thoughts} "
-                f"to session {session.session_id[:8]}"
-            )
-            
-            # Validate parameters (after status.start so error messages work)
+            # Validate parameters
             if thought_number < 1:
                 await status.error("thought_number must be >= 1")
                 return {"status": "error", "error": "thought_number must be >= 1"}
@@ -378,8 +372,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # END status
             complete_msg = "✓ Complete" if not next_thought_needed else "Continue reasoning..."
             await status.end(
-                f"Thought {thought_number} added. "
-                f"Progress: {session.actual_thoughts}/{session.total_thoughts_estimate} thoughts. "
+                f"Thought {thought_number} added ({session.actual_thoughts}/{session.total_thoughts_estimate}). "
                 f"{complete_msg}"
             )
             

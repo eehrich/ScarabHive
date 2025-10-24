@@ -928,7 +928,7 @@ async def test_duplicate_branch_id(server, mock_status):
 
 @pytest.mark.asyncio
 async def test_status_messages_start_end(server, mock_status):
-    """Test START and END status messages are sent."""
+    """Test status messages are sent."""
     result = await server.sequentialthinking({
         "thought": "Test thought",
         "thought_number": 1,
@@ -937,13 +937,7 @@ async def test_status_messages_start_end(server, mock_status):
         "_status": mock_status
     })
     
-    # Verify start was called
-    mock_status.start.assert_called_once()
-    start_call = mock_status.start.call_args[0][0]
-    assert "Adding thought" in start_call
-    assert "1/1" in start_call
-    
-    # Verify end was called
+    # Verify end was called (start doesn't exist in StatusScope)
     mock_status.end.assert_called_once()
     end_call = mock_status.end.call_args[0][0]
     assert "Thought 1 added" in end_call

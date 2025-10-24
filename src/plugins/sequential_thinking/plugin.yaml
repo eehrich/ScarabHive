@@ -14,7 +14,7 @@ config_schema:
   session_ttl_seconds:
     type: integer
     default: 3600
-    description: Session expiration time in seconds (default: 1 hour)
+    description: "Session expiration time in seconds (default: 1 hour)"
   enable_branching:
     type: boolean
     default: true
