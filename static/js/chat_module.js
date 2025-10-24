@@ -329,17 +329,34 @@
     // Find parent element
     const parentNode = treeNodes.get(parentId);
     if (parentNode && parentNode.element) {
-      // Insert after parent and its existing children
-      let insertAfter = parentNode.element;
-      
-      // Find the last child element of the parent
+      // Collect all children with their request IDs for sorting
+      const childElements = [];
       for (const childId of parentNode.children) {
         const childNode = treeNodes.get(childId);
-        if (childNode && childNode.element) {
-          const childElement = childNode.element;
-          if (container.contains(childElement)) {
-            insertAfter = childElement;
-          }
+        if (childNode && childNode.element && container.contains(childNode.element)) {
+          childElements.push({ id: childId, element: childNode.element });
+        }
+      }
+      
+      // Sort children by request ID (preserves chronological order from backend)
+      childElements.sort((a, b) => {
+        // Extract sequence numbers from request IDs for comparison
+        // e.g., "rbwytmgxyt_006_015" -> compare last segment (015)
+        const aSeq = a.id.split('_').pop();
+        const bSeq = b.id.split('_').pop();
+        return aSeq.localeCompare(bSeq);
+      });
+      
+      // Find correct insertion position among sorted siblings
+      let insertAfter = parentNode.element;
+      const newSeq = requestId.split('_').pop();
+      
+      for (const child of childElements) {
+        const childSeq = child.id.split('_').pop();
+        if (childSeq.localeCompare(newSeq) < 0) {
+          insertAfter = child.element;
+        } else {
+          break; // Found first sibling that should come after new element
         }
       }
       
