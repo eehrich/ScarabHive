@@ -11,7 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="plugins.weather", description="Weather MCP Server")
 
     # Core weather parameters
-    parser.add_argument("--location", default="Munich", help="Location name (city, address, coordinates)")
+    parser.add_argument("--location", help="Location name (city, address, coordinates)")
     parser.add_argument("--source", help="Weather data source (wttr.in, weather.gov, met.no, marine.weather.gov)")
     parser.add_argument("--days", type=int, default=3, help="Number of forecast days (1-7)")
     parser.add_argument("--units", choices=["metric", "imperial"], default="metric", help="Temperature units")
@@ -50,6 +50,10 @@ async def async_main():
         await serve_mcp_server(server, port=args.port)
     else:
         # Direct test (async)
+        if not args.location:
+            print("Error: --location is required when not in server mode")
+            return
+            
         from unittest.mock import AsyncMock
         mock_status = AsyncMock()
         

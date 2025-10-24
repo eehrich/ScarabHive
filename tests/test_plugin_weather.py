@@ -699,3 +699,162 @@ class TestWeatherPluginFactory:
 
         server = PLUGIN_FACTORY("custom_weather", mock_system_config, mock_mcp_config)
         assert server.name == "custom_weather"
+
+
+class TestWeatherSummary:
+    """Test the weather summary generation feature."""
+
+    @pytest.mark.asyncio
+    async def test_summary_field_present(self, mock_system_config, mock_mcp_config):
+        """Test that summary field is present in weather response."""
+        from plugins.weather.server import WeatherServer
+        from unittest.mock import AsyncMock, patch
+
+        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        
+        mock_weather_data = {
+            "location": "TestCity",
+            "source": "met.no",
+            "units": "metric",
+            "current": {
+                "temperature": 20.5,
+                "humidity": 65,
+                "wind_speed": 15.2,
+            },
+            "forecast": [
+                {
+                    "date": "2025-01-01",
+                    "max_temp": 22,
+                    "min_temp": 18,
+                    "hourly": [
+                        {"time": "2025-01-01T12:00:00Z", "precipitation": 0.5},
+                        {"time": "2025-01-01T15:00:00Z", "precipitation": 1.2},
+                    ]
+                }
+            ]
+        }
+        
+        with patch('plugins.weather.sources.fetch_met_no', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_weather_data
+            
+            mock_status = AsyncMock()
+            result = await server.call("get_weather", {
+                "location": "TestCity",
+                "_status": mock_status
+            })
+            
+            assert result["status"] == "success"
+            assert "summary" in result
+            assert isinstance(result["summary"], str)
+            assert len(result["summary"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_summary_content(self, mock_system_config, mock_mcp_config):
+        """Test that summary contains expected weather information."""
+        from plugins.weather.server import WeatherServer
+        from unittest.mock import AsyncMock, patch
+
+        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        
+        mock_weather_data = {
+            "location": "Berlin",
+            "source": "met.no",
+            "units": "metric",
+            "current": {
+                "temperature": 15.0,
+                "humidity": 70,
+                "wind_speed": 10.0,
+            },
+            "forecast": [
+                {
+                    "date": "2025-01-01",
+                    "max_temp": 18,
+                    "min_temp": 12,
+                    "hourly": [
+                        {"time": "2025-01-01T12:00:00Z", "precipitation": 2.5},
+                    ]
+                }
+            ]
+        }
+        
+        with patch('plugins.weather.sources.fetch_met_no', new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_weather_data
+            
+            mock_status = AsyncMock()
+            result = await server.call("get_weather", {
+                "location": "Berlin",
+                "_status": mock_status
+            })
+            
+            summary = result["summary"]
+            
+            # Check for key information in summary
+            assert "Berlin" in summary
+            assert "15" in summary or "15.0" in summary  # Temperature
+            assert "°C" in summary
+            assert "humidity" in summary.lower()
+            assert "2025-01-01" in summary  # Forecast date
+            assert "rain" in summary.lower()  # Precipitation warning
+
+    def test_create_summary_metric_units(self, mock_system_config, mock_mcp_config):
+        """Test summary generation with metric units."""
+        from plugins.weather.server import WeatherServer
+
+        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        
+        weather_data = {
+            "location": "TestCity",
+            "current": {
+                "temperature": 20.5,
+                "humidity": 65,
+                "wind_speed": 15.2,
+            },
+            "forecast": [
+                {
+                    "date": "2025-01-01",
+                    "max_temp": 22,
+                    "min_temp": 18,
+                    "hourly": [{"precipitation": 1.5}]
+                }
+            ]
+        }
+        
+        summary = server._create_summary(weather_data, "detailed", "metric")
+        
+        assert "TestCity" in summary
+        assert "20.5°C" in summary
+        assert "humidity 65%" in summary
+        assert "wind 15.2 km/h" in summary
+        assert "18°C to 22°C" in summary
+        assert "rain expected" in summary
+
+    def test_create_summary_imperial_units(self, mock_system_config, mock_mcp_config):
+        """Test summary generation with imperial units."""
+        from plugins.weather.server import WeatherServer
+
+        server = WeatherServer("weather", mock_system_config, mock_mcp_config)
+        
+        weather_data = {
+            "location": "NewYork",
+            "current": {
+                "temperature": 68.5,
+                "humidity": 60,
+                "wind_speed": 10.2,
+            },
+            "forecast": [
+                {
+                    "date": "2025-01-01",
+                    "max_temp": 72,
+                    "min_temp": 65,
+                    "hourly": [{"precipitation": 0.0}]
+                }
+            ]
+        }
+        
+        summary = server._create_summary(weather_data, "detailed", "imperial")
+        
+        assert "NewYork" in summary
+        assert "68.5°F" in summary
+        assert "wind 10.2 mph" in summary
+        assert "65°F to 72°F" in summary
+        assert "rain expected" not in summary  # No precipitation
