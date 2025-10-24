@@ -998,6 +998,16 @@ class Agent(MCPServer):
             await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
 
             assistant = llm_out.get("assistant", {})
+            
+            # Check if LLM returned an error response
+            if "error" in assistant:
+                error_info = assistant["error"]
+                error_msg = error_info.get("message", "Unknown LLM error")
+                error_type = error_info.get("type", "unknown")
+                logger.warning(f"LLM returned error: {error_type} - {error_msg}")
+                yield {"type": "error", "message": error_msg, "error_type": error_type}
+                return
+            
             content = assistant.get("content")
             tool_calls = assistant.get("tool_calls", [])
 
