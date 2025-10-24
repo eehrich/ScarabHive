@@ -78,7 +78,15 @@ class WeatherServer(SchemaBasedMCPServer):
                 result["status"] = "success"
                 
                 # Add human-readable summary for agent consumption
-                result["summary"] = self._create_summary(result, summary_format, units)
+                # IMPORTANT: Place summary at the TOP of response for LLM visibility
+                summary_text = self._create_summary(result, summary_format, units)
+                
+                # Restructure response to prioritize summary
+                result = {
+                    "summary": summary_text,
+                    "status": "success",
+                    **result  # Merge remaining fields (location, coordinates, current, forecast, etc.)
+                }
                 
                 await status.end(f"Successfully fetched weather for {location}")
             else:
