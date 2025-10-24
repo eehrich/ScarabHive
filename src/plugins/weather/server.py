@@ -53,6 +53,7 @@ class WeatherServer(SchemaBasedMCPServer):
         days = min(int(params.get("days", 3)), 7)
         units = params.get("units", "metric").lower()
         include_marine = params.get("include_marine", False)
+        summary_format = params.get("summary_format", "detailed").lower()
 
         if days > 3 and source == "wttr.in":
             source = "met.no"
@@ -75,6 +76,10 @@ class WeatherServer(SchemaBasedMCPServer):
 
             if "error" not in result:
                 result["status"] = "success"
+                
+                # Add human-readable summary for agent consumption
+                result["summary"] = self._create_summary(result, summary_format, units)
+                
                 await status.end(f"Successfully fetched weather for {location}")
             else:
                 result["status"] = "error"
@@ -93,3 +98,59 @@ class WeatherServer(SchemaBasedMCPServer):
                 "source": source,
                 "message": f"Failed to fetch weather data from {source}",
             }
+    
+    def _create_summary(self, result: dict[str, Any], format_type: str, units: str) -> str:
+        """Create human-readable weather summary for agent consumption."""
+        location = result.get("location", "Unknown location")
+        current = result.get("current", {})
+        forecast = result.get("forecast", [])
+        
+        # Temperature unit
+        temp_unit = "°C" if units == "metric" else "°F"
+        
+        # Build summary
+        lines = [f"Weather for {location}:"]
+        
+        # Current conditions
+        if current:
+            temp = current.get("temperature")
+            humidity = current.get("humidity")
+            wind = current.get("wind_speed")
+            weather_desc = current.get("weather_desc", "")
+            
+            if temp is not None:
+                current_line = f"Currently: {temp}{temp_unit}"
+                if humidity:
+                    current_line += f", humidity {humidity}%"
+                if wind:
+                    wind_unit = "km/h" if units == "metric" else "mph"
+                    current_line += f", wind {wind} {wind_unit}"
+                if weather_desc:
+                    current_line += f" - {weather_desc}"
+                lines.append(current_line)
+        
+        # Forecast summary
+        if forecast and format_type != "hourly":
+            lines.append("\nForecast:")
+            for day in forecast[:3]:  # Limit to 3 days for brevity
+                date = day.get("date", "")
+                max_temp = day.get("max_temp")
+                min_temp = day.get("min_temp")
+                
+                # Check for precipitation in hourly data
+                hourly = day.get("hourly", [])
+                precipitation = False
+                max_precip = 0.0
+                for hour in hourly:
+                    precip_val = hour.get("precipitation", 0)
+                    if precip_val and precip_val > 0:
+                        precipitation = True
+                        max_precip = max(max_precip, precip_val)
+                
+                if max_temp is not None and min_temp is not None:
+                    day_line = f"  {date}: {min_temp}{temp_unit} to {max_temp}{temp_unit}"
+                    if precipitation:
+                        day_line += f", rain expected (up to {max_precip}mm)"
+                    lines.append(day_line)
+        
+        return "\n".join(lines)
