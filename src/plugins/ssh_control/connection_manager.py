@@ -558,7 +558,7 @@ class SSHConnectionManager:
         except asyncio.TimeoutError:
             raise
         except Exception as e:
-            logger.error(f"Streaming command failed on {machine_name}: {e}", exc_info=True)
+            logger.info(f"Streaming command failed on {machine_name}: {e}")
             yield {
                 'type': 'error',
                 'data': str(e)
@@ -638,7 +638,7 @@ class SSHConnectionManager:
             
         except Exception as e:
             duration = time.time() - start_time
-            logger.error(f"File upload failed on {machine_name}: {e}", exc_info=True)
+            logger.info(f"File upload failed on {machine_name}: {e}")
             return FileTransferResult(
                 machine=machine_name,
                 local_path=local_path,
@@ -711,7 +711,7 @@ class SSHConnectionManager:
             
         except Exception as e:
             duration = time.time() - start_time
-            logger.error(f"File download failed on {machine_name}: {e}", exc_info=True)
+            logger.info(f"File download failed on {machine_name}: {e}")
             return FileTransferResult(
                 machine=machine_name,
                 local_path=local_path,

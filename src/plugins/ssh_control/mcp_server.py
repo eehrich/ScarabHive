@@ -157,7 +157,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         responses = []
         for machine_name, result in zip(machines, results):
             if isinstance(result, Exception):
-                logger.error(f"Command failed on {machine_name}: {result}", exc_info=True)
+                logger.info(f"Command failed on {machine_name}: {result}")
                 response = {
                     'machine': machine_name,
                     'command': command,
@@ -276,7 +276,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
         responses = []
         for machine_name, result in zip(machines, results):
             if isinstance(result, Exception):
-                logger.error(f"Upload failed on {machine_name}: {result}", exc_info=True)
+                logger.info(f"Upload failed on {machine_name}: {result}")
                 responses.append({
                     'machine': machine_name,
                     'error': str(result),
@@ -399,7 +399,7 @@ class SSHControlMCPServer(SchemaBasedMCPServer):
                 'success': result.success
             }
         except Exception as e:
-            logger.error(f"Download failed: {e}", exc_info=True)
+            logger.info(f"Download failed: {e}")
             
             # Send error status
             if status:
