@@ -55,6 +55,15 @@ plugins:
       max_wait_seconds: 3600
       default_update_interval: 5.0
     
+    sequential_thinking:
+      type: sequential_thinking
+      enabled: true
+      max_history_size: 100
+      session_ttl_seconds: 3600
+      enable_branching: true
+      enable_revisions: true
+      max_summary_thoughts: 10
+    
     http_server:
       type: http_server
       enabled: false
@@ -196,6 +205,7 @@ plugins:
             - "basic_agent/*"
             - "basic_operations/*"
             - "datetime/*"
+            - "sequential_thinking/*"
         
         hooks:
           enabled: true
@@ -385,6 +395,7 @@ plugins:
             - "duckduckgo_search/*"
             - "datetime/*"
             - "basic_operations/*"
+            - "sequential_thinking/*"
 
       metadata:
         author: "AgentSystem"

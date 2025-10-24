@@ -1,0 +1,91 @@
+tools:
+  - type: function
+    function:
+      name: "sequentialthinking"
+      description: |
+        Main reasoning tool for step-by-step problem-solving with dynamic complexity adjustment.
+        Supports branching to explore alternative approaches and revising previous thoughts.
+        Use this when tackling complex problems that require structured, iterative thinking.
+      parameters:
+        type: object
+        properties:
+          thought:
+            type: string
+            minLength: 1
+            maxLength: 10000
+            description: "Current thinking step content (1-10000 chars)"
+          next_thought_needed:
+            type: boolean
+            description: "Whether another thought step is needed after this one"
+          thought_number:
+            type: integer
+            minimum: 1
+            description: "Current thought number (1-indexed)"
+          total_thoughts:
+            type: integer
+            minimum: 1
+            description: "Estimated total thoughts needed (adjustable during reasoning)"
+          session_id:
+            type: string
+            description: "Session ID (auto-generated if omitted, use to continue existing session)"
+          is_revision:
+            type: boolean
+            default: false
+            description: "Whether this thought revises previous thinking"
+          revises_thought:
+            type: integer
+            minimum: 1
+            description: "Which thought number is being reconsidered (required if is_revision=true)"
+          branch_from_thought:
+            type: integer
+            minimum: 1
+            description: "Thought number to branch from (creates new exploration path)"
+          branch_id:
+            type: string
+            maxLength: 100
+            description: "Branch identifier (required if branching, e.g., 'alternative_approach')"
+          needs_more_thoughts:
+            type: boolean
+            default: false
+            description: "Flag indicating more thoughts are needed beyond initial estimate"
+        required: ["thought", "next_thought_needed", "thought_number", "total_thoughts"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "clear_history"
+      description: |
+        Clear thought history for a specific session or all sessions.
+        Use when starting fresh or cleaning up expired sessions.
+      parameters:
+        type: object
+        properties:
+          session_id:
+            type: string
+            description: "Specific session to clear (if omitted, clears all sessions)"
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "get_thought_summary"
+      description: |
+        Get condensed summary of thought chain for a session.
+        Returns recent thoughts with metadata, branch information, and session statistics.
+      parameters:
+        type: object
+        properties:
+          session_id:
+            type: string
+            description: "Session ID to summarize"
+          max_thoughts:
+            type: integer
+            minimum: 1
+            maximum: {{ max_history_size }}
+            default: 10
+            description: "Maximum thoughts to include in summary (default: 10)"
+          include_branches:
+            type: boolean
+            default: true
+            description: "Include branch tree visualization in summary"
+        required: ["session_id"]
+        additionalProperties: false
