@@ -51,41 +51,46 @@ tools:
   - type: function
     function:
       name: "todo"
-      description: "TODO task manager. CREATE: title required. UPDATE: task_id+fields. DELETE: task_id+delete=true. LIST: use filters. GET: task_id only. SUMMARY: task_id='SUMMARY'"
+      description: "TODO task manager with explicit operations: create, update, delete, list, get, summary"
       parameters:
         type: object
         properties:
+          operation:
+            type: string
+            enum: ["create", "update", "delete", "list", "get", "summary"]
+            description: "Operation to perform: 'create' (new task), 'update' (modify task), 'delete' (remove task), 'list' (filter tasks), 'get' (single task), 'summary' (statistics)"
+          
           task_id:
             type: string
-            description: "Task ID or 'SUMMARY'"
+            description: "Task ID (required for: get, update, delete)"
           
           title:
             type: string
             minLength: 1
             maxLength: 200
-            description: "Task title"
+            description: "Task title (required for: create)"
           
           description:
             type: string
             maxLength: 2000
-            description: "Task description"
+            description: "Task description (optional)"
           
           status:
             type: string
             enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
-            description: "Task status"
+            description: "Task status (optional)"
           
           progress:
             type: integer
             minimum: 0
             maximum: 100
-            description: "Completion %"
+            description: "Completion percentage 0-100 (optional)"
           
           priority:
             type: string
             enum: ["low", "medium", "high", "critical"]
             default: "medium"
-            description: "Priority"
+            description: "Task priority (optional, default: medium)"
           
           tags:
             type: array
@@ -93,7 +98,7 @@ tools:
               type: string
               maxLength: 50
             maxItems: 20
-            description: "Tags"
+            description: "Task tags (optional)"
           
           depends_on:
             type: array
@@ -101,47 +106,49 @@ tools:
               type: string
               pattern: "^task_\\d{3}$"
             maxItems: 50
-            description: "Task dependencies"
+            description: "Task dependencies - other task IDs (optional)"
           
           note:
             type: string
             maxLength: 1000
-            description: "Add note"
-          
-          delete:
-            type: boolean
-            default: false
-            description: "Delete task mode"
+            description: "Add note to task (for update operation)"
           
           cascade:
             type: boolean
             default: false
-            description: "Also delete dependents"
+            description: "Also delete dependent tasks (for delete operation)"
           
           filter_status:
             type: array
             items:
               type: string
               enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
-            description: "Filter by status"
+            description: "Filter by status (for list operation)"
           
           filter_priority:
             type: array
             items:
               type: string
               enum: ["low", "medium", "high", "critical"]
-            description: "Filter by priority"
+            description: "Filter by priority (for list operation)"
+          
+          filter_tags:
+            type: array
+            items:
+              type: string
+            description: "Filter by tags (for list operation)"
           
           only_unblocked:
             type: boolean
             default: false
-            description: "Only unblocked tasks"
+            description: "Only show unblocked tasks (for list operation)"
           
           limit:
             type: integer
             minimum: 1
             maximum: 1000
             default: 100
-            description: "Max results"
+            description: "Max results (for list operation)"
         
+        required: ["operation"]
         additionalProperties: false

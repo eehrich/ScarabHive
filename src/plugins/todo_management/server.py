@@ -521,31 +521,43 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
     async def todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Multi-mode task management tool (CREATE/UPDATE/LIST/GET).
+        Multi-mode task management tool with explicit operation parameter.
         
-        Modes auto-detected:
-        - CREATE: Provide title only → creates new task
-        - UPDATE: Provide task_id + fields → updates existing task
-        - LIST: Provide filters (filter_status/filter_priority/tags) → query tasks
-        - GET/SUMMARY: Provide task_id="SUMMARY" → progress stats, else task details
+        Operations:
+        - create: Create new task (requires: title)
+        - update: Update existing task (requires: task_id + fields)
+        - delete: Delete task (requires: task_id, optional: cascade)
+        - list: Query tasks with filters (optional: filter_status, filter_priority, filter_tags, only_unblocked, limit)
+        - get: Get single task details (requires: task_id)
+        - summary: Get progress statistics (no parameters required)
         
         Args:
             params: Tool parameters dict containing:
+                - operation: Required operation type (create/update/delete/list/get/summary)
                 - title: Task title (required for CREATE)
-                - task_id: For UPDATE/GET, or "SUMMARY" for stats
+                - task_id: Task ID (required for UPDATE/GET/DELETE)
                 - description, status, progress, priority, tags, depends_on, note: Task fields
                 - thinking_session_id, thought_number: Integration fields
-                - filter_status, filter_priority, only_unblocked, limit: LIST query filters
+                - filter_status, filter_priority, filter_tags, only_unblocked, limit: LIST query filters
+                - cascade: Delete dependent tasks (for DELETE operation)
                 - context: System parameters (includes _status for progress reporting)
             
         Returns:
             Dict with operation type and result (task/tasks/summary)
         """
-        # Extract parameters
-        title = params.get("title")
+        # Extract operation (required)
+        operation = params.get("operation")
+        if not operation:
+            raise ValidationError(
+                "Missing required parameter 'operation'. "
+                "Must be one of: create, update, delete, list, get, summary"
+            )
+        
+        # Extract common parameters
         task_id = params.get("task_id")
+        title = params.get("title")
         description = params.get("description")
-        status = params.get("status")  # Renamed from status_param
+        status = params.get("status")
         progress = params.get("progress")
         priority = params.get("priority", "medium")
         tags = params.get("tags")
@@ -553,10 +565,10 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         note = params.get("note")
         filter_status = params.get("filter_status")
         filter_priority = params.get("filter_priority")
+        filter_tags = params.get("filter_tags")
         only_unblocked = params.get("only_unblocked", False)
         limit = params.get("limit")
-        delete = params.get("delete", False)  # NEW: delete mode flag
-        cascade = params.get("cascade", False)  # NEW: cascade delete flag
+        cascade = params.get("cascade", False)
         context = params.get("context") or {}
         
         # Extract session_id from params and inject into context
@@ -576,53 +588,12 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             context["_status"] = params["_status"]
         
         # ============================================================
-        # Mode detection
+        # Operation dispatch
         # ============================================================
         
-        # Mode 0: DEFAULT (no params) → GET SUMMARY
-        if not any([task_id, title, status, progress, note, filter_status, filter_priority, tags, only_unblocked]):
-            return await self.get_progress_summary(
-                context=context,
-            )
-        
-        # Mode 1: GET SUMMARY (explicit)
-        if task_id == "SUMMARY":
-            return await self.get_progress_summary(
-                context=context,
-            )
-        
-        # Mode 2: DELETE task
-        if delete and task_id:
-            return await self._delete_todo_impl(
-                task_id=task_id,
-                cascade=cascade,
-                context=context,
-            )
-        
-        # Mode 3: GET task details
-        if task_id and not any([
-            title, status, progress, note, filter_status, filter_priority
-        ]):
-            return await self.get_todo(
-                task_id=task_id,
-                context=context,
-            )
-        
-        # Mode 4: LIST tasks
-        if any([filter_status, filter_priority, only_unblocked]) or (
-            tags and not task_id and not title
-        ):
-            return await self.list_todos(
-                filter_status=filter_status,
-                filter_priority=filter_priority,
-                filter_tags=tags,
-                only_unblocked=only_unblocked,
-                limit=limit,
-                context=context,
-            )
-        
-        # Mode 4: CREATE
-        if title and not task_id:
+        if operation == "create":
+            if not title:
+                raise ValidationError("CREATE operation requires 'title' parameter")
             return await self.create_todo(
                 title=title,
                 description=description,
@@ -632,8 +603,9 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 context=context,
             )
         
-        # Mode 5: UPDATE
-        if task_id:
+        elif operation == "update":
+            if not task_id:
+                raise ValidationError("UPDATE operation requires 'task_id' parameter")
             return await self.update_todo(
                 task_id=task_id,
                 new_status=status,
@@ -644,15 +616,43 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 context=context,
             )
         
-        # Fallback: invalid arguments
-        raise ValidationError(
-            "Invalid arguments. Modes:\n"
-            "- CREATE: provide title\n"
-            "- UPDATE: provide task_id + fields\n"
-            "- DELETE: provide task_id + delete=True\n"
-            "- LIST: provide filter_status/filter_priority/tags\n"
-            "- GET: provide task_id or task_id='SUMMARY'"
-        )
+        elif operation == "delete":
+            if not task_id:
+                raise ValidationError("DELETE operation requires 'task_id' parameter")
+            return await self._delete_todo_impl(
+                task_id=task_id,
+                cascade=cascade,
+                context=context,
+            )
+        
+        elif operation == "list":
+            return await self.list_todos(
+                filter_status=filter_status,
+                filter_priority=filter_priority,
+                filter_tags=filter_tags,
+                only_unblocked=only_unblocked,
+                limit=limit,
+                context=context,
+            )
+        
+        elif operation == "get":
+            if not task_id:
+                raise ValidationError("GET operation requires 'task_id' parameter")
+            return await self.get_todo(
+                task_id=task_id,
+                context=context,
+            )
+        
+        elif operation == "summary":
+            return await self.get_progress_summary(
+                context=context,
+            )
+        
+        else:
+            raise ValidationError(
+                f"Invalid operation '{operation}'. "
+                f"Must be one of: create, update, delete, list, get, summary"
+            )
 
     async def create_todo(
         self,
