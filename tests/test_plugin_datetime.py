@@ -30,7 +30,7 @@ def mock_status():
 @pytest.fixture
 def datetime_server(mock_system_config, mock_mcp_config):
     """Create datetime server for testing."""
-    return DateTimeServer("datetime_test", mock_system_config, mock_mcp_config)
+    return DateTimeServer("datetime", mock_system_config, mock_mcp_config)
 
 
 # Basic datetime operations tests
@@ -215,7 +215,7 @@ async def test_datetime_plugin_factory(mock_system_config, mock_mcp_config):
 @pytest.mark.asyncio
 async def test_datetime_server_get_tools(mock_system_config, mock_mcp_config):
     """Test datetime server exposes correct tools."""
-    server = DateTimeServer("test", mock_system_config, mock_mcp_config)
+    server = DateTimeServer("datetime", mock_system_config, mock_mcp_config)
     tools = server.get_tools()
     
     assert len(tools) > 0

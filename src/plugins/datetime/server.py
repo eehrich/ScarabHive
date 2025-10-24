@@ -36,12 +36,12 @@ class DateTimeServer(SchemaBasedMCPServer):
         """
         super().__init__(name, system_config, mcp_config)
 
-    async def datetime_operations(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def operations(self, params: dict[str, Any]) -> dict[str, Any]:
         """
         Execute datetime operations.
         
         Tool method - automatically called by generic dispatcher.
-        Method name matches tool name in schema.yaml.
+        Method name is 'operations' - the 'datetime_' prefix is stripped by SchemaBasedMCPServer.
         """
         status = params["_status"]  # Status is mandatory from framework
 
@@ -82,7 +82,7 @@ class DateTimeServer(SchemaBasedMCPServer):
             result = {"status": "error", "error": str(e)}
 
         # Publish status for operation completion
-        status_msg = f"Completed datetime_operations: {operation}"
+        status_msg = f"Completed operations: {operation}"
         if result.get("status") == "error":
             await status.error(status_msg)
         else:
