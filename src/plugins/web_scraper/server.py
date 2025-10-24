@@ -344,14 +344,18 @@ class WebScraperServer(SchemaBasedMCPServer):
             proxy_url = self._proxies[proxy_index]
         
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                verify=self.ssl_verify,
-                headers=headers,
-                cookies=self._sessions[domain],
-                timeout=timeout,
-                proxies=proxy_url,
-            ) as client:
+            # Note: httpx uses 'proxy' (singular), not 'proxies' (plural)
+            client_kwargs = {
+                "follow_redirects": True,
+                "verify": self.ssl_verify,
+                "headers": headers,
+                "cookies": self._sessions[domain],
+                "timeout": timeout,
+            }
+            if proxy_url:
+                client_kwargs["proxy"] = proxy_url
+            
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 resp = await client.get(target_url)
                 status_code = resp.status_code
                 final_url = str(resp.url)
@@ -364,11 +368,14 @@ class WebScraperServer(SchemaBasedMCPServer):
                     # Non-HTML content detected
                     html = f"[Non-HTML content detected: {content_type}. Content type not supported for text extraction.]"
         except ReadTimeout:
+            logger.warning(f"ReadTimeout fetching {target_url}")
             return "", 0, target_url, ""
-        except RequestError:
+        except RequestError as e:
+            logger.warning(f"RequestError fetching {target_url}: {e}")
             return "", 0, target_url, ""
-        except Exception:
-            # Any other error - return empty
+        except Exception as e:
+            # Any other error - log and return empty
+            logger.error(f"Unexpected error fetching {target_url}: {type(e).__name__}: {e}", exc_info=True)
             return "", 0, target_url, ""
 
         return html, status_code, final_url, content_type

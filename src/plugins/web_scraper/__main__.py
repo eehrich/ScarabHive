@@ -49,8 +49,13 @@ async def async_main():
     # Lazy imports
     from .plugin import PLUGIN_FACTORY
     from agent_system.servers.http_server import serve_mcp_server
+    from agent_system.config.models import AgentSystemConfig, MCPConfig
 
-    server = PLUGIN_FACTORY("web_scraper", {})
+    # Create minimal config for CLI usage
+    system_config = AgentSystemConfig()
+    mcp_config = MCPConfig(type="web_scraper", enabled=True)
+    
+    server = PLUGIN_FACTORY("web_scraper", system_config, mcp_config)
 
     if args.server:
         print(f"Starting Web Scraper MCP Server on port {args.port}")
@@ -61,24 +66,28 @@ async def async_main():
 
 
 async def test_scraper(server, args):
+    from unittest.mock import AsyncMock
+    
+    # Create mock status object (required by server)
+    mock_status = AsyncMock()
+    
     params = {
         "url": args.url,
         "max_chars": int(getattr(args, "max_chars", 0) or 0),
         "max_links": int(getattr(args, "max_links", 0) or 0),
-    "include_html": bool(getattr(args, "html", False)),
+        "include_html": bool(getattr(args, "html", False)),
         "timeout": 10,
+        "_status": mock_status,  # Required by server
     }
 
-    # If the user only wants links, call the 'links' action to avoid extra work
-    if getattr(args, "show_links", False):
-        result = await server.call("links", params)
-    else:
-        result = await server.call("fetch", params)
-    # If user requested raw HTML, call fetch with include_html and print only the html
+    # Call scrape_webpage tool (operation mode is determined by params)
+    result = await server.call("scrape_webpage", params)
+    
+    # If user requested raw HTML, call scrape_webpage with include_html and print only the html
     if getattr(args, "html", False):
         # Ensure server includes raw HTML
         params["include_html"] = True
-        result = await server.call("fetch", params)
+        result = await server.call("scrape_webpage", params)
         html = result.get("html") or ""
         # Respect max_chars when printing raw HTML: 0 means unlimited
         maxc = int(getattr(args, "max_chars", 0) or 0)
