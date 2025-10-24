@@ -440,34 +440,42 @@ These methods are called internally by the `todo()` universal tool:
 
 ## Tool Design: Universal `todo()` Tool
 
-The plugin exposes a **single ultra-minimal tool** with mode detection:
+The plugin exposes a **single ultra-minimal tool** with explicit operation parameter:
 
-### Mode Detection Logic
+### Operation-Based Dispatch
 
 ```python
-# Mode 1: GET SUMMARY
-if task_id == "SUMMARY":
-    return get_progress_summary()
+# All calls require explicit 'operation' parameter
+operation = params["operation"]  # Required enum: create/update/delete/list/get/summary
 
-# Mode 2: DELETE
-if delete == True and task_id:
-    return delete_todo_impl(task_id, cascade)
-
-# Mode 3: GET task
-if task_id and no_other_params:
-    return get_todo(task_id)
-
-# Mode 4: LIST tasks
-if any(filters) or tags_without_title:
-    return list_todos(filters)
-
-# Mode 5: CREATE
-if title and not task_id:
+if operation == "create":
+    if not title:
+        raise ValidationError("CREATE requires 'title'")
     return create_todo(title, ...)
 
-# Mode 6: UPDATE
-if task_id:
+elif operation == "update":
+    if not task_id:
+        raise ValidationError("UPDATE requires 'task_id'")
     return update_todo(task_id, fields)
+
+elif operation == "delete":
+    if not task_id:
+        raise ValidationError("DELETE requires 'task_id'")
+    return delete_todo_impl(task_id, cascade)
+
+elif operation == "list":
+    return list_todos(filters)  # All filters optional
+
+elif operation == "get":
+    if not task_id:
+        raise ValidationError("GET requires 'task_id'")
+    return get_todo(task_id)
+
+elif operation == "summary":
+    return get_progress_summary()
+
+else:
+    raise ValidationError(f"Invalid operation '{operation}'")
 ```
 
 ### Example Usage
@@ -475,6 +483,7 @@ if task_id:
 **CREATE:**
 ```json
 {
+  "operation": "create",
   "title": "Implement JWT authentication",
   "priority": "high",
   "tags": ["security", "backend"]
@@ -484,6 +493,7 @@ if task_id:
 **UPDATE:**
 ```json
 {
+  "operation": "update",
   "task_id": "task_001",
   "status": "completed",
   "progress": 100
@@ -493,8 +503,8 @@ if task_id:
 **DELETE:**
 ```json
 {
+  "operation": "delete",
   "task_id": "task_042",
-  "delete": true,
   "cascade": false
 }
 ```
@@ -502,6 +512,7 @@ if task_id:
 **LIST:**
 ```json
 {
+  "operation": "list",
   "filter_status": ["in-progress", "not-started"],
   "filter_priority": ["high", "critical"]
 }
@@ -510,6 +521,7 @@ if task_id:
 **GET:**
 ```json
 {
+  "operation": "get",
   "task_id": "task_001"
 }
 ```
@@ -517,7 +529,7 @@ if task_id:
 **SUMMARY:**
 ```json
 {
-  "task_id": "SUMMARY"
+  "operation": "summary"
 }
 ```
 

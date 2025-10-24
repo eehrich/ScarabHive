@@ -36,6 +36,7 @@ todo_management:
 ```python
 # Create a task
 await agent.todo(
+    operation="create",
     title="Implement user authentication",
     description="Add JWT-based auth with refresh tokens",
     priority="high",
@@ -44,6 +45,7 @@ await agent.todo(
 
 # Update task status
 await agent.todo(
+    operation="update",
     task_id="task_001",
     status="in-progress",
     progress=50,
@@ -52,23 +54,25 @@ await agent.todo(
 
 # List tasks
 result = await agent.todo(
+    operation="list",
     filter_status=["in-progress"],
     filter_priority=["high", "critical"]
 )
 
 # Get progress summary
-summary = await agent.todo(task_id="SUMMARY")
+summary = await agent.todo(operation="summary")
 ```
 
 ## Tool Reference
 
 ### `todo` (Multi-Mode Universal Tool)
 
-The single entry point for all task operations. Mode is auto-detected from parameters.
+The single entry point for all task operations. Operation must be explicitly specified.
 
-**CREATE Mode** (provide `title` only):
+**CREATE Mode** (operation: `create`, requires `title`):
 ```python
 await agent.todo(
+    operation="create",
     title="Task title",
     description="Optional description",
     priority="medium",  # low/medium/high/critical
@@ -79,9 +83,10 @@ await agent.todo(
 )
 ```
 
-**UPDATE Mode** (provide `task_id` + fields):
+**UPDATE Mode** (operation: `update`, requires `task_id`):
 ```python
 await agent.todo(
+    operation="update",
     task_id="task_001",
     status="in-progress",  # not-started/in-progress/completed/blocked/cancelled
     progress=75,
@@ -89,41 +94,46 @@ await agent.todo(
 )
 ```
 
-**LIST Mode** (provide filters):
+**LIST Mode** (operation: `list`, all filters optional):
 ```python
 await agent.todo(
+    operation="list",
     filter_status=["in-progress", "not-started"],
     filter_priority=["high"],
+    filter_tags=["backend", "security"],
     only_unblocked=True,  # Exclude blocked tasks
     limit=10
 )
 ```
 
-**GET Mode** (provide `task_id`):
+**GET Mode** (operation: `get`, requires `task_id`):
 ```python
-await agent.todo(task_id="task_001")  # Full task details
+await agent.todo(
+    operation="get",
+    task_id="task_001"  # Full task details
+)
 ```
 
-**SUMMARY Mode** (special task_id):
+**SUMMARY Mode** (operation: `summary`, no parameters needed):
 ```python
-await agent.todo(task_id="SUMMARY")  # Progress statistics
+await agent.todo(operation="summary")  # Progress statistics
 ```
 
-### DELETE Mode
+### DELETE Mode (operation: `delete`, requires `task_id`)
 
-Delete tasks with optional cascade using the `todo()` tool.
+Delete tasks with optional cascade.
 
 ```python
 # Delete single task
 await agent.todo(
-    task_id="task_001",
-    delete=True
+    operation="delete",
+    task_id="task_001"
 )
 
 # Delete with cascade (also delete dependent tasks)
 await agent.todo(
+    operation="delete",
     task_id="task_001",
-    delete=True,
     cascade=True
 )
 ```
@@ -134,17 +144,17 @@ await agent.todo(
 
 ```python
 # Planning phase
-await agent.todo(title="Design JWT schema", priority="high", tags=["planning"])
-await agent.todo(title="Implement JWT signing", depends_on=["task_001"], tags=["implementation"])
-await agent.todo(title="Add refresh token logic", depends_on=["task_002"], tags=["implementation"])
-await agent.todo(title="Write authentication tests", depends_on=["task_003"], tags=["testing"])
+await agent.todo(operation="create", title="Design JWT schema", priority="high", tags=["planning"])
+await agent.todo(operation="create", title="Implement JWT signing", depends_on=["task_001"], tags=["implementation"])
+await agent.todo(operation="create", title="Add refresh token logic", depends_on=["task_002"], tags=["implementation"])
+await agent.todo(operation="create", title="Write authentication tests", depends_on=["task_003"], tags=["testing"])
 
 # Execution
-await agent.todo(task_id="task_001", status="completed")
-await agent.todo(task_id="task_002", status="in-progress", progress=60)
+await agent.todo(operation="update", task_id="task_001", status="completed")
+await agent.todo(operation="update", task_id="task_002", status="in-progress", progress=60)
 
 # Progress check
-summary = await agent.todo(task_id="SUMMARY")
+summary = await agent.todo(operation="summary")
 print(f"Completion: {summary['completion_rate']}")
 print(f"Next: {summary['next_unblocked'][0]['title']}")
 ```
@@ -157,6 +167,7 @@ thinking_session = "session_abc123"
 
 # Generate actionable tasks from thoughts
 await agent.todo(
+    operation="create",
     title="Refactor authentication module",
     thinking_session_id=thinking_session,
     thought_number=3,  # Generated from thought #3
@@ -164,20 +175,20 @@ await agent.todo(
 )
 
 # Later: Query tasks from thinking session
-tasks = await agent.todo(thinking_session_id=thinking_session)
+tasks = await agent.todo(operation="list", filter_tags=["thinking_session:abc123"])
 ```
 
 ### 3. Sub-Agent Task Coordination
 
 ```python
 # Main agent creates tasks
-await agent.todo(title="Backend API", tags=["backend-team"])
-await agent.todo(title="Frontend UI", tags=["frontend-team"])
-await agent.todo(title="Integration tests", depends_on=["task_001", "task_002"], tags=["qa-team"])
+await agent.todo(operation="create", title="Backend API", tags=["backend-team"])
+await agent.todo(operation="create", title="Frontend UI", tags=["frontend-team"])
+await agent.todo(operation="create", title="Integration tests", depends_on=["task_001", "task_002"], tags=["qa-team"])
 
 # Sub-agents filter by tag
-backend_tasks = await agent.todo(filter_tags=["backend-team"], only_unblocked=True)
-frontend_tasks = await agent.todo(filter_tags=["frontend-team"], only_unblocked=True)
+backend_tasks = await agent.todo(operation="list", filter_tags=["backend-team"], only_unblocked=True)
+frontend_tasks = await agent.todo(operation="list", filter_tags=["frontend-team"], only_unblocked=True)
 ```
 
 ## Task Lifecycle
