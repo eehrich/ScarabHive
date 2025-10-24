@@ -50,24 +50,23 @@ async def long_running_tool(params, cancellation_token):
 
 **Purpose**: Immediate termination of agent's conversation loop
 
-**Scope**: Agent-local - each agent tracks its own active requests
+**Scope**: Agent-local - each agent tracks its own active requests via `AgentRequestManager` component
 
 **Mechanism**:
-- Stores `asyncio.Event` in `self._active_requests[request_id]["cancel"]`
-- Agent checks event at step boundaries in `_run_events()`
+- `AgentRequestManager` stores `asyncio.Event` in `self._active_requests[request_id]["cancel"]`
+- Agent checks event at step boundaries in `_run_events()` via `_request_manager.is_cancelled()`
 - No grace period - stops at next checkpoint
 - Direct event signaling via `event.set()`
 
 **Usage**:
 ```python
-# Agent checks cancellation
-if self._is_cancelled(request_id):
+# Agent checks cancellation (via component)
+if self._request_manager.is_cancelled(request_id):
     yield {"type": "cancelled", "request_id": request_id}
     return
 
-# Cancel from outside
-async with self._request_lock:
-    self._active_requests[request_id]["cancel"].set()
+# Cancel from outside (via component)
+await self._request_manager.cancel_request(request_id, status_bus)
 ```
 
 **Use Cases**:

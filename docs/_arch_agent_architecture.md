@@ -546,3 +546,123 @@ Choose based on your needs:
 - **10% of agents** → Use `Agent` (dynamic tools, complex logic)
 
 Both integrate seamlessly with the Agent System's LLM, hooks, and plugin infrastructure.
+
+---
+
+## Internal Component Architecture (Oct 2025 Refactoring)
+
+The `Agent` class has been refactored into a modular component-based architecture for better maintainability and testability. This section documents the internal components (for developers working on the agent system itself).
+
+### Component Structure
+
+```
+src/agent_system/servers/agent/
+├── server.py (1,421 LOC - core agent orchestration)
+├── components/
+│   ├── session_tracking.py (231 LOC - session & message management)
+│   ├── request_manager.py (169 LOC - request lifecycle & cancellation)
+│   ├── mcp_integration.py (existing - MCP protocol handling)
+│   ├── tool_execution.py (existing - tool call execution)
+│   └── status_forwarding.py (existing - status event streaming)
+├── prompt_strategies.py (prompt rendering)
+├── tool_discovery.py (tool enumeration)
+├── tool_schema_builder.py (tool schema generation)
+└── result_utils.py (result extraction & formatting)
+```
+
+### Core Components
+
+#### 1. SessionTracker (`session_tracking.py`)
+**Purpose:** Manages session lifecycle and message history
+
+**Key Methods:**
+- `append_user_message(request_id, content)` - Append message to active request
+- `append_to_session(session_id, content)` - Append to persisted session
+- `drain_appended_messages(request_id, messages)` - Consume pending messages
+- `get/set_session_messages(session_id)` - Session history access
+- `has_session(session_id)` - Check session existence
+- `delete_session(session_id)` - Remove session
+- `get_all_session_ids()` - List all sessions
+
+**Manages:**
+- `_sessions: Dict[str, List[ChatMessage]]` - Session message history
+- `_request_to_session: Dict[str, str]` - Request-to-session mapping
+- `_appended_messages: Dict[str, List[str]]` - Pending message queue
+
+#### 2. AgentRequestManager (`request_manager.py`)
+**Purpose:** Manages active request lifecycle and cancellation
+
+**Key Methods:**
+- `cancel_request(request_id, status_bus)` - Cancel active request
+- `is_cancelled(request_id)` - Check cancellation status
+- `register_active_request(request_id, session_id)` - Register new request
+- `unregister_active_request(request_id)` - Clean up completed request
+- `get_active_requests()` - List active request IDs
+- `get_request_entry(request_id)` - Get request metadata
+
+**Manages:**
+- `_active_requests: Dict[str, Dict]` - Active request registry (shared with SessionTracker)
+
+### Component Coordination
+
+Both components share the same `_active_requests` dictionary reference for consistency:
+
+```python
+# In Agent.__init__:
+self._request_manager = AgentRequestManager(name=self.name)
+self._session_tracker = SessionTracker(
+    shared_active_requests=self._request_manager._active_requests
+)
+```
+
+This enables:
+- SessionTracker to check if requests are active before appending messages
+- Consistent request lifecycle tracking across both components
+- No synchronization issues between components
+
+### Usage in Agent Code
+
+**Service Layer (agent_service.py, session_service.py):**
+```python
+# OLD (direct access - removed):
+agent._sessions[session_id] = messages
+async with agent._request_lock:
+    if session_id in agent._sessions:
+        del agent._sessions[session_id]
+
+# NEW (component API):
+agent._session_tracker.set_session_messages(session_id, messages)
+if agent._session_tracker.has_session(session_id):
+    agent._session_tracker.delete_session(session_id)
+```
+
+**Request Management:**
+```python
+# OLD (direct access - removed):
+async with agent._request_lock:
+    agent._active_requests[request_id]["cancel"].set()
+
+# NEW (component API):
+await agent._request_manager.cancel_request(request_id, status_bus)
+if agent._request_manager.is_cancelled(request_id):
+    # Handle cancellation
+```
+
+### Benefits of Component Architecture
+
+✅ **Encapsulation:** Internal dictionaries not exposed directly  
+✅ **Testability:** Components can be tested in isolation  
+✅ **Maintainability:** Clear single responsibility per component  
+✅ **Extensibility:** Easy to add monitoring/metrics/hooks per component  
+✅ **Type Safety:** Component methods provide better type hints than dict access
+
+### For Plugin Developers
+
+**You don't need to know about these internal components!** They're implementation details of the `Agent` base class. Just use the public Agent API:
+
+- `run_events(task, session_id, ...)` - Execute agent task
+- `cancel_request(request_id)` - Cancel active request  
+- `get_tools()` - Define your agent's tools
+- `call(tool, params)` - Handle tool execution
+
+The component architecture is transparent to plugin developers.
