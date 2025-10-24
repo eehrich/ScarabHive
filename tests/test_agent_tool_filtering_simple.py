@@ -50,7 +50,7 @@ async def test_filter_patterns():
     agent = Agent("test_agent", system_config, mcp_config, registry)
 
     tools = ["web_scraper", "web_scraper.scrape", "duckduckgo_search", "weather.get_forecast", "weather.get_temperature", "datetime.get_time", "datetime.other", "other"]
-    effective = agent._filter_available_tools(tools, agent_config.tools.allowed)  # type: ignore[attr-defined]
+    effective = agent._filter_usable_tools(tools, agent_config.tools.allowed)  # type: ignore[attr-defined]
     assert "duckduckgo_search" in effective
     assert "web_scraper" in effective
     assert "web_scraper.scrape" in effective
