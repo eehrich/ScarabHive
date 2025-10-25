@@ -37,7 +37,7 @@ async def test_global_config_disables_hook(clean_registry):
     
     await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
     
-    hook_info = clean_registry.get_hook_info('test_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.test_hook')  # Use full hook name
     assert hook_info is not None
     assert hook_info['enabled'] is False  # Global config overrides
 
@@ -68,7 +68,7 @@ async def test_global_config_override_timeout(clean_registry):
     
     await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
     
-    hook_info = clean_registry.get_hook_info('test_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
     assert hook_info is not None
     assert hook_info['timeout'] == 5.0  # Global override applied
 
@@ -105,7 +105,7 @@ async def test_global_config_override_order(clean_registry):
     
     await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
     
-    hook_info = clean_registry.get_hook_info('test_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
     assert hook_info is not None
     assert hook_info['order']['before'] == ['end']
     assert hook_info['order']['after'] == ['begin']
@@ -142,7 +142,7 @@ async def test_global_config_selective_override(clean_registry):
     
     await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
     
-    hook_info = clean_registry.get_hook_info('test_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
     assert hook_info is not None
     assert hook_info['enabled'] is False  # Overridden
     assert hook_info['timeout'] == 15.0   # From plugin
@@ -176,7 +176,7 @@ async def test_global_config_no_override_uses_plugin_defaults(clean_registry):
     
     await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
     
-    hook_info = clean_registry.get_hook_info('test_hook')
+    hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
     assert hook_info is not None
     assert hook_info['enabled'] is True   # Plugin default
     assert hook_info['timeout'] == 20.0   # Plugin default
@@ -219,7 +219,7 @@ hooks:
         
         await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
         
-        hook_info = clean_registry.get_hook_info('test_hook')
+        hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
         assert hook_info is not None
         assert hook_info['enabled'] is False  # From YAML override
         assert hook_info['timeout'] == 10.0   # From YAML override
@@ -264,8 +264,8 @@ async def test_multiple_hooks_different_overrides(clean_registry):
     
     await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
     
-    hook1_info = clean_registry.get_hook_info('hook1')
-    hook2_info = clean_registry.get_hook_info('hook2')
+    hook1_info = clean_registry.get_hook_info('test_plugin.hook1')  # Use full hook name
+    hook2_info = clean_registry.get_hook_info('test_plugin.hook2')  # Use full hook name
     
     assert hook1_info['enabled'] is False  # Disabled by global config
     assert hook1_info['timeout'] == 30.0   # Plugin default

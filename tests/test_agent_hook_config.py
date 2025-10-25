@@ -167,27 +167,31 @@ async def test_hook_integration_manager_is_hook_enabled():
     assert manager.is_hook_enabled('markdown_formatter.format_markdown_output') is False
     assert manager.is_hook_enabled('request_logger.log_pre_llm') is True
     
-    # Test 2: Globally disabled, specific hook enabled via override
+    # Test 2: Agent with override can enable specific hook
     agent2 = Mock()
     agent2.agent_config = Mock()
     agent2.agent_config.hooks = HooksConfig(
-        enabled=False,
+        enabled=True,  # Agent hooks enabled
         overrides={
-            'llm_message_validator.validate_messages': {'enabled': True}
+            'llm_message_validator.validate_messages': {'enabled': True},
+            'markdown_formatter.format_markdown_output': {'enabled': False}  # Override to disable
         }
     )
     
     manager2 = HookIntegrationManager(agent2)
-    assert manager2.is_hook_enabled('llm_message_validator.validate_messages') is True
-    assert manager2.is_hook_enabled('markdown_formatter.format_markdown_output') is False
+    assert manager2.is_hook_enabled('llm_message_validator.validate_messages') is True  # Override enables
+    assert manager2.is_hook_enabled('markdown_formatter.format_markdown_output') is False  # Override disables
+    assert manager2.is_hook_enabled('request_logger.log_pre_llm') is True  # No override, uses metadata default
     
-    # Test 3: Globally disabled, no overrides
+    # Test 3: Agent without overrides uses hook metadata defaults
     agent3 = Mock()
     agent3.agent_config = Mock()
-    agent3.agent_config.hooks = HooksConfig(enabled=False)
+    agent3.agent_config.hooks = HooksConfig(enabled=True)  # enabled field is for registration, not filtering
     
     manager3 = HookIntegrationManager(agent3)
-    assert manager3.is_hook_enabled('any_hook') is False
+    # Without override, uses default_enabled from hook metadata (passed by registry)
+    assert manager3.is_hook_enabled('any_hook', default_enabled=True) is True
+    assert manager3.is_hook_enabled('any_hook', default_enabled=False) is False
 
 
 def test_hooks_config_validation():

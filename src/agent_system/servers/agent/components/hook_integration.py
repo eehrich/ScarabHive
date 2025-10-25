@@ -52,8 +52,8 @@ class HookIntegrationManager:
         """Check if a specific hook should execute for this agent.
         
         This method properly handles per-agent hook overrides:
-        - If agent has explicit override: use it (ignores global state)
-        - If no override: use global enabled state from metadata
+        - If agent has explicit override: use it (ignores everything else)
+        - If no override: use hook metadata default_enabled
         
         Args:
             hook_name: Full hook name (e.g., 'todo_management.inject_todo_tasks')

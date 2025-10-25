@@ -18,6 +18,15 @@ hooks:
     order:
       after: ["begin"]
       before: ["validate_messages"]
+  
+  - name: parse_deepseek_response
+    type: post_llm_call
+    enabled: true
+    timeout: 5.0
+    description: "Parse DeepSeek tool call markers from LLM response"
+    order:
+      after: ["begin"]
+      before: ["end"]
 
 # Configuration schema for this plugin
 config:

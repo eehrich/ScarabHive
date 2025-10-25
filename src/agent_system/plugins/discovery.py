@@ -339,12 +339,19 @@ async def register_plugin_hooks(
         logger.debug(f"Plugin '{plugin_name}' declares no hooks in metadata")
         return registered_hooks
     
-    # Verify plugin implements PluginHook interface
+    # Verify plugin implements PluginHook interface OR has the required hook methods
+    # Duck-typing: Plugin doesn't need to inherit from PluginHook if it has the hook methods
     if not isinstance(plugin_instance, PluginHook):
-        raise TypeError(
-            f"Plugin '{plugin_name}' declares hooks but does not implement PluginHook interface. "
-            "The plugin class must inherit from PluginHook and implement async hook methods."
-        )
+        # Check if plugin has hook methods (duck typing for hybrid plugins)
+        hook_method_name = f"on_{hooks_list[0].get('type', '').lower()}"
+        if not hasattr(plugin_instance, hook_method_name):
+            raise TypeError(
+                f"Plugin '{plugin_name}' declares hooks but does not implement PluginHook interface "
+                f"and is missing hook method '{hook_method_name}'. "
+                "The plugin class must either inherit from PluginHook or implement async hook methods."
+            )
+        logger.debug(f"Plugin '{plugin_name}' uses duck-typed hooks (has {hook_method_name} method)")
+
     
     # Use provided registry or get global one
     if registry is None:
