@@ -791,7 +791,7 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                             f"'{title}' vs '{best_match.title}' ({similarity*100:.0f}% similar)"
                         )
                         if status:
-                            await status.update(
+                            await status.progress(
                                 f"⚠️  Similar task exists: {best_match_id} "
                                 f"({similarity*100:.0f}% match)"
                             )

@@ -29,6 +29,7 @@ class PromptContext:
     system_config: AgentSystemConfig
     available_tools: list[str]
     max_steps: int
+    current_step: int  # Current step number (1-indexed, updated per-step)
     agent_instance: Any  # The actual agent instance for hook calls
 
 
@@ -54,7 +55,8 @@ class PromptStrategy(ABC):
         """Build common context values for template rendering."""
         context_vals = {
             "tools": context.available_tools,
-            "max_steps": context.max_steps - 1
+            "max_steps": context.max_steps,
+            "current_step": context.current_step
         }
         
         # Add datetime context if enabled

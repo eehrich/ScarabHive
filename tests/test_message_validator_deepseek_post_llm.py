@@ -32,11 +32,9 @@ async def test_parse_deepseek_response_hook(validator_plugin):
         messages=[],
         request_id="test_req_001",
         session_id="test_session_001",
-        metadata={
-            "llm_response": {
-                "content": response_with_markers,
-                "tool_calls": []
-            }
+        llm_response={
+            "content": response_with_markers,
+            "tool_calls": []
         }
     )
     
@@ -46,8 +44,8 @@ async def test_parse_deepseek_response_hook(validator_plugin):
     assert result.success
     assert result.modified  # Should be modified
     
-    # Check that markers were parsed
-    llm_response = result.context.metadata["llm_response"]
+    # Check that markers were parsed (llm_response is direct field, not in metadata)
+    llm_response = result.context.llm_response
     
     # Content should be cleaned (markers removed)
     assert "<｜tool" not in llm_response["content"]
@@ -72,11 +70,9 @@ async def test_parse_deepseek_response_no_markers(validator_plugin):
         messages=[],
         request_id="test_req_002",
         session_id="test_session_002",
-        metadata={
-            "llm_response": {
-                "content": normal_response,
-                "tool_calls": []
-            }
+        llm_response={
+            "content": normal_response,
+            "tool_calls": []
         }
     )
     
@@ -85,33 +81,60 @@ async def test_parse_deepseek_response_no_markers(validator_plugin):
     assert result.success
     assert not result.modified  # Should NOT be modified
     
-    # Content unchanged
-    llm_response = result.context.metadata["llm_response"]
+    # Content unchanged (llm_response is direct field)
+    llm_response = result.context.llm_response
     assert llm_response["content"] == normal_response
     assert llm_response["tool_calls"] == []
 
 
 @pytest.mark.asyncio
-async def test_parse_deepseek_response_already_has_tool_calls(validator_plugin):
-    """Test hook skips if response already has tool_calls."""
+async def test_parse_deepseek_response_with_both_markers_and_toolcalls(validator_plugin):
+    """Test hook cleans markers from content when DeepSeek returns BOTH tool_calls AND markers.
+    
+    DeepSeek sometimes returns proper tool_calls in OpenAI format but ALSO includes
+    the marker syntax in the content field. We need to clean the markers from content
+    while preserving the existing tool_calls.
+    """
+    
+    response_with_both = (
+        "< | tool__calls__begin | > < | tool__call__begin | > todo< | tool__sep | >"
+        '{"operation": "delete", "task_id": "task_002"}'
+        "< | tool__call__end | > < | tool__calls__end | >"
+    )
+    
+    existing_tool_calls = [{
+        "id": "call_abc123",
+        "type": "function",
+        "function": {
+            "name": "todo",
+            "arguments": '{"operation": "delete", "task_id": "task_002"}'
+        }
+    }]
     
     context = HookContext(
         hook_type="post_llm_call",
         messages=[],
         request_id="test_req_003",
         session_id="test_session_003",
-        metadata={
-            "llm_response": {
-                "content": "Some content",
-                "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "test"}}]
-            }
+        llm_response={
+            "content": response_with_both,
+            "tool_calls": existing_tool_calls
         }
     )
     
     result = await validator_plugin.parse_deepseek_response(context)
     
     assert result.success
-    assert not result.modified  # Should skip
+    assert result.modified  # Should be modified to clean markers
+    
+    # Content should be cleaned
+    llm_response = result.context.llm_response
+    assert llm_response["content"] == ""  # Markers removed
+    assert "tool__calls__begin" not in llm_response["content"]
+    
+    # Should preserve existing tool_calls (not create new ones)
+    assert len(llm_response["tool_calls"]) == 1
+    assert llm_response["tool_calls"][0]["id"] == "call_abc123"  # Original ID preserved
 
 
 @pytest.mark.asyncio
@@ -130,11 +153,9 @@ async def test_parse_deepseek_response_ascii_markers(validator_plugin):
         messages=[],
         request_id="test_req_004",
         session_id="test_session_004",
-        metadata={
-            "llm_response": {
-                "content": response_with_ascii,
-                "tool_calls": []
-            }
+        llm_response={
+            "content": response_with_ascii,
+            "tool_calls": []
         }
     )
     
@@ -143,7 +164,8 @@ async def test_parse_deepseek_response_ascii_markers(validator_plugin):
     assert result.success
     assert result.modified
     
-    llm_response = result.context.metadata["llm_response"]
+    # llm_response is direct field
+    llm_response = result.context.llm_response
     assert "<|tool" not in llm_response["content"]
     assert len(llm_response["tool_calls"]) == 1
     assert llm_response["tool_calls"][0]["function"]["name"] == "todo"

@@ -34,7 +34,9 @@ system_prompt: |
   - Parallelize tool calls for multiple stocks
   
   Operational Constraints:
-  - Planning budget (remaining steps): {{ max_steps }}
+  - Current step: {{ current_step }}/{{ max_steps }}
+  - When approaching max steps, provide the best possible answer with available information
+  - If max steps reached without completion, summarize progress and indicate what's missing
 
 tools_prompt: |
   Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tools configured){% endif %}

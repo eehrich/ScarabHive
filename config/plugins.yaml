@@ -41,6 +41,11 @@ plugins:
         tools:
           allowed:
             - "*"
+        hooks:
+          enabled: true
+          overrides:
+            todo_management.inject_todo_tasks:
+              enabled: true            
       
       metadata:
         visibility: "both"  # Make available as tool for meta_agent
@@ -196,7 +201,7 @@ plugins:
       
       agent_config:
         llm_profile: normal
-        max_steps: 10
+        max_steps: 50
         
         system_template: "config/prompts/meta_agent_prompt.yaml"
         

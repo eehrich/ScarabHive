@@ -39,10 +39,10 @@ logger = logging.getLogger(__name__)
 # OpenAI tool name pattern requirement
 OPENAI_TOOL_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
-# DeepSeek tool call marker patterns
-DEEPSEEK_TOOL_MARKER_PATTERN = re.compile(r'<[｜|]tool[▁_]calls[▁_]begin[｜|]>')
+# DeepSeek tool call marker patterns (with optional spaces and double underscores)
+DEEPSEEK_TOOL_MARKER_PATTERN = re.compile(r'<\s*[｜|]\s*tool[▁_]+calls[▁_]+begin\s*[｜|]\s*>')
 DEEPSEEK_TOOL_CALL_PATTERN = re.compile(
-    r'<[｜|]tool[▁_]call[▁_]begin[｜|]>([^<]+)<[｜|]tool[▁_]sep[▁_]?[｜|]>(\{[^}]+\})<[｜|]tool[▁_]call[▁_]end[｜|]>'
+    r'<\s*[｜|]\s*tool[▁_]+call[▁_]+begin\s*[｜|]\s*>([^<]+)<\s*[｜|]\s*tool[▁_]+sep[▁_]*\s*[｜|]\s*>(\{[^}]+\})<\s*[｜|]\s*tool[▁_]+call[▁_]+end\s*[｜|]\s*>'
 )
 
 
@@ -601,7 +601,8 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
         This hook converts them to OpenAI-compatible tool_calls format.
         """
         try:
-            llm_response = context.metadata.get("llm_response", {})
+            # llm_response is a direct field on HookContext, not in metadata!
+            llm_response = context.llm_response or {}
             content = llm_response.get("content", "")
             tool_calls = llm_response.get("tool_calls", [])
             
@@ -611,13 +612,9 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                 f"has tool_calls: {bool(tool_calls)}"
             )
             
-            # Skip if no content or already has tool_calls
+            # Skip if no content
             if not content or not isinstance(content, str):
                 logger.debug("[parse_deepseek_response] No string content to parse")
-                return HookResult(success=True, modified=False, context=context)
-            
-            if tool_calls:
-                logger.debug("[parse_deepseek_response] Already has tool_calls, skipping")
                 return HookResult(success=True, modified=False, context=context)
             
             # Check for DeepSeek markers
@@ -625,10 +622,34 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                 logger.debug("[parse_deepseek_response] No DeepSeek markers found")
                 return HookResult(success=True, modified=False, context=context)
             
-            logger.info("[parse_deepseek_response] ⚠️ DETECTED DeepSeek tool markers in response!")
+                        # DeepSeek sometimes returns BOTH tool_calls AND markers in content
+            # We need to clean the markers from content even if tool_calls exist
+            already_has_tool_calls = bool(tool_calls)
+            
+            logger.info(
+                f"[parse_deepseek_response] ⚠️ DETECTED DeepSeek tool markers in response! "
+                f"(already_has_tool_calls={already_has_tool_calls})"
+            )
             logger.debug(f"[parse_deepseek_response] Full content with markers: {content}")
             
-            # Extract tool calls from markers
+            # Clean content (remove all marker text)
+            clean_content = DEEPSEEK_TOOL_MARKER_PATTERN.split(content)[0].strip()
+            
+            # If we already have tool_calls from DeepSeek, just clean the content
+            if already_has_tool_calls:
+                logger.warning(
+                    "[parse_deepseek_response] ⚠️ DeepSeek sent BOTH tool_calls AND markers! "
+                    f"Cleaning {len(content) - len(clean_content)} chars of marker text from content. "
+                    f"Tool calls: {[tc.get('function', {}).get('name', 'unknown') for tc in tool_calls]}"
+                )
+                modified_response = {
+                    "content": clean_content or "",
+                    "tool_calls": tool_calls  # Keep existing tool_calls
+                }
+                modified_context = replace(context, llm_response=modified_response)
+                return HookResult(success=True, modified=True, context=modified_context)
+            
+            # Otherwise, parse tool calls from markers
             matches = DEEPSEEK_TOOL_CALL_PATTERN.findall(content)
             if not matches:
                 logger.warning("[parse_deepseek_response] DeepSeek markers found but no parseable tool calls")
@@ -656,24 +677,22 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                 logger.warning("[parse_deepseek_response] No valid tool calls extracted from DeepSeek markers")
                 return HookResult(success=True, modified=False, context=context)
             
-            # Clean content (remove all marker text)
-            clean_content = DEEPSEEK_TOOL_MARKER_PATTERN.split(content)[0].strip()
-            
-            # Update llm_response
+            # Update llm_response with parsed tool calls
             modified_response = {
                 "content": clean_content or "",
                 "tool_calls": parsed_tool_calls
             }
             
-            logger.info(
-                f"[parse_deepseek_response] ✅ Parsed {len(parsed_tool_calls)} DeepSeek tool calls: "
+            logger.warning(
+                f"[parse_deepseek_response] ⚠️ DeepSeek used legacy marker format! "
+                f"Converted {len(parsed_tool_calls)} tool calls to OpenAI format: "
                 f"{[tc['function']['name'] for tc in parsed_tool_calls]}"
             )
             
-            # Update context with modified response
+            # Update context with modified response (llm_response is a direct field, not in metadata!)
             modified_context = replace(
                 context,
-                metadata={**context.metadata, "llm_response": modified_response}
+                llm_response=modified_response
             )
             
             return HookResult(
