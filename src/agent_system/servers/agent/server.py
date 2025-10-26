@@ -764,14 +764,14 @@ class Agent(MCPServer):
             server_getter_func=self._get_server_from_any_registry
         )
         
-        tools_schema, tool_name_mapping, usable_tools = await schema_builder.build_schemas(
+        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
             usable_tools
         )
 
         # Return initialized context
         return ConversationContext(
             messages=messages,
-            available_tools=usable_tools,
+            available_tools=display_tools,  # Use display_tools for prompt (individual tool names only)
             tools_schema=tools_schema,
             tool_name_mapping=tool_name_mapping,
             max_steps=max_steps,

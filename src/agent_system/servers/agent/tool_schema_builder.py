@@ -40,7 +40,7 @@ class ToolSchemaBuilder:
     async def build_schemas(
         self,
         available_tools: List[str]
-    ) -> Tuple[List[Dict], Dict[str, str], List[str]]:
+    ) -> Tuple[List[Dict], Dict[str, str], List[str], List[str]]:
         """
         Build tool schemas for LLM and maintain name mapping.
         
@@ -55,7 +55,8 @@ class ToolSchemaBuilder:
             Tuple of:
             - tools_schema: List of OpenAI function schemas
             - tool_name_mapping: Maps individual tool names to server names
-            - updated_available_tools: Extended list with individual tool names
+            - usable_tools: Extended list with individual tool names (for internal use)
+            - display_tools: List of ONLY individual tool names (for prompt display)
         """
         tools_schema: List[Dict] = []
         tool_name_mapping: Dict[str, str] = {}
@@ -75,9 +76,15 @@ class ToolSchemaBuilder:
         )
         
         # Extend available_tools with individual tool names from multi-tool servers
-        updated_available_tools = available_tools + internal_tools_to_add
+        usable_tools = available_tools + internal_tools_to_add
         
-        return tools_schema, tool_name_mapping, updated_available_tools
+        # For prompt display, show ONLY individual tool names (not server names)
+        # This avoids listing both "duckduckgo_search" and "duckduckgo_search_web_search"
+        display_tools = internal_tools_to_add + [
+            tool for tool in available_tools if "." in tool  # External tools (e.g., "context7.resolve-library-id")
+        ]
+        
+        return tools_schema, tool_name_mapping, usable_tools, display_tools
     
     async def _build_internal_tool_schemas(
         self,
