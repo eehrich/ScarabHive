@@ -115,6 +115,83 @@ async def list_sessions(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+@session_router.get("/{session_id}")
+async def get_session(
+    session_id: str,
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+    default_agent=Depends(get_agent_optional),
+    mcp_registry=Depends(get_mcp_registry),
+):
+    """Get session with messages (authenticated or anonymous)."""
+    # Determine user_id: use username if authenticated, otherwise "anonymous"
+    user_id = current_user.username if current_user else "anonymous"
+    
+    try:
+        from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
+        
+        session = await session_manager.load_session(user_id, session_id)
+        
+        # Format assistant messages to HTML for frontend display
+        if session.get("messages"):
+            # Get the agent that was used in this session
+            session_agent_name = session.get("agent_name")
+            formatting_agent = None
+            
+            # Try to get the specific agent from the session
+            if session_agent_name and mcp_registry:
+                try:
+                    from agent_system.servers.agent.server import Agent as _Agent
+                    session_agent = mcp_registry.get(session_agent_name)
+                    if isinstance(session_agent, _Agent):
+                        formatting_agent = session_agent
+                    else:
+                        logger.warning(f"Session agent '{session_agent_name}' is not an Agent instance, using default")
+                except KeyError:
+                    logger.warning(f"Session agent '{session_agent_name}' not found in registry, using default")
+                except Exception as e:
+                    logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, using default")
+            
+            # Fallback to default agent if session agent not available
+            if not formatting_agent:
+                formatting_agent = default_agent
+            
+            # Format messages using the correct agent's hooks
+            if formatting_agent:
+                try:
+                    # Format each assistant message using agent's hooks
+                    for msg in session["messages"]:
+                        if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
+                            # Only format if not already formatted
+                            if not msg.get("content_format") or msg.get("content_format") != "html":
+                                try:
+                                    formatted_content, content_format = await formatting_agent._hook_manager.execute_format_output_hooks(
+                                        output=msg["content"],
+                                        request_id="session_load",
+                                        session_id=session_id,
+                                        output_format='html'
+                                    )
+                                    msg["content"] = formatted_content
+                                    msg["content_format"] = content_format
+                                except Exception as format_error:
+                                    logger.warning(f"Failed to format message in session {session_id}: {format_error}")
+                                    # Keep original content if formatting fails
+                                    msg["content_format"] = "text"
+                except Exception as hook_error:
+                    logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
+                    # Return session without formatting if hook access fails
+        
+        return session
+    
+    except SessionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
+    except SessionPermissionError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    except Exception as e:
+        logger.exception("Failed to get session %s: %s", session_id, e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
 @session_router.get("/{session_id}/messages")
 async def get_session_messages(
     session_id: str,

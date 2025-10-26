@@ -122,11 +122,12 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
             was_modified = False
             
             if has_system:
-                # Append to existing system message
+                # Append to first system message only
                 modified_messages = []
+                already_appended = False
                 for msg in messages:
                     msg_role = msg.get('role') if isinstance(msg, dict) else getattr(msg, 'role', None)
-                    if msg_role == 'system':
+                    if msg_role == 'system' and not already_appended:
                         existing_content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', '')
                         # Check if already injected to avoid duplication
                         if self.system_prompt_template in existing_content:
@@ -140,6 +141,7 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                             modified_msg = msg.model_copy(update={'content': new_content})
                         modified_messages.append(modified_msg)
                         was_modified = True
+                        already_appended = True
                     else:
                         modified_messages.append(msg)
                 messages = modified_messages

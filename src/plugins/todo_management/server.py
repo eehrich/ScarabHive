@@ -1305,12 +1305,17 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 {
                     "task_id": t.task_id,
                     "title": t.title,
+                    "description": t.description,
                     "status": t.status.value,
                     "priority": t.priority.value,
                     "progress": t.progress,
                     "is_blocked": self._is_blocked(t, collection),
                     "created_at": t.created_at.isoformat().replace('+00:00', 'Z'),
                     "updated_at": t.updated_at.isoformat().replace('+00:00', 'Z'),
+                    "started_at": t.started_at.isoformat().replace('+00:00', 'Z') if t.started_at else None,
+                    "completed_at": t.completed_at.isoformat().replace('+00:00', 'Z') if t.completed_at else None,
+                    "depends_on": t.depends_on,
+                    "blocks": t.blocks,
                     "tags": t.tags,
                 }
                 for t in tasks_page
@@ -1429,6 +1434,33 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             if status:
                 await status.error(f"Internal error: {e}")
             raise TodoError(f"Failed to get task: {e}") from e
+
+    # =========================================================================
+    # Delete Todo
+    # =========================================================================
+
+    async def delete_todo(
+        self,
+        task_id: str,
+        cascade: bool = False,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Delete a task (public API for web endpoints).
+        
+        Args:
+            task_id: Task identifier
+            cascade: If true, also delete dependent tasks
+            context: MCP tool call context
+            
+        Returns:
+            Deletion summary with cascade list
+        """
+        return await self._delete_todo_impl(
+            task_id=task_id,
+            cascade=cascade,
+            context=context,
+        )
 
     async def _delete_todo_impl(
         self,
@@ -1695,6 +1727,12 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             # Format task list
             from agent_system.llm.models import ChatMessage
             task_prompt = self._format_tasks_for_prompt(result["tasks"], format_type)
+            
+            # Check if already injected to avoid duplication
+            for msg in context.messages:
+                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
+                if "Active TODO Tasks" in msg_content:
+                    return HookResult(success=True, modified=False, context=context)
             
             # Insert after first system message
             insert_pos = self._find_system_message_position(context.messages)

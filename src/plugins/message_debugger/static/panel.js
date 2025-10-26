@@ -181,7 +181,7 @@ const messageDebugger = {
                     <div class="message-role">${msg.role}${toolResultBadge}</div>
                     ${tokens ? `<div class="message-tokens">${tokens}</div>` : ''}
                 </div>
-                <div class="message-content">${this.escapeHtml(content.substring(0, 500))}${content.length > 500 ? '...' : ''}</div>
+                <div class="message-content">${this.escapeHtml(content.substring(0, 20000))}${content.length > 20000 ? '...' : ''}</div>
                 ${toolCallsHtml}
             </div>
         `;
