@@ -1229,10 +1229,11 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         only_unblocked: bool = False,
         sort_by: str = "created_at",
         limit: Optional[int] = None,
+        offset: int = 0,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Query tasks with filters.
+        Query tasks with filters and pagination.
         
         Args:
             filter_status: Filter by status (can be list)
@@ -1241,6 +1242,7 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             only_unblocked: Exclude tasks with incomplete dependencies
             sort_by: Sort field (priority/created_at/updated_at/progress)
             limit: Max results to return
+            offset: Number of results to skip (for pagination)
             context: MCP tool call context
             
         Returns:
@@ -1288,10 +1290,15 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
             tasks = sorted(tasks, key=sort_key)
 
-            # Apply limit
+            # Apply pagination (offset + limit)
             filtered_count = len(tasks)
+            tasks_page = tasks[offset:]
             if limit and limit > 0:
-                tasks = tasks[:limit]
+                tasks_page = tasks_page[:limit]
+            
+            # Calculate pagination metadata
+            has_more = (offset + len(tasks_page)) < filtered_count
+            next_offset = offset + len(tasks_page) if has_more else None
 
             # Build response
             task_summaries = [
@@ -1306,7 +1313,7 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                     "updated_at": t.updated_at.isoformat().replace('+00:00', 'Z'),
                     "tags": t.tags,
                 }
-                for t in tasks
+                for t in tasks_page
             ]
 
             # Short status message
@@ -1317,6 +1324,10 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 "total_count": len(collection.tasks),
                 "filtered_count": filtered_count,
                 "returned_count": len(task_summaries),
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "next_offset": next_offset,
                 "tasks": task_summaries,
                 "filters_applied": {
                     k: v

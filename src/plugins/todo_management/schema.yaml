@@ -159,6 +159,12 @@ tools:
             maximum: 1000
             default: 100
             description: "Max results (for list operation)"
+          
+          offset:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "Number of results to skip for pagination (for list operation)"
         
         required: ["operation"]
         additionalProperties: false
