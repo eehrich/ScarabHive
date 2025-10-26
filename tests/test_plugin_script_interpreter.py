@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
-# Now import our modules
-from plugins.script_interpreter.config import ScriptInterpreterConfig
-from plugins.script_interpreter.executor import ScriptExecutor
-from plugins.script_interpreter.server import ScriptInterpreterServer
+# Now import our modules  # noqa: E402
+from plugins.script_interpreter.config import ScriptInterpreterConfig  # noqa: E402
+from plugins.script_interpreter.executor import ScriptExecutor  # noqa: E402
+from plugins.script_interpreter.server import ScriptInterpreterServer  # noqa: E402
 
 
 class TestScriptInterpreterBasic:
@@ -151,23 +151,23 @@ class TestScriptInterpreterBasic:
     def test_server_list_tools(self, mock_system_config, mock_mcp_config):
         """Test server tool listing."""
         config = ScriptInterpreterConfig()
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         tools = server.get_tools()
         assert isinstance(tools, list)
         assert len(tools) >= 2  # eval, reset
         
         tool_names = [tool["function"]["name"] for tool in tools]
-        assert "execute_python_sandbox" in tool_names
-        assert "reset_python_sandbox" in tool_names
+        assert "script_interpreter_execute" in tool_names
+        assert "script_interpreter_reset" in tool_names
 
     @pytest.mark.asyncio
     async def test_server_eval_tool(self, mock_system_config, mock_mcp_config):
         """Test server eval tool."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
-        result = await server.call("execute_python_sandbox", {"code": "2 + 3", "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": "2 + 3", "_status": mock_status})
         
         assert "error" not in result
         assert "result" in result
@@ -175,21 +175,21 @@ class TestScriptInterpreterBasic:
     @pytest.mark.asyncio
     async def test_server_reset_tool(self, mock_system_config, mock_mcp_config):
         """Test server reset tool."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         # Execute something first
         mock_status = AsyncMock()
-        await server.call("execute_python_sandbox", {"code": "x = 42", "_status": mock_status})
+        await server.call("script_interpreter_execute", {"code": "x = 42", "_status": mock_status})
         
         # Reset
-        result = await server.call("reset_python_sandbox", {"_status": mock_status})
+        result = await server.call("script_interpreter_reset", {"_status": mock_status})
         assert "error" not in result
         assert "result" in result
 
     @pytest.mark.asyncio
     async def test_server_error_handling(self, mock_system_config, mock_mcp_config):
         """Test server error handling for invalid tools."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
         with pytest.raises(ValueError, match="Tool 'unknown_tool' not found"):
@@ -471,8 +471,8 @@ class TestSchemaCompliance:
         assert len(tools) >= 2  # Should have eval, reset at minimum
         
         tool_names = [tool["function"]["name"] for tool in tools]
-        assert "execute_python_sandbox" in tool_names
-        assert "reset_python_sandbox" in tool_names
+        assert any("_execute" in name for name in tool_names)
+        assert any("_reset" in name for name in tool_names)
 
     def test_eval_tool_schema(self, mock_system_config, mock_mcp_config):
         """Test eval tool schema structure."""
@@ -483,7 +483,9 @@ class TestSchemaCompliance:
         
         eval_tool = None
         for tool in schema["tools"]:
-            if tool["function"]["name"] == "execute_python_sandbox":
+            # Tool names are templates, check if it contains "_execute"
+            name = tool["function"]["name"]
+            if "_execute" in name or name == "{{ name }}_execute":
                 eval_tool = tool
                 break
         
@@ -502,7 +504,9 @@ class TestSchemaCompliance:
         
         reset_tool = None
         for tool in schema["tools"]:
-            if tool["function"]["name"] == "reset_python_sandbox":
+            # Tool names are templates, check if it contains "_reset"
+            name = tool["function"]["name"]
+            if "_reset" in name or name == "{{ name }}_reset":
                 reset_tool = tool
                 break
         
@@ -545,10 +549,10 @@ class TestMCPServerIntegration:
     @pytest.mark.asyncio
     async def test_mcpserver_call_method(self, mock_system_config, mock_mcp_config):
         """Test MCP server call method."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
-        result = await server.call("execute_python_sandbox", {"code": "1 + 1", "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": "1 + 1", "_status": mock_status})
         
         assert isinstance(result, dict)
         assert "result" in result or "error" in result
@@ -556,16 +560,16 @@ class TestMCPServerIntegration:
     @pytest.mark.asyncio
     async def test_mcpserver_call_eval(self, mock_system_config, mock_mcp_config):
         """Test MCP server eval call."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
-        result = await server.call("execute_python_sandbox", {"code": "2 * 3", "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": "2 * 3", "_status": mock_status})
         
         assert "result" in result or "error" in result
 
     def test_mcpserver_get_tools_method(self, mock_system_config, mock_mcp_config):
         """Test MCP server get_tools method."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         tools = server.get_tools()
         assert isinstance(tools, list)
@@ -577,7 +581,7 @@ class TestMCPServerIntegration:
     @pytest.mark.asyncio
     async def test_mcpserver_handles_unknown_tool(self, mock_system_config, mock_mcp_config):
         """Test MCP server raises ValueError for unknown tools."""
-        server = ScriptInterpreterServer("test", mock_system_config, mock_mcp_config)
+        server = ScriptInterpreterServer("script_interpreter", mock_system_config, mock_mcp_config)
         
         mock_status = AsyncMock()
         with pytest.raises(ValueError, match="Tool 'unknown_tool' not found"):

@@ -18,7 +18,7 @@ async def test_web_scraper_plugin_discovered():
     plugins = discover_all_plugins([default_dir])
     assert "web_scraper" in plugins
     factory = plugins["web_scraper"]
-    inst = factory("web_scraper", {}, {})
+    inst = factory("web_scraper_page", {}, {})
     assert inst is not None
 
 
@@ -26,23 +26,23 @@ class TestWebScraperServer:
     """Test the Web Scraper server functionality."""
 
     def test_scraper_server_initialization(self, mock_system_config, mock_mcp_config):
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
-        assert server.name == "scraper"
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        assert server.name == "web_scraper"
         assert server.ssl_verify is True
 
     def test_scraper_server_initialization_with_config(self, mock_system_config):
         from agent_system.config.models import MCPConfig, AgentConfig
         
-        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+        mcp_config = MCPConfig(type="web_scraper_page", enabled=True, agent_config=AgentConfig())
         mcp_config.timeout = 30
         mcp_config.user_agent = "test-agent"
         
-        server = WebScraperServer("scraper", mock_system_config, mcp_config)
-        assert server.name == "scraper"
+        server = WebScraperServer("web_scraper", mock_system_config, mcp_config)
+        assert server.name == "web_scraper"
         assert server.ssl_verify is True
 
     def test_scraper_server_schema(self, mock_system_config, mock_mcp_config):
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
 
         assert isinstance(tools, list)
@@ -50,7 +50,7 @@ class TestWebScraperServer:
 
         tool = tools[0]
         assert tool["type"] == "function"
-        assert tool["function"]["name"] == "scrape_webpage"
+        assert tool["function"]["name"] == "web_scraper_page"
         assert "description" in tool["function"]
         assert tool["function"]["parameters"]["type"] == "object"
 
@@ -58,22 +58,22 @@ class TestWebScraperServer:
         assert "url" in params["properties"]
 
     def test_scraper_server_tool_name(self, mock_system_config, mock_mcp_config):
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
-        assert tools[0]["function"]["name"] == "scrape_webpage"
+        assert tools[0]["function"]["name"] == "web_scraper_page"
 
     @pytest.mark.asyncio
     async def test_scraper_server_missing_url(self, mock_system_config, mock_mcp_config):
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
-        result = await server.call("scrape_webpage", {"_status": mock_status})
+        result = await server.call("web_scraper_page", {"_status": mock_status})
         assert "error" in result
         assert "url" in result["error"].lower()
 
     @pytest.mark.asyncio
     async def test_scraper_server_invalid_tool(self, mock_system_config, mock_mcp_config):
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
         # Modern pattern: generic dispatcher raises ValueError
@@ -82,7 +82,7 @@ class TestWebScraperServer:
 
     @pytest.mark.asyncio
     async def test_scraper_server_valid_url(self, mock_system_config, mock_mcp_config):
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 
         with patch('aiohttp.ClientSession') as mock_session_class:
             mock_response = MagicMock()
@@ -95,42 +95,15 @@ class TestWebScraperServer:
             mock_session_class.return_value.__aenter__.return_value = mock_session
 
             mock_status = AsyncMock()
-            result = await server.call("scrape_webpage", {"url": "https://example.com", "_status": mock_status})
+            result = await server.call("web_scraper_page", {"url": "https://example.com", "_status": mock_status})
             # If there's an error key it should not indicate an unknown tool
             assert "error" not in result or "Unknown tool" not in result.get("error", "")
-
-
-class TestWebScraperPluginFactory:
-    def test_plugin_factory_basic(self, mock_system_config, mock_mcp_config):
-        from plugins.web_scraper.plugin import PLUGIN_FACTORY
-
-        server = PLUGIN_FACTORY("scraper", mock_system_config, mock_mcp_config)
-        assert server.name == "scraper"
-        assert server.ssl_verify is True
-
-    def test_plugin_factory_with_config(self, mock_system_config):
-        from plugins.web_scraper.plugin import PLUGIN_FACTORY
-        from agent_system.config.models import MCPConfig, AgentConfig
-
-        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
-        mcp_config.timeout = 60
-        mcp_config.user_agent = "custom-agent"
-        
-        server = PLUGIN_FACTORY("scraper", mock_system_config, mcp_config)
-        assert server.name == "scraper"
-        assert server.ssl_verify is True
-
-    def test_plugin_factory_name_parameter(self, mock_system_config, mock_mcp_config):
-        from plugins.web_scraper.plugin import PLUGIN_FACTORY
-
-        server = PLUGIN_FACTORY("custom_scraper", mock_system_config, mock_mcp_config)
-        assert server.name == "custom_scraper"
 
 
 # Improvements tests (merged from test_web_scraper_improvements.py)
 @pytest.fixture
 def web_scraper(mock_system_config, mock_mcp_config):
-    return WebScraperServer("test_web_scraper", mock_system_config, mock_mcp_config)
+    return WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 
 
 class TestCloudflareDetection:
@@ -239,7 +212,7 @@ class TestIntegration:
         
         # Need to provide _status mock
         mock_status = AsyncMock()
-        result = await web_scraper.call("scrape_webpage", {"url": "https://example.com", "ignore_cache": True, "_status": mock_status})
+        result = await web_scraper.call("web_scraper_page", {"url": "https://example.com", "ignore_cache": True, "_status": mock_status})
         assert result["status_code"] == 403
         assert "blocked:" in result["text"]
         assert "access forbidden (403)" in result["text"]
@@ -252,25 +225,25 @@ class TestIntegration:
         )
         assert "Chrome/120.0.0.0" in user_agent
         assert "Safari/537.36" in user_agent
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
-        assert server.name == "scraper"
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
+        assert server.name == "web_scraper"
         assert server.ssl_verify is True
 
     def test_scraper_server_initialization_with_config(self, mock_system_config):
         """Test Web Scraper server initialization with config."""
         from agent_system.config.models import MCPConfig, AgentConfig
         
-        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+        mcp_config = MCPConfig(type="web_scraper_page", enabled=True, agent_config=AgentConfig())
         mcp_config.timeout = 30
         mcp_config.user_agent = "test-agent"
         
-        server = WebScraperServer("scraper", mock_system_config, mcp_config)
-        assert server.name == "scraper"
+        server = WebScraperServer("web_scraper", mock_system_config, mcp_config)
+        assert server.name == "web_scraper"
         assert server.ssl_verify is True
 
     def test_scraper_server_schema(self, mock_system_config, mock_mcp_config):
         """Test Web Scraper server tools structure."""
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
 
         assert isinstance(tools, list)
@@ -278,7 +251,7 @@ class TestIntegration:
         
         tool = tools[0]
         assert tool["type"] == "function"
-        assert tool["function"]["name"] == "scrape_webpage"
+        assert tool["function"]["name"] == "web_scraper_page"
         assert "description" in tool["function"]
         assert tool["function"]["parameters"]["type"] == "object"
 
@@ -287,24 +260,24 @@ class TestIntegration:
 
     def test_scraper_server_tool_name(self, mock_system_config, mock_mcp_config):
         """Test Web Scraper server tool name."""
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
-        assert tools[0]["function"]["name"] == "scrape_webpage"
+        assert tools[0]["function"]["name"] == "web_scraper_page"
 
     @pytest.mark.asyncio
     async def test_scraper_server_missing_url(self, mock_system_config, mock_mcp_config):
-        """Test Web Scraper server with missing URL."""
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        """Test Web Scraper server with missing URL parameter."""
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
-        result = await server.call("scrape_webpage", {"_status": mock_status})
+        result = await server.call("web_scraper_page", {"_status": mock_status})
         assert "error" in result
         assert "url" in result["error"].lower()
 
     @pytest.mark.asyncio
     async def test_scraper_server_invalid_tool(self, mock_system_config, mock_mcp_config):
         """Test Web Scraper server with invalid tool name."""
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
         # Modern pattern: generic dispatcher raises ValueError
@@ -314,7 +287,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_scraper_server_valid_url(self, mock_system_config, mock_mcp_config):
         """Test Web Scraper server with valid URL."""
-        server = WebScraperServer("scraper", mock_system_config, mock_mcp_config)
+        server = WebScraperServer("web_scraper", mock_system_config, mock_mcp_config)
 
         # Mock the HTTP session and response
         with patch('aiohttp.ClientSession') as mock_session_class:
@@ -328,7 +301,7 @@ class TestIntegration:
             mock_session_class.return_value.__aenter__.return_value = mock_session
 
             mock_status = AsyncMock()
-            result = await server.call("scrape_webpage", {"url": "https://example.com", "_status": mock_status})
+            result = await server.call("web_scraper_page", {"url": "https://example.com", "_status": mock_status})
             
             # Should not fail with "Unknown tool" error and should contain scraped content
             assert "error" not in result or "Unknown tool" not in result.get("error", "")
@@ -341,8 +314,8 @@ class TestWebScraperPluginFactory:
         """Test basic plugin factory functionality."""
         from plugins.web_scraper.plugin import PLUGIN_FACTORY
 
-        server = PLUGIN_FACTORY("scraper", mock_system_config, mock_mcp_config)
-        assert server.name == "scraper"
+        server = PLUGIN_FACTORY("web_scraper_page", mock_system_config, mock_mcp_config)
+        assert server.name == "web_scraper_page"
         assert server.ssl_verify is True
 
     def test_plugin_factory_with_config(self, mock_system_config):
@@ -350,12 +323,12 @@ class TestWebScraperPluginFactory:
         from plugins.web_scraper.plugin import PLUGIN_FACTORY
         from agent_system.config.models import MCPConfig, AgentConfig
 
-        mcp_config = MCPConfig(type="web_scraper", enabled=True, agent_config=AgentConfig())
+        mcp_config = MCPConfig(type="web_scraper_page", enabled=True, agent_config=AgentConfig())
         mcp_config.timeout = 60
         mcp_config.user_agent = "custom-agent"
         
-        server = PLUGIN_FACTORY("scraper", mock_system_config, mcp_config)
-        assert server.name == "scraper"
+        server = PLUGIN_FACTORY("web_scraper_page", mock_system_config, mcp_config)
+        assert server.name == "web_scraper_page"
         assert server.ssl_verify is True
 
     def test_plugin_factory_name_parameter(self, mock_system_config, mock_mcp_config):

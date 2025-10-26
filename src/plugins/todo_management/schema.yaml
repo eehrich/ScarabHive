@@ -8,8 +8,8 @@ web_ui:
   
   panel:
     enabled: true
-    title: "TODO Manager"
-    endpoint: "/plugins/todo_management/panel"
+    title: "TODO Management"
+    endpoint: "/plugins/{{ name }}/panel"
     type: "iframe"
     width: "1000px"
     height: "800px"
@@ -50,8 +50,9 @@ config:
 tools:
   - type: function
     function:
-      name: "todo"
-      description: "TODO task manager with explicit operations: create, update, delete, list, get, summary"
+      name: "{{ name }}"
+      description: |
+        Unified TODO management tool supporting all task operations.
       parameters:
         type: object
         properties:

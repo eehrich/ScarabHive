@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: list_log_files
+      name: "{{ name }}_list"
       description: List all available log files in the configured log directory.
       parameters:
         type: object
@@ -10,7 +10,7 @@ tools:
 
   - type: function
     function:
-      name: get_log_tail
+      name: "{{ name }}_tail"
       description: Get the most recent lines from a specified log file.
       parameters:
         type: object
@@ -27,7 +27,7 @@ tools:
 
   - type: function
     function:
-      name: search_logs
+      name: "{{ name }}_search"
       description: Search log files for patterns with regex support.
       parameters:
         type: object
@@ -58,23 +58,23 @@ web_ui:
   panel:
     enabled: true
     title: "Real-time Log Viewer"
-    endpoint: "/plugins/log_viewer/panel"
+    endpoint: "/plugins/{{ name }}/panel"
     type: "fetch"  # How to load content: "fetch" or "iframe"
     description: "View application logs with polling-based updates (avoids infinite logging loops)"
   
   endpoints:
-    - path: "/logs/list"
+    - path: "/plugins/{{ name }}/logs/list"
       method: "GET"
       description: "List available log files with metadata"
-    - path: "/logs/content/{log_name}"
+    - path: "/plugins/{{ name }}/logs/content/{log_name}"
       method: "GET"
       description: "Get log file content with optional timestamp filtering (avoids infinite loops)"
-    - path: "/logs/poll/{log_name}"
+    - path: "/plugins/{{ name }}/logs/poll/{log_name}"
       method: "GET"
       description: "Poll for log updates since last timestamp (non-streaming approach)"
-    - path: "/panel.html"
+    - path: "/plugins/{{ name }}/panel.html"
       method: "GET"
       description: "Main log viewer UI panel"
-    - path: "/static/{file_path}"
+    - path: "/plugins/{{ name }}/static/{file_path}"
       method: "GET"
       description: "Static assets (CSS, JS, images)"

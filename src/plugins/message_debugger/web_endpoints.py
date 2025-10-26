@@ -17,15 +17,17 @@ logger = logging.getLogger(__name__)
 class MessageDebuggerWebFactory:
     """Web UI factory for message debugger plugin."""
     
-    def __init__(self, message_history: List[Dict[str, Any]]):
+    def __init__(self, message_history: List[Dict[str, Any]], name: str = "message_debugger"):
         """Initialize web factory with shared message history.
         
         Args:
             message_history: Shared list of message snapshots
+            name: Plugin instance name for dynamic routing
         """
+        self.name = name
         self.message_history = message_history
         self.plugin_dir = Path(__file__).parent
-        self.router = APIRouter(prefix="/plugins/message_debugger")
+        self.router = APIRouter(prefix=f"/plugins/{self.name}")
         
         # Register all routes
         self._register_routes()

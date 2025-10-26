@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: scrape_webpage
+      name: "{{ name }}_page"
       description: Scrape web pages to extract text content, structured data (tables, forms, lists), or extract all links. Supports flexible content extraction modes.
       parameters:
         type: object

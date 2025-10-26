@@ -76,11 +76,11 @@ class TestLLMRouterServerNew:
         assert len(tools) == 2
         
         tool_names = [tool["function"]["name"] for tool in tools]
-        assert "chat_agent" in tool_names
-        assert "list_profiles" in tool_names
+        assert "llm_router_chat" in tool_names
+        assert "llm_router_list_profiles" in tool_names
 
         # Verify chat_agent tool structure
-        chat_tool = next(tool for tool in tools if tool["function"]["name"] == "chat_agent")
+        chat_tool = next(tool for tool in tools if tool["function"]["name"] == "llm_router_chat")
         assert chat_tool["type"] == "function"
         assert "description" in chat_tool["function"]
         
@@ -96,7 +96,7 @@ class TestLLMRouterServerNew:
         server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         mock_status = AsyncMock()
         
-        result = await server.call("chat_agent", {"message": "Hello", "_status": mock_status})
+        result = await server.call("llm_router_chat", {"message": "Hello", "_status": mock_status})
         assert "error" in result
         assert "Profile parameter is required" in result["error"]
 
@@ -106,7 +106,7 @@ class TestLLMRouterServerNew:
         server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         mock_status = AsyncMock()
         
-        result = await server.call("chat_agent", {"profile": "test", "_status": mock_status})
+        result = await server.call("llm_router_chat", {"profile": "test", "_status": mock_status})
         assert "error" in result
         assert "No message or messages provided" in result["error"]
 
@@ -130,7 +130,7 @@ class TestLLMRouterServerNew:
         server = LLMRouterServer("llm_router", mock_system_config, mock_mcp_config)
         mock_status = AsyncMock()
         
-        result = await server.call("list_profiles", {"_status": mock_status})
+        result = await server.call("llm_router_list_profiles", {"_status": mock_status})
         
         assert "profiles" in result
         assert "total_count" in result
@@ -172,7 +172,7 @@ class TestLLMRouterServerNew:
         mock_client.model = "gpt-5-nano"
         
         with patch.object(server, '_make_client', return_value=mock_client):
-            result = await server.call("chat_agent", {
+            result = await server.call("llm_router_chat", {
                 "message": "Hello world",
                 "profile": "test",
                 "_status": mock_status

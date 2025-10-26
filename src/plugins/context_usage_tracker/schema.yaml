@@ -23,15 +23,15 @@ web_ui:
     default_height: 600
     
   endpoints:
-    - path: "/plugins/context_usage_tracker/panel"
+    - path: "/plugins/{{ name }}/panel"
       method: "GET"
-      description: "Context usage debug panel"
-    - path: "/plugins/context_usage_tracker/usage"
+      description: "Render the context usage debug panel"
+    - path: "/plugins/{{ name }}/usage"
       method: "GET"
       description: "Get current usage statistics"
-    - path: "/plugins/context_usage_tracker/history"
+    - path: "/plugins/{{ name }}/history"
       method: "GET"
-      description: "Get usage history"
-    - path: "/plugins/context_usage_tracker/clear"
+      description: "Get historical usage data"
+    - path: "/plugins/{{ name }}/clear"
       method: "POST"
       description: "Clear usage history"

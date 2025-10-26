@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: execute_python_sandbox
+      name: "{{ name }}_execute"
       description: |
         Execute Python code in a secure sandbox. Supports built-in types, math/stats, control flow, functions, f-strings, and type checking.
         No imports, os function or global dunders allowed.
@@ -17,7 +17,7 @@ tools:
 
   - type: function
     function:
-      name: reset_python_sandbox
+      name: "{{ name }}_reset"
       description: Reset the Python sandbox environment, clearing all variables and state.
       parameters:
         type: object

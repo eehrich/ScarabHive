@@ -85,18 +85,18 @@ web_ui:
   # Panel configuration
   panel:
     enabled: true
-    title: "Context Summarization History"
-    endpoint: "/plugins/context_summarizer/panel"
+    title: "Context Summarizer"
+    endpoint: "/plugins/{{ name }}/panel"
     type: "iframe"
     description: "View summarization events with before/after message counts and token savings"
   
   endpoints:
-    - path: "/plugins/context_summarizer/history"
+    - path: "/plugins/{{ name }}/history"
       method: "GET"
       description: "Get summarization event history with timestamps and statistics"
-    - path: "/plugins/context_summarizer/stats"
+    - path: "/plugins/{{ name }}/stats"
       method: "GET"
       description: "Get aggregated summarization statistics"
-    - path: "/plugins/context_summarizer/panel"
+    - path: "/plugins/{{ name }}/panel"
       method: "GET"
       description: "Main context summarizer UI panel"

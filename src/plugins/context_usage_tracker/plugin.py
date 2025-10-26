@@ -110,8 +110,8 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
         
         plugin_dir = Path(__file__).parent
         
-        # Initialize shared tracker
-        self.tracker = UsageTracker(max_history=1000)
+        # Initialize shared tracker with plugin name for dynamic routing
+        self.tracker = UsageTracker(max_history=1000, name=name)
         
         # Initialize hooks (schema-based)
         self.hooks_plugin = ContextUsageTrackerHooks(plugin_dir, self.tracker)

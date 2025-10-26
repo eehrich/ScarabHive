@@ -404,12 +404,12 @@ class WebScraperServer(SchemaBasedMCPServer):
             # Fallback: return empty string if sanitization fails
             return ""
 
-    async def scrape_webpage(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def page(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Scrape webpage content or extract links.
+        Scrape a web page and extract content.
         
         Tool method - automatically called by generic dispatcher.
-        Method name matches tool name in schema.yaml.
+        Tool name: {{ name }}_page → Method: page (after stripping {{ name }}_ prefix)
         """
         operation = params.get("operation", "content")
         if operation not in ("content", "links"):

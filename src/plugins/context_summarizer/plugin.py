@@ -32,8 +32,8 @@ class ContextSummarizerHybridPlugin(SchemaBasedPluginWebInterface):
         # Create hooks plugin with history tracking
         self.hooks_plugin = ContextSummarizerPlugin(plugin_dir, summarization_history=self._summarization_history)
         
-        # Create web UI factory
-        self.web_factory = ContextSummarizerWebFactory(self._summarization_history)
+        # Create web UI factory with plugin name for dynamic routing
+        self.web_factory = ContextSummarizerWebFactory(self._summarization_history, name=name)
     
     # Hook interface - delegate to hooks plugin
     def get_hooks(self):

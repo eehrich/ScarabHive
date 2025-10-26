@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: "sequentialthinking"
+      name: "{{ name }}"
       description: |
         Main reasoning tool for step-by-step problem-solving with dynamic complexity adjustment.
         Supports branching to explore alternative approaches and revising previous thoughts.
@@ -53,7 +53,7 @@ tools:
 
   - type: function
     function:
-      name: "clear_history"
+      name: "{{ name }}_clear_history"
       description: |
         Clear thought history for a specific session or all sessions.
         Use when starting fresh or cleaning up expired sessions.
@@ -67,7 +67,7 @@ tools:
 
   - type: function
     function:
-      name: "get_thought_summary"
+      name: "{{ name }}_get_summary"
       description: |
         Get condensed summary of thought chain for a session.
         Returns recent thoughts with metadata, branch information, and session statistics.

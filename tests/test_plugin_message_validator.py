@@ -1,11 +1,7 @@
 """Unit tests for message_validator plugin."""
 
-import pytest
-from typing import List
 from plugins.message_validator.hooks import (
     InternalMessageValidator,
-    ValidationIssue,
-    ValidationResult,
 )
 from agent_system.llm.models import ChatMessage
 
@@ -34,13 +30,13 @@ class TestToolCallConsistency:
             ChatMessage(
                 role="assistant",
                 content=None,
-                tool_calls=[{"id": "call_1", "function": {"name": "get_weather"}}]
+                tool_calls=[{"id": "call_1", "function": {"name": "weather_forecast"}}]
             ),
             ChatMessage(
                 role="tool",
                 content="Sunny, 72°F",
                 tool_call_id="call_1",
-                name="get_weather"
+                name="weather_forecast"
             ),
             ChatMessage(role="assistant", content="It's sunny and 72°F!")
         ]
@@ -65,7 +61,7 @@ class TestToolCallConsistency:
             ChatMessage(
                 role="assistant",
                 content=None,
-                tool_calls=[{"id": "call_1", "function": {"name": "get_weather"}}]
+                tool_calls=[{"id": "call_1", "function": {"name": "weather_forecast"}}]
             ),
             ChatMessage(role="user", content="Any update?")  # Another message after
         ]
@@ -88,7 +84,7 @@ class TestToolCallConsistency:
             ChatMessage(
                 role="assistant",
                 content=None,
-                tool_calls=[{"id": "call_1", "function": {"name": "get_weather"}}]
+                tool_calls=[{"id": "call_1", "function": {"name": "weather_forecast"}}]
             )
         ]
         
@@ -147,7 +143,7 @@ class TestToolCallConsistency:
                 role="assistant",
                 content=None,
                 tool_calls=[
-                    {"id": "call_1", "function": {"name": "get_weather"}},
+                    {"id": "call_1", "function": {"name": "weather_forecast"}},
                     {"id": "call_2", "function": {"name": "get_time"}}
                 ]
             ),
@@ -188,7 +184,7 @@ class TestContentStructure:
             ChatMessage(
                 role="assistant",
                 content=None,
-                tool_calls=[{"id": "call_1", "function": {"name": "get_weather"}}]
+                tool_calls=[{"id": "call_1", "function": {"name": "weather_forecast"}}]
             ),
             ChatMessage(role="tool", content="Sunny", tool_call_id="call_1")
         ]

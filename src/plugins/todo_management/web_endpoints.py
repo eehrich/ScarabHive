@@ -28,7 +28,7 @@ class TodoWebFactory:
     
     def get_web_router(self) -> APIRouter:
         """Get the FastAPI router for this plugin's web endpoints."""
-        router = APIRouter(prefix="/plugins/todo_management")
+        router = APIRouter(prefix=f"/plugins/{self.server.name}")
         
         @router.get("/panel", response_class=HTMLResponse)
         async def get_panel(request: Request):

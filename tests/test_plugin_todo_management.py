@@ -130,12 +130,15 @@ async def test_create_todo_with_dependencies(server: TodoManagementServer, mock_
 @pytest.mark.asyncio
 async def test_create_todo_invalid_dependency(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test creation with non-existent dependency"""
-    with pytest.raises(DependencyError, match="does not exist"):
-        await server.create_todo(
-            title="Test Task",
-            depends_on=["nonexistent_task"],
-            context=mock_context,
-        )
+    result = await server.create_todo(
+        title="Test Task",
+        depends_on=["nonexistent_task"],
+        context=mock_context,
+    )
+    
+    # Should return validation_failed status, not raise exception
+    assert result["status"] == "validation_failed"
+    assert "does not exist" in result["message"].lower() or "nonexistent" in result["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -148,12 +151,14 @@ async def test_create_todo_max_tasks_limit(server: TodoManagementServer, mock_co
             context=mock_context,
         )
     
-    # 101st task should fail
-    with pytest.raises(ValidationError, match="max tasks limit"):
-        await server.create_todo(
-            title="Overflow Task",
-            context=mock_context,
-        )
+    # 101st task should return limit_reached status
+    result = await server.create_todo(
+        title="Overflow Task",
+        context=mock_context,
+    )
+    
+    assert result["status"] == "limit_reached"
+    assert "max tasks limit" in result["message"].lower()
 
 
 # =============================================================================
@@ -376,13 +381,16 @@ async def test_delete_without_cascade(server: TodoManagementServer, mock_context
         context=mock_context,
     )
     
-    # Try to delete parent without cascade
-    with pytest.raises(DependencyError, match="depend on it"):
-        await server._delete_todo_impl(
-            task_id=parent_id,
-            cascade=False,
-            context=mock_context,
-        )
+    # Try to delete parent without cascade - should return rejected status
+    result = await server._delete_todo_impl(
+        task_id=parent_id,
+        cascade=False,
+        context=mock_context,
+    )
+    
+    assert result["status"] == "rejected"
+    assert result["reason"] == "has_dependents"
+    assert "depend on it" in result["message"].lower()
 
 
 # =============================================================================
@@ -510,8 +518,10 @@ async def test_get_todo(server: TodoManagementServer, mock_context: Dict[str, An
 @pytest.mark.asyncio
 async def test_get_todo_nonexistent(server: TodoManagementServer, mock_context: Dict[str, Any]):
     """Test get non-existent task"""
-    with pytest.raises(ValidationError, match="not found"):
-        await server.get_todo(task_id="nonexistent", context=mock_context)
+    result = await server.get_todo(task_id="nonexistent", context=mock_context)
+    
+    assert result["status"] == "not_found"
+    assert "not found" in result["message"].lower()
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ async def server():
     """Create a script interpreter server for testing."""
     system_config = Mock(spec=AgentSystemConfig)
     mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    server = ScriptInterpreterServer("test", system_config, mcp_config)
+    server = ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
     yield server
 
 
@@ -46,7 +46,7 @@ async def test_file_system_access_blocked(server, mock_status):
     ]
     
     for code in dangerous_file_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"File operation should be blocked: {code}"
 
 
@@ -61,7 +61,7 @@ async def test_environment_variable_access_blocked(server, mock_status):
     ]
     
     for code in env_access_attempts:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Environment access should be blocked: {code}"
 
 
@@ -79,7 +79,7 @@ async def test_process_manipulation_blocked(server, mock_status):
     ]
     
     for code in process_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Process operation should be blocked: {code}"
 
 
@@ -96,7 +96,7 @@ async def test_network_access_blocked(server, mock_status):
     ]
     
     for code in network_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Network operation should be blocked: {code}"
 
 
@@ -119,7 +119,7 @@ async def test_reflection_and_introspection_blocked(server, mock_status):
     ]
     
     for code in reflection_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Reflection operation should be blocked: {code}"
 
 
@@ -136,7 +136,7 @@ async def test_memory_and_gc_manipulation_blocked(server, mock_status):
     ]
     
     for code in memory_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Memory operation should be blocked: {code}"
 
 
@@ -152,7 +152,7 @@ async def test_module_loading_manipulation_blocked(server, mock_status):
     ]
     
     for code in module_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Module operation should be blocked: {code}"
 
 
@@ -168,7 +168,7 @@ async def test_class_and_object_manipulation_blocked(server, mock_status):
     ]
     
     for code in class_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Class manipulation should be blocked: {code}"
 
 
@@ -184,7 +184,7 @@ async def test_encoding_and_codec_manipulation_blocked(server, mock_status):
     ]
     
     for code in codec_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Codec operation should be blocked: {code}"
 
 
@@ -200,7 +200,7 @@ async def test_time_and_signal_manipulation_blocked(server, mock_status):
     ]
     
     for code in time_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Time/signal operation should be blocked: {code}"
 
 
@@ -216,7 +216,7 @@ async def test_serialization_and_persistence_blocked(server, mock_status):
     ]
     
     for code in serialization_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Serialization operation should be blocked: {code}"
 
 
@@ -231,7 +231,7 @@ async def test_logging_and_debugging_blocked(server, mock_status):
     ]
     
     for code in debug_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Debug operation should be blocked: {code}"
 
 
@@ -252,7 +252,7 @@ async def test_legitimate_operations_still_work(server, mock_status):
     ]
     
     for code in safe_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" not in result, f"Safe operation should work: {code}"
         assert "result" in result
 
@@ -282,7 +282,7 @@ async def test_code_injection_attempts_blocked(server, mock_status):
     ]
     
     for code in injection_attempts:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Code injection should be blocked: {code}"
 
 
@@ -299,7 +299,7 @@ async def test_resource_exhaustion_protection(server, mock_status):
     ]
     
     for code in resource_exhaustion_attempts:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" in result, f"Resource exhaustion should be blocked: {code}"
 
 
@@ -314,5 +314,5 @@ async def test_memory_usage_reasonable(server, mock_status):
     ]
     
     for code in moderate_operations:
-        result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+        result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
         assert "error" not in result, f"Moderate memory usage should work: {code}"

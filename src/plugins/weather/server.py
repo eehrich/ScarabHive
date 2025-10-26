@@ -26,12 +26,12 @@ class WeatherServer(SchemaBasedMCPServer):
         # Extract SSL verification setting from system config if available
         self.ssl_verify = getattr(system_config, 'ssl_verify', True)
     
-    async def get_weather(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def forecast(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Get weather conditions and forecasts for any location.
+        Get current weather for a location.
         
         Tool method - automatically called by generic dispatcher.
-        Method name matches tool name in schema.yaml.
+        Tool name: {{ name }}_forecast → Method: forecast (after stripping {{ name }}_ prefix)
         """
         status = params.get("_status")
         cancellation_token = params.get("_cancellation_token")

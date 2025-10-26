@@ -28,7 +28,7 @@ class ContextUsageWebFactory:
     
     def get_web_router(self) -> APIRouter:
         """Get the FastAPI router for this plugin's web endpoints."""
-        router = APIRouter(prefix="/plugins/context_usage_tracker")
+        router = APIRouter(prefix=f"/plugins/{self.tracker.name}")
         
         @router.get("/panel", response_class=HTMLResponse)
         async def get_panel(request: Request):

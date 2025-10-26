@@ -72,7 +72,7 @@ def sample_messages_with_tools():
                 "id": "call_123",
                 "type": "function",
                 "function": {
-                    "name": "get_weather",
+                    "name": "weather_forecast",
                     "arguments": '{"city": "Berlin", "units": "celsius"}'
                 }
             }]
@@ -195,7 +195,7 @@ class TestMessageDebuggerHooks:
         # Find assistant message with tool call
         tool_call_msg = next(m for m in snapshot['messages'] if m.get('tool_calls'))
         assert tool_call_msg['tool_call_count'] == 1
-        assert tool_call_msg['tool_calls'][0]['function']['name'] == "get_weather"
+        assert tool_call_msg['tool_calls'][0]['function']['name'] == "weather_forecast"
         
         # Find tool result message
         tool_result_msg = next(m for m in snapshot['messages'] if m.get('is_tool_result'))

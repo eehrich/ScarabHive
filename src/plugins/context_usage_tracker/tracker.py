@@ -42,7 +42,8 @@ class AgentStats:
 class UsageTracker:
     """Tracks context usage over time."""
     
-    def __init__(self, max_history: int = 1000, storage_path: Optional[Path] = None):
+    def __init__(self, max_history: int = 1000, storage_path: Optional[Path] = None, name: str = "context_usage_tracker"):
+        self.name = name
         self.max_history = max_history
         self._history: deque = deque(maxlen=max_history)
         self._agent_stats: Dict[str, AgentStats] = {}

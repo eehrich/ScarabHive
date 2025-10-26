@@ -53,7 +53,7 @@ class TestBasicOperationsServer:
         
         # Check tool names
         tool_names = [tool["function"]["name"] for tool in tools]
-        expected_names = ["wait", "ping"]
+        expected_names = ["basic_ops_wait", "basic_ops_ping"]
         assert set(tool_names) == set(expected_names)
         
         # Verify each tool has proper structure
@@ -75,7 +75,7 @@ class TestBasicOperationsServer:
         """Test basic ping functionality."""
         server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
         
-        result = await server.call("ping", {})
+        result = await server.call("basic_ops_ping", {})
         
         assert result["status"] == "success"
         assert result["message"] == "Pong!"
@@ -88,7 +88,7 @@ class TestBasicOperationsServer:
         """Test ping with detailed information."""
         server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
         
-        result = await server.call("ping", {"include_details": True})
+        result = await server.call("basic_ops_ping", {"include_details": True})
         
         assert result["status"] == "success"
         assert result["message"] == "Pong!"
@@ -108,7 +108,7 @@ class TestBasicOperationsServer:
         # Provide a mock status because the server assumes one is always present
         mock_status = AsyncMock()
         mock_status.progress = AsyncMock()
-        result = await server.call("wait", {"seconds": 0.1, "_status": mock_status})
+        result = await server.call("basic_ops_wait", {"seconds": 0.1, "_status": mock_status})
         elapsed = time.time() - start_time
 
         assert result["status"] == "success"
@@ -124,7 +124,7 @@ class TestBasicOperationsServer:
         
         mock_status = AsyncMock()
         mock_status.progress = AsyncMock()
-        result = await server.call("wait", {
+        result = await server.call("basic_ops_wait", {
             "seconds": 0.1,
             "message": "Test Operation",
             "_status": mock_status
@@ -147,7 +147,7 @@ class TestBasicOperationsServer:
         
         mock_status.progress = AsyncMock(side_effect=capture_status_update)
         
-        result = await server.call("wait", {
+        result = await server.call("basic_ops_wait", {
             "seconds": 0.3,
             "_status": mock_status
         })
@@ -177,21 +177,21 @@ class TestBasicOperationsServer:
         # Test negative seconds
         mock_status = AsyncMock()
         mock_status.progress = AsyncMock()
-        result = await server.call("wait", {"seconds": -1, "_status": mock_status})
+        result = await server.call("basic_ops_wait", {"seconds": -1, "_status": mock_status})
         assert result["status"] == "error"
         assert "must be positive" in result["error"]
 
         # Test zero seconds
         mock_status = AsyncMock()
         mock_status.progress = AsyncMock()
-        result = await server.call("wait", {"seconds": 0, "_status": mock_status})
+        result = await server.call("basic_ops_wait", {"seconds": 0, "_status": mock_status})
         assert result["status"] == "error"
         assert "must be positive" in result["error"]
 
         # Test exceeds maximum
         mock_status = AsyncMock()
         mock_status.progress = AsyncMock()
-        result = await server.call("wait", {"seconds": 10, "_status": mock_status})
+        result = await server.call("basic_ops_wait", {"seconds": 10, "_status": mock_status})
         assert result["status"] == "error"
         assert "exceeds maximum" in result["error"]
 
@@ -208,7 +208,7 @@ class TestBasicOperationsServer:
         
         mock_status.progress = AsyncMock(side_effect=capture_status_update)
         
-        result = await server.call("wait", {
+        result = await server.call("basic_ops_wait", {
             "seconds": 0.2,
             "update_interval": 0.05,  # More frequent updates
             "_status": mock_status
@@ -301,7 +301,7 @@ class TestBasicOperationsIntegration:
         # Start multiple wait operations concurrently
         # Provide status mocks for each concurrent task
         tasks = [
-            server.call("wait", {"seconds": 0.1, "message": f"Wait {i}", "_status": AsyncMock(progress=AsyncMock())})
+            server.call("basic_ops_wait", {"seconds": 0.1, "message": f"Wait {i}", "_status": AsyncMock(progress=AsyncMock())})
             for i in range(3)
         ]
         
@@ -324,7 +324,7 @@ class TestBasicOperationsIntegration:
         # Start a wait operation and then "cancel" it by timing out the test
         try:
             await asyncio.wait_for(
-                server.call("wait", {"seconds": 10, "_status": AsyncMock(progress=AsyncMock())}),
+                server.call("basic_ops_wait", {"seconds": 10, "_status": AsyncMock(progress=AsyncMock())}),
                 timeout=0.1
             )
             # Should not reach here
@@ -339,11 +339,11 @@ class TestBasicOperationsIntegration:
         server = BasicOperationsServer("basic_ops", mock_system_config, mock_mcp_config)
         
         # 1. Start with a ping
-        ping_result = await server.call("ping", {"include_details": True})
+        ping_result = await server.call("basic_ops_ping", {"include_details": True})
         assert ping_result["status"] == "success"
         
         # 2. Wait briefly
-        wait_result = await server.call("wait", {
+        wait_result = await server.call("basic_ops_wait", {
             "seconds": 0.1,
             "message": "Processing",
             "_status": AsyncMock(progress=AsyncMock())
@@ -351,5 +351,5 @@ class TestBasicOperationsIntegration:
         assert wait_result["status"] == "success"
         
         # 3. Final ping
-        final_result = await server.call("ping", {})
+        final_result = await server.call("basic_ops_ping", {})
         assert final_result["status"] == "success"

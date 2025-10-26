@@ -32,8 +32,8 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         # Create hooks plugin with history tracking
         self.hooks_plugin = MessageDebuggerPlugin(plugin_dir, message_history=self._message_history)
         
-        # Create web UI factory
-        self.web_factory = MessageDebuggerWebFactory(self._message_history)
+        # Create web UI factory with plugin name for dynamic routing
+        self.web_factory = MessageDebuggerWebFactory(self._message_history, name=name)
     
     # Hook interface - delegate to hooks plugin
     def get_hooks(self):

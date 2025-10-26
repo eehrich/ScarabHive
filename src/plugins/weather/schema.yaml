@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: get_weather
+      name: "{{ name }}_forecast"
       description: Get weather conditions and forecasts for any location. Supports current weather and multi-day forecasts.
       parameters:
         type: object

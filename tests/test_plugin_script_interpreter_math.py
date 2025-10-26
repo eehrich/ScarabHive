@@ -28,7 +28,7 @@ def server():
     from unittest.mock import Mock
     system_config = Mock(spec=AgentSystemConfig)
     mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    return ScriptInterpreterServer("test", system_config, mcp_config)
+    return ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ print(f"E: {e_val}")
 print(f"Pi type: {str(type(pi_val)).split('.')[-1].replace(\"'>\", \"\")}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Pi: 3.141592" in result["result"]
@@ -73,7 +73,7 @@ print(f"ceil(4.2) = {ceil_result}")
 print(f"round(3.14159, 2) = {round_result}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "sqrt(16) = 4.0" in result["result"]
@@ -102,7 +102,7 @@ print(f"sin(π/2) ≈ {round(sin_pi_half, 6)}")
 print(f"cos(π) ≈ {round(cos_pi, 6)}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "sin(0) = 0.0" in result["result"]
@@ -129,7 +129,7 @@ print(f"π/2 = {pi_val / 2}")
 print(f"π/4 = {pi_val / 4}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "asin(1)" in result["result"]
@@ -157,7 +157,7 @@ print(f"sinh(1) ≈ {round(sinh_1, 6)}")
 print(f"cosh(1) ≈ {round(cosh_1, 6)}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "sinh(0) = 0.0" in result["result"]
@@ -186,7 +186,7 @@ print(f"exp(1) ≈ {round(exp_1, 6)}")
 print(f"log(8, 2) = {log_base_2}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "log(e) = 1.0" in result["result"]
@@ -210,7 +210,7 @@ print(f"pow(2, 8, 5) = {pow_2_8_mod_5}")
 print(f"pow(2, -2) = {pow_negative}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "pow(2, 3) = 8.0" in result["result"]
@@ -235,7 +235,7 @@ print(f"radians(180) ≈ {round(radians_180, 6)}")
 print(f"radians(90) ≈ {round(radians_90, 6)}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "degrees(π) = 180.0" in result["result"]
@@ -272,7 +272,7 @@ print(f"Distance (0,0) to (3,4): {distance}")
 print(f"sin(45°) ≈ {round(sine_45, 6)}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Circle area" in result["result"]
@@ -307,7 +307,7 @@ except ValueError:
     print("ValueError correctly caught for asin(2)")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "ValueError correctly caught for sqrt(-1)" in result["result"]
@@ -350,7 +350,7 @@ normal_value = coefficient * pow(e_val, exponent)
 print(f"Normal distribution f({x}): {round(normal_value, 6)}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Pendulum period" in result["result"]

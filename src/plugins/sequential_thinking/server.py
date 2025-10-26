@@ -242,12 +242,12 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             }
         return tree
 
-    async def sequentialthinking(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def sequential_thinking(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Main reasoning tool for step-by-step problem-solving.
+        Main tool for sequential thinking - generates chain of thought.
         
-        Tool method - automatically called by generic dispatcher.
-        Supports branching, revision, and adaptive complexity.
+        Tool name: {{ name }} → e.g., 'sequential_thinking'
+        Method is called directly (no prefix to strip since tool name = plugin name).
         """
         try:
             # Cleanup old sessions first
@@ -439,11 +439,12 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             await status.error(f"Failed to clear history: {str(e)}")
             return {"status": "error", "error": str(e)}
 
-    async def get_thought_summary(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def get_summary(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Get condensed summary of thought chain.
+        Get summary of current thinking session.
         
-        Tool method - automatically called by generic dispatcher.
+        Tool name: {{ name }}_get_summary → e.g., 'sequential_thinking_get_summary'
+        Method called after dispatcher strips prefix → 'get_summary'
         """
         try:
             session_id = params["session_id"]
