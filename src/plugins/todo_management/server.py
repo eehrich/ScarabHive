@@ -576,7 +576,7 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
     # Tool Implementations (Multi-Mode)
     # =========================================================================
 
-    async def todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def todo_management(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Multi-mode task management tool with explicit operation parameter.
         
