@@ -2,8 +2,8 @@
 TODO Management Plugin Factory
 
 Hybrid MCP+Hook+Web plugin:
-- MCP tools via TodoManagementServer
-- Hooks via TodoManagementServer.on_pre_llm_call
+- MCP tools via TodoServer
+- Hooks via TodoServer.on_pre_llm_call
 - Web UI via TodoWebFactory
 
 Exports PLUGIN_FACTORY for AgentSystem plugin discovery.
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter
 
-from .server import TodoManagementServer
+from .server import TodoServer
 from .web_endpoints import TodoWebFactory
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ class TodoManagementHybridPlugin:
     """
     Hybrid plugin combining MCP tools, hooks, and web interface.
     
-    - Delegates MCP tools to TodoManagementServer
+    - Delegates MCP tools to TodoServer
     - Delegates hooks to server.on_pre_llm_call
     - Provides web router via TodoWebFactory
     """
@@ -43,7 +43,7 @@ class TodoManagementHybridPlugin:
         self.mcp_config = mcp_config
         
         # Create MCP server instance (provides tools + hooks)
-        self.server = TodoManagementServer(name, system_config, mcp_config)
+        self.server = TodoServer(name, system_config, mcp_config)
         
         # Create web factory (provides REST API + HTML)
         self.web_factory = TodoWebFactory(self.server)

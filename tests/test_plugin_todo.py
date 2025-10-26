@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Dict, Any
 from unittest.mock import MagicMock
 
-from plugins.todo_management.server import (
-    TodoManagementServer,
+from plugins.todo.server import (
+    TodoServer,
     Task,
     TaskStatus,
     TaskPriority,
@@ -62,10 +62,10 @@ def mock_mcp_config(temp_storage: Path) -> MagicMock:
 
 
 @pytest.fixture
-def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock) -> TodoManagementServer:
-    """TodoManagementServer instance"""
-    return TodoManagementServer(
-        name="todo_management",
+def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock) -> TodoServer:
+    """TodoServer instance"""
+    return TodoServer(
+        name="todo",
         system_config=mock_system_config,
         mcp_config=mock_mcp_config,
     )
@@ -84,7 +84,7 @@ def mock_context() -> Dict[str, Any]:
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_create_todo_basic(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_create_todo_basic(server: TodoServer, mock_context: Dict[str, Any]):
     """Test basic task creation"""
     result = await server.create_todo(
         title="Test Task",
@@ -105,7 +105,7 @@ async def test_create_todo_basic(server: TodoManagementServer, mock_context: Dic
 
 
 @pytest.mark.asyncio
-async def test_create_todo_with_dependencies(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_create_todo_with_dependencies(server: TodoServer, mock_context: Dict[str, Any]):
     """Test task creation with dependencies"""
     # Create parent task
     parent = await server.create_todo(
@@ -128,7 +128,7 @@ async def test_create_todo_with_dependencies(server: TodoManagementServer, mock_
 
 
 @pytest.mark.asyncio
-async def test_create_todo_invalid_dependency(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_create_todo_invalid_dependency(server: TodoServer, mock_context: Dict[str, Any]):
     """Test creation with non-existent dependency"""
     result = await server.create_todo(
         title="Test Task",
@@ -142,7 +142,7 @@ async def test_create_todo_invalid_dependency(server: TodoManagementServer, mock
 
 
 @pytest.mark.asyncio
-async def test_create_todo_max_tasks_limit(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_create_todo_max_tasks_limit(server: TodoServer, mock_context: Dict[str, Any]):
     """Test max tasks per session limit"""
     # Create 100 tasks (the limit)
     for i in range(100):
@@ -166,7 +166,7 @@ async def test_create_todo_max_tasks_limit(server: TodoManagementServer, mock_co
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_update_todo_status(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_update_todo_status(server: TodoServer, mock_context: Dict[str, Any]):
     """Test status update with valid transition"""
     # Create task
     created = await server.create_todo(
@@ -189,7 +189,7 @@ async def test_update_todo_status(server: TodoManagementServer, mock_context: Di
 
 
 @pytest.mark.asyncio
-async def test_update_todo_invalid_transition(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_update_todo_invalid_transition(server: TodoServer, mock_context: Dict[str, Any]):
     """Test invalid status transition"""
     # Create completed task
     created = await server.create_todo(title="Test", context=mock_context)
@@ -209,7 +209,7 @@ async def test_update_todo_invalid_transition(server: TodoManagementServer, mock
 
 
 @pytest.mark.asyncio
-async def test_update_todo_progress(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_update_todo_progress(server: TodoServer, mock_context: Dict[str, Any]):
     """Test progress update"""
     created = await server.create_todo(title="Test", context=mock_context)
     task_id = created["task_id"]
@@ -225,7 +225,7 @@ async def test_update_todo_progress(server: TodoManagementServer, mock_context: 
 
 
 @pytest.mark.asyncio
-async def test_update_todo_add_note(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_update_todo_add_note(server: TodoServer, mock_context: Dict[str, Any]):
     """Test adding notes to task"""
     created = await server.create_todo(title="Test", context=mock_context)
     task_id = created["task_id"]
@@ -250,7 +250,7 @@ async def test_update_todo_add_note(server: TodoManagementServer, mock_context: 
 
 
 @pytest.mark.asyncio
-async def test_update_todo_tags(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_update_todo_tags(server: TodoServer, mock_context: Dict[str, Any]):
     """Test tag management"""
     created = await server.create_todo(
         title="Test",
@@ -282,7 +282,7 @@ async def test_update_todo_tags(server: TodoManagementServer, mock_context: Dict
 
 
 @pytest.mark.asyncio
-async def test_update_todo_completion_auto_progress(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_update_todo_completion_auto_progress(server: TodoServer, mock_context: Dict[str, Any]):
     """Test auto-set progress to 100 on completion"""
     created = await server.create_todo(title="Test", context=mock_context)
     task_id = created["task_id"]
@@ -303,7 +303,7 @@ async def test_update_todo_completion_auto_progress(server: TodoManagementServer
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_circular_dependency_detection(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_circular_dependency_detection(server: TodoServer, mock_context: Dict[str, Any]):
     """Test circular dependency prevention"""
     # Skipping this test - circular dependency detection requires
     # ability to update dependencies after task creation, which
@@ -314,7 +314,7 @@ async def test_circular_dependency_detection(server: TodoManagementServer, mock_
 
 
 @pytest.mark.asyncio
-async def test_blocked_status_auto_update(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_blocked_status_auto_update(server: TodoServer, mock_context: Dict[str, Any]):
     """Test auto-blocking when dependency incomplete"""
     # Create parent
     parent = await server.create_todo(title="Parent", context=mock_context)
@@ -341,7 +341,7 @@ async def test_blocked_status_auto_update(server: TodoManagementServer, mock_con
 
 
 @pytest.mark.asyncio
-async def test_cascade_delete(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_cascade_delete(server: TodoServer, mock_context: Dict[str, Any]):
     """Test cascade delete of dependent tasks"""
     # Create parent and child
     parent = await server.create_todo(title="Parent", context=mock_context)
@@ -370,7 +370,7 @@ async def test_cascade_delete(server: TodoManagementServer, mock_context: Dict[s
 
 
 @pytest.mark.asyncio
-async def test_delete_without_cascade(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_delete_without_cascade(server: TodoServer, mock_context: Dict[str, Any]):
     """Test delete fails when dependents exist (no cascade)"""
     parent = await server.create_todo(title="Parent", context=mock_context)
     parent_id = parent["task_id"]
@@ -398,7 +398,7 @@ async def test_delete_without_cascade(server: TodoManagementServer, mock_context
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_list_todos_all(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_list_todos_all(server: TodoServer, mock_context: Dict[str, Any]):
     """Test list all tasks"""
     # Create multiple tasks
     await server.create_todo(title="Task 1", priority="high", context=mock_context)
@@ -413,7 +413,7 @@ async def test_list_todos_all(server: TodoManagementServer, mock_context: Dict[s
 
 
 @pytest.mark.asyncio
-async def test_list_todos_filter_status(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_list_todos_filter_status(server: TodoServer, mock_context: Dict[str, Any]):
     """Test filter by status"""
     task1 = await server.create_todo(title="Task 1", context=mock_context)
     await server.create_todo(title="Task 2", context=mock_context)
@@ -432,7 +432,7 @@ async def test_list_todos_filter_status(server: TodoManagementServer, mock_conte
 
 
 @pytest.mark.asyncio
-async def test_list_todos_filter_priority(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_list_todos_filter_priority(server: TodoServer, mock_context: Dict[str, Any]):
     """Test filter by priority"""
     await server.create_todo(title="High", priority="high", context=mock_context)
     await server.create_todo(title="Low", priority="low", context=mock_context)
@@ -447,7 +447,7 @@ async def test_list_todos_filter_priority(server: TodoManagementServer, mock_con
 
 
 @pytest.mark.asyncio
-async def test_list_todos_filter_tags(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_list_todos_filter_tags(server: TodoServer, mock_context: Dict[str, Any]):
     """Test filter by tags"""
     await server.create_todo(title="Backend", tags=["backend"], context=mock_context)
     await server.create_todo(title="Frontend", tags=["frontend"], context=mock_context)
@@ -462,7 +462,7 @@ async def test_list_todos_filter_tags(server: TodoManagementServer, mock_context
 
 
 @pytest.mark.asyncio
-async def test_list_todos_only_unblocked(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_list_todos_only_unblocked(server: TodoServer, mock_context: Dict[str, Any]):
     """Test filter for unblocked tasks"""
     parent = await server.create_todo(title="Parent", context=mock_context)
     await server.create_todo(
@@ -482,7 +482,7 @@ async def test_list_todos_only_unblocked(server: TodoManagementServer, mock_cont
 
 
 @pytest.mark.asyncio
-async def test_list_todos_limit(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_list_todos_limit(server: TodoServer, mock_context: Dict[str, Any]):
     """Test result limiting"""
     for i in range(10):
         await server.create_todo(title=f"Task {i}", context=mock_context)
@@ -499,7 +499,7 @@ async def test_list_todos_limit(server: TodoManagementServer, mock_context: Dict
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_get_todo(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_get_todo(server: TodoServer, mock_context: Dict[str, Any]):
     """Test get single task details"""
     created = await server.create_todo(
         title="Test Task",
@@ -516,7 +516,7 @@ async def test_get_todo(server: TodoManagementServer, mock_context: Dict[str, An
 
 
 @pytest.mark.asyncio
-async def test_get_todo_nonexistent(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_get_todo_nonexistent(server: TodoServer, mock_context: Dict[str, Any]):
     """Test get non-existent task"""
     result = await server.get_todo(task_id="nonexistent", context=mock_context)
     
@@ -525,7 +525,7 @@ async def test_get_todo_nonexistent(server: TodoManagementServer, mock_context: 
 
 
 @pytest.mark.asyncio
-async def test_get_progress_summary(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_get_progress_summary(server: TodoServer, mock_context: Dict[str, Any]):
     """Test progress summary statistics"""
     # Create tasks in different states
     task1 = await server.create_todo(title="Task 1", priority="high", context=mock_context)
@@ -552,9 +552,9 @@ async def test_get_progress_summary(server: TodoManagementServer, mock_context: 
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_todo_mode_create(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_todo_mode_create(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() CREATE mode"""
-    result = await server.todo_management({
+    result = await server.todo({
         "operation": "create",
         "title": "New Task",
         "description": "Description",
@@ -567,12 +567,12 @@ async def test_todo_mode_create(server: TodoManagementServer, mock_context: Dict
 
 
 @pytest.mark.asyncio
-async def test_todo_mode_update(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_todo_mode_update(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() UPDATE mode"""
-    created = await server.todo_management({"operation": "create", "title": "Task", "context": mock_context})
+    created = await server.todo({"operation": "create", "title": "Task", "context": mock_context})
     task_id = created["task_id"]
     
-    result = await server.todo_management({
+    result = await server.todo({
         "operation": "update",
         "task_id": task_id,
         "status": "in-progress",
@@ -585,12 +585,12 @@ async def test_todo_mode_update(server: TodoManagementServer, mock_context: Dict
 
 
 @pytest.mark.asyncio
-async def test_todo_mode_list(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_todo_mode_list(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() LIST mode"""
-    await server.todo_management({"operation": "create", "title": "Task 1", "priority": "high", "context": mock_context})
-    await server.todo_management({"operation": "create", "title": "Task 2", "priority": "low", "context": mock_context})
+    await server.todo({"operation": "create", "title": "Task 1", "priority": "high", "context": mock_context})
+    await server.todo({"operation": "create", "title": "Task 2", "priority": "low", "context": mock_context})
     
-    result = await server.todo_management({
+    result = await server.todo({
         "operation": "list",
         "filter_priority": ["high"],
         "context": mock_context,
@@ -601,34 +601,34 @@ async def test_todo_mode_list(server: TodoManagementServer, mock_context: Dict[s
 
 
 @pytest.mark.asyncio
-async def test_todo_mode_get(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_todo_mode_get(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() GET mode"""
-    created = await server.todo_management({"operation": "create", "title": "Task", "context": mock_context})
+    created = await server.todo({"operation": "create", "title": "Task", "context": mock_context})
     task_id = created["task_id"]
     
-    result = await server.todo_management({"operation": "get", "task_id": task_id, "context": mock_context})
+    result = await server.todo({"operation": "get", "task_id": task_id, "context": mock_context})
     
     assert result["task"]["task_id"] == task_id
 
 
 @pytest.mark.asyncio
-async def test_todo_mode_summary(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_todo_mode_summary(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() SUMMARY mode"""
-    await server.todo_management({"operation": "create", "title": "Task 1", "context": mock_context})
-    await server.todo_management({"operation": "create", "title": "Task 2", "context": mock_context})
+    await server.todo({"operation": "create", "title": "Task 1", "context": mock_context})
+    await server.todo({"operation": "create", "title": "Task 2", "context": mock_context})
     
-    result = await server.todo_management({"operation": "summary", "context": mock_context})
+    result = await server.todo({"operation": "summary", "context": mock_context})
     
     assert "total_tasks" in result
     assert result["total_tasks"] == 2
 
 
 @pytest.mark.asyncio
-async def test_todo_invalid_args(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_todo_invalid_args(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() with invalid arguments"""
     # Missing operation should raise ValidationError
     with pytest.raises(Exception) as exc_info:
-        await server.todo_management({"context": mock_context})
+        await server.todo({"context": mock_context})
     assert "operation" in str(exc_info.value).lower()
 
 
@@ -637,7 +637,7 @@ async def test_todo_invalid_args(server: TodoManagementServer, mock_context: Dic
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_duplicate_exact_title(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_duplicate_exact_title(server: TodoServer, mock_context: Dict[str, Any]):
     """Test exact duplicate title returns existing task"""
     # Create first task
     result1 = await server.create_todo(
@@ -662,7 +662,7 @@ async def test_duplicate_exact_title(server: TodoManagementServer, mock_context:
 
 
 @pytest.mark.asyncio
-async def test_duplicate_similar_title(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_duplicate_similar_title(server: TodoServer, mock_context: Dict[str, Any]):
     """Test very similar titles (95%+) return existing task"""
     # Create first task
     result1 = await server.create_todo(
@@ -683,7 +683,7 @@ async def test_duplicate_similar_title(server: TodoManagementServer, mock_contex
 
 
 @pytest.mark.asyncio
-async def test_allow_duplicates_flag(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_allow_duplicates_flag(server: TodoServer, mock_context: Dict[str, Any]):
     """Test allow_duplicates=True creates new task despite similarity"""
     # Create first task
     result1 = await server.create_todo(
@@ -705,7 +705,7 @@ async def test_allow_duplicates_flag(server: TodoManagementServer, mock_context:
 
 
 @pytest.mark.asyncio
-async def test_idempotency_key(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_idempotency_key(server: TodoServer, mock_context: Dict[str, Any]):
     """Test idempotency key prevents duplicate creation"""
     # Create task with idempotency key
     result1 = await server.create_todo(
@@ -729,7 +729,7 @@ async def test_idempotency_key(server: TodoManagementServer, mock_context: Dict[
 
 
 @pytest.mark.asyncio
-async def test_duplicate_ignores_completed(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_duplicate_ignores_completed(server: TodoServer, mock_context: Dict[str, Any]):
     """Test duplicate detection ignores completed tasks"""
     # Create and complete task
     result1 = await server.create_todo(
@@ -755,7 +755,7 @@ async def test_duplicate_ignores_completed(server: TodoManagementServer, mock_co
 
 
 @pytest.mark.asyncio
-async def test_similar_but_different_tasks(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_similar_but_different_tasks(server: TodoServer, mock_context: Dict[str, Any]):
     """Test tasks with <80% similarity create separate tasks"""
     # Create first task
     await server.create_todo(
@@ -778,7 +778,7 @@ async def test_similar_but_different_tasks(server: TodoManagementServer, mock_co
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_session_persistence(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_session_persistence(server: TodoServer, mock_context: Dict[str, Any]):
     """Test tasks persist to JSON file"""
     await server.create_todo(title="Persisted Task", context=mock_context)
     
@@ -804,8 +804,8 @@ async def test_session_reload(
 ):
     """Test session reloads from disk"""
     # Create tasks with first server instance
-    server1 = TodoManagementServer(
-        name="todo_management",
+    server1 = TodoServer(
+        name="todo",
         system_config=mock_system_config,
         mcp_config=mock_mcp_config,
     )
@@ -813,8 +813,8 @@ async def test_session_reload(
     await server1.create_todo(title="Task 2", context=mock_context)
     
     # Create new server instance (simulates restart)
-    server2 = TodoManagementServer(
-        name="todo_management",
+    server2 = TodoServer(
+        name="todo",
         system_config=mock_system_config,
         mcp_config=mock_mcp_config,
     )
@@ -826,7 +826,7 @@ async def test_session_reload(
 
 
 @pytest.mark.asyncio
-async def test_corrupt_file_handling(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_corrupt_file_handling(server: TodoServer, mock_context: Dict[str, Any]):
     """Test handling of corrupt JSON file"""
     # Create corrupt file
     session_id = mock_context["session_id"]
@@ -846,7 +846,7 @@ async def test_corrupt_file_handling(server: TodoManagementServer, mock_context:
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_task_id_generation_uniqueness(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_task_id_generation_uniqueness(server: TodoServer, mock_context: Dict[str, Any]):
     """Test task IDs are unique and sequential"""
     task_ids = []
     for i in range(10):
@@ -862,7 +862,7 @@ async def test_task_id_generation_uniqueness(server: TodoManagementServer, mock_
 
 
 @pytest.mark.asyncio
-async def test_session_isolation(server: TodoManagementServer):
+async def test_session_isolation(server: TodoServer):
     """Test tasks are isolated per session"""
     context1 = {"session_id": "session_001"}
     context2 = {"session_id": "session_002"}
@@ -881,7 +881,7 @@ async def test_session_isolation(server: TodoManagementServer):
 
 
 @pytest.mark.asyncio
-async def test_empty_session(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_empty_session(server: TodoServer, mock_context: Dict[str, Any]):
     """Test operations on empty session"""
     result = await server.list_todos(context=mock_context)
     assert result["total_count"] == 0
@@ -891,7 +891,7 @@ async def test_empty_session(server: TodoManagementServer, mock_context: Dict[st
 
 
 @pytest.mark.asyncio
-async def test_unicode_handling(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_unicode_handling(server: TodoServer, mock_context: Dict[str, Any]):
     """Test Unicode in task titles and descriptions"""
     result = await server.create_todo(
         title="Aufgabe mit Umlauten: äöü ß",
@@ -906,7 +906,7 @@ async def test_unicode_handling(server: TodoManagementServer, mock_context: Dict
 
 
 @pytest.mark.asyncio
-async def test_long_text_fields(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_long_text_fields(server: TodoServer, mock_context: Dict[str, Any]):
     """Test text field length limits"""
     # Title max 200 chars
     long_title = "x" * 200
@@ -924,7 +924,7 @@ async def test_long_text_fields(server: TodoManagementServer, mock_context: Dict
 
 
 @pytest.mark.asyncio
-async def test_multiple_dependencies(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_multiple_dependencies(server: TodoServer, mock_context: Dict[str, Any]):
     """Test task with multiple dependencies"""
     task1 = await server.create_todo(title="Dep 1", context=mock_context)
     task2 = await server.create_todo(title="Dep 2", context=mock_context)
@@ -942,7 +942,7 @@ async def test_multiple_dependencies(server: TodoManagementServer, mock_context:
 
 
 @pytest.mark.asyncio
-async def test_task_lifecycle_complete_flow(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_task_lifecycle_complete_flow(server: TodoServer, mock_context: Dict[str, Any]):
     """Test complete task lifecycle"""
     # Create
     created = await server.create_todo(
@@ -1041,7 +1041,7 @@ def test_exception_hierarchy():
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_large_session_performance(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_large_session_performance(server: TodoServer, mock_context: Dict[str, Any]):
     """Test performance with many tasks (50+)"""
     # Create 50 tasks
     for i in range(50):
@@ -1069,7 +1069,7 @@ async def test_large_session_performance(server: TodoManagementServer, mock_cont
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_hook_inject_tasks_into_prompt(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_hook_inject_tasks_into_prompt(server: TodoServer, mock_context: Dict[str, Any]):
     """Test that hook injects tasks into system prompt"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
@@ -1125,7 +1125,7 @@ async def test_hook_inject_tasks_into_prompt(server: TodoManagementServer, mock_
 
 
 @pytest.mark.asyncio
-async def test_hook_no_tasks_no_injection(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_hook_no_tasks_no_injection(server: TodoServer, mock_context: Dict[str, Any]):
     """Test that hook does not modify when no tasks exist"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
@@ -1151,7 +1151,7 @@ async def test_hook_no_tasks_no_injection(server: TodoManagementServer, mock_con
 
 
 @pytest.mark.asyncio
-async def test_hook_filter_status_config(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_hook_filter_status_config(server: TodoServer, mock_context: Dict[str, Any]):
     """Test that hook respects filter_status config"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
@@ -1184,7 +1184,7 @@ async def test_hook_filter_status_config(server: TodoManagementServer, mock_cont
 
 
 @pytest.mark.asyncio
-async def test_hook_config_from_schema(server: TodoManagementServer):
+async def test_hook_config_from_schema(server: TodoServer):
     """Test that hook config is loaded from schema.yaml"""
     # Server should have loaded config from schema.yaml
     assert hasattr(server, 'config')
@@ -1197,7 +1197,7 @@ async def test_hook_config_from_schema(server: TodoManagementServer):
 
 
 @pytest.mark.asyncio
-async def test_hook_no_session_id_skips(server: TodoManagementServer):
+async def test_hook_no_session_id_skips(server: TodoServer):
     """Test that hook skips when no session_id in context"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
@@ -1218,7 +1218,7 @@ async def test_hook_no_session_id_skips(server: TodoManagementServer):
 
 
 @pytest.mark.asyncio
-async def test_hook_format_markdown(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_hook_format_markdown(server: TodoServer, mock_context: Dict[str, Any]):
     """Test markdown formatting of injected tasks"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
@@ -1251,7 +1251,7 @@ async def test_hook_format_markdown(server: TodoManagementServer, mock_context: 
 
 
 @pytest.mark.asyncio
-async def test_hook_session_isolation(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_hook_session_isolation(server: TodoServer, mock_context: Dict[str, Any]):
     """Test that hook only injects tasks from current session"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
@@ -1280,7 +1280,7 @@ async def test_hook_session_isolation(server: TodoManagementServer, mock_context
 
 
 @pytest.mark.asyncio
-async def test_hook_max_tasks_limit(server: TodoManagementServer, mock_context: Dict[str, Any]):
+async def test_hook_max_tasks_limit(server: TodoServer, mock_context: Dict[str, Any]):
     """Test that hook respects max_tasks config"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
@@ -1308,4 +1308,4 @@ async def test_hook_max_tasks_limit(server: TodoManagementServer, mock_context: 
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--cov=plugins.todo_management.server", "--cov-report=html"])
+    pytest.main([__file__, "-v", "--cov=plugins.todo.server", "--cov-report=html"])

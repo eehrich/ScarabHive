@@ -22,7 +22,7 @@ The TODO Management plugin provides comprehensive task tracking capabilities wit
 The plugin is automatically available when AgentSystem starts. Enable it in `config/plugins.yaml`:
 
 ```yaml
-todo_management:
+todo:
   type: mcp_server
   server_config:
     storage_path: data/todos
@@ -348,26 +348,26 @@ await agent.todo(task_id=task_a["task_id"], status="completed")
 
 ```bash
 # Create task
-python -m plugins.todo_management create \
+python -m plugins.todo create \
   --title "Implement feature X" \
   --priority high \
   --tags backend security
 
 # List tasks
-python -m plugins.todo_management list \
+python -m plugins.todo list \
   --status in-progress \
   --priority high
 
 # Update task
-python -m plugins.todo_management update task_001 \
+python -m plugins.todo update task_001 \
   --status completed \
   --progress 100
 
 # Get summary
-python -m plugins.todo_management summary
+python -m plugins.todo summary
 
 # Delete task
-python -m plugins.todo_management delete task_001 --cascade
+python -m plugins.todo delete task_001 --cascade
 ```
 
 ## Configuration
@@ -375,7 +375,7 @@ python -m plugins.todo_management delete task_001 --cascade
 **Server Config (`config/plugins.yaml`):**
 
 ```yaml
-todo_management:
+todo:
   type: mcp_server
   server_config:
     storage_path: data/todos           # JSON file directory
@@ -389,11 +389,11 @@ todo_management:
 ```yaml
 meta_agent:
   tools:
-    - todo_management/*
+    - todo/*
 
 basic_agent:
   tools:
-    - todo_management/todo  # Single tool with all operations
+    - todo/todo  # Single tool with all operations
 ```
 
 ## Storage Format
@@ -512,15 +512,15 @@ The TODO plugin automatically injects active tasks into the agent's system promp
 
 ```yaml
 # In config/plugins.yaml
-todo_management:
-  type: todo_management
+todo:
+  type: todo
   enabled: true
   
   agent_config:
     hooks:
       enabled: true
       overrides:
-        todo_management.inject_todo_tasks:
+        todo.inject_todo_tasks:
           enabled: true
           max_tasks: 20
           filter_status: ["not-started", "in-progress", "blocked"]
@@ -562,7 +562,7 @@ meta_agent:
   agent_config:
     hooks:
       overrides:
-        todo_management.inject_todo_tasks:
+        todo.inject_todo_tasks:
           enabled: false
 ```
 
@@ -592,7 +592,7 @@ for dep_id in task["task"]["depends_on"]:
 
 ## API Reference
 
-See [todo_management_design.md](../../../docs/todo_management_design.md) for complete API specification and design details.
+See [todo_design.md](../../../docs/todo_design.md) for complete API specification and design details.
 
 ## License
 

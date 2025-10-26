@@ -44,7 +44,7 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            todo_management.inject_todo_tasks:
+            todo.inject_todo_tasks:
               enabled: true            
       
       metadata:
@@ -69,8 +69,8 @@ plugins:
       enable_revisions: true
       max_summary_thoughts: 10
     
-    todo_management:
-      type: todo_management
+    todo:
+      type: todo
       enabled: true
 
     http_server:
@@ -215,14 +215,14 @@ plugins:
             - "basic_operations/*"
             - "datetime/*"
             - "sequential_thinking/*"
-            - "todo_management/*"
+            - "todo/*"
         
         hooks:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
-            todo_management.inject_todo_tasks:
+            todo.inject_todo_tasks:
               enabled: true
       
       metadata:
@@ -398,7 +398,7 @@ plugins:
           overrides:
             markdown_formatter.format_markdown_output:
               enabled: true
-            todo_management.inject_todo_tasks:
+            todo.inject_todo_tasks:
               enabled: true
         
         tools:
@@ -410,7 +410,7 @@ plugins:
             - "datetime/*"
             - "basic_operations/*"
             - "sequential_thinking/*"
-            - "todo_management/*"
+            - "todo/*"
 
       metadata:
         author: "AgentSystem"

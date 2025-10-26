@@ -95,7 +95,7 @@ async def test_hook_registered_with_full_name(clean_registry):
 @pytest.mark.asyncio
 async def test_agent_override_enables_globally_disabled_hook(clean_registry):
     """Test that agent can enable a globally disabled hook via override."""
-    plugin = MockHookPlugin("todo_management", {})
+    plugin = MockHookPlugin("todo", {})
     metadata = {
         'hooks': [
             {
@@ -107,8 +107,8 @@ async def test_agent_override_enables_globally_disabled_hook(clean_registry):
     }
     
     # Register with global disabled state
-    registered = await register_plugin_hooks("todo_management", plugin, metadata, clean_registry)
-    assert 'todo_management.inject_todo_tasks' in registered
+    registered = await register_plugin_hooks("todo", plugin, metadata, clean_registry)
+    assert 'todo.inject_todo_tasks' in registered
     
     # Create mock agent with override enabling this hook
     agent = Mock()
@@ -117,7 +117,7 @@ async def test_agent_override_enables_globally_disabled_hook(clean_registry):
     agent.agent_config.hooks = HooksConfig(
         enabled=True,
         overrides={
-            'todo_management.inject_todo_tasks': {'enabled': True}
+            'todo.inject_todo_tasks': {'enabled': True}
         }
     )
     
@@ -125,7 +125,7 @@ async def test_agent_override_enables_globally_disabled_hook(clean_registry):
     manager = HookIntegrationManager(agent)
     
     # Test with new signature (default_enabled parameter)
-    result = manager.is_hook_enabled('todo_management.inject_todo_tasks', default_enabled=False)
+    result = manager.is_hook_enabled('todo.inject_todo_tasks', default_enabled=False)
     
     # Should be enabled via override despite global disabled state
     assert result is True
@@ -319,11 +319,11 @@ async def test_hook_name_format_consistency():
     schema_hook_name = 'inject_todo_tasks'
     
     # 2. In registry: full name with plugin prefix
-    registry_hook_name = f'todo_management.{schema_hook_name}'
-    assert registry_hook_name == 'todo_management.inject_todo_tasks'
+    registry_hook_name = f'todo.{schema_hook_name}'
+    assert registry_hook_name == 'todo.inject_todo_tasks'
     
     # 3. In agent config overrides: full name
-    override_key = 'todo_management.inject_todo_tasks'
+    override_key = 'todo.inject_todo_tasks'
     
     # 4. In hook filter: receives full name from registry
     filter_receives = registry_hook_name

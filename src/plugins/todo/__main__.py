@@ -6,13 +6,13 @@ Supports both direct CLI mode and MCP server mode.
 
 Usage:
     # Direct CLI commands
-    python -m plugins.todo_management create --title "Implement auth"
-    python -m plugins.todo_management list --status in-progress
-    python -m plugins.todo_management update task_001 --status completed
-    python -m plugins.todo_management summary
+    python -m plugins.todo create --title "Implement auth"
+    python -m plugins.todo list --status in-progress
+    python -m plugins.todo update task_001 --status completed
+    python -m plugins.todo summary
     
     # MCP server mode
-    python -m plugins.todo_management --server --port 9012
+    python -m plugins.todo --server --port 9012
 """
 
 import argparse
@@ -21,7 +21,7 @@ import json
 import sys
 from typing import Any, Dict
 
-from plugins.todo_management.server import TodoManagementServer
+from plugins.todo.server import TodoServer
 
 
 def format_task_summary(task: Dict[str, Any], verbose: bool = False) -> str:
@@ -77,7 +77,7 @@ def format_task_summary(task: Dict[str, Any], verbose: bool = False) -> str:
     return summary
 
 
-async def cli_create(server: TodoManagementServer, args: argparse.Namespace) -> int:
+async def cli_create(server: TodoServer, args: argparse.Namespace) -> int:
     """Handle 'create' command"""
     try:
         result = await server.create_todo(
@@ -106,7 +106,7 @@ async def cli_create(server: TodoManagementServer, args: argparse.Namespace) -> 
         return 1
 
 
-async def cli_update(server: TodoManagementServer, args: argparse.Namespace) -> int:
+async def cli_update(server: TodoServer, args: argparse.Namespace) -> int:
     """Handle 'update' command"""
     try:
         result = await server.update_todo(
@@ -135,7 +135,7 @@ async def cli_update(server: TodoManagementServer, args: argparse.Namespace) -> 
         return 1
 
 
-async def cli_list(server: TodoManagementServer, args: argparse.Namespace) -> int:
+async def cli_list(server: TodoServer, args: argparse.Namespace) -> int:
     """Handle 'list' command"""
     try:
         result = await server.list_todos(
@@ -174,7 +174,7 @@ async def cli_list(server: TodoManagementServer, args: argparse.Namespace) -> in
         return 1
 
 
-async def cli_get(server: TodoManagementServer, args: argparse.Namespace) -> int:
+async def cli_get(server: TodoServer, args: argparse.Namespace) -> int:
     """Handle 'get' command"""
     try:
         result = await server.get_todo(
@@ -238,7 +238,7 @@ async def cli_get(server: TodoManagementServer, args: argparse.Namespace) -> int
         return 1
 
 
-async def cli_delete(server: TodoManagementServer, args: argparse.Namespace) -> int:
+async def cli_delete(server: TodoServer, args: argparse.Namespace) -> int:
     """Handle 'delete' command"""
     try:
         result = await server._delete_todo_impl(
@@ -265,7 +265,7 @@ async def cli_delete(server: TodoManagementServer, args: argparse.Namespace) -> 
         return 1
 
 
-async def cli_summary(server: TodoManagementServer, args: argparse.Namespace) -> int:
+async def cli_summary(server: TodoServer, args: argparse.Namespace) -> int:
     """Handle 'summary' command"""
     try:
         result = await server.get_progress_summary(
@@ -309,7 +309,7 @@ async def cli_summary(server: TodoManagementServer, args: argparse.Namespace) ->
         return 1
 
 
-async def cli_clear(server: TodoManagementServer, args: argparse.Namespace) -> int:
+async def cli_clear(server: TodoServer, args: argparse.Namespace) -> int:
     """Handle 'clear' command (delete all tasks)"""
     try:
         # Load session to get all task IDs
@@ -533,7 +533,7 @@ def cli_main():
     
     system_config = AgentSystemConfig()
     mcp_config = MCPConfig(
-        type="todo_management",
+        type="todo",
         enabled=True,
         storage_path="data/todos",
         max_tasks_per_session=1000,
@@ -542,7 +542,7 @@ def cli_main():
     )
     
     from .plugin import PLUGIN_FACTORY
-    server = PLUGIN_FACTORY("todo_management", system_config, mcp_config)
+    server = PLUGIN_FACTORY("todo", system_config, mcp_config)
     
     # Dispatch command
     handlers = {

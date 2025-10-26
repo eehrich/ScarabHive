@@ -19,7 +19,7 @@ class TodoWebFactory:
         Initialize web factory.
         
         Args:
-            server: TodoManagementServer instance
+            server: TodoServer instance
         """
         self.server = server
         self.plugin_dir = Path(__file__).parent
@@ -222,10 +222,10 @@ class TodoWebFactory:
         """Get panel definitions for this plugin."""
         return [
             {
-                "id": "todo_management",
+                "id": "todo",
                 "title": "TODO Manager",
                 "icon": "📝",
-                "endpoint": "/plugins/todo_management/panel",
+                "endpoint": "/plugins/todo/panel",
                 "type": "iframe",
                 "default_height": 700,
             }

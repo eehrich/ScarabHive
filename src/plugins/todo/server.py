@@ -148,7 +148,7 @@ class StorageError(TodoError):
 # TODO Management Server
 # =============================================================================
 
-class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
+class TodoServer(SchemaBasedMCPServer, PluginHook):
     """
     TODO Management MCP Server with Hook Integration
     
@@ -196,7 +196,7 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         self._storage_path.mkdir(parents=True, exist_ok=True)
 
         logger.info(
-            f"TodoManagementServer initialized (storage={self._storage_path}, "
+            f"TodoServer initialized (storage={self._storage_path}, "
             f"max_tasks={self._max_tasks})"
         )
 
@@ -576,7 +576,7 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
     # Tool Implementations (Multi-Mode)
     # =========================================================================
 
-    async def todo_management(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Multi-mode task management tool with explicit operation parameter.
         
