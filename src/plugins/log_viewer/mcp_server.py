@@ -77,7 +77,7 @@ class LogViewerMCPServer(SchemaBasedMCPServer):
             return {"error": "Log tail request cancelled by user", "cancelled": True}
 
         log_file = params.get("log_file")
-        lines = params.get("lines", 50)
+        lines = params.get("lines", 500)
         
         if not log_file:
             raise ValueError("Missing required parameter: log_file")

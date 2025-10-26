@@ -20,7 +20,7 @@ tools:
             description: "Log file path"
           lines:
             type: integer
-            default: 50
+            default: 500
             description: "Number of recent lines to retrieve"
         required: ["log_file"]
         additionalProperties: false
