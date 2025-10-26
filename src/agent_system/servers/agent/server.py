@@ -1058,7 +1058,9 @@ class Agent(MCPServer):
                 if consecutive_no_tool_calls >= max_consecutive_no_tools:
                     logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls")
                     # Treat final content as answer
-                    messages.append(ChatMessage(role="assistant", content=content or ""))
+                    assistant_msg = ChatMessage(role="assistant", content=content or "")
+                    messages.append(assistant_msg)
+                    context.messages.append(assistant_msg)  # FIX: Also append to context.messages
                     results["summary"] = content
                     self._current_messages = messages.copy()
                     yield {"type": "final", "summary": content, "content_format": "markdown"}
@@ -1084,11 +1086,13 @@ class Agent(MCPServer):
                 await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
                 
                 # Add assistant message with ALL tool calls to conversation
-                messages.append(ChatMessage(
+                assistant_msg = ChatMessage(
                     role="assistant",
                     content=content or "",
                     tool_calls=tool_calls
-                ))
+                )
+                messages.append(assistant_msg)
+                context.messages.append(assistant_msg)  # FIX: Also append to context.messages
                 
                 # Update tracked messages
                 self._current_messages = messages.copy()
@@ -1121,6 +1125,7 @@ class Agent(MCPServer):
                 
                 # Add tool messages to conversation
                 messages.extend(tool_messages)
+                context.messages.extend(tool_messages)  # FIX: Also extend context.messages
                 
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
@@ -1135,7 +1140,9 @@ class Agent(MCPServer):
             # No tool calls - this is the final answer
             if content:
                 # Append assistant final message to conversation history
-                messages.append(ChatMessage(role="assistant", content=content or ""))
+                assistant_msg = ChatMessage(role="assistant", content=content or "")
+                messages.append(assistant_msg)
+                context.messages.append(assistant_msg)  # Also append to context.messages
                 results["summary"] = content
                 # Update tracked messages with final response
                 self._current_messages = messages.copy()
@@ -1190,7 +1197,9 @@ class Agent(MCPServer):
             
             if final_content:
                 # Append final assistant message to conversation history
-                messages.append(ChatMessage(role="assistant", content=final_content or ""))
+                assistant_msg = ChatMessage(role="assistant", content=final_content or "")
+                messages.append(assistant_msg)
+                context.messages.append(assistant_msg)  # Also append to context.messages
                 results["summary"] = final_content
                 # Update tracked messages and emit final event
                 self._current_messages = messages.copy()
