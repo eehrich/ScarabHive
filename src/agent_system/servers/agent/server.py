@@ -1025,6 +1025,16 @@ class Agent(MCPServer):
             content = assistant.get("content")
             tool_calls = assistant.get("tool_calls", [])
 
+            # Create assistant message and add it BEFORE post_llm hooks
+            # so message debugger can capture the complete conversation
+            assistant_msg = ChatMessage(
+                role="assistant",
+                content=content or "",
+                tool_calls=tool_calls if tool_calls else None
+            )
+            messages.append(assistant_msg)
+            context.messages.append(assistant_msg)
+
             # Execute post-LLM hooks to transform the response
             try:
                 modified_response = await self._hook_manager.execute_post_llm_hooks(
@@ -1038,6 +1048,9 @@ class Agent(MCPServer):
                 if modified_response is not None:
                     content = modified_response.get("content", content)
                     tool_calls = modified_response.get("tool_calls", tool_calls)
+                    # Update the assistant message if hooks modified the response
+                    assistant_msg.content = content or ""
+                    assistant_msg.tool_calls = tool_calls if tool_calls else None
             except Exception as e:
                 logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
 
@@ -1057,10 +1070,7 @@ class Agent(MCPServer):
                 consecutive_no_tool_calls += 1
                 if consecutive_no_tool_calls >= max_consecutive_no_tools:
                     logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls")
-                    # Treat final content as answer
-                    assistant_msg = ChatMessage(role="assistant", content=content or "")
-                    messages.append(assistant_msg)
-                    context.messages.append(assistant_msg)  # FIX: Also append to context.messages
+                    # Treat final content as answer (assistant_msg already added above)
                     results["summary"] = content
                     self._current_messages = messages.copy()
                     yield {"type": "final", "summary": content, "content_format": "markdown"}
@@ -1085,14 +1095,7 @@ class Agent(MCPServer):
                 # Signal tool execution start
                 await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
                 
-                # Add assistant message with ALL tool calls to conversation
-                assistant_msg = ChatMessage(
-                    role="assistant",
-                    content=content or "",
-                    tool_calls=tool_calls
-                )
-                messages.append(assistant_msg)
-                context.messages.append(assistant_msg)  # FIX: Also append to context.messages
+                # Assistant message with tool calls was already added above before post_llm hooks
                 
                 # Update tracked messages
                 self._current_messages = messages.copy()
@@ -1139,10 +1142,7 @@ class Agent(MCPServer):
             
             # No tool calls - this is the final answer
             if content:
-                # Append assistant final message to conversation history
-                assistant_msg = ChatMessage(role="assistant", content=content or "")
-                messages.append(assistant_msg)
-                context.messages.append(assistant_msg)  # Also append to context.messages
+                # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
                 self._current_messages = messages.copy()
