@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
@@ -93,6 +93,17 @@ class Task(BaseModel):
     # Notes
     notes: List[str] = Field(default_factory=list)
 
+    # Metadata (system-managed, non-user-facing data)
+    metadata: Dict[str, str] = Field(default_factory=dict)
+
+    @field_serializer('created_at', 'updated_at', 'started_at', 'completed_at')
+    def serialize_datetime(self, dt: Optional[datetime], _info) -> Optional[str]:
+        """Serialize datetime to ISO format with 'Z' suffix for UTC."""
+        if dt is None:
+            return None
+        # Replace '+00:00' with 'Z' for cleaner UTC timestamps
+        return dt.isoformat().replace('+00:00', 'Z')
+
 
 class TaskCollection(BaseModel):
     """Session-scoped task collection"""
@@ -102,6 +113,11 @@ class TaskCollection(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: Dict[str, str] = Field(default_factory=dict)
+
+    @field_serializer('created_at', 'updated_at')
+    def serialize_datetime(self, dt: datetime, _info) -> str:
+        """Serialize datetime to ISO format with 'Z' suffix for UTC."""
+        return dt.isoformat().replace('+00:00', 'Z')
 
 
 # =============================================================================
@@ -603,6 +619,8 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         priority = params.get("priority", "medium")
         tags = params.get("tags")
         depends_on = params.get("depends_on")
+        add_depends_on = params.get("add_depends_on")
+        remove_depends_on = params.get("remove_depends_on")
         note = params.get("note")
         filter_status = params.get("filter_status")
         filter_priority = params.get("filter_priority")
@@ -636,7 +654,12 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         
         if operation == "create":
             if not title:
-                raise ValidationError("CREATE operation requires 'title' parameter")
+                msg = "CREATE operation requires 'title' parameter"
+                logger.info("Manage rejected (missing title): operation=create")
+                return {
+                    "status": "validation_failed",
+                    "message": msg,
+                }
             return await self.create_todo(
                 title=title,
                 description=description,
@@ -650,7 +673,12 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         
         elif operation == "update":
             if not task_id:
-                raise ValidationError("UPDATE operation requires 'task_id' parameter")
+                msg = "UPDATE operation requires 'task_id' parameter"
+                logger.info("Manage rejected (missing task_id): operation=update")
+                return {
+                    "status": "validation_failed",
+                    "message": msg,
+                }
             return await self.update_todo(
                 task_id=task_id,
                 new_status=status,
@@ -658,12 +686,19 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 priority=priority if priority != "medium" else None,
                 add_note=note,
                 add_tags=tags,
+                add_depends_on=add_depends_on,
+                remove_depends_on=remove_depends_on,
                 context=context,
             )
         
         elif operation == "delete":
             if not task_id:
-                raise ValidationError("DELETE operation requires 'task_id' parameter")
+                msg = "DELETE operation requires 'task_id' parameter"
+                logger.info("Manage rejected (missing task_id): operation=delete")
+                return {
+                    "status": "validation_failed",
+                    "message": msg,
+                }
             return await self._delete_todo_impl(
                 task_id=task_id,
                 cascade=cascade,
@@ -682,7 +717,12 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         
         elif operation == "get":
             if not task_id:
-                raise ValidationError("GET operation requires 'task_id' parameter")
+                msg = "GET operation requires 'task_id' parameter"
+                logger.info("Manage rejected (missing task_id): operation=get")
+                return {
+                    "status": "validation_failed",
+                    "message": msg,
+                }
             return await self.get_todo(
                 task_id=task_id,
                 context=context,
@@ -694,10 +734,15 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             )
         
         else:
-            raise ValidationError(
+            msg = (
                 f"Invalid operation '{operation}'. "
                 f"Must be one of: create, update, delete, list, get, summary"
             )
+            logger.info(f"Manage rejected (invalid operation): {operation}")
+            return {
+                "status": "validation_failed",
+                "message": msg,
+            }
 
     async def create_todo(
         self,
@@ -742,9 +787,9 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
             # Check for idempotency key
             if idempotency_key:
-                # Search for existing task with this idempotency key
+                # Search for existing task with this idempotency key in metadata
                 for task_id, task in collection.tasks.items():
-                    if task.tags and f"idempotency:{idempotency_key}" in task.tags:
+                    if task.metadata.get("idempotency_key") == idempotency_key:
                         if status:
                             await status.end(f"Returned existing {task_id} (idempotency key)")
                         return {
@@ -798,9 +843,14 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
             # Check task limit
             if len(collection.tasks) >= self._max_tasks:
-                raise ValidationError(
-                    f"Session has reached max tasks limit ({self._max_tasks})"
-                )
+                msg = f"Session has reached max tasks limit ({self._max_tasks})"
+                logger.info(f"Create rejected (max tasks limit): {session_id}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "status": "limit_reached",
+                    "message": msg,
+                }
 
             # Generate task ID
             task_id = self._generate_task_id(session_id)
@@ -809,15 +859,25 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             try:
                 priority_enum = TaskPriority(priority.lower())
             except ValueError:
-                raise ValidationError(
+                msg = (
                     f"Invalid priority '{priority}'. "
                     f"Must be: low, medium, high, critical"
                 )
+                logger.info(f"Create rejected (invalid priority): {priority}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "status": "validation_failed",
+                    "message": msg,
+                }
 
-            # Prepare tags (add idempotency key if provided)
+            # Prepare tags and metadata
             task_tags = tags or []
+            task_metadata: Dict[str, str] = {}
+            
+            # Store idempotency key in metadata (not as tag)
             if idempotency_key:
-                task_tags.append(f"idempotency:{idempotency_key}")
+                task_metadata["idempotency_key"] = idempotency_key
 
             # Create task
             task = Task(
@@ -829,10 +889,21 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 depends_on=depends_on or [],
                 session_id=session_id,
                 agent_name=context.get("agent_name") if context else None,
+                metadata=task_metadata,
             )
 
             # Validate dependencies
-            self._validate_dependencies(task, collection)
+            try:
+                self._validate_dependencies(task, collection)
+            except DependencyError as e:
+                msg = str(e)
+                logger.info(f"Create rejected (dependency error): {msg}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "status": "validation_failed",
+                    "message": msg,
+                }
 
             # Update reverse dependency (blocks) on parent tasks
             for dep_id in task.depends_on:
@@ -863,11 +934,6 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 "task": task.model_dump(mode='json'),
             }
 
-        except (ValidationError, DependencyError) as e:
-            if status:
-                await status.error(f"Failed to create task: {e}")
-            raise
-
         except Exception as e:
             logger.error(f"Error creating task: {e}", exc_info=True)
             if status:
@@ -883,6 +949,8 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
         add_note: Optional[str] = None,
         add_tags: Optional[List[str]] = None,
         remove_tags: Optional[List[str]] = None,
+        add_depends_on: Optional[List[str]] = None,
+        remove_depends_on: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -896,6 +964,8 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             add_note: Append note to task history
             add_tags: Tags to add
             remove_tags: Tags to remove
+            add_depends_on: Dependencies to add
+            remove_depends_on: Dependencies to remove
             context: MCP tool call context
             
         Returns:
@@ -916,10 +986,21 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
             # Find task
             if task_id not in collection.tasks:
-                raise ValidationError(f"Task '{task_id}' not found")
+                msg = f"Task '{task_id}' not found"
+                logger.info(f"Update rejected (task not found): {task_id}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "task_id": task_id,
+                    "status": "not_found",
+                    "message": msg,
+                }
 
             task = collection.tasks[task_id]
             changes = {}
+
+            # Save old values BEFORE any updates (for accurate change tracking)
+            old_progress = task.progress if progress is not None else None
 
             # Update status
             if new_status:
@@ -930,6 +1011,26 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                         f"Invalid status '{new_status}'. "
                         f"Must be: not-started, in-progress, completed, blocked, cancelled"
                     )
+
+                # Check if trying to manually set 'blocked' status
+                if new_status_enum == TaskStatus.BLOCKED:
+                    # Check if task actually has unmet dependencies
+                    is_actually_blocked = self._is_blocked(task, collection)
+                    if not is_actually_blocked:
+                        msg = (
+                            "Cannot manually set status to 'blocked'. "
+                            "This status is automatically managed based on dependencies. "
+                            "Task has no unmet dependencies."
+                        )
+                        logger.info(f"Update rejected (blocked is auto-managed): {task_id}")
+                        if status:
+                            await status.error(msg)
+                        return {
+                            "task_id": task_id,
+                            "status": "validation_failed",
+                            "message": msg,
+                        }
+                    # If task IS blocked, allow the status (it's redundant but harmless)
 
                 old_status = task.status
                 task.status = new_status_enum
@@ -943,9 +1044,16 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
             # Update progress
             if progress is not None:
                 if not 0 <= progress <= 100:
-                    raise ValidationError("Progress must be between 0 and 100")
+                    msg = "Progress must be between 0 and 100"
+                    logger.info(f"Update rejected (invalid progress): {progress}")
+                    if status:
+                        await status.error(msg)
+                    return {
+                        "task_id": task_id,
+                        "status": "validation_failed",
+                        "message": msg,
+                    }
 
-                old_progress = task.progress
                 task.progress = progress
                 task.updated_at = datetime.now(UTC)
 
@@ -956,10 +1064,18 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 try:
                     priority_enum = TaskPriority(priority.lower())
                 except ValueError:
-                    raise ValidationError(
+                    msg = (
                         f"Invalid priority '{priority}'. "
                         f"Must be: low, medium, high, critical"
                     )
+                    logger.info(f"Update rejected (invalid priority): {priority}")
+                    if status:
+                        await status.error(msg)
+                    return {
+                        "task_id": task_id,
+                        "status": "validation_failed",
+                        "message": msg,
+                    }
 
                 old_priority = task.priority
                 task.priority = priority_enum
@@ -969,7 +1085,7 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
             # Add note
             if add_note:
-                timestamp = datetime.now(UTC).isoformat()
+                timestamp = datetime.now(UTC).isoformat().replace('+00:00', 'Z')
                 note = f"[{timestamp}] {add_note}"
                 task.notes.append(note)
                 task.updated_at = datetime.now(UTC)
@@ -991,9 +1107,96 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 task.updated_at = datetime.now(UTC)
                 changes["tags_removed"] = ", ".join(remove_tags)  # type: ignore[assignment]
 
+            # Manage dependencies
+            if add_depends_on:
+                added = []
+                for dep_id in add_depends_on:
+                    if dep_id not in collection.tasks:
+                        msg = f"Dependency '{dep_id}' does not exist"
+                        logger.info(f"Update rejected (dependency not found): {dep_id}")
+                        if status:
+                            await status.error(msg)
+                        return {
+                            "task_id": task_id,
+                            "status": "validation_failed",
+                            "message": msg,
+                        }
+                    if dep_id not in task.depends_on:
+                        task.depends_on.append(dep_id)
+                        # Update reverse dependency
+                        collection.tasks[dep_id].blocks.append(task_id)
+                        added.append(dep_id)
+                
+                if added:
+                    # Check for circular dependencies
+                    try:
+                        self._detect_circular_deps(task, collection)
+                    except DependencyError as e:
+                        msg = str(e)
+                        logger.info(f"Update rejected (circular dependency): {msg}")
+                        if status:
+                            await status.error(msg)
+                        # Rollback changes
+                        for dep_id in added:
+                            task.depends_on.remove(dep_id)
+                            collection.tasks[dep_id].blocks.remove(task_id)
+                        return {
+                            "task_id": task_id,
+                            "status": "validation_failed",
+                            "message": msg,
+                        }
+                    
+                    task.updated_at = datetime.now(UTC)
+                    changes["dependencies_added"] = ", ".join(added)  # type: ignore[assignment]
+                    
+                    # Update blocked status
+                    self._update_blocked_status(task_id, collection)
+
+            if remove_depends_on:
+                removed = []
+                for dep_id in remove_depends_on:
+                    if dep_id in task.depends_on:
+                        task.depends_on.remove(dep_id)
+                        # Update reverse dependency
+                        if dep_id in collection.tasks and task_id in collection.tasks[dep_id].blocks:
+                            collection.tasks[dep_id].blocks.remove(task_id)
+                        removed.append(dep_id)
+                
+                if removed:
+                    task.updated_at = datetime.now(UTC)
+                    changes["dependencies_removed"] = ", ".join(removed)  # type: ignore[assignment]
+                    
+                    # Update blocked status
+                    self._update_blocked_status(task_id, collection)
+
             # Save
             if self._auto_save:
                 self._save_session(session_id)
+
+            # Calculate is_blocked for response
+            is_blocked = self._is_blocked(task, collection)
+
+            # Build dependency info for response
+            blocked_by = []
+            for dep_id in task.depends_on:
+                if dep_id in collection.tasks:
+                    dep_task = collection.tasks[dep_id]
+                    if dep_task.status != TaskStatus.COMPLETED:
+                        blocked_by.append({
+                            "task_id": dep_id,
+                            "title": dep_task.title,
+                            "status": dep_task.status.value,
+                        })
+
+            blocking = []
+            for block_id in task.blocks:
+                if block_id in collection.tasks:
+                    block_task = collection.tasks[block_id]
+                    blocking.append({
+                        "task_id": block_id,
+                        "title": block_task.title,
+                        "status": block_task.status.value,
+                    })
 
             # Short status message
             if status:
@@ -1003,13 +1206,14 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 "task_id": task_id,
                 "status": "updated",
                 "changes": changes,
+                "is_blocked": is_blocked,
+                "dependency_info": {
+                    "blocked_by": blocked_by,
+                    "blocking": blocking,
+                    "all_dependencies_met": len(blocked_by) == 0,
+                },
                 "task": task.model_dump(mode='json'),
             }
-
-        except ValidationError as e:
-            if status:
-                await status.error(f"Failed to update task: {e}")
-            raise
 
         except Exception as e:
             logger.error(f"Error updating task {task_id}: {e}", exc_info=True)
@@ -1098,8 +1302,8 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                     "priority": t.priority.value,
                     "progress": t.progress,
                     "is_blocked": self._is_blocked(t, collection),
-                    "created_at": t.created_at.isoformat(),
-                    "updated_at": t.updated_at.isoformat(),
+                    "created_at": t.created_at.isoformat().replace('+00:00', 'Z'),
+                    "updated_at": t.updated_at.isoformat().replace('+00:00', 'Z'),
                     "tags": t.tags,
                 }
                 for t in tasks
@@ -1161,7 +1365,15 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
             # Find task
             if task_id not in collection.tasks:
-                raise ValidationError(f"Task '{task_id}' not found")
+                msg = f"Task '{task_id}' not found"
+                logger.info(f"Get rejected (task not found): {task_id}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "task_id": task_id,
+                    "status": "not_found",
+                    "message": msg,
+                }
 
             task = collection.tasks[task_id]
 
@@ -1200,11 +1412,6 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                     "all_dependencies_met": len(blocked_by) == 0,
                 },
             }
-
-        except ValidationError as e:
-            if status:
-                await status.error(f"Task not found: {e}")
-            raise
 
         except Exception as e:
             logger.error(f"Error getting task {task_id}: {e}", exc_info=True)
@@ -1246,16 +1453,35 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
 
             # Find task
             if task_id not in collection.tasks:
-                raise ValidationError(f"Task '{task_id}' not found")
+                msg = f"Task '{task_id}' not found"
+                logger.info(f"Delete rejected (task not found): {task_id}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "task_id": task_id,
+                    "status": "not_found",
+                    "message": msg,
+                }
 
             task = collection.tasks[task_id]
 
-            # Check for dependents
+            # Check for dependents - inform agent instead of raising error
             if task.blocks and not cascade:
-                raise DependencyError(
-                    f"Cannot delete task {task_id}: {len(task.blocks)} tasks depend on it. "
+                msg = (
+                    f"Cannot delete task {task_id}: {len(task.blocks)} task(s) depend on it. "
                     f"Use cascade=True to delete all: {', '.join(task.blocks)}"
                 )
+                logger.info(f"Delete rejected (has dependencies): {task_id}")
+                if status:
+                    await status.error(msg)
+                # Return informative response instead of raising exception
+                return {
+                    "task_id": task_id,
+                    "status": "rejected",
+                    "reason": "has_dependents",
+                    "message": msg,
+                    "dependent_tasks": task.blocks,
+                }
 
             # Cascade delete
             cascade_deleted = []
@@ -1294,11 +1520,6 @@ class TodoManagementServer(SchemaBasedMCPServer, PluginHook):
                 "status": "deleted",
                 "cascade_deleted": cascade_deleted,
             }
-
-        except (ValidationError, DependencyError) as e:
-            if status:
-                await status.error(f"Failed to delete task: {e}")
-            raise
 
         except Exception as e:
             logger.error(f"Error deleting task {task_id}: {e}", exc_info=True)
