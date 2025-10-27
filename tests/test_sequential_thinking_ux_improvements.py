@@ -145,11 +145,11 @@ async def test_hook_with_quick_actions(plugin_server):
     assert result.success
     assert result.modified
     
-    # Check for quick actions section
+    # Check for parameter groups and examples section (replaces old "Quick actions")
     injected_msg = result.context.messages[1]
-    assert "**Quick actions:**" in injected_msg.content
-    assert f"sequential_thinking(thought='...', session_id='{thinking_session_id}'" in injected_msg.content
-    assert f"get_summary(session_id='{thinking_session_id}')" in injected_msg.content
+    assert "**Parameter Groups:**" in injected_msg.content
+    assert "**Examples:**" in injected_msg.content
+    assert f"sequential_thinking(session_id='{thinking_session_id}'" in injected_msg.content
 
 
 @pytest.mark.asyncio
