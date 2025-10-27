@@ -43,7 +43,11 @@ tools:
           branch_id:
             type: string
             maxLength: 100
-            description: "Branch identifier (required if branching, e.g., 'alternative_approach')"
+            description: |
+              Branch identifier for creating new branch or switching to existing branch.
+              - To create new branch: Set both 'branch_from_thought' AND 'branch_id'
+              - To switch to existing branch: Set only 'branch_id' (e.g., 'main' to return to main)
+              - Branch names: any alphanumeric string (e.g., 'alternative_approach', 'cloud_first')
           needs_more_thoughts:
             type: boolean
             default: false

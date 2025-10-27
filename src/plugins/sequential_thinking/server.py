@@ -183,24 +183,42 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         is_revision: bool = False,
         revises_thought: int | None = None
     ) -> Thought:
-        """Add thought to current branch."""
-        current_branch = session.branches[session.current_branch]
+        """Add thought to current branch (or to original branch if revision)."""
+        # Determine target branch for this thought
+        target_branch_id = session.current_branch
+        
+        # Handle revision - find original thought and use its branch
+        if is_revision and revises_thought is not None:
+            # Find most recent version of the thought being revised (across all branches)
+            latest_version = None
+            for t in reversed(session.thoughts):
+                if t.number == revises_thought:
+                    latest_version = t
+                    break
+            
+            if latest_version:
+                # Revision goes to the same branch as the original thought
+                target_branch_id = latest_version.branch_id
+                logger.debug(
+                    f"Revision of thought #{revises_thought} assigned to original branch '{target_branch_id}'"
+                )
+        
+        target_branch = session.branches[target_branch_id]
         
         thought = Thought(
             number=thought_number,
             content=thought_content,
             timestamp=datetime.now(),
-            branch_id=session.current_branch,
+            branch_id=target_branch_id,
             is_revision=is_revision,
             revises_thought=revises_thought
         )
         
-        # Handle revision
+        # Build revision history if revising
         if is_revision and revises_thought is not None:
-            # Find most recent version of the thought being revised
             latest_version = None
             for t in reversed(session.thoughts):
-                if t.number == revises_thought and t.branch_id == session.current_branch:
+                if t.number == revises_thought:
                     latest_version = t
                     break
             
@@ -209,10 +227,11 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 thought.revision_history = latest_version.revision_history.copy()
                 thought.revision_history.append({
                     "timestamp": latest_version.timestamp.isoformat(),
-                    "content": latest_version.content
+                    "content": latest_version.content,
+                    "branch_id": latest_version.branch_id
                 })
         
-        current_branch.thoughts.append(thought)
+        target_branch.thoughts.append(thought)
         session.thoughts.append(thought)
         session.actual_thoughts += 1
         
@@ -281,6 +300,20 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             if not thought_content.strip():
                 await status.error("thought content cannot be empty")
                 return {"status": "error", "error": "thought content cannot be empty"}
+            
+            # Validate revision parameters
+            if is_revision:
+                if revises_thought is None:
+                    await status.error("revises_thought is required when is_revision=true")
+                    return {"status": "error", "error": "revises_thought is required when is_revision=true"}
+                if revises_thought < 1:
+                    await status.error("revises_thought must be >= 1")
+                    return {"status": "error", "error": "revises_thought must be >= 1"}
+                # Check if thought to revise exists
+                thought_exists = any(t.number == revises_thought for t in session.thoughts)
+                if not thought_exists:
+                    await status.error(f"Thought #{revises_thought} not found in session")
+                    return {"status": "error", "error": f"Thought #{revises_thought} not found in session"}
             
             # Check feature flags
             if is_revision and not self.enable_revisions:
