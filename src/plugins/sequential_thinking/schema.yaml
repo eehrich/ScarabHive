@@ -48,7 +48,13 @@ tools:
   - type: function
     function:
       name: "{{ name }}"
-      description: "Step-by-step reasoning with branching and revision. Use for complex problems requiring structured thinking."
+      description: |
+        Step-by-step reasoning with branching/revision. Complex problems → structured thinking.
+        
+        KEY SEMANTICS:
+        - thought_number: YOUR counter (informational). Server assigns sequential numbers automatically.
+        - Revisions: Set is_revision=true + revises_thought=N. Creates new entry but numbered as N.
+        - Response fields: current_thought_number (server's canonical), client_thought_number (yours), recorded_thoughts_count (total entries).
       parameters:
         type: object
         properties:

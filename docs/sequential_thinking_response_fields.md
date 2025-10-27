@@ -138,16 +138,21 @@ All `sequentialthinking` tool calls return a structured response with the follow
       "number": 5,
       "content": "Analyzing the data reveals...",
       "branch": "main",
-      "is_revision": false
+      "is_revision": false,
+      "revises_thought": null,        # ✅ v1.0.2: Always present
+      "timestamp": "2025-10-27T10:30:00Z"  # ✅ v1.0.2: Always present
     },
     {
       "number": 3,
       "content": "Revised: Data actually shows...",
       "branch": "main",
-      "is_revision": true
+      "is_revision": true,
+      "revises_thought": 3,           # Points to revised thought
+      "timestamp": "2025-10-27T10:35:00Z"
     }
   ]
   ```
+- **Note**: As of v1.0.2, `revises_thought` and `timestamp` are always included (consistent with summary)
 
 ---
 

@@ -497,7 +497,9 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                         "number": t.number,
                         "content": t.content[:200] + "..." if len(t.content) > 200 else t.content,
                         "branch": t.branch_id,
-                        "is_revision": t.is_revision
+                        "is_revision": t.is_revision,
+                        "revises_thought": t.revises_thought,  # Consistent with summary
+                        "timestamp": t.timestamp.isoformat()   # Consistent with summary
                     }
                     for t in session.thoughts[-self.max_summary_thoughts:]
                 ],
@@ -803,18 +805,11 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
             
             # Add quick actions if enabled
             if show_quick_actions:
-                lines.append("\n**Quick actions:**")
-                lines.append(f"- Continue: `sequential_thinking(thought='...', session_id='{session.session_id}', ...)`")
-                
-                # Show branch switch hint if multiple branches exist
-                if show_branch_info and len(session.branches) > 1:
-                    other_branches = [b for b in session.branches.keys() if b != session.current_branch]
-                    if other_branches:
-                        example_branch = other_branches[0]
-                        lines.append(f"- Switch to '{example_branch}': `sequential_thinking(..., branch_id='{example_branch}', ...)`")
-                
-                lines.append(f"- Get summary: `get_summary(session_id='{session.session_id}')`")
-                lines.append(f"- Clear session: `clear_history(session_id='{session.session_id}')`")
+                lines.append("\n**Usage notes:**")
+                lines.append("- `current_thought_number` (server) is canonical; `client_thought_number` is your counter (informational only)")
+                lines.append(f"- `recorded_thoughts_count`={len(session.thoughts)} entries; estimate={session.total_thoughts_estimate}")
+                lines.append("- Revisions: use existing thought's number; creates new entry but keeps original number")
+                lines.append(f"- Continue: `session_id='{session.session_id}'` | Summary: `get_summary()` | Clear: `clear_history()`")
             else:
                 lines.append("\nContinue reasoning with `sequential_thinking()` or summarize findings if complete.")
             
