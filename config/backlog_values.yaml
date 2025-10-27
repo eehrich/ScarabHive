@@ -47,7 +47,8 @@ word_map:
   reverted: reverted
   rejected: rejected
   cancelled: cancelled
-  dupplicate: cancelled
+  deferred: cancelled
+  duplicate: cancelled
   wontfix: cancelled
   failed: cancelled
 
