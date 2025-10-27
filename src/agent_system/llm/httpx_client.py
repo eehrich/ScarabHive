@@ -11,6 +11,7 @@ from typing import Optional
 from dataclasses import dataclass
 
 import httpx
+import ssl
 
 from agent_system.llm.clients import LLMClient
 from agent_system.core.cancellation import CancellationToken
@@ -60,7 +61,23 @@ class HTTPXOpenAIClient(LLMClient):
         self.verify = verify
         self.extra_params = extra_params
 
-        logger.debug(f"HTTPXOpenAIClient initialized model={model} base_url={base_url} verify={verify}")
+        # Normalize verify: when explicitly False, create an SSLContext that disables
+        # certificate verification. This is more robust across httpx/httpcore
+        # backends and when using proxies that perform TLS interception.
+        if self.verify is False:
+            try:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                self._verify = ctx
+            except Exception:
+                # Fall back to boolean False if SSLContext can't be created for any reason
+                self._verify = False
+        else:
+            # Keep None or True as-is (None means httpx default behavior)
+            self._verify = self.verify
+
+        logger.debug(f"HTTPXOpenAIClient initialized model={model} base_url={base_url} verify={self._verify}")
 
         # Create timeout object for HTTPX
         self._timeout = httpx.Timeout(
@@ -138,8 +155,9 @@ class HTTPXOpenAIClient(LLMClient):
             try:
                 # Create fresh client for each request to avoid connection issues
                 client_kwargs = {"timeout": self._timeout}
-                if self.verify is not None:
-                    client_kwargs["verify"] = self.verify
+                # Only include verify if explicitly configured (None means use httpx default)
+                if getattr(self, "_verify", None) is not None:
+                    client_kwargs["verify"] = self._verify
                 async with httpx.AsyncClient(**client_kwargs) as client:
                     logger.debug(f"HTTPX request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
 

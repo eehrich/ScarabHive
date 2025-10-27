@@ -58,13 +58,13 @@ async def lifespan(app: FastAPI):
 
     # Startup: Initialize MCP integration
     global _mcp_integration, _mcp_service, _tool_service, _session_manager, _session_service
-    
+
     # Get config from global service
     if _config_service is None:
         logger.error("ConfigService not initialized before lifespan startup")
     else:
         config = _config_service.get_config()
-        
+
         # Initialize MCP integration
         logger.info("Starting MCP integration initialization...")
         try:
@@ -72,38 +72,38 @@ async def lifespan(app: FastAPI):
             from .services.mcp_service import MCPService
             from .services.tool_service import ToolService
             from .services.session_manager import SessionManager
-            
+
             mcp_integration = await initialize_mcp(config, app)
             _mcp_integration = mcp_integration
-            
+
             # Initialize services
             _mcp_service = MCPService(mcp_integration, config)
             _tool_service = ToolService(mcp_integration, config)
-            
+
             # Initialize SessionManager
             from pathlib import Path
             storage_path = Path(__file__).parents[2] / "data" / "sessions"
             _session_manager = SessionManager(storage_path=str(storage_path))
             logger.info(f"SessionManager initialized with storage_path={storage_path}")
-            
+
             # Initialize SessionService
             from .services.session_service import SessionService
             _session_service = SessionService(_session_manager)
             logger.info("SessionService initialized")
-            
+
             # Store session manager in app state for dependency injection
             app.state.session_manager = _session_manager
             logger.info("SessionManager stored in app.state for dependency injection")
-            
+
             # Make integration accessible to mcp module
             from .mcp import integration as _mcp_mod
             _mcp_mod.mcp_integration = mcp_integration
-            
+
             logger.info("MCP integration startup complete")
         except Exception as e:
             logger.error(f"Failed to initialize MCP integration: {e}", exc_info=True)
             raise
-    
+
     yield
 
     # Shutdown logic
@@ -136,15 +136,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
     else:
         cfg_path = config_path
-    
+
     # Create ConfigService
     global _config_service
     _config_service = ConfigService()
     config = _config_service.load_config(config_path=cfg_path)
-    
+
     # Setup logging via ConfigService
     _config_service.setup_logging()
-    
+
     # Log configuration status
     logger = logging.getLogger(__name__)
     logger.info(f"Loading configuration from: {cfg_path}")
@@ -152,7 +152,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logger.debug(f"LLM system loaded with {len(config.llm_system.profiles)} profiles")
     else:
         logger.warning("No llm_system configuration loaded")
-    
+
     # Count configured servers
     plugin_count = len(config.plugins.servers) if config.plugins else 0
     mcp_remote_count = len(config.external_servers.remote_servers) if config.external_servers else 0
@@ -169,33 +169,33 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             mcp_integration = await initialize_mcp(config, app)
             _mcp_integration = mcp_integration
-            
+
             # Initialize services
             _mcp_service = MCPService(mcp_integration, config)
             _tool_service = ToolService(mcp_integration, config)
-            
+
             # Initialize SessionManager (persistent session storage)
             from pathlib import Path
             storage_path = Path(__file__).parents[2] / "data" / "sessions"
             _session_manager = SessionManager(storage_path=str(storage_path))
             logger.info(f"SessionManager initialized with storage_path={storage_path}")
-            
+
             # Initialize SessionService (session loading/saving logic)
             from .services.session_service import SessionService
             _session_service = SessionService(_session_manager)
             logger.info("SessionService initialized")
-            
+
             # Store session manager in app state for dependency injection (after initialization)
             app.state.session_manager = _session_manager
             logger.info("SessionManager stored in app.state for dependency injection")
-            
+
             # Agent will be initialized later when needed
             # (requires agent instance from bootstrap_servers)
-            
+
             # Make integration accessible to mcp module
             from .mcp import integration as _mcp_mod
             _mcp_mod.mcp_integration = mcp_integration
-            
+
             logger.info("MCP integration and services initialized for API")
 
             # Apply plugin web capabilities
@@ -227,11 +227,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Create FastAPI app
     app = FastAPI(title="Agent System (MCP)", lifespan=custom_lifespan)
-    
+
     # Helper function for optional user authentication
     async def _get_current_user_optional(request: Request) -> Optional[Any]:
         """Get current user if authenticated, None otherwise.
-        
+
         Checks multiple auth methods in order (via get_current_user dependency):
         1. Bearer token in Authorization header
         2. JWT token in access_token cookie (for EventSource/browser)
@@ -241,20 +241,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from .auth.dependencies import get_current_user as get_user_dep
             from .auth.database import get_db
             from fastapi.security import HTTPBearer
-            
+
             bearer_scheme = HTTPBearer(auto_error=False)
             credentials = await bearer_scheme(request)
             x_api_key = request.headers.get("X-API-Key")
-            
+
             # Debug: Check what auth methods are available
             has_bearer = credentials is not None
             has_cookie = request.cookies.get("access_token") is not None
             has_api_key = x_api_key is not None
             logger.debug(f"[AUTH_DEBUG] Auth methods - Bearer: {has_bearer}, Cookie: {has_cookie}, API-Key: {has_api_key}")
-            
+
             # Get database instance (NOT a generator!)
             db = get_db()
-            
+
             # Call get_current_user with the database instance
             user = await get_user_dep(
                 request=request,
@@ -357,7 +357,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # Check if we need to update tools config
                         tools_cfg = overrides.get('tools', {})
                         needs_copy = (
-                            ('allowed' in tools_cfg or 'blocked' in tools_cfg) or 
+                            ('allowed' in tools_cfg or 'blocked' in tools_cfg) or
                             'max_steps' in server_cfg
                         )
                         if needs_copy:
@@ -414,18 +414,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Not a config-based agent, try MCP server config
                 server_mcp = _config_service.get_mcp_server_config(entry_name, config)
                 server_cfg = server_mcp.model_dump() if server_mcp and hasattr(server_mcp, 'model_dump') else {}
-            
+
             if not server_cfg:
                 logging.getLogger(__name__).warning(
                     "No server configuration found for agent '%s', using defaults", entry_name
                 )
         except Exception as e:
             logger.debug(f"Failed to load server config: {e}")
-        
+
         # Build MCPConfig for agent - use ConfigService
         from .config.models import MCPConfig, AgentConfig, ToolConfig
         mcp_cfg = _config_service.get_default_mcp_config(config)
-        
+
         if not mcp_cfg:
             # Create default MCPConfig if not found
             logging.getLogger(__name__).warning(
@@ -434,7 +434,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             tool_cfg = ToolConfig()
             agent_cfg = AgentConfig(llm_profile="normal", tools=tool_cfg)
             mcp_cfg = MCPConfig(type="agent", enabled=True, agent_config=agent_cfg)
-        
+
         selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry)
         registry.register(entry_name, selected_agent)
     else:
@@ -477,26 +477,26 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # Initialize authentication system if enabled
     if config.auth and config.auth.enabled:
         logger.info("Multi-user authentication enabled, initializing auth system...")
-        
+
         # Setup auth database and configuration
         from .auth.database import setup_database
         from .auth.security import set_jwt_config
         from .auth.middleware import configure_cors, configure_security_middleware
         from .auth.models import UserCreate, UserRole
         from pathlib import Path as AuthPath
-        
+
         # Configure JWT settings
         set_jwt_config(
             secret_key=config.auth.secret_key,
             algorithm=config.auth.algorithm,
             expire_minutes=config.auth.access_token_expire_minutes
         )
-        
+
         # Setup database
         db_path = AuthPath(config.auth.database_path)
         db = setup_database(db_path)
         logger.info(f"User database initialized at: {db_path}")
-        
+
         # Create default admin user if no users exist
         users = db.list_users(limit=1)
         if not users:
@@ -507,7 +507,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 if not admin_password:
                     import secrets
                     admin_password = secrets.token_urlsafe(16)
-                
+
                 default_admin = UserCreate(
                     username=config.auth.default_admin_username,
                     email=config.auth.default_admin_email,
@@ -546,7 +546,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 )
             except Exception as e:
                 logger.error(f"Failed to create default admin user: {e}")
-        
+
         # Configure CORS if enabled
         if config.auth.cors_enabled:
             configure_cors(
@@ -556,7 +556,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 allow_methods=config.auth.cors_methods,
                 allow_headers=config.auth.cors_headers,
             )
-        
+
         # Configure security middleware
         configure_security_middleware(
             app,
@@ -565,20 +565,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             security_headers_enabled=config.auth.security_headers_enabled,
             trusted_hosts=config.auth.trusted_hosts,
         )
-        
+
         # Include auth and admin routers
         from .api.auth_endpoints import router as auth_router
         from .api.admin_endpoints import router as admin_router
         from .api.menu_endpoints import menu_router
         from .api.session_endpoints import session_router
-        
+
         app.include_router(auth_router)
         app.include_router(admin_router)
         app.include_router(menu_router)
         app.include_router(session_router)
-        
+
         # Note: SessionManager is stored in app.state during async lifespan startup
-        
+
         logger.info("Authentication system initialized successfully")
     else:
         logger.info("Multi-user authentication is disabled")
@@ -608,11 +608,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
         """Get agent instance with optional overrides.
-        
+
         Args:
             agent_name: Name of agent to use (None = use default global agent)
             llm_profile: LLM profile to use (None = use agent's configured profile)
-            
+
         Returns:
             Tuple of (agent_instance, llm_override, llm_profile_info)
             - agent_instance: The selected agent
@@ -622,7 +622,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         selected_agent = agent
         llm_override = None
         llm_profile_info = None
-        
+
         # Override agent if specified
         if agent_name and agent_name != selected_agent.name:
             try:
@@ -634,25 +634,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
-        
+
         # Create LLM override if profile specified
         if llm_profile and config.llm_system and config.llm_system.profiles:
             if llm_profile not in config.llm_system.profiles:
                 raise HTTPException(status_code=400, detail=f"LLM profile '{llm_profile}' not found")
-            
+
             try:
                 # Resolve profile to model config using the factory
                 from .llm.factory import resolve_llm_config_for_agent
                 from .config.models import AgentConfig
-                
+
                 # Create temporary agent config with override profile
                 temp_agent_config = AgentConfig(llm_profile=llm_profile)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-                
-                # Create new LLM with resolved config
+
+                # Create new LLM with resolved config, including SSL verification setting
                 from .llm.clients import make_llm
-                llm_override = make_llm(**llm_kwargs)
-                
+                llm_override = make_llm(
+                    **llm_kwargs,
+                    ssl_verify=getattr(config.network, "ssl_verify", None)
+                )
+
                 # Build profile info string for status display (matching agent's format)
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
@@ -660,7 +663,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"Failed to apply LLM profile: {str(e)}")
-        
+
         return selected_agent, llm_override, llm_profile_info
 
     @app.get("/config")
@@ -670,7 +673,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/agents")
     def list_agents():
         """List registered agent-like servers that are publicly visible (UI dropdown).
-        
+
         Returns agents with _mcp_public=True OR agents without _mcp_public attribute (backward compat).
         Agents with visibility='tool' or 'private' (_mcp_public=False) are excluded.
         """
@@ -792,7 +795,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/run")
     async def run(
-        request: Request, 
+        request: Request,
         traceparent: Optional[str] = Header(default=None),
         session_id: Optional[str] = Query(default=None),
         agent_name: Optional[str] = Query(default=None),
@@ -855,7 +858,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 files_list = form.getlist('files')
             else:
                 files_list = [form.get('files')] if 'files' in form else []
-            
+
             for file_val in files_list:
                 if file_val and isinstance(file_val, UploadFile):
                     upload_files.append(file_val)
@@ -867,21 +870,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if query_task:
                 task = query_task
 
-        logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s", 
+        logger.info("/run invoked, task=%s, files=%d, request_id=%s, session_id=%s, agent=%s, llm_profile=%s",
                    task, len(upload_files), request_id, session_id, agent_name or "default", llm_profile or "default")
 
         # Get current user (optional authentication)
         current_user = await _get_current_user_optional(request)
-        
+
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"
-        
+
         # Register request ownership for status stream security
         _request_user_map[request_id] = user_id
 
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
-        
+
         # Load existing session if session_id provided
         session_exists = False
         if session_id and _session_service:
@@ -895,11 +898,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not upload_files:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
-            
+
             try:
                 # Pass LLM override to collect_final_result
                 result = await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
-                
+
                 # Format summary from Markdown to HTML for web display
                 if result.get("summary") and selected_agent._hook_manager:
                     try:
@@ -913,7 +916,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     except Exception as e:
                         logger.warning(f"Failed to format summary to HTML: {e}")
                         # Keep original markdown on error
-                
+
                 return result
             finally:
                 # Cleanup: Remove request_id from ownership map
@@ -962,33 +965,33 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             async def event_stream():
                 # Initial keep-alive line
                 yield ":ok\n\n"
-                
+
                 # Track if this is a new session
                 was_new_session = (session_id is None) or (not session_exists)
                 actual_session_id = session_id
-                
+
                 try:
                     async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
-                        
+
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
                             old_session_id = actual_session_id
                             actual_session_id = event["session_id"]
                             logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
-                        
+
                         # Ensure proper JSON serialization
                         if hasattr(event, 'to_dict'):
                             payload = event.to_dict()
                         else:
                             payload = event
-                        
+
                         yield f"event: {event_type}\n"
                         yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
-                        
+
                         if event_type == "end":
                             break
-                            
+
                 except Exception as e:
                     logger.exception("Error streaming multimodal events: %s", e)
                     error_event = {"type": "error", "message": str(e)}
@@ -1007,10 +1010,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             llm_profile_used,
                             was_new_session
                         )
-                    
+
                     # Cleanup: Remove request_id from ownership map
                     _request_user_map.pop(request_id, None)
-                    
+
                     # Cleanup temp files after streaming completes
                     for temp_file in temp_files:
                         try:
@@ -1034,45 +1037,45 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/events")
     async def events(
         request: Request,
-        task: str, 
+        task: str,
         session_id: Optional[str] = Query(default=None),
         agent: Optional[str] = Query(default=None, alias="agent"),  # Accept both 'agent' and 'agent_name'
         agent_name: Optional[str] = Query(default=None),
         llm_profile: Optional[str] = Query(default=None)
     ):
         """Stream agent events for a task.
-        
+
         Query parameters:
         - task: The task to execute
         - session_id: Optional session ID for conversation continuity
         - agent or agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
-        
+
         Authentication:
         - If user is authenticated (JWT token or API key), sessions are saved to their account
         - If not authenticated, sessions use "anonymous" user_id
         """
         logger = logging.getLogger(__name__)
         request_id = short_id()
-        
+
         # Prioritize 'agent' parameter over 'agent_name' for backwards compatibility
         agent_name = agent or agent_name
-        
+
         # Get current user (optional authentication)
         current_user = await _get_current_user_optional(request)
-        
+
         # Determine user_id for session management
         user_id = current_user.username if current_user else "anonymous"
-        
+
         # Register request ownership for status stream security
         _request_user_map[request_id] = user_id
-        
-        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s", 
+
+        logger.info("SSE /events connected, task=%s, request_id=%s, session_id=%s, agent=%s, llm_profile=%s, user_id=%s",
                    task, request_id, session_id, agent_name or "default", llm_profile or "default", user_id)
 
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
-        
+
         # Load existing session if session_id provided
         session_exists = False
         if session_id and _session_service:
@@ -1082,24 +1085,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         async def event_stream():
             yield ":ok\n\n"
-            
+
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
-            
+
             try:
                 async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                     logger.debug("SSE event: %s", ev.get("type"))
-                    
+
                     if ev.get("type") == "start" and ev.get("session_id"):
                         old_session_id = actual_session_id
                         actual_session_id = ev["session_id"]
                         logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
-                    
+
                     if hasattr(ev, 'to_dict'):
                         payload = ev.to_dict()
                     else:
                         payload = ev
-                    
+
                     # Format final event summary to HTML
                     if ev.get("type") == "final" and ev.get("summary") and selected_agent._hook_manager:
                         try:
@@ -1113,7 +1116,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             payload["content_format"] = content_format
                         except Exception as e:
                             logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
-                    
+
                     try:
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     except (TypeError, ValueError) as e:
@@ -1134,7 +1137,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         llm_profile_used,
                         was_new_session
                     )
-                
+
                 # Cleanup: Remove request_id from ownership map to prevent memory leak
                 _request_user_map.pop(request_id, None)
 
@@ -1318,19 +1321,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             response.headers["Expires"] = "0"
 
         return response
-    
+
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
         """Login page for multi-user authentication"""
         response = templates.TemplateResponse(request, "login.html")
-        
+
         # Disable caching for login page
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
-        
+
         return response
-    
+
     @app.get("/status", response_class=HTMLResponse)
     async def status_page(request: Request):
         # Redirect to main page with integrated status
@@ -1350,22 +1353,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     @app.get("/mcp/status")
     async def mcp_status(force_refresh: bool = False):
         """Get MCP server status including plugins and external servers.
-        
+
         Args:
             force_refresh: If True, invalidates cache before fetching status
         """
         try:
             logger = logging.getLogger(__name__)
-            
+
             # Use MCPService for comprehensive status
             global _mcp_service, _app_registry, _mcp_integration
-            
+
             if not _mcp_service:
                 return {"error": "MCP service not initialized"}
-            
+
             if not _app_registry:
                 return {"error": "Registry not initialized"}
-            
+
             # If force_refresh requested, invalidate cache first
             if force_refresh and _mcp_integration:
                 try:
@@ -1373,15 +1376,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug("Cache invalidated due to force_refresh=True")
                 except Exception as e:
                     logger.warning(f"Failed to invalidate cache: {e}")
-            
+
             # Delegate to MCPService
             status = await _mcp_service.get_comprehensive_status(
                 registry=_app_registry,
                 check_connectivity=True  # Always check connectivity for accurate status
             )
-            
+
             return status
-            
+
         except Exception as e:
             import traceback
             logger = logging.getLogger(__name__)
@@ -1444,28 +1447,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def mcp_server_endpoint(request: Request):
         """
         MCP JSON-RPC 2.0 server endpoint.
-        
+
         Handles MCP protocol requests when running in server mode.
         Exposes activated plugins as MCP tools to remote MCP clients.
-        
+
         Requires MCP server mode to be enabled in configuration.
         Authentication required if server_mode.authentication.required is true.
         """
         logger = logging.getLogger(__name__)
-        
+
         # Check if MCP server mode is enabled
         if not _mcp_server_handler:
             raise HTTPException(
                 status_code=501,
                 detail="MCP server mode is not enabled. Set mcp_server_mode.enabled: true in config/mcp_server_mode.yaml"
             )
-        
+
         # Check authentication if required
         server_config = config.server_mode
         if server_config.authentication.required:
             # Try to get user from JWT or API key
             current_user = None
-            
+
             # Try JWT first (Bearer token)
             if "jwt" in server_config.authentication.methods:
                 auth_header = request.headers.get("Authorization", "")
@@ -1473,34 +1476,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     try:
                         from .auth.dependencies import get_current_user_from_token
                         from .auth.database import get_db
-                        
+
                         token = auth_header.split(" ", 1)[1]
                         db = await anext(get_db())  # Get database instance
                         current_user = await get_current_user_from_token(token, db)
                     except Exception as e:
                         logger.debug(f"JWT authentication failed: {e}")
-            
+
             # Try API key if JWT failed
             if not current_user and "api_key" in server_config.authentication.methods:
                 api_key = request.headers.get("X-API-Key")
                 if api_key:
                     try:
                         from .auth.database import get_db, verify_api_key
-                        
+
                         db = await anext(get_db())
                         current_user = await verify_api_key(db, api_key)
                     except Exception as e:
                         logger.debug(f"API key authentication failed: {e}")
-            
+
             # If authentication required but no valid credentials
             if not current_user:
                 raise HTTPException(
                     status_code=401,
                     detail="Authentication required. Provide valid JWT token (Authorization: Bearer <token>) or API key (X-API-Key: <key>)"
                 )
-            
+
             logger.info(f"MCP request authenticated for user: {current_user.username}")
-        
+
         # Delegate request to MCP server handler
         try:
             return await _mcp_server_handler.handle_request(request)
@@ -1512,17 +1515,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def mcp_server_sse(request: Request):
         """
         MCP server SSE stream endpoint (MCP spec compliant).
-        
+
         According to MCP spec, this endpoint:
         1. Accepts client SSE connections
         2. Sends an 'endpoint' event with the POST URI for client messages
         3. Sends server messages as 'message' events (tools/resources/prompts notifications)
-        
+
         This implements server-initiated notifications for:
         - tools/list: Tool availability changes
-        - resources/list: Resource availability changes  
+        - resources/list: Resource availability changes
         - prompts/list: Prompt availability changes
-        
+
         Spec: https://modelcontextprotocol.io/specification/2024-11-05/basic/transports#http-with-sse
         """
         if not _mcp_server_handler:
@@ -1530,9 +1533,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 status_code=501,
                 detail="MCP server mode is not enabled"
             )
-        
+
         logger.info("MCP SSE client connected")
-        
+
         # Create SSE event generator following MCP spec
         async def event_generator():
             try:
@@ -1541,7 +1544,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 endpoint_event = f"event: endpoint\ndata: {endpoint_uri}\n\n"
                 yield endpoint_event
                 logger.debug(f"Sent endpoint event: {endpoint_uri}")
-                
+
                 # 2. Send initial server capabilities and available tools
                 # Send tools/list notification
                 try:
@@ -1555,7 +1558,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug(f"Sent tools list notification: {len(tools_result.get('tools', []))} tools")
                 except Exception as e:
                     logger.error(f"Failed to send tools list: {e}")
-                
+
                 # Send resources/list notification
                 try:
                     resources_result = await _mcp_server_handler._handle_resources_list({}, None)
@@ -1568,7 +1571,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug("Sent resources list notification")
                 except Exception as e:
                     logger.debug(f"Resources not available: {e}")
-                
+
                 # Send prompts/list notification
                 try:
                     prompts_result = await _mcp_server_handler._handle_prompts_list({}, None)
@@ -1581,14 +1584,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug("Sent prompts list notification")
                 except Exception as e:
                     logger.debug(f"Prompts not available: {e}")
-                
+
                 # 3. Keep connection alive with periodic heartbeats
                 while True:
                     # Check if client disconnected
                     if await request.is_disconnected():
                         logger.debug("MCP SSE client disconnected")
                         break
-                    
+
                     # Send heartbeat as a 'message' event with JSON-RPC notification
                     heartbeat_message = {
                         "jsonrpc": "2.0",
@@ -1598,15 +1601,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         }
                     }
                     yield f"event: message\ndata: {json.dumps(heartbeat_message, ensure_ascii=False)}\n\n"
-                    
+
                     # Wait before next heartbeat (30 seconds)
                     await asyncio.sleep(30)
-                    
+
             except asyncio.CancelledError:
                 logger.debug("MCP SSE stream cancelled")
             except Exception as e:
                 logger.exception("MCP SSE stream error: %s", e)
-        
+
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
@@ -1621,7 +1624,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def mcp_server_info():
         """
         Get MCP server information (non-MCP REST endpoint).
-        
+
         Provides server capabilities, exposed plugins, and session statistics
         without requiring MCP protocol.
         """
@@ -1630,11 +1633,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "enabled": False,
                 "message": "MCP server mode is not enabled"
             }
-        
+
         try:
             server_config = config.server_mode
             session_stats = _mcp_server_handler.get_session_stats()
-            
+
             return {
                 "enabled": True,
                 "endpoint": server_config.endpoint,
@@ -1667,11 +1670,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from .hooks import get_hook_registry
             registry = get_hook_registry()
             hooks_dict = registry.list_hooks()
-            
+
             if hook_type:
                 # Filter by type
                 return {hook_type: hooks_dict.get(hook_type, [])}
-            
+
             return hooks_dict
         except Exception as e:
             logger = logging.getLogger(__name__)
@@ -1685,10 +1688,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from .hooks import get_hook_registry
             registry = get_hook_registry()
             info = registry.get_hook_info(hook_name)
-            
+
             if not info:
                 return {"error": f"Hook '{hook_name}' not found"}
-            
+
             return info
         except Exception as e:
             logger = logging.getLogger(__name__)
@@ -1703,13 +1706,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             registry = get_hook_registry()
             hooks_dict = registry.list_hooks()
             all_stats = {}
-            
+
             for hook_type, hook_names in hooks_dict.items():
                 for name in hook_names:
                     stats = registry.get_stats(name)
                     if stats:
                         all_stats[name] = stats
-            
+
             return all_stats
         except Exception as e:
             logger = logging.getLogger(__name__)
@@ -1723,13 +1726,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from .hooks import get_hook_registry
             registry = get_hook_registry()
             stats = registry.get_stats(hook_name)
-            
+
             if stats is None:
                 info = registry.get_hook_info(hook_name)
                 if not info:
                     return {"error": f"Hook '{hook_name}' not found"}
                 return {hook_name: {}}
-            
+
             return {hook_name: stats}
         except Exception as e:
             logger = logging.getLogger(__name__)
@@ -1761,7 +1764,7 @@ def run() -> None:
     # Build the application (loads config internally)
     cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
     app_obj = build_app(cfg_path)
-    
+
     # Get config from global ConfigService (already loaded in build_app)
     config = _config_service.get_config()
 
