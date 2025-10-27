@@ -281,6 +281,21 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 f"Memory limit reached for session {session.session_id}, "
                 f"removed {excess} oldest thoughts"
             )
+    
+    def _relative_time(self, dt: datetime) -> str:
+        """Format datetime as relative time (e.g., '2m ago', '1h ago')."""
+        now = datetime.now()
+        delta = now - dt
+        
+        seconds = int(delta.total_seconds())
+        if seconds < 60:
+            return f"{seconds}s ago"
+        elif seconds < 3600:
+            return f"{seconds // 60}m ago"
+        elif seconds < 86400:
+            return f"{seconds // 3600}h ago"
+        else:
+            return f"{seconds // 86400}d ago"
 
     def _get_branch_tree(self, session: SessionState) -> dict[str, Any]:
         """Get branch tree visualization."""
@@ -606,24 +621,27 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             max_thoughts = getattr(self.mcp_config, "max_thoughts_in_prompt", 5)
             show_branch_info = getattr(self.mcp_config, "show_branch_info", True)
             format_type = getattr(self.mcp_config, "format", "markdown")
+            max_sessions_in_prompt = getattr(self.mcp_config, "max_sessions_in_prompt", 1)
             
             # Find active sequential thinking sessions for this agent session
             agent_session_id = context.session_id
             thinking_session_ids = self._agent_session_mapping.get(agent_session_id, [])
             
-            # Get the most recently accessed session (if multiple exist)
-            active_session = None
+            # Get valid sessions sorted by last accessed (most recent first)
+            active_sessions = []
             if thinking_session_ids:
-                # Filter out expired sessions and get most recent
                 valid_sessions = [
                     self._sessions[sid] for sid in thinking_session_ids 
                     if sid in self._sessions
                 ]
                 if valid_sessions:
-                    active_session = max(valid_sessions, key=lambda s: s.last_accessed)
+                    # Sort by last_accessed descending
+                    active_sessions = sorted(valid_sessions, key=lambda s: s.last_accessed, reverse=True)
+                    # Limit to max_sessions_in_prompt
+                    active_sessions = active_sessions[:max_sessions_in_prompt]
                     logger.debug(
                         f"Found {len(valid_sessions)} thinking session(s) for agent session {agent_session_id}, "
-                        f"using most recent: {active_session.session_id}"
+                        f"showing {len(active_sessions)} most recent"
                     )
             
             from agent_system.llm.models import ChatMessage
@@ -636,15 +654,22 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                     context.messages.pop(i)
                     break
             
-            if active_session and len(active_session.thoughts) > 0:
-                # Format active session with recent thoughts
-                session_prompt = self._format_session_for_prompt(
-                    active_session, max_thoughts, show_branch_info, format_type
-                )
+            if active_sessions:
+                # Format active sessions (one or multiple)
+                if len(active_sessions) == 1:
+                    session_prompt = self._format_session_for_prompt(
+                        active_sessions[0], max_thoughts, show_branch_info, format_type
+                    )
+                else:
+                    # Multiple sessions - format with dividers
+                    session_prompt = self._format_multiple_sessions_for_prompt(
+                        active_sessions, max_thoughts, show_branch_info, format_type
+                    )
+                
+                total_thoughts = sum(len(s.thoughts) for s in active_sessions)
                 logger.info(
-                    f"[SequentialThinkingHook] Injecting {len(active_session.thoughts)} thoughts "
-                    f"(showing last {min(max_thoughts, len(active_session.thoughts))}) "
-                    f"for session {active_session.session_id}"
+                    f"[SequentialThinkingHook] Injecting {len(active_sessions)} session(s) "
+                    f"with {total_thoughts} total thoughts"
                 )
             else:
                 # No active session - inject reminder about tool
@@ -682,10 +707,20 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
         format_type: str = "markdown"
     ) -> str:
         """Format active session for injection into prompt."""
+        # Get config options for UX improvements
+        show_relative_timestamps = getattr(self.mcp_config, "show_relative_timestamps", True)
+        show_quick_actions = getattr(self.mcp_config, "show_quick_actions", True)
+        
         if format_type == "markdown":
             lines = []
             lines.append("## Active Sequential Thinking Session\n")
             lines.append(f"**Session ID**: `{session.session_id}`")
+            
+            # Add relative timestamp for session age if enabled
+            if show_relative_timestamps:
+                session_age = self._relative_time(session.created_at)
+                lines.append(f"**Started**: {session_age}")
+            
             lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts\n")
             
             # Show recent thoughts
@@ -697,11 +732,16 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
                     branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
                     revision_tag = f" (revises #{thought.revises_thought})" if thought.is_revision else ""
                     
+                    # Add relative timestamp if enabled
+                    time_tag = ""
+                    if show_relative_timestamps:
+                        time_tag = f" *({self._relative_time(thought.timestamp)})*"
+                    
                     # Truncate long thoughts
                     content = thought.content[:150] + "..." if len(thought.content) > 150 else thought.content
                     
                     lines.append(
-                        f"- **Thought #{thought.number}**{branch_tag}{revision_tag}: {content}"
+                        f"- **Thought #{thought.number}**{branch_tag}{revision_tag}{time_tag}: {content}"
                     )
             
             # Show branch info if enabled
@@ -709,7 +749,21 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
                 lines.append(f"\n**Current branch**: `{session.current_branch}`")
                 lines.append(f"**Available branches**: {', '.join(f'`{b}`' for b in session.branches.keys())}")
             
-            lines.append("\nContinue reasoning with `sequential_thinking()` or summarize findings if complete.")
+            # Add quick actions if enabled
+            if show_quick_actions:
+                lines.append("\n**Quick actions:**")
+                lines.append(f"- Continue: `sequential_thinking(thought='...', session_id='{session.session_id}', ...)`")
+                
+                # Show branch switch hint if multiple branches exist
+                if show_branch_info and len(session.branches) > 1:
+                    other_branches = [b for b in session.branches.keys() if b != session.current_branch]
+                    if other_branches:
+                        example_branch = other_branches[0]
+                        lines.append(f"- Switch branch: `sequential_thinking(..., branch_id='{example_branch}', ...)`")
+                
+                lines.append(f"- Get summary: `get_summary(session_id='{session.session_id}')`")
+            else:
+                lines.append("\nContinue reasoning with `sequential_thinking()` or summarize findings if complete.")
             
             return "\n".join(lines)
         else:
@@ -723,8 +777,84 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
             
             recent_thoughts = session.thoughts[-max_thoughts:] if max_thoughts > 0 else session.thoughts
             for thought in recent_thoughts:
-                content = thought.content[:100] + "..." if len(thought.content) > 100 else thought.content
-                lines.append(f"#{thought.number}: {content}")
+                lines.append(f"Thought #{thought.number}: {thought.content[:100]}")
+            
+            return "\n".join(lines)
+    
+    def _format_multiple_sessions_for_prompt(
+        self, 
+        sessions: list[SessionState], 
+        max_thoughts: int, 
+        show_branch_info: bool,
+        format_type: str = "markdown"
+    ) -> str:
+        """Format multiple active sessions for injection into prompt."""
+        if format_type == "markdown":
+            lines = []
+            lines.append(f"## Active Sequential Thinking Sessions ({len(sessions)})\n")
+            
+            for i, session in enumerate(sessions, 1):
+                # Session header
+                lines.append(f"### Session {i}: `{session.session_id}`")
+                
+                # Add relative timestamp if enabled
+                show_relative_timestamps = getattr(self.mcp_config, "show_relative_timestamps", True)
+                if show_relative_timestamps:
+                    session_age = self._relative_time(session.created_at)
+                    lines.append(f"**Started**: {session_age}")
+                
+                lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
+                
+                # Show recent thoughts (reduced for multi-session view)
+                thoughts_to_show = min(max_thoughts, 3)  # Show fewer thoughts per session
+                recent_thoughts = session.thoughts[-thoughts_to_show:]
+                
+                if recent_thoughts:
+                    lines.append("**Recent thoughts:**")
+                    for thought in recent_thoughts:
+                        branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
+                        
+                        # Add relative timestamp if enabled
+                        time_tag = ""
+                        if show_relative_timestamps:
+                            time_tag = f" *({self._relative_time(thought.timestamp)})*"
+                        
+                        # Truncate for compactness
+                        content = thought.content[:100] + "..." if len(thought.content) > 100 else thought.content
+                        lines.append(f"- **#{thought.number}**{branch_tag}{time_tag}: {content}")
+                
+                # Add divider between sessions (except after last)
+                if i < len(sessions):
+                    lines.append("")
+            
+            # Add quick actions for all sessions
+            show_quick_actions = getattr(self.mcp_config, "show_quick_actions", True)
+            if show_quick_actions:
+                lines.append("\n**Quick actions:**")
+                lines.append("- Continue session: `sequential_thinking(thought='...', session_id='<session_id>', ...)`")
+                lines.append("- Get summary: `get_summary(session_id='<session_id>')`")
+            
+            return "\n".join(lines)
+        else:
+            # Plain text format for multiple sessions
+            lines = [
+                f"Sequential Thinking: {len(sessions)} Active Sessions",
+                ""
+            ]
+            
+            for i, session in enumerate(sessions, 1):
+                lines.append(f"Session {i}: {session.session_id}")
+                lines.append(f"Progress: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
+                
+                # Show fewer thoughts in plain text
+                thoughts_to_show = min(max_thoughts, 2)
+                recent_thoughts = session.thoughts[-thoughts_to_show:]
+                for thought in recent_thoughts:
+                    content = thought.content[:80] + "..." if len(thought.content) > 80 else thought.content
+                    lines.append(f"  #{thought.number}: {content}")
+                
+                if i < len(sessions):
+                    lines.append("")
             
             return "\n".join(lines)
     

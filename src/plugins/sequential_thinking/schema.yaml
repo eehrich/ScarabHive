@@ -12,15 +12,32 @@ hooks:
 config:
   max_thoughts_in_prompt:
     type: integer
-    default: 10
+    default: 5
     description: "Maximum recent thoughts to show per session in system prompt"
     minimum: 1
     maximum: 20
+  
+  max_sessions_in_prompt:
+    type: integer
+    default: 1
+    description: "Maximum number of active sessions to show in prompt (most recent first)"
+    minimum: 1
+    maximum: 5
   
   show_branch_info:
     type: boolean
     default: true
     description: "Include branch information in injected prompt"
+  
+  show_relative_timestamps:
+    type: boolean
+    default: true
+    description: "Show relative timestamps (e.g., '2m ago') instead of absolute times"
+  
+  show_quick_actions:
+    type: boolean
+    default: true
+    description: "Include quick action hints in prompt"
   
   format:
     type: string
