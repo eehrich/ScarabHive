@@ -1222,6 +1222,305 @@ async def test_memory_usage_warning_in_warnings_array(server, mock_status):
     assert any("Memory usage" in w for w in result["warnings"])
 
 
+# ===== Phase 2 Feature Tests (Event IDs + Idempotency) =====
+
+@pytest.mark.asyncio
+async def test_event_id_present_in_response(server, mock_status):
+    """Test that event_id is present in responses."""
+    result = await server.sequential_thinking({
+        "thought": "Test thought",
+        "thought_number": 1,
+        "total_thoughts": 1,
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    assert "event_id" in result
+    assert result["event_id"] is not None
+    assert len(result["event_id"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_event_id_in_thought_history(server, mock_status):
+    """Test that event_id appears in thought_history."""
+    result1 = await server.sequential_thinking({
+        "thought": "First",
+        "thought_number": 1,
+        "total_thoughts": 2,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    
+    session_id = result1["session_id"]
+    
+    result2 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Second",
+        "thought_number": 2,
+        "total_thoughts": 2,
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    # Check thought_history has event_id
+    assert len(result2["thought_history"]) == 2
+    for t in result2["thought_history"]:
+        assert "event_id" in t
+        assert t["event_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_event_id_in_summary(server, mock_status):
+    """Test that event_id appears in summary."""
+    result = await server.sequential_thinking({
+        "thought": "Test",
+        "thought_number": 1,
+        "total_thoughts": 1,
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    session_id = result["session_id"]
+    
+    summary = await server.get_summary({
+        "session_id": session_id,
+        "_status": mock_status
+    })
+    
+    assert len(summary["thoughts"]) == 1
+    assert "event_id" in summary["thoughts"][0]
+    assert summary["thoughts"][0]["event_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_idempotency_basic(server, mock_status):
+    """Test basic idempotency with idempotency_key."""
+    idempotency_key = "test-key-12345"
+    
+    # First call with idempotency_key
+    result1 = await server.sequential_thinking({
+        "thought": "First thought",
+        "thought_number": 1,
+        "total_thoughts": 1,
+        "next_thought_needed": False,
+        "idempotency_key": idempotency_key,
+        "_status": mock_status
+    })
+    
+    event_id1 = result1["event_id"]
+    session_id = result1["session_id"]
+    
+    # Second call with same idempotency_key
+    result2 = await server.sequential_thinking({
+        "thought": "Different thought (should be ignored)",
+        "thought_number": 2,
+        "total_thoughts": 2,
+        "next_thought_needed": False,
+        "idempotency_key": idempotency_key,
+        "_status": mock_status
+    })
+    
+    # Should return same event_id
+    assert result2["event_id"] == event_id1
+    assert result2["warnings"] is not None
+    assert any("Idempotent" in w for w in result2["warnings"])
+    
+    # Session should only have 1 thought (not duplicated)
+    summary = await server.get_summary({
+        "session_id": session_id,
+        "_status": mock_status
+    })
+    assert len(summary["thoughts"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_idempotency_different_keys(server, mock_status):
+    """Test that different idempotency_keys create different events."""
+    result1 = await server.sequential_thinking({
+        "thought": "First",
+        "thought_number": 1,
+        "total_thoughts": 2,
+        "next_thought_needed": True,
+        "idempotency_key": "key-1",
+        "_status": mock_status
+    })
+    
+    session_id = result1["session_id"]
+    event_id1 = result1["event_id"]
+    
+    result2 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Second",
+        "thought_number": 2,
+        "total_thoughts": 2,
+        "next_thought_needed": False,
+        "idempotency_key": "key-2",
+        "_status": mock_status
+    })
+    
+    event_id2 = result2["event_id"]
+    
+    # Different keys → different event_ids
+    assert event_id1 != event_id2
+    
+    # Should have 2 thoughts
+    summary = await server.get_summary({
+        "session_id": session_id,
+        "_status": mock_status
+    })
+    assert len(summary["thoughts"]) == 2
+
+
+# ===== Edge Case Validation Tests =====
+
+@pytest.mark.asyncio
+async def test_revision_without_revises_thought_fails(server, mock_status):
+    """Test that is_revision without revises_thought is rejected."""
+    result = await server.sequential_thinking({
+        "thought": "Test",
+        "thought_number": 1,
+        "total_thoughts": 1,
+        "next_thought_needed": False,
+        "is_revision": True,  # Missing revises_thought!
+        "_status": mock_status
+    })
+    
+    assert result["status"] == "error"
+    assert "revises_thought is required" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_nonexistent_branch_switch_fails(server, mock_status):
+    """Test that switching to nonexistent branch fails."""
+    result = await server.sequential_thinking({
+        "thought": "First",
+        "thought_number": 1,
+        "total_thoughts": 1,
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    session_id = result["session_id"]
+    
+    # Try to switch to non-existent branch
+    result2 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Second",
+        "thought_number": 2,
+        "total_thoughts": 2,
+        "next_thought_needed": False,
+        "branch_id": "nonexistent",  # Doesn't exist!
+        "_status": mock_status
+    })
+    
+    assert result2["status"] == "error"
+    assert "not found" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_revise_nonexistent_thought_fails(server, mock_status):
+    """Test that revising nonexistent thought fails."""
+    result = await server.sequential_thinking({
+        "thought": "First",
+        "thought_number": 1,
+        "total_thoughts": 1,
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    session_id = result["session_id"]
+    
+    # Try to revise thought that doesn't exist
+    result2 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Revise nonexistent",
+        "thought_number": 2,
+        "total_thoughts": 2,
+        "next_thought_needed": False,
+        "is_revision": True,
+        "revises_thought": 99,  # Doesn't exist!
+        "_status": mock_status
+    })
+    
+    assert result2["status"] == "error"
+    assert "not found" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_branch_id_already_exists_fails(server, mock_status):
+    """Test that creating branch with existing ID fails."""
+    result = await server.sequential_thinking({
+        "thought": "First",
+        "thought_number": 1,
+        "total_thoughts": 2,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    
+    session_id = result["session_id"]
+    
+    # Create branch
+    result2 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Branch",
+        "thought_number": 2,
+        "total_thoughts": 2,
+        "next_thought_needed": False,
+        "branch_id": "test_branch",
+        "branch_from_thought": 1,
+        "_status": mock_status
+    })
+    
+    assert result2["status"] == "success"
+    
+    # Try to create same branch again
+    result3 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Another",
+        "thought_number": 3,
+        "total_thoughts": 3,
+        "next_thought_needed": False,
+        "branch_id": "test_branch",  # Already exists!
+        "branch_from_thought": 1,
+        "_status": mock_status
+    })
+    
+    assert result3["status"] == "error"
+    assert "already exists" in result3["error"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_thought_number_zero_fails(server, mock_status):
+    """Test that thought_number=0 is rejected."""
+    result = await server.sequential_thinking({
+        "thought": "Test",
+        "thought_number": 0,  # Invalid!
+        "total_thoughts": 1,
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    assert result["status"] == "error"
+    assert "must be >= 1" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_total_thoughts_zero_fails(server, mock_status):
+    """Test that total_thoughts=0 is rejected."""
+    result = await server.sequential_thinking({
+        "thought": "Test",
+        "thought_number": 1,
+        "total_thoughts": 0,  # Invalid!
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    assert result["status"] == "error"
+    assert "must be >= 1" in result["error"]
+
+
+
+
 # ===== Phase 2a: Edge Cases & Validation Tests =====
 
 @pytest.mark.asyncio

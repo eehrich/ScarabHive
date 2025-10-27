@@ -101,6 +101,10 @@ tools:
             type: boolean
             default: false
             description: "Update estimate upward"
+          idempotency_key:
+            type: string
+            maxLength: 200
+            description: "Optional: UUID/hash for retry protection. Same key = same event_id returned (no duplicate)."
         required: ["thought", "next_thought_needed", "thought_number", "total_thoughts"]
         additionalProperties: false
 

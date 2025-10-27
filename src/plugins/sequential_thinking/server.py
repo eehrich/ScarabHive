@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 class Thought:
     """Single thought in reasoning chain."""
     
+    event_id: str  # Unique UUID for this entry
     number: int
     content: str
     timestamp: datetime
@@ -112,6 +113,9 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         # Mapping: agent_session_id → list of sequential_thinking_session_ids
         # This allows the hook to find active thinking sessions for a given conversation
         self._agent_session_mapping: dict[str, list[str]] = {}
+        
+        # Idempotency: idempotency_key → event_id (prevents duplicate entries on retry)
+        self._idempotency_cache: dict[str, str] = {}
         
         logger.info(
             f"Sequential Thinking server '{name}' initialized - "
@@ -234,6 +238,9 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         revises_thought: int | None = None
     ) -> Thought:
         """Add thought to current branch (or to original branch if revision)."""
+        # Generate unique event ID
+        event_id = short_id()
+        
         # Determine target branch for this thought
         target_branch_id = session.current_branch
         
@@ -256,6 +263,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         target_branch = session.branches[target_branch_id]
         
         thought = Thought(
+            event_id=event_id,
             number=thought_number,
             content=thought_content,
             timestamp=datetime.now(),
@@ -276,6 +284,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 # Copy existing revision history and add this version
                 thought.revision_history = latest_version.revision_history.copy()
                 thought.revision_history.append({
+                    "event_id": latest_version.event_id,
                     "timestamp": latest_version.timestamp.isoformat(),
                     "content": latest_version.content,
                     "branch_id": latest_version.branch_id
@@ -348,12 +357,38 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             branch_from_thought = params.get("branch_from_thought")
             branch_id = params.get("branch_id")
             needs_more_thoughts = params.get("needs_more_thoughts", False)
+            idempotency_key = params.get("idempotency_key")
             
             # Get status context
             status = params["_status"]
             
             # Get agent session ID if available (for hook mapping)
             agent_session_id = params.get("_session_id")
+            
+            # Check idempotency: return cached result if key exists
+            if idempotency_key and idempotency_key in self._idempotency_cache:
+                cached_event_id = self._idempotency_cache[idempotency_key]
+                await status.end(f"Idempotent request (key={idempotency_key[:8]}..., event_id={cached_event_id[:8]}...)")
+                # Find the cached thought and return its response
+                for s in self._sessions.values():
+                    for t in s.thoughts:
+                        if t.event_id == cached_event_id:
+                            return {
+                                "status": "success",
+                                "session_id": s.session_id,
+                                "event_id": t.event_id,
+                                "current_thought_number": t.number,
+                                "client_thought_number": thought_number,
+                                "recorded_thoughts_count": len(s.thoughts),
+                                "total_thoughts_estimate": s.total_thoughts_estimate,
+                                "next_thought_needed": next_thought_needed,
+                                "progress": f"Thought {s.actual_thoughts}/{max(s.actual_thoughts, s.total_thoughts_estimate)}",
+                                "branch": s.current_branch,
+                                "thought_history": [],  # Minimal response for cached
+                                "branch_summary": None,
+                                "error": None,
+                                "warnings": ["Idempotent request - returned cached result"]
+                            }
             
             # Get or create session first (for session_id in status messages)
             session = self._get_or_create_session(session_id, agent_session_id)
@@ -481,10 +516,19 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Consistent progress display: never show X/Y with X > Y
             effective_total = max(session.actual_thoughts, session.total_thoughts_estimate)
             
+            # Get the thought that was just added
+            current_thought = session.thoughts[-1]
+            
+            # Cache event_id for idempotency (if key provided)
+            if idempotency_key:
+                self._idempotency_cache[idempotency_key] = current_thought.event_id
+                logger.debug(f"Cached idempotency_key={idempotency_key[:8]}... → event_id={current_thought.event_id[:8]}...")
+            
             # Prepare result
             result = {
                 "status": "success",
                 "session_id": session.session_id,
+                "event_id": current_thought.event_id,  # UUID for this entry
                 "current_thought_number": server_thought_number,  # Return server number
                 "client_thought_number": thought_number,  # Also return client's number for reference
                 "recorded_thoughts_count": len(session.thoughts),  # Total recorded thoughts
@@ -494,6 +538,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 "branch": session.current_branch,
                 "thought_history": [
                     {
+                        "event_id": t.event_id,
                         "number": t.number,
                         "content": t.content[:200] + "..." if len(t.content) > 200 else t.content,
                         "branch": t.branch_id,
@@ -615,6 +660,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 "current_branch": session.current_branch,
                 "thoughts": [
                     {
+                        "event_id": t.event_id,
                         "number": t.number,
                         "content": t.content,
                         "timestamp": t.timestamp.isoformat(),
