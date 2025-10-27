@@ -198,15 +198,31 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         if branch_id in session.branches:
             raise ValueError(f"Branch '{branch_id}' already exists")
         
+        # Find the thought we're branching from to determine parent branch
+        source_thought = None
+        for t in session.thoughts:
+            if t.number == branch_from_thought:
+                source_thought = t
+                break
+        
+        if source_thought is None:
+            raise ValueError(f"Thought #{branch_from_thought} not found")
+        
+        # Parent branch is the branch of the thought we're branching from
+        parent_branch_id = source_thought.branch_id
+        
         branch = Branch(
             branch_id=branch_id,
-            parent_branch=session.current_branch,
+            parent_branch=parent_branch_id,
             branched_from_thought=branch_from_thought,
             created_at=datetime.now()
         )
         session.branches[branch_id] = branch
         session.current_branch = branch_id
-        logger.info(f"Created branch '{branch_id}' from thought {branch_from_thought}")
+        logger.info(
+            f"Created branch '{branch_id}' from thought {branch_from_thought} "
+            f"(parent: '{parent_branch_id}')"
+        )
         return branch
 
     def _add_thought(
@@ -413,10 +429,34 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 revises_thought
             )
             
-            # Update estimate if needed
+            # Collect warnings for validation issues
+            warnings = []
+            
+            # Update estimate if needed with auto-clamp and validation
             if needs_more_thoughts or total_thoughts != session.total_thoughts_estimate:
                 old_estimate = session.total_thoughts_estimate
+                
+                # Auto-clamp: estimate must be >= actual thoughts
+                if total_thoughts < session.actual_thoughts:
+                    warnings.append(
+                        f"total_thoughts ({total_thoughts}) < recorded thoughts "
+                        f"({session.actual_thoughts}), adjusted to {session.actual_thoughts}"
+                    )
+                    total_thoughts = session.actual_thoughts
+                    logger.warning(
+                        f"Auto-clamped total_thoughts from {params['total_thoughts']} "
+                        f"to {total_thoughts} for session {session.session_id}"
+                    )
+                
+                # Warn if needs_more_thoughts but estimate not increased
+                if needs_more_thoughts and total_thoughts <= old_estimate:
+                    warnings.append(
+                        f"needs_more_thoughts=true but estimate not increased "
+                        f"({total_thoughts} <= {old_estimate})"
+                    )
+                
                 session.total_thoughts_estimate = total_thoughts
+                
                 if needs_more_thoughts:
                     await status.progress(
                         f"Adjusting complexity: {old_estimate} → {total_thoughts} thoughts"
@@ -428,11 +468,18 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Check memory usage
             usage_pct = (len(session.thoughts) / session.max_history_size) * 100
             if usage_pct > 80:
+                warnings.append(
+                    f"Memory usage: {usage_pct:.0f}% "
+                    f"({len(session.thoughts)}/{session.max_history_size})"
+                )
                 await status.progress(
                     f"Memory usage: {len(session.thoughts)}/{session.max_history_size} "
                     f"thoughts ({usage_pct:.0f}%)",
                     level="warning"
                 )
+            
+            # Consistent progress display: never show X/Y with X > Y
+            effective_total = max(session.actual_thoughts, session.total_thoughts_estimate)
             
             # Prepare result
             result = {
@@ -440,9 +487,10 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 "session_id": session.session_id,
                 "current_thought_number": server_thought_number,  # Return server number
                 "client_thought_number": thought_number,  # Also return client's number for reference
+                "recorded_thoughts_count": len(session.thoughts),  # Total recorded thoughts
                 "total_thoughts_estimate": session.total_thoughts_estimate,
                 "next_thought_needed": next_thought_needed,
-                "progress": f"Thought {session.actual_thoughts}/{session.total_thoughts_estimate}",
+                "progress": f"Thought {session.actual_thoughts}/{effective_total}",
                 "branch": session.current_branch,
                 "thought_history": [
                     {
@@ -455,17 +503,13 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 ],
                 "branch_summary": self._get_branch_tree(session) if self.enable_branching else None,
                 "error": None,
-                "warning": None
+                "warnings": warnings if warnings else None
             }
-            
-            # Add warning if approaching limit
-            if usage_pct > 90:
-                result["warning"] = f"Session approaching memory limit ({usage_pct:.0f}% used)"
             
             # END status
             complete_msg = "✓ Complete" if not next_thought_needed else "Continue reasoning..."
             await status.end(
-                f"Thought #{server_thought_number} added ({session.actual_thoughts}/{session.total_thoughts_estimate}). "
+                f"Thought #{server_thought_number} added ({session.actual_thoughts}/{effective_total}). "
                 f"{complete_msg}"
             )
             

@@ -973,3 +973,251 @@ async def test_template_vars(server):
     assert vars["session_ttl_seconds"] == 3600
     assert vars["enable_branching"] is True
     assert vars["enable_revisions"] is True
+
+
+# ===== Phase 1 Improvement Tests =====
+
+@pytest.mark.asyncio
+async def test_branch_parent_from_thought_branch(server, mock_status):
+    """Test that branch parent is derived from branched_from_thought's branch, not current_branch."""
+    # Create initial thoughts on main
+    result1 = await server.sequential_thinking({
+        "thought": "Main thought 1",
+        "thought_number": 1,
+        "total_thoughts": 5,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    session_id = result1["session_id"]
+    
+    result2 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Main thought 2",
+        "thought_number": 2,
+        "total_thoughts": 5,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    
+    # Create branch 'alternative' from thought 2
+    result3 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Alternative approach",
+        "thought_number": 3,
+        "total_thoughts": 5,
+        "next_thought_needed": True,
+        "branch_id": "alternative",
+        "branch_from_thought": 2,
+        "_status": mock_status
+    })
+    
+    # Now create branch 'edge_cases' from thought 1 (which is on main, not alternative)
+    # This is the critical test: we're on 'alternative' branch but branching from thought 1
+    result4 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Edge case exploration",
+        "thought_number": 4,
+        "total_thoughts": 5,
+        "next_thought_needed": True,
+        "branch_id": "edge_cases",
+        "branch_from_thought": 1,  # Thought 1 is on 'main' branch
+        "_status": mock_status
+    })
+    
+    # Verify branch_summary shows correct parent
+    branch_summary = result4["branch_summary"]
+    assert "edge_cases" in branch_summary
+    # Parent should be 'main' (from thought 1), NOT 'alternative' (current branch)
+    assert branch_summary["edge_cases"]["parent"] == "main"
+    assert branch_summary["edge_cases"]["branched_from"] == 1
+
+
+@pytest.mark.asyncio
+async def test_progress_auto_clamp(server, mock_status):
+    """Test that total_thoughts_estimate is auto-clamped to >= actual_thoughts."""
+    # Start with estimate of 10
+    result1 = await server.sequential_thinking({
+        "thought": "Start",
+        "thought_number": 1,
+        "total_thoughts": 10,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    session_id = result1["session_id"]
+    
+    # Add thoughts up to 12 (exceeding original estimate)
+    for i in range(2, 13):
+        result = await server.sequential_thinking({
+            "session_id": session_id,
+            "thought": f"Thought {i}",
+            "thought_number": i,
+            "total_thoughts": 10,  # Still claiming 10
+            "next_thought_needed": True,
+            "_status": mock_status
+        })
+    
+    # Now try to set estimate to 8 (less than actual 12)
+    result_clamp = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Thought 13",
+        "thought_number": 13,
+        "total_thoughts": 8,  # Invalid: less than actual
+        "next_thought_needed": False,
+        "_status": mock_status
+    })
+    
+    # Should be auto-clamped to 13 (actual thoughts)
+    assert result_clamp["total_thoughts_estimate"] == 13
+    assert result_clamp["warnings"] is not None
+    assert any("adjusted to" in w for w in result_clamp["warnings"])
+    # Progress should never show X/Y with X > Y
+    assert "13/13" in result_clamp["progress"] or "13/" in result_clamp["progress"]
+
+
+@pytest.mark.asyncio
+async def test_progress_display_consistency(server, mock_status):
+    """Test that progress display is always consistent (never X/Y with X > Y)."""
+    result1 = await server.sequential_thinking({
+        "thought": "Start",
+        "thought_number": 1,
+        "total_thoughts": 5,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    session_id = result1["session_id"]
+    
+    # Add thoughts beyond estimate
+    for i in range(2, 8):
+        result = await server.sequential_thinking({
+            "session_id": session_id,
+            "thought": f"Thought {i}",
+            "thought_number": i,
+            "total_thoughts": 5,  # Not updating estimate
+            "next_thought_needed": i < 7,
+            "_status": mock_status
+        })
+        
+        # Extract progress numbers
+        progress = result["progress"]
+        # Format: "Thought X/Y"
+        parts = progress.split()
+        if len(parts) >= 2:
+            numbers = parts[1].split("/")
+            if len(numbers) == 2:
+                current = int(numbers[0])
+                total = int(numbers[1])
+                # Current should never exceed total in display
+                assert current <= total, f"Progress {progress} is inconsistent"
+
+
+@pytest.mark.asyncio
+async def test_warnings_array_on_inconsistent_params(server, mock_status):
+    """Test that warnings array is populated on inconsistent parameters."""
+    result1 = await server.sequential_thinking({
+        "thought": "Start",
+        "thought_number": 1,
+        "total_thoughts": 10,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    session_id = result1["session_id"]
+    
+    # Add thoughts to 5
+    for i in range(2, 6):
+        await server.sequential_thinking({
+            "session_id": session_id,
+            "thought": f"Thought {i}",
+            "thought_number": i,
+            "total_thoughts": 10,
+            "next_thought_needed": True,
+            "_status": mock_status
+        })
+    
+    # Now: needs_more_thoughts=true but estimate NOT increased
+    result_warning = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Need more but not increasing estimate",
+        "thought_number": 6,
+        "total_thoughts": 10,  # Same as before
+        "next_thought_needed": True,
+        "needs_more_thoughts": True,  # But claiming need more
+        "_status": mock_status
+    })
+    
+    # Should have warning about needs_more_thoughts
+    assert result_warning["warnings"] is not None
+    assert any("not increased" in w for w in result_warning["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_recorded_thoughts_count_field(server, mock_status):
+    """Test that recorded_thoughts_count field is present and correct."""
+    result1 = await server.sequential_thinking({
+        "thought": "First",
+        "thought_number": 1,
+        "total_thoughts": 3,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    session_id = result1["session_id"]
+    
+    assert "recorded_thoughts_count" in result1
+    assert result1["recorded_thoughts_count"] == 1
+    
+    result2 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "Second",
+        "thought_number": 2,
+        "total_thoughts": 3,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    
+    assert result2["recorded_thoughts_count"] == 2
+    
+    # Revise thought 1
+    result3 = await server.sequential_thinking({
+        "session_id": session_id,
+        "thought": "First (revised)",
+        "thought_number": 3,
+        "total_thoughts": 3,
+        "next_thought_needed": False,
+        "is_revision": True,
+        "revises_thought": 1,
+        "_status": mock_status
+    })
+    
+    # Recorded count should be 3 (original thought 1, thought 2, revision of thought 1)
+    assert result3["recorded_thoughts_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_memory_usage_warning_in_warnings_array(server, mock_status):
+    """Test that memory usage warnings appear in warnings array."""
+    # Set small limit
+    server.max_history_size = 10
+    
+    result = await server.sequential_thinking({
+        "thought": "Start",
+        "thought_number": 1,
+        "total_thoughts": 15,
+        "next_thought_needed": True,
+        "_status": mock_status
+    })
+    session_id = result["session_id"]
+    
+    # Add thoughts to 9 (90% of limit)
+    for i in range(2, 10):
+        result = await server.sequential_thinking({
+            "session_id": session_id,
+            "thought": f"Thought {i}",
+            "thought_number": i,
+            "total_thoughts": 15,
+            "next_thought_needed": True,
+            "_status": mock_status
+        })
+    
+    # Last result should have memory warning
+    assert result["warnings"] is not None
+    assert any("Memory usage" in w for w in result["warnings"])
+

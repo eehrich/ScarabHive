@@ -67,7 +67,9 @@ tools:
           total_thoughts:
             type: integer
             minimum: 1
-            description: "Estimated total (dynamic, update via needs_more_thoughts=true)"
+            description: |
+              Estimated total (dynamic, update via needs_more_thoughts=true).
+              Note: Will be auto-clamped to >= actual thoughts to ensure consistency.
           session_id:
             type: string
             description: "Session ID (auto-generated if omitted)"
