@@ -1037,7 +1037,7 @@ class Agent(MCPServer):
 
             # Execute post-LLM hooks to transform the response
             try:
-                modified_response = await self._hook_manager.execute_post_llm_hooks(
+                modified_response, hook_metadata = await self._hook_manager.execute_post_llm_hooks(
                     messages=messages,
                     llm_response=llm_out,  # Pass full LLM response including usage data
                     step=step,
@@ -1053,6 +1053,9 @@ class Agent(MCPServer):
                     # Update the assistant message if hooks modified the response
                     assistant_msg.content = content or ""
                     assistant_msg.tool_calls = tool_calls if tool_calls else None
+                    # Set content_format from hook metadata (e.g., 'html', 'markdown', 'text')
+                    if "content_format" in hook_metadata:
+                        assistant_msg.content_format = hook_metadata["content_format"]
             except Exception as e:
                 logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
 

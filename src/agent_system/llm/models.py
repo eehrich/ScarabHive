@@ -113,6 +113,7 @@ class ChatMessage(BaseModel):
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
+    content_format: Optional[str] = None  # 'text', 'html', 'markdown', 'ansi', etc.
     
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""

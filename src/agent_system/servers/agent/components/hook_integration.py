@@ -7,7 +7,7 @@ Provides centralized hook execution at agent lifecycle points.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ....hooks import get_hook_registry, HookContext, HookType
 from ....llm.models import ChatMessage
@@ -126,7 +126,7 @@ class HookIntegrationManager:
         request_id: str,
         session_id: str,
         llm: Optional[Any] = None
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Execute post-LLM hooks.
         
@@ -139,7 +139,8 @@ class HookIntegrationManager:
             llm: LLM client instance
             
         Returns:
-            Potentially modified LLM response
+            Tuple of (potentially modified LLM response, metadata dict)
+            Metadata may include 'content_format' if hooks modified the output format
         """
         if not self.is_enabled():
             return llm_response
@@ -162,10 +163,10 @@ class HookIntegrationManager:
             hook_filter=self.is_hook_enabled
         )
         
-        # Return modified LLM response if hooks changed it
+        # Return modified LLM response and metadata if hooks changed it
         if modified_context.llm_response is not None:
-            return modified_context.llm_response
-        return llm_response
+            return modified_context.llm_response, modified_context.metadata
+        return llm_response, {}
     
     async def execute_pre_tool_hooks(
         self,
