@@ -345,3 +345,129 @@ async def test_context_isolation(registry, base_context):
     # Even though mutator cleared messages, normal hook should have received original messages
     # and could add to them
     assert len(result_context.messages) >= 0
+
+
+@pytest.mark.asyncio
+async def test_hook_categories(registry, base_context):
+    """Test hook ordering using categories."""
+    execution_order = []
+    
+    class TrackedHook(PluginHook):
+        def __init__(self, name: str, config: dict = None):
+            super().__init__(name, config or {})
+        
+        async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+            execution_order.append(self.name)
+            return HookResult(success=True, modified=False, context=context)
+    
+    # Register hooks with categories
+    hook1 = TrackedHook("inject_hook1")
+    hook2 = TrackedHook("inject_hook2")
+    hook3 = TrackedHook("capture_hook")
+    
+    # inject_hook1 and inject_hook2 are in category "inject"
+    await registry.register_hook(
+        HookType.PRE_LLM_CALL,
+        "inject_hook1",
+        hook1,
+        order_spec={"after": ["begin"], "before": ["end"]},
+        category="inject"
+    )
+    
+    await registry.register_hook(
+        HookType.PRE_LLM_CALL,
+        "inject_hook2",
+        hook2,
+        order_spec={"after": ["begin"], "before": ["end"]},
+        category="inject"
+    )
+    
+    # capture_hook comes after all "inject" hooks
+    await registry.register_hook(
+        HookType.PRE_LLM_CALL,
+        "capture_hook",
+        hook3,
+        order_spec={"after": ["inject"], "before": ["end"]}  # "inject" is a category
+    )
+    
+    # Execute hooks
+    await registry.execute_hooks(HookType.PRE_LLM_CALL, base_context)
+    
+    # Verify that capture_hook comes after both inject hooks
+    assert len(execution_order) == 3
+    assert execution_order.index("capture_hook") > execution_order.index("inject_hook1")
+    assert execution_order.index("capture_hook") > execution_order.index("inject_hook2")
+
+
+@pytest.mark.asyncio
+async def test_hook_category_before(registry, base_context):
+    """Test hook ordering before a category."""
+    execution_order = []
+    
+    class TrackedHook(PluginHook):
+        def __init__(self, name: str, config: dict = None):
+            super().__init__(name, config or {})
+        
+        async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+            execution_order.append(self.name)
+            return HookResult(success=True, modified=False, context=context)
+    
+    # Register hooks with categories
+    hook1 = TrackedHook("optimize_hook")
+    hook2 = TrackedHook("inject_hook1")
+    hook3 = TrackedHook("inject_hook2")
+    
+    # inject hooks are in category "inject"
+    await registry.register_hook(
+        HookType.PRE_LLM_CALL,
+        "inject_hook1",
+        hook2,
+        order_spec={"after": ["begin"], "before": ["end"]},
+        category="inject"
+    )
+    
+    await registry.register_hook(
+        HookType.PRE_LLM_CALL,
+        "inject_hook2",
+        hook3,
+        order_spec={"after": ["begin"], "before": ["end"]},
+        category="inject"
+    )
+    
+    # optimize_hook comes before all "inject" hooks
+    await registry.register_hook(
+        HookType.PRE_LLM_CALL,
+        "optimize_hook",
+        hook1,
+        order_spec={"after": ["begin"], "before": ["inject"]}  # Before "inject" category
+    )
+    
+    # Execute hooks
+    await registry.execute_hooks(HookType.PRE_LLM_CALL, base_context)
+    
+    # Verify that optimize_hook comes before both inject hooks
+    assert len(execution_order) == 3
+    assert execution_order.index("optimize_hook") < execution_order.index("inject_hook1")
+    assert execution_order.index("optimize_hook") < execution_order.index("inject_hook2")
+
+
+@pytest.mark.asyncio
+async def test_hook_category_nonexistent_warning(registry, base_context, caplog):
+    """Test that referencing non-existent category logs a warning."""
+    hook = SimpleHook("test_hook")
+    
+    await registry.register_hook(
+        HookType.PRE_LLM_CALL,
+        "test_hook",
+        hook,
+        order_spec={"after": ["nonexistent_category"], "before": ["end"]}
+    )
+    
+    # Execute hooks - should work but log warning
+    await registry.execute_hooks(HookType.PRE_LLM_CALL, base_context)
+    
+    # Check for warning in logs
+    assert any(
+        "non-existent hook/category 'nonexistent_category'" in record.message
+        for record in caplog.records
+    )

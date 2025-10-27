@@ -385,6 +385,7 @@ async def register_plugin_hooks(
             enabled = hook_metadata.get('enabled', True)
             timeout = hook_metadata.get('timeout', 30.0)
             description = hook_metadata.get('description', '')
+            category = hook_metadata.get('category', None)  # Optional category/tag
             order_spec = hook_metadata.get('order', {})
             
             # Apply global hooks configuration overrides
@@ -437,6 +438,7 @@ async def register_plugin_hooks(
                 enabled=enabled,
                 timeout=timeout,
                 description=description,
+                category=category,  # Pass category for grouping
                 # Additional metadata for tracking
                 plugin=plugin_name,
                 source="plugin_discovery"

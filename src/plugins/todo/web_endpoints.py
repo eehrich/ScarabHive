@@ -239,5 +239,8 @@ class TodoWebFactory:
         """Render the TODO management dashboard."""
         return self.templates.TemplateResponse(
             "panel.html",
-            {"request": request}
+            {
+                "request": request,
+                "name": self.server.name
+            }
         )

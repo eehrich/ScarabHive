@@ -487,10 +487,9 @@
         async function refreshData() {
             try {
                 const sessionId = currentSessionOnly ? getCurrentSessionId() : null;
-                console.log('[TODO Manager] Session ID:', sessionId, '| Filter:', currentSessionOnly ? 'Current Session' : 'All Sessions');
                 
                 // Fetch stats
-                const statsUrl = `/plugins/todo_management/stats${sessionId ? '?session_id=' + sessionId : ''}`;
+                const statsUrl = `/plugins/{{ name }}/stats${sessionId ? '?session_id=' + sessionId : ''}`;
                 const statsResp = await fetch(statsUrl);
                 const stats = await statsResp.json();
                 
@@ -509,7 +508,7 @@
                 progressBar.setAttribute('data-progress', `${completionRate.toFixed(1)}%`);
                 
                 // Fetch tasks
-                const tasksUrl = `/plugins/todo_management/tasks${sessionId ? '?session_id=' + sessionId : ''}`;
+                const tasksUrl = `/plugins/{{ name }}/tasks${sessionId ? '?session_id=' + sessionId : ''}`;
                 const tasksResp = await fetch(tasksUrl);
                 const tasksData = await tasksResp.json();
                 
@@ -526,6 +525,14 @@
                 document.getElementById('error-container').innerHTML = 
                     `<div class="error">Error loading data: ${error.message}</div>`;
             }
+        }
+        
+        function showError(message) {
+            const container = document.getElementById('error-container');
+            container.innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
+            setTimeout(() => {
+                container.innerHTML = '';
+            }, 5000);
         }
         
         function applyFilters() {
@@ -621,38 +628,48 @@
         async function startTask(taskId) {
             try {
                 const sessionId = getCurrentSessionId();
-                const url = `/plugins/todo_management/tasks/${taskId}/start${sessionId ? '?session_id=' + sessionId : ''}`;
-                await fetch(url, { method: 'POST' });
+                const url = `/plugins/{{ name }}/tasks/${taskId}/start${sessionId ? '?session_id=' + sessionId : ''}`;
+                const resp = await fetch(url, { method: 'POST' });
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err || `HTTP ${resp.status}`);
+                }
                 await refreshData();
             } catch (error) {
                 console.error('Error starting task:', error);
-                alert('Error starting task: ' + error.message);
+                showError('Error starting task: ' + error.message);
             }
         }
         
         async function completeTask(taskId) {
             try {
                 const sessionId = getCurrentSessionId();
-                const url = `/plugins/todo_management/tasks/${taskId}/complete${sessionId ? '?session_id=' + sessionId : ''}`;
-                await fetch(url, { method: 'POST' });
+                const url = `/plugins/{{ name }}/tasks/${taskId}/complete${sessionId ? '?session_id=' + sessionId : ''}`;
+                const resp = await fetch(url, { method: 'POST' });
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err || `HTTP ${resp.status}`);
+                }
                 await refreshData();
             } catch (error) {
                 console.error('Error completing task:', error);
-                alert('Error completing task: ' + error.message);
+                showError('Error completing task: ' + error.message);
             }
         }
         
         async function deleteTask(taskId) {
-            if (!confirm(`Delete task ${taskId}?`)) return;
-            
             try {
                 const sessionId = getCurrentSessionId();
-                const url = `/plugins/todo_management/tasks/${taskId}${sessionId ? '?session_id=' + sessionId : ''}`;
-                await fetch(url, { method: 'DELETE' });
+                const url = `/plugins/{{ name }}/tasks/${taskId}${sessionId ? '?session_id=' + sessionId : ''}`;
+                const resp = await fetch(url, { method: 'DELETE' });
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err || `HTTP ${resp.status}`);
+                }
                 await refreshData();
             } catch (error) {
                 console.error('Error deleting task:', error);
-                alert('Error deleting task: ' + error.message);
+                showError('Error deleting task: ' + error.message);
             }
         }
         

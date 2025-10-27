@@ -6,9 +6,10 @@ hooks:
     enabled: true
     timeout: 60.0
     description: "Intelligently summarizes older messages using LLM to reduce context size while preserving key information"
+    category: "context_summarization"
     order:
-      after: ["optimize_context"]  # Run after basic context optimization
-      before: ["validate_messages"]
+      after: ["begin"]
+      before: ["context_optimization"]
 
 # Configuration schema for this plugin
 config:

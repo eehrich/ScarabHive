@@ -5,18 +5,20 @@ hooks:
     enabled: true
     timeout: 5.0
     description: "Captures LLM input messages just before sending to LLM (runs last in pre-chain)"
+    category: "message_debugging"
     order:
-      after: ["optimize_context", "summarize_context", "validate_messages"]  # After all message optimization
-      before: ["end"]   # But before the end marker
+      after: ["context_summarization", "context_optimization", "prompt_injection", "message_validation"]
+      before: ["end"]
   
   - name: debugger_capture_post_llm
     type: post_llm_call
     enabled: true
     timeout: 5.0
     description: "Captures LLM response immediately after receiving from LLM (runs first in post-chain)"
+    category: "message_debugging"
     order:
-      after: ["begin"]  # Right at the start
-      before: []   # Before any post-processing
+      after: ["begin"]
+      before: ["end"]
 
 # Configuration schema
 config:

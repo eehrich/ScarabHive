@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any, List, Dict, Set
 import logging
 import re
-import json
 from dataclasses import replace, dataclass
 
 from agent_system.hooks import (
@@ -36,14 +35,8 @@ from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
-# OpenAI tool name pattern requirement
+# Pattern for valid OpenAI tool names (alphanumeric, underscore, hyphen)
 OPENAI_TOOL_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
-
-# DeepSeek tool call marker patterns (with optional spaces and double underscores)
-DEEPSEEK_TOOL_MARKER_PATTERN = re.compile(r'<\s*[｜|]\s*tool[▁_]+calls[▁_]+begin\s*[｜|]\s*>')
-DEEPSEEK_TOOL_CALL_PATTERN = re.compile(
-    r'<\s*[｜|]\s*tool[▁_]+call[▁_]+begin\s*[｜|]\s*>([^<]+)<\s*[｜|]\s*tool[▁_]+sep[▁_]*\s*[｜|]\s*>(\{[^}]+\})<\s*[｜|]\s*tool[▁_]+call[▁_]+end\s*[｜|]\s*>'
-)
 
 
 @dataclass
@@ -235,17 +228,6 @@ class InternalMessageValidator:
         for i, msg in enumerate(messages):
             content = msg.content
             
-            # Check for DeepSeek tool markers in content (should be parsed out)
-            if content and isinstance(content, str):
-                if DEEPSEEK_TOOL_MARKER_PATTERN.search(content):
-                    issues.append(ValidationIssue(
-                        type="deepseek_tool_markers",
-                        severity="error",
-                        message_index=i,
-                        description="DeepSeek tool markers found in message content (needs parsing)",
-                        details={"content_preview": content[:200]}
-                    ))
-            
             if content is None and not msg.tool_calls and msg.role == "assistant":
                 issues.append(ValidationIssue(
                     type="empty_assistant_message",
@@ -285,20 +267,7 @@ class InternalMessageValidator:
         removed_tool_call_ids: Set[str] = set()
         
         for issue in issues:
-            if issue.type == "deepseek_tool_markers":
-                # Parse DeepSeek markers and convert to tool_calls
-                msg_idx = issue.message_index
-                if 0 <= msg_idx < len(repaired):
-                    msg = repaired[msg_idx]
-                    parsed_msg = self._parse_deepseek_markers(msg)
-                    if parsed_msg:
-                        repaired[msg_idx] = parsed_msg
-                        logger.info(f"Parsed DeepSeek tool markers at message {msg_idx}")
-                    else:
-                        # Parsing failed, remove message
-                        remove_indices.add(msg_idx)
-                        
-            elif issue.type == "orphaned_tool_call":
+            if issue.type == "orphaned_tool_call":
                 # Remove assistant messages with orphaned tool calls
                 msg_idx = issue.message_index
                 remove_indices.add(msg_idx)
@@ -355,71 +324,6 @@ class InternalMessageValidator:
                 
         return repaired
     
-    def _parse_deepseek_markers(self, msg: ChatMessage) -> ChatMessage | None:
-        """Parse DeepSeek tool call markers and convert to standard tool_calls format.
-        
-        Args:
-            msg: Message potentially containing DeepSeek markers
-            
-        Returns:
-            Modified message with parsed tool_calls, or None if parsing failed
-        """
-        if not msg.content or not isinstance(msg.content, str):
-            return None
-        
-        content = msg.content
-        
-        # Check for DeepSeek markers
-        if not DEEPSEEK_TOOL_MARKER_PATTERN.search(content):
-            return None
-        
-        # Extract tool calls
-        matches = DEEPSEEK_TOOL_CALL_PATTERN.findall(content)
-        
-        if not matches:
-            logger.warning("Found DeepSeek markers but couldn't parse tool calls")
-            return None
-        
-        # Convert to standard tool_calls format
-        tool_calls = []
-        for idx, (tool_name, args_json) in enumerate(matches):
-            tool_name = tool_name.strip()
-            
-            try:
-                # Parse JSON arguments
-                args = json.loads(args_json)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse tool arguments for {tool_name}: {e}")
-                continue
-            
-            # Create OpenAI-compatible tool call
-            tool_call = {
-                "id": f"call_ds_{idx:02d}_{tool_name[:10]}",
-                "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "arguments": json.dumps(args)
-                }
-            }
-            tool_calls.append(tool_call)
-        
-        if not tool_calls:
-            return None
-        
-        # Extract clean content (text before tool markers)
-        clean_content = DEEPSEEK_TOOL_MARKER_PATTERN.split(content)[0].strip()
-        
-        logger.info(
-            f"Parsed {len(tool_calls)} DeepSeek tool call(s): "
-            f"{[tc['function']['name'] for tc in tool_calls]}"
-        )
-        
-        # Create new message with parsed tool_calls
-        return ChatMessage(
-            role=msg.role,
-            content=clean_content or "",
-            tool_calls=tool_calls
-        )
     
     def _sanitize_tool_name(self, name: str) -> str:
         """Attempt to sanitize an invalid tool name."""
@@ -589,119 +493,4 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
             
         except Exception as e:
             logger.exception(f"Error in structure validation: {e}")
-            return HookResult(success=False, modified=False, context=context, error=str(e))
-
-    async def parse_deepseek_response(self, context: HookContext) -> HookResult:
-        """
-        Parse DeepSeek tool call markers from LLM response (post_llm_call hook).
-        
-        DeepSeek returns tool calls in its native marker format in the content field:
-        <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>name<｜tool▁sep｜>{json}<｜tool▁call▁end｜><｜tool▁calls▁end｜>
-        
-        This hook converts them to OpenAI-compatible tool_calls format.
-        """
-        try:
-            # llm_response is a direct field on HookContext, not in metadata!
-            llm_response = context.llm_response or {}
-            content = llm_response.get("content", "")
-            tool_calls = llm_response.get("tool_calls", [])
-            
-            # Debug logging - always log to see what we receive
-            logger.debug(
-                f"[parse_deepseek_response] Response content preview: {content[:100] if content else 'NONE'}, "
-                f"has tool_calls: {bool(tool_calls)}"
-            )
-            
-            # Skip if no content
-            if not content or not isinstance(content, str):
-                logger.debug("[parse_deepseek_response] No string content to parse")
-                return HookResult(success=True, modified=False, context=context)
-            
-            # Check for DeepSeek markers
-            if not DEEPSEEK_TOOL_MARKER_PATTERN.search(content):
-                logger.debug("[parse_deepseek_response] No DeepSeek markers found")
-                return HookResult(success=True, modified=False, context=context)
-            
-                        # DeepSeek sometimes returns BOTH tool_calls AND markers in content
-            # We need to clean the markers from content even if tool_calls exist
-            already_has_tool_calls = bool(tool_calls)
-            
-            logger.info(
-                f"[parse_deepseek_response] ⚠️ DETECTED DeepSeek tool markers in response! "
-                f"(already_has_tool_calls={already_has_tool_calls})"
-            )
-            logger.debug(f"[parse_deepseek_response] Full content with markers: {content}")
-            
-            # Clean content (remove all marker text)
-            clean_content = DEEPSEEK_TOOL_MARKER_PATTERN.split(content)[0].strip()
-            
-            # If we already have tool_calls from DeepSeek, just clean the content
-            if already_has_tool_calls:
-                logger.warning(
-                    "[parse_deepseek_response] ⚠️ DeepSeek sent BOTH tool_calls AND markers! "
-                    f"Cleaning {len(content) - len(clean_content)} chars of marker text from content. "
-                    f"Tool calls: {[tc.get('function', {}).get('name', 'unknown') for tc in tool_calls]}"
-                )
-                modified_response = {
-                    "content": clean_content or "",
-                    "tool_calls": tool_calls  # Keep existing tool_calls
-                }
-                modified_context = replace(context, llm_response=modified_response)
-                return HookResult(success=True, modified=True, context=modified_context)
-            
-            # Otherwise, parse tool calls from markers
-            matches = DEEPSEEK_TOOL_CALL_PATTERN.findall(content)
-            if not matches:
-                logger.warning("[parse_deepseek_response] DeepSeek markers found but no parseable tool calls")
-                return HookResult(success=True, modified=False, context=context)
-            
-            # Convert to OpenAI format
-            parsed_tool_calls = []
-            for idx, (tool_name, args_json) in enumerate(matches):
-                try:
-                    # Parse and re-serialize JSON to ensure valid format
-                    args = json.loads(args_json)
-                    parsed_tool_calls.append({
-                        "id": f"call_ds_{idx:02d}_{tool_name.strip()[:10]}",
-                        "type": "function",
-                        "function": {
-                            "name": tool_name.strip(),
-                            "arguments": json.dumps(args)
-                        }
-                    })
-                except json.JSONDecodeError as e:
-                    logger.warning(f"[parse_deepseek_response] Failed to parse tool args for {tool_name}: {e}")
-                    continue
-            
-            if not parsed_tool_calls:
-                logger.warning("[parse_deepseek_response] No valid tool calls extracted from DeepSeek markers")
-                return HookResult(success=True, modified=False, context=context)
-            
-            # Update llm_response with parsed tool calls
-            modified_response = {
-                "content": clean_content or "",
-                "tool_calls": parsed_tool_calls
-            }
-            
-            logger.warning(
-                f"[parse_deepseek_response] ⚠️ DeepSeek used legacy marker format! "
-                f"Converted {len(parsed_tool_calls)} tool calls to OpenAI format: "
-                f"{[tc['function']['name'] for tc in parsed_tool_calls]}"
-            )
-            
-            # Update context with modified response (llm_response is a direct field, not in metadata!)
-            modified_context = replace(
-                context,
-                llm_response=modified_response
-            )
-            
-            return HookResult(
-                success=True,
-                modified=True,
-                context=modified_context,
-                metadata={'parsed_deepseek_tools': len(parsed_tool_calls)}
-            )
-            
-        except Exception as e:
-            logger.exception(f"Error in DeepSeek response parsing: {e}")
             return HookResult(success=False, modified=False, context=context, error=str(e))

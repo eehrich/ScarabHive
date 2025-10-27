@@ -514,10 +514,11 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         self, task_id: str, collection: TaskCollection
     ) -> None:
         """
-        Update tasks that depend on this task.
+        Update blocked status for task and its dependents.
         
         When a task is completed, unblock dependent tasks.
-        When a task is incomplete, mark dependent tasks as blocked.
+        When a task becomes incomplete, mark dependent tasks as blocked.
+        Also checks if the task itself should be blocked.
         
         Args:
             task_id: Task that changed
@@ -529,6 +530,24 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         changed_task = collection.tasks.get(task_id)
         if not changed_task:
             return
+
+        # Check if THIS task should be blocked (new dependencies added)
+        is_this_blocked = self._is_blocked(changed_task, collection)
+        if is_this_blocked and changed_task.status == TaskStatus.IN_PROGRESS:
+            changed_task.status = TaskStatus.BLOCKED
+            changed_task.updated_at = datetime.now(UTC)
+            logger.debug(
+                f"Auto-blocked {changed_task.task_id} "
+                f"(has incomplete dependencies)"
+            )
+        elif not is_this_blocked and changed_task.status == TaskStatus.BLOCKED:
+            # Unblock if all dependencies are met
+            changed_task.status = TaskStatus.NOT_STARTED
+            changed_task.updated_at = datetime.now(UTC)
+            logger.debug(
+                f"Auto-unblocked {changed_task.task_id} "
+                f"(all dependencies met)"
+            )
 
         # Find tasks that depend on this task
         for other_task in collection.tasks.values():
@@ -542,6 +561,14 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     logger.debug(
                         f"Auto-blocked {other_task.task_id} "
                         f"(dependency {task_id} incomplete)"
+                    )
+                elif not is_blocked and other_task.status == TaskStatus.BLOCKED:
+                    # Unblock if all dependencies are met
+                    other_task.status = TaskStatus.NOT_STARTED
+                    other_task.updated_at = datetime.now(UTC)
+                    logger.debug(
+                        f"Auto-unblocked {other_task.task_id} "
+                        f"(dependency {task_id} completed)"
                     )
 
     # =========================================================================
@@ -679,6 +706,17 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     "status": "validation_failed",
                     "message": msg,
                 }
+            
+            # Handle depends_on parameter: if passed directly, treat as "set" operation
+            # (replace all dependencies), otherwise use add/remove for incremental changes
+            set_depends_on = None
+            final_add_depends_on = add_depends_on
+            final_remove_depends_on = remove_depends_on
+            
+            if depends_on is not None:
+                # User passed depends_on directly → replace all dependencies
+                set_depends_on = depends_on if isinstance(depends_on, list) else [depends_on]
+            
             return await self.update_todo(
                 task_id=task_id,
                 new_status=status,
@@ -686,8 +724,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 priority=priority if priority != "medium" else None,
                 add_note=note,
                 add_tags=tags,
-                add_depends_on=add_depends_on,
-                remove_depends_on=remove_depends_on,
+                set_depends_on=set_depends_on,
+                add_depends_on=final_add_depends_on,
+                remove_depends_on=final_remove_depends_on,
                 context=context,
             )
         
@@ -949,6 +988,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         add_note: Optional[str] = None,
         add_tags: Optional[List[str]] = None,
         remove_tags: Optional[List[str]] = None,
+        set_depends_on: Optional[List[str]] = None,
         add_depends_on: Optional[List[str]] = None,
         remove_depends_on: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
@@ -964,8 +1004,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             add_note: Append note to task history
             add_tags: Tags to add
             remove_tags: Tags to remove
-            add_depends_on: Dependencies to add
-            remove_depends_on: Dependencies to remove
+            set_depends_on: Replace all dependencies (None = no change)
+            add_depends_on: Dependencies to add (incremental)
+            remove_depends_on: Dependencies to remove (incremental)
             context: MCP tool call context
             
         Returns:
@@ -1107,8 +1148,70 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 task.updated_at = datetime.now(UTC)
                 changes["tags_removed"] = ", ".join(remove_tags)  # type: ignore[assignment]
 
-            # Manage dependencies
-            if add_depends_on:
+            # Manage dependencies - SET (replace all)
+            if set_depends_on is not None:
+                # Validate all new dependencies exist
+                for dep_id in set_depends_on:
+                    if dep_id not in collection.tasks:
+                        msg = f"Dependency '{dep_id}' does not exist"
+                        logger.info(f"Update rejected (dependency not found): {dep_id}")
+                        if status:
+                            await status.error(msg)
+                        return {
+                            "task_id": task_id,
+                            "status": "validation_failed",
+                            "message": msg,
+                        }
+                
+                # Remove old dependencies (update reverse links)
+                old_deps = task.depends_on.copy()
+                for dep_id in old_deps:
+                    if dep_id in collection.tasks and task_id in collection.tasks[dep_id].blocks:
+                        collection.tasks[dep_id].blocks.remove(task_id)
+                
+                # Set new dependencies
+                task.depends_on = list(set_depends_on)  # Remove duplicates
+                
+                # Add reverse dependencies (blocks)
+                for dep_id in task.depends_on:
+                    if task_id not in collection.tasks[dep_id].blocks:
+                        collection.tasks[dep_id].blocks.append(task_id)
+                
+                # Check for circular dependencies
+                try:
+                    self._detect_circular_deps(task, collection)
+                except DependencyError as e:
+                    msg = str(e)
+                    logger.info(f"Update rejected (circular dependency): {msg}")
+                    if status:
+                        await status.error(msg)
+                    # Rollback to old dependencies
+                    for dep_id in task.depends_on:
+                        if dep_id in collection.tasks and task_id in collection.tasks[dep_id].blocks:
+                            collection.tasks[dep_id].blocks.remove(task_id)
+                    task.depends_on = old_deps
+                    for dep_id in old_deps:
+                        if dep_id in collection.tasks and task_id not in collection.tasks[dep_id].blocks:
+                            collection.tasks[dep_id].blocks.append(task_id)
+                    return {
+                        "task_id": task_id,
+                        "status": "validation_failed",
+                        "message": msg,
+                    }
+                
+                task.updated_at = datetime.now(UTC)
+                changes["depends_on"] = {
+                    "from": old_deps,
+                    "to": task.depends_on,
+                    "added": [d for d in task.depends_on if d not in old_deps],
+                    "removed": [d for d in old_deps if d not in task.depends_on]
+                }
+                
+                # Update blocked status
+                self._update_blocked_status(task_id, collection)
+            
+            # Manage dependencies - ADD (incremental) - only if set_depends_on was not used
+            elif add_depends_on:
                 added = []
                 for dep_id in add_depends_on:
                     if dep_id not in collection.tasks:
@@ -1152,7 +1255,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     # Update blocked status
                     self._update_blocked_status(task_id, collection)
 
-            if remove_depends_on:
+            # Manage dependencies - REMOVE (incremental) - only if set_depends_on was not used
+            elif remove_depends_on:
                 removed = []
                 for dep_id in remove_depends_on:
                     if dep_id in task.depends_on:
@@ -1720,19 +1824,23 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 context={"session_id": context.session_id}
             )
             
-            if not result or not result.get("tasks"):
-                logger.debug(f"TodoHook: No active tasks for session {context.session_id}")
-                return HookResult(success=True, modified=False, context=context)
-            
-            # Format task list
+            # Always inject TODO tool reminder, with or without tasks
             from agent_system.llm.models import ChatMessage
-            task_prompt = self._format_tasks_for_prompt(result["tasks"], format_type)
             
-            # Check if already injected to avoid duplication
+            tasks_list = result.get("tasks", []) if result else []
+            
+            # Check if already injected to avoid duplication (check BEFORE formatting)
             for msg in context.messages:
                 msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if "Active TODO Tasks" in msg_content:
+                if "## TODO Tool Available" in msg_content:
                     return HookResult(success=True, modified=False, context=context)
+            
+            if tasks_list and len(tasks_list) > 0:
+                # Format existing tasks with reminder
+                task_prompt = self._format_tasks_for_prompt(tasks_list, format_type)
+            else:
+                # No tasks yet - inject reminder about todo tool
+                task_prompt = self._format_todo_reminder()
             
             # Insert after first system message
             insert_pos = self._find_system_message_position(context.messages)
@@ -1741,11 +1849,6 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 content=task_prompt
             ))
             
-            logger.info(
-                f"TodoHook: Injected {len(result['tasks'])} tasks "
-                f"into session {context.session_id}"
-            )
-            
             return HookResult(success=True, modified=True, context=context)
             
         except Exception as e:
@@ -1753,10 +1856,22 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             # Don't fail the entire LLM call if hook fails
             return HookResult(success=True, modified=False, context=context)
     
+    def _format_todo_reminder(self) -> str:
+        """Format TODO tool reminder when no tasks exist yet."""
+        return """## TODO Tool Available
+
+Use `todo()` to break down and track your work. Create tasks to organize complex problems into manageable steps.
+
+Example: `todo(operation="create", title="Analyze data and create report", priority="high")`
+"""
+    
     def _format_tasks_for_prompt(self, tasks: list, format_type: str = "markdown") -> str:
         """Format task list for injection into prompt."""
         if format_type == "markdown":
-            lines = ["## Active TODO Tasks\n"]
+            # Start with reminder
+            lines = [self._format_todo_reminder().rstrip()]
+            lines.append("\n**Current active tasks:**\n")
+            
             for task in tasks:
                 status_icon = self._get_status_icon(task["status"])
                 priority_label = self._get_priority_label(task["priority"])
@@ -1772,18 +1887,17 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 if task.get("blocks"):
                     lines.append(f"  - Blocks: {', '.join(task['blocks'])}")
 
-            lines.append("\nUse `todo()` tool for your own task planning to keep track and use it to update task status as you complete work.")
             return "\n".join(lines)
         
         else:  # text format
-            lines = ["=== Active TODO Tasks ===\n"]
+            lines = ["=== TODO Tool Available ===\n"]
+            
             for task in tasks:
                 lines.append(
                     f"{task['task_id']}: {task['title']} "
                     f"[{task['status']}, {task['priority']}, {task['progress']}%]"
                 )
             
-            lines.append("\nUse todo() tool to update tasks.")
             return "\n".join(lines)
     
     def _get_status_icon(self, status: str) -> str:

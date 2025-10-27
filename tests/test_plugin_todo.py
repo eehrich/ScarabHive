@@ -1118,15 +1118,15 @@ async def test_hook_inject_tasks_into_prompt(server: TodoServer, mock_context: D
     # Check injected message
     injected_msg = result.context.messages[1]
     assert injected_msg.role == "system"
-    assert "Active TODO Tasks" in injected_msg.content
+    assert "TODO Tool Available" in injected_msg.content
     assert "Task 1: Implement feature" in injected_msg.content
     assert "Task 2: Write tests" in injected_msg.content
     assert "HIGH" in injected_msg.content
 
 
 @pytest.mark.asyncio
-async def test_hook_no_tasks_no_injection(server: TodoServer, mock_context: Dict[str, Any]):
-    """Test that hook does not modify when no tasks exist"""
+async def test_hook_no_tasks_injects_reminder(server: TodoServer, mock_context: Dict[str, Any]):
+    """Test that hook injects TODO tool reminder even when no tasks exist"""
     from agent_system.hooks.plugin_hook import HookContext, HookType
     from agent_system.llm.models import ChatMessage
     
@@ -1145,9 +1145,15 @@ async def test_hook_no_tasks_no_injection(server: TodoServer, mock_context: Dict
     
     result = await server.on_pre_llm_call(hook_context)
     
+    # Now we ALWAYS inject a reminder, even when no tasks exist
     assert result.success is True
-    assert result.modified is False
-    assert len(result.context.messages) == 2  # unchanged
+    assert result.modified is True  # Changed: now injects TODO tool reminder
+    assert len(result.context.messages) == 3  # Changed: system + reminder + user
+    
+    # Verify reminder was injected
+    injected_msg = result.context.messages[1]
+    assert "TODO Tool Available" in injected_msg.content
+    assert "todo()" in injected_msg.content
 
 
 @pytest.mark.asyncio
@@ -1245,9 +1251,8 @@ async def test_hook_format_markdown(server: TodoServer, mock_context: Dict[str, 
     injected = result.context.messages[1].content
     
     # Check markdown formatting
-    assert "## Active TODO Tasks" in injected
+    assert "## TODO Tool Available" in injected
     assert "**task_" in injected  # Bold task IDs
-    assert "Use `todo()` tool" in injected
 
 
 @pytest.mark.asyncio

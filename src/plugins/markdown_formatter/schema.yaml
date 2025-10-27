@@ -6,9 +6,10 @@ hooks:
     description: >
       Injects a system message before each LLM call to guide LLM to generate Markdown output.
       Modifies messages temporarily for the LLM call without persisting to session.
+    category: "prompt_injection"
     order:
-      after: ["begin"]
-      before: ["optimize_context", "summarize_context"]
+      after: ["context_optimization"]
+      before: ["message_validation"]
     
   - name: format_markdown_output
     type: format_output

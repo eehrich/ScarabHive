@@ -20,9 +20,10 @@ hooks:
     enabled: false # default is disabled
     timeout: 5.0
     description: "Inject active TODO tasks into system prompt before LLM calls"
+    category: "prompt_injection"
     order:
-      after: ["begin"]
-      before: ["end"]
+      after: ["context_optimization"]
+      before: ["message_validation"]
 
 config:
   max_tasks:
