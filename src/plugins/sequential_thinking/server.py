@@ -109,6 +109,10 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         # Session storage (in-memory)
         self._sessions: dict[str, SessionState] = {}
         
+        # Mapping: agent_session_id → list of sequential_thinking_session_ids
+        # This allows the hook to find active thinking sessions for a given conversation
+        self._agent_session_mapping: dict[str, list[str]] = {}
+        
         logger.info(
             f"Sequential Thinking server '{name}' initialized - "
             f"max_history={self.max_history_size}, ttl={self.session_ttl_seconds}s, "
@@ -125,11 +129,23 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             "enable_revisions": self.enable_revisions
         }
 
-    def _get_or_create_session(self, session_id: str | None) -> SessionState:
-        """Get existing session or create new one."""
+    def _get_or_create_session(self, session_id: str | None, agent_session_id: str | None = None) -> SessionState:
+        """Get existing session or create new one.
+        
+        Args:
+            session_id: Sequential thinking session ID (UUID)
+            agent_session_id: Agent conversation session ID (for hook lookup)
+        """
         if session_id and session_id in self._sessions:
             session = self._sessions[session_id]
             session.last_accessed = datetime.now()
+            
+            # Update agent session mapping if provided
+            if agent_session_id and agent_session_id not in self._agent_session_mapping.get(agent_session_id, []):
+                if agent_session_id not in self._agent_session_mapping:
+                    self._agent_session_mapping[agent_session_id] = []
+                self._agent_session_mapping[agent_session_id].append(session_id)
+            
             return session
         
         # Create new session
@@ -141,6 +157,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             max_history_size=self.max_history_size
         )
         self._sessions[new_id] = session
+        
+        # Add to agent session mapping if provided
+        if agent_session_id:
+            if agent_session_id not in self._agent_session_mapping:
+                self._agent_session_mapping[agent_session_id] = []
+            self._agent_session_mapping[agent_session_id].append(new_id)
+            logger.debug(f"Mapped agent session {agent_session_id} → thinking session {new_id}")
+        
         logger.info(f"Created new session: {new_id}")
         return session
 
@@ -153,6 +177,15 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         ]
         for sid in expired:
             del self._sessions[sid]
+            
+            # Clean up agent session mapping
+            for agent_sid, thinking_sids in list(self._agent_session_mapping.items()):
+                if sid in thinking_sids:
+                    thinking_sids.remove(sid)
+                # Remove empty mappings
+                if not thinking_sids:
+                    del self._agent_session_mapping[agent_sid]
+            
             logger.info(f"Cleaned up expired session: {sid}")
 
     def _create_branch(
@@ -288,8 +321,11 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Get status context
             status = params["_status"]
             
+            # Get agent session ID if available (for hook mapping)
+            agent_session_id = params.get("_session_id")
+            
             # Get or create session first (for session_id in status messages)
-            session = self._get_or_create_session(session_id)
+            session = self._get_or_create_session(session_id, agent_session_id)
             
             # Validate parameters
             if thought_number < 1:
@@ -571,28 +607,44 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             show_branch_info = getattr(self.mcp_config, "show_branch_info", True)
             format_type = getattr(self.mcp_config, "format", "markdown")
             
-            # Check if there's an active session for this agent session
-            session = self._sessions.get(context.session_id)
+            # Find active sequential thinking sessions for this agent session
+            agent_session_id = context.session_id
+            thinking_session_ids = self._agent_session_mapping.get(agent_session_id, [])
+            
+            # Get the most recently accessed session (if multiple exist)
+            active_session = None
+            if thinking_session_ids:
+                # Filter out expired sessions and get most recent
+                valid_sessions = [
+                    self._sessions[sid] for sid in thinking_session_ids 
+                    if sid in self._sessions
+                ]
+                if valid_sessions:
+                    active_session = max(valid_sessions, key=lambda s: s.last_accessed)
+                    logger.debug(
+                        f"Found {len(valid_sessions)} thinking session(s) for agent session {agent_session_id[:8]}..., "
+                        f"using most recent: {active_session.session_id[:8]}..."
+                    )
             
             from agent_system.llm.models import ChatMessage
             
             # Check if already injected and REMOVE old injection to replace it
             for i, msg in enumerate(context.messages):
                 msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and "## Sequential Thinking Tool Available" in msg_content:
+                if msg_content and ("## Sequential Thinking Tool Available" in msg_content or "## Active Sequential Thinking Session" in msg_content):
                     # Remove old injection
                     context.messages.pop(i)
                     break
             
-            if session and len(session.thoughts) > 0:
+            if active_session and len(active_session.thoughts) > 0:
                 # Format active session with recent thoughts
                 session_prompt = self._format_session_for_prompt(
-                    session, max_thoughts, show_branch_info, format_type
+                    active_session, max_thoughts, show_branch_info, format_type
                 )
                 logger.info(
-                    f"[SequentialThinkingHook] Injecting {len(session.thoughts)} thoughts "
-                    f"(showing last {min(max_thoughts, len(session.thoughts))}) "
-                    f"for session {session.session_id[:8]}..."
+                    f"[SequentialThinkingHook] Injecting {len(active_session.thoughts)} thoughts "
+                    f"(showing last {min(max_thoughts, len(active_session.thoughts))}) "
+                    f"for session {active_session.session_id[:8]}..."
                 )
             else:
                 # No active session - inject reminder about tool
@@ -633,7 +685,7 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
         if format_type == "markdown":
             lines = []
             lines.append("## Active Sequential Thinking Session\n")
-            lines.append(f"**Session ID**: `{session.session_id[:12]}...`")
+            lines.append(f"**Session ID**: `{session.session_id}`")
             lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts\n")
             
             # Show recent thoughts
@@ -664,7 +716,7 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
             # Plain text format
             lines = [
                 "Sequential Thinking Session Active",
-                f"Session ID: {session.session_id[:12]}...",
+                f"Session ID: {session.session_id}",
                 f"Progress: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts",
                 ""
             ]

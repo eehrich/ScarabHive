@@ -117,37 +117,38 @@ async def test_hook_inject_reminder_no_active_session(server):
 
 @pytest.mark.asyncio
 async def test_hook_inject_active_session(server, mock_status):
-    """Test hook injects active session info with thoughts."""
-    # Create a session with some thoughts first
-    params = {
+    """Test hook injects active session thoughts into system prompt."""
+    # Create a session with some thoughts
+    agent_session_id = "test-agent-session"  # Agent conversation session ID
+    
+    params1 = {
         "thought": "First thought: analyze the problem",
         "next_thought_needed": True,
         "thought_number": 1,
         "total_thoughts": 3,
-        "session_id": "test-session-123",
-        "_status": mock_status
+        "_status": mock_status,
+        "_session_id": agent_session_id  # Link to agent session
     }
-    result1 = await server.sequential_thinking(params)
-    assert result1["status"] == "success"
-    session_id = result1["session_id"]
+    result1 = await server.sequential_thinking(params1)
+    thinking_session_id = result1["session_id"]  # Sequential thinking session ID
     
-    # Add second thought
     params2 = {
         "thought": "Second thought: consider alternatives",
         "next_thought_needed": True,
         "thought_number": 2,
         "total_thoughts": 3,
-        "session_id": session_id,
-        "_status": mock_status
+        "session_id": thinking_session_id,
+        "_status": mock_status,
+        "_session_id": agent_session_id  # Same agent session
     }
     result2 = await server.sequential_thinking(params2)
     assert result2["status"] == "success"
     
-    # Now test the hook with this active session
+    # Now test the hook with the AGENT session ID (not thinking session ID)
     context = HookContext(
         hook_type=HookType.PRE_LLM_CALL,
         request_id="test-req",
-        session_id=session_id,
+        session_id=agent_session_id,  # Agent session ID for hook lookup
         agent=None,
         messages=[
             ChatMessage(role="system", content="You are a helpful assistant"),
@@ -173,17 +174,19 @@ async def test_hook_inject_active_session(server, mock_status):
 @pytest.mark.asyncio
 async def test_hook_with_branches(server, mock_status):
     """Test hook shows branch information."""
+    agent_session_id = "test-agent-session"
+    
     # Create main branch thoughts
     params1 = {
         "thought": "Main branch thought",
         "next_thought_needed": True,
         "thought_number": 1,
         "total_thoughts": 5,
-        "session_id": "branch-session",
-        "_status": mock_status
+        "_status": mock_status,
+        "_session_id": agent_session_id
     }
     result1 = await server.sequential_thinking(params1)
-    session_id = result1["session_id"]
+    thinking_session_id = result1["session_id"]
     
     # Create alternative branch
     params2 = {
@@ -191,10 +194,11 @@ async def test_hook_with_branches(server, mock_status):
         "next_thought_needed": True,
         "thought_number": 2,
         "total_thoughts": 5,
-        "session_id": session_id,
+        "session_id": thinking_session_id,
         "branch_from_thought": 1,
         "branch_id": "alternative",
-        "_status": mock_status
+        "_status": mock_status,
+        "_session_id": agent_session_id
     }
     result2 = await server.sequential_thinking(params2)
     assert result2["status"] == "success"
@@ -203,7 +207,7 @@ async def test_hook_with_branches(server, mock_status):
     context = HookContext(
         hook_type=HookType.PRE_LLM_CALL,
         request_id="test-req",
-        session_id=session_id,
+        session_id=agent_session_id,
         agent=None,
         messages=[
             ChatMessage(role="system", content="System"),
@@ -225,16 +229,18 @@ async def test_hook_with_branches(server, mock_status):
 @pytest.mark.asyncio
 async def test_hook_removes_old_injection(server, mock_status):
     """Test hook removes old injection before adding new one."""
+    agent_session_id = "test-agent-session"
+    
     params = {
         "thought": "Test thought",
         "next_thought_needed": False,
         "thought_number": 1,
         "total_thoughts": 1,
-        "session_id": "replace-session",
-        "_status": mock_status
+        "_status": mock_status,
+        "_session_id": agent_session_id
     }
     result = await server.sequential_thinking(params)
-    session_id = result["session_id"]
+    # thinking_session_id = result["session_id"]  # Not needed for this test
     
     # Create context with old injection already present
     old_injection = ChatMessage(
@@ -245,7 +251,7 @@ async def test_hook_removes_old_injection(server, mock_status):
     context = HookContext(
         hook_type=HookType.PRE_LLM_CALL,
         request_id="test-req",
-        session_id=session_id,
+        session_id=agent_session_id,
         agent=None,
         messages=[
             ChatMessage(role="system", content="System"),
@@ -272,26 +278,29 @@ async def test_hook_removes_old_injection(server, mock_status):
 @pytest.mark.asyncio
 async def test_hook_max_thoughts_limit(server, mock_status):
     """Test hook respects max_thoughts_in_prompt config."""
+    agent_session_id = "test-agent-session"
+    
     # Create 10 thoughts
-    session_id = None
+    thinking_session_id = None
     for i in range(1, 11):
         params = {
             "thought": f"Thought number {i}",
             "next_thought_needed": i < 10,
             "thought_number": i,
             "total_thoughts": 10,
-            "session_id": session_id,
-            "_status": mock_status
+            "session_id": thinking_session_id,
+            "_status": mock_status,
+            "_session_id": agent_session_id
         }
         result = await server.sequential_thinking(params)
-        if session_id is None:
-            session_id = result["session_id"]
+        if thinking_session_id is None:
+            thinking_session_id = result["session_id"]
     
     # Hook should only show last 5 thoughts (max_thoughts_in_prompt=5)
     context = HookContext(
         hook_type=HookType.PRE_LLM_CALL,
         request_id="test-req",
-        session_id=session_id,
+        session_id=agent_session_id,
         agent=None,
         messages=[
             ChatMessage(role="system", content="System"),
@@ -317,6 +326,7 @@ async def test_hook_max_thoughts_limit(server, mock_status):
 @pytest.mark.asyncio
 async def test_hook_truncates_long_thoughts(server, mock_status):
     """Test hook truncates thoughts longer than 150 chars."""
+    agent_session_id = "test-agent-session"
     long_thought = "A" * 200  # 200 chars
     
     params = {
@@ -324,16 +334,16 @@ async def test_hook_truncates_long_thoughts(server, mock_status):
         "next_thought_needed": False,
         "thought_number": 1,
         "total_thoughts": 1,
-        "session_id": "truncate-session",
-        "_status": mock_status
+        "_status": mock_status,
+        "_session_id": agent_session_id
     }
     result = await server.sequential_thinking(params)
-    session_id = result["session_id"]
+    # thinking_session_id = result["session_id"]  # Not needed
     
     context = HookContext(
         hook_type=HookType.PRE_LLM_CALL,
         request_id="test-req",
-        session_id=session_id,
+        session_id=agent_session_id,
         agent=None,
         messages=[
             ChatMessage(role="system", content="System"),
@@ -356,17 +366,19 @@ async def test_hook_truncates_long_thoughts(server, mock_status):
 @pytest.mark.asyncio
 async def test_hook_with_revision(server, mock_status):
     """Test hook shows revision indicator."""
+    agent_session_id = "test-agent-session"
+    
     # Original thought
     params1 = {
         "thought": "Original thought",
         "next_thought_needed": True,
         "thought_number": 1,
         "total_thoughts": 3,
-        "session_id": "revision-session",
-        "_status": mock_status
+        "_status": mock_status,
+        "_session_id": agent_session_id
     }
     result1 = await server.sequential_thinking(params1)
-    session_id = result1["session_id"]
+    thinking_session_id = result1["session_id"]
     
     # Revision of first thought
     params2 = {
@@ -374,10 +386,11 @@ async def test_hook_with_revision(server, mock_status):
         "next_thought_needed": False,
         "thought_number": 2,
         "total_thoughts": 3,
-        "session_id": session_id,
+        "session_id": thinking_session_id,
         "is_revision": True,
         "revises_thought": 1,
-        "_status": mock_status
+        "_status": mock_status,
+        "_session_id": agent_session_id
     }
     result2 = await server.sequential_thinking(params2)
     assert result2["status"] == "success"
@@ -385,7 +398,7 @@ async def test_hook_with_revision(server, mock_status):
     context = HookContext(
         hook_type=HookType.PRE_LLM_CALL,
         request_id="test-req",
-        session_id=session_id,
+        session_id=agent_session_id,
         agent=None,
         messages=[
             ChatMessage(role="system", content="System"),
