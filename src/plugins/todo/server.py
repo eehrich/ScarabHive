@@ -1829,11 +1829,14 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             
             tasks_list = result.get("tasks", []) if result else []
             
-            # Check if already injected to avoid duplication (check BEFORE formatting)
-            for msg in context.messages:
+            # Check if already injected and REMOVE old injection to replace it
+            # This allows updating from "no tasks" to "with tasks" seamlessly
+            for i, msg in enumerate(context.messages):
                 msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if "## TODO Tool Available" in msg_content:
-                    return HookResult(success=True, modified=False, context=context)
+                if msg_content and "## TODO Tool Available" in msg_content:
+                    # Remove old TODO injection
+                    context.messages.pop(i)
+                    break
             
             if tasks_list and len(tasks_list) > 0:
                 # Format existing tasks with reminder
