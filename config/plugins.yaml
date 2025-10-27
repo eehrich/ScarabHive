@@ -231,6 +231,8 @@ plugins:
               enabled: true
             todo.inject_todo_tasks:
               enabled: true
+            sequential_thinking.inject_active_sessions:
+              enabled: true
       
       metadata:
         author: "AgentSystem"
@@ -406,6 +408,8 @@ plugins:
             markdown_formatter.format_markdown_output:
               enabled: true
             todo.inject_todo_tasks:
+              enabled: true
+            sequential_thinking.inject_active_sessions:
               enabled: true
         
         tools:

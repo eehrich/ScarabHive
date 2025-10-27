@@ -589,9 +589,15 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 session_prompt = self._format_session_for_prompt(
                     session, max_thoughts, show_branch_info, format_type
                 )
+                logger.info(
+                    f"[SequentialThinkingHook] Injecting {len(session.thoughts)} thoughts "
+                    f"(showing last {min(max_thoughts, len(session.thoughts))}) "
+                    f"for session {session.session_id[:8]}..."
+                )
             else:
                 # No active session - inject reminder about tool
                 session_prompt = self._format_thinking_reminder()
+                logger.info("[SequentialThinkingHook] No active session - injecting tool reminder")
             
             # Insert after first system message
             insert_pos = self._find_system_message_position(context.messages)
