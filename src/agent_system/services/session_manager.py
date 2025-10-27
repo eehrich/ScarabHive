@@ -97,9 +97,26 @@ class SessionManager:
         """Generate a unique session ID.
         
         Returns:
-            Short alphanumeric session ID (12 characters)
+            Short alphanumeric session ID (10 characters)
         """
-        return uuid4().hex[:12]
+        return uuid4().hex[:10]
+
+    def _session_id_exists_globally(self, session_id: str) -> bool:
+        """Check if a session ID exists for ANY user (global collision check).
+        
+        Args:
+            session_id: Session ID to check
+        
+        Returns:
+            True if session exists for any user, False otherwise
+        """
+        # Check all user directories for this session ID
+        for user_dir in self.storage_path.iterdir():
+            if user_dir.is_dir():
+                session_file = user_dir / f"{session_id}.json"
+                if session_file.exists():
+                    return True
+        return False
 
     def _validate_session_data(self, data: Dict[str, Any]) -> None:
         """Validate session data structure.
@@ -206,18 +223,34 @@ class SessionManager:
             Session data dictionary
         
         Raises:
-            ValueError: If session_id already exists
+            ValueError: If session_id already exists (after max retries)
         """
         async with self._lock:
-            sid = session_id or self._generate_session_id()
-            
             # Sanitize user_id before storing
             safe_user_id = self._sanitize_user_id(user_id)
             
-            path = self._get_session_path(safe_user_id, sid)
+            # Generate unique session ID with collision detection (global across all users)
+            if session_id:
+                sid = session_id
+                # Check if this custom ID exists for ANY user (global check)
+                if self._session_id_exists_globally(sid):
+                    raise ValueError(f"Session {sid} already exists")
+            else:
+                # Generate new ID with retry on collision
+                max_retries = 10
+                for attempt in range(max_retries):
+                    sid = self._generate_session_id()
+                    if not self._session_id_exists_globally(sid):
+                        break
+                    logger.warning(
+                        f"Session ID collision detected: {sid} (attempt {attempt + 1}/{max_retries})"
+                    )
+                else:
+                    # Extremely unlikely - fallback to longer ID
+                    sid = uuid4().hex
+                    logger.error(f"Failed to generate unique session ID after {max_retries} attempts, using full UUID")
             
-            if path.exists():
-                raise ValueError(f"Session {sid} already exists")
+            path = self._get_session_path(safe_user_id, sid)
             
             now = datetime.now(timezone.utc).isoformat()
             

@@ -41,7 +41,7 @@ async def test_create_session_basic(session_manager):
     assert session["agent_name"] == "test_agent"
     assert session["llm_profile"] == "gpt-4"
     assert "session_id" in session
-    assert len(session["session_id"]) == 12
+    assert len(session["session_id"]) == 10  # Session IDs are 10 chars (hex)
     assert session["messages"] == []
     assert session["metadata"]["message_count"] == 0
 
@@ -71,6 +71,46 @@ async def test_create_session_duplicate_id_fails(session_manager):
             user_id="user1",
             session_id="duplicate_id"
         )
+
+
+@pytest.mark.asyncio
+async def test_create_session_global_collision_detection(session_manager):
+    """Test that duplicate session IDs are detected across different users (global)."""
+    # Create session for user1
+    await session_manager.create_session(
+        user_id="user1",
+        session_id="shared_id_123"
+    )
+    
+    # Try to create session with same ID for different user (should fail)
+    with pytest.raises(ValueError, match="already exists"):
+        await session_manager.create_session(
+            user_id="user2",  # Different user!
+            session_id="shared_id_123"  # Same ID - should be rejected
+        )
+
+
+@pytest.mark.asyncio
+async def test_session_id_uniqueness_across_users(session_manager):
+    """Test that auto-generated session IDs are unique across all users."""
+    # Create many sessions for different users
+    session_ids = set()
+    
+    for i in range(50):
+        user_id = f"user{i % 5}"  # 5 different users
+        session = await session_manager.create_session(
+            user_id=user_id,
+            title=f"Session {i}"
+        )
+        
+        # Check for collision
+        assert session["session_id"] not in session_ids, \
+            f"Session ID collision detected: {session['session_id']}"
+        
+        session_ids.add(session["session_id"])
+    
+    # All IDs should be unique
+    assert len(session_ids) == 50
 
 
 @pytest.mark.asyncio
