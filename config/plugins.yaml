@@ -45,7 +45,9 @@ plugins:
           enabled: true
           overrides:
             todo.inject_todo_tasks:
-              enabled: true            
+              enabled: true
+            sequential_thinking.inject_active_sessions:
+              enabled: true
       
       metadata:
         visibility: "both"  # Make available as tool for meta_agent
@@ -68,6 +70,11 @@ plugins:
       enable_branching: true
       enable_revisions: true
       max_summary_thoughts: 10
+      
+      # Hook config for inject_active_sessions
+      max_thoughts_in_prompt: 5
+      show_branch_info: true
+      format: markdown
     
     todo:
       type: todo

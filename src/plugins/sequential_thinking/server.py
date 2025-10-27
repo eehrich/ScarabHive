@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -535,3 +536,140 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             logger.exception(f"Error in get_thought_summary: {e}")
             await status.error(f"Failed to generate summary: {str(e)}")
             return {"status": "error", "error": str(e)}
+
+    # =========================================================================
+    # Hook Implementation: System Prompt Injection
+    # =========================================================================
+    
+    async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+        """
+        Inject active sequential thinking sessions into system prompt before LLM call.
+        
+        This hook (defined in schema.yaml as inject_active_sessions) automatically 
+        adds recent thoughts from active sessions to the agent's context, 
+        providing reasoning continuity without explicit tool calls.
+        
+        Configuration is loaded from schema.yaml config section.
+        
+        Args:
+            context: Hook context with messages, session_id, agent
+            
+        Returns:
+            HookResult with modified=True if session info was injected
+        """
+        if not context.messages:
+            logger.debug("SequentialThinkingHook: No messages in context, skipping")
+            return HookResult(success=True, modified=False, context=context)
+        
+        if not context.session_id:
+            logger.debug("SequentialThinkingHook: No session_id in context, skipping")
+            return HookResult(success=True, modified=False, context=context)
+        
+        try:
+            # Get hook config from schema.yaml
+            max_thoughts = getattr(self.mcp_config, "max_thoughts_in_prompt", 5)
+            show_branch_info = getattr(self.mcp_config, "show_branch_info", True)
+            format_type = getattr(self.mcp_config, "format", "markdown")
+            
+            # Check if there's an active session for this agent session
+            session = self._sessions.get(context.session_id)
+            
+            from agent_system.llm.models import ChatMessage
+            
+            # Check if already injected and REMOVE old injection to replace it
+            for i, msg in enumerate(context.messages):
+                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
+                if msg_content and "## Sequential Thinking Tool Available" in msg_content:
+                    # Remove old injection
+                    context.messages.pop(i)
+                    break
+            
+            if session and len(session.thoughts) > 0:
+                # Format active session with recent thoughts
+                session_prompt = self._format_session_for_prompt(
+                    session, max_thoughts, show_branch_info, format_type
+                )
+            else:
+                # No active session - inject reminder about tool
+                session_prompt = self._format_thinking_reminder()
+            
+            # Insert after first system message
+            insert_pos = self._find_system_message_position(context.messages)
+            context.messages.insert(insert_pos, ChatMessage(
+                role="system",
+                content=session_prompt
+            ))
+            
+            return HookResult(success=True, modified=True, context=context)
+            
+        except Exception as e:
+            logger.error(f"SequentialThinkingHook failed: {e}", exc_info=True)
+            # Don't fail the entire LLM call if hook fails
+            return HookResult(success=True, modified=False, context=context)
+    
+    def _format_thinking_reminder(self) -> str:
+        """Format sequential thinking tool reminder when no active session."""
+        return """## Sequential Thinking Tool Available
+
+Use `sequential_thinking()` for complex reasoning that requires step-by-step analysis. Break down problems into thoughts, explore alternatives via branching, and revise earlier insights.
+
+Example: `sequential_thinking(thought="First, let's analyze the requirements...", thought_number=1, total_thoughts=5, next_thought_needed=true)`
+"""
+    
+    def _format_session_for_prompt(
+        self, 
+        session: SessionState, 
+        max_thoughts: int, 
+        show_branch_info: bool,
+        format_type: str = "markdown"
+    ) -> str:
+        """Format active session for injection into prompt."""
+        if format_type == "markdown":
+            lines = [self._format_thinking_reminder().rstrip()]
+            lines.append(f"\n**Active reasoning session** (ID: `{session.session_id[:12]}...`):\n")
+            
+            # Show recent thoughts
+            recent_thoughts = session.thoughts[-max_thoughts:] if max_thoughts > 0 else session.thoughts
+            
+            for thought in recent_thoughts:
+                branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
+                revision_tag = f" (revises #{thought.revises_thought})" if thought.is_revision else ""
+                
+                # Truncate long thoughts
+                content = thought.content[:150] + "..." if len(thought.content) > 150 else thought.content
+                
+                lines.append(
+                    f"- **Thought #{thought.number}**{branch_tag}{revision_tag}: {content}"
+                )
+            
+            # Show branch info if enabled
+            if show_branch_info and len(session.branches) > 1:
+                lines.append(f"\n**Current branch**: `{session.current_branch}`")
+                lines.append(f"**Available branches**: {', '.join(f'`{b}`' for b in session.branches.keys())}")
+            
+            lines.append(f"\n**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
+            
+            return "\n".join(lines)
+        else:
+            # Plain text format
+            lines = [
+                "Sequential Thinking Session Active",
+                f"Session ID: {session.session_id[:12]}...",
+                f"Progress: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts",
+                ""
+            ]
+            
+            recent_thoughts = session.thoughts[-max_thoughts:] if max_thoughts > 0 else session.thoughts
+            for thought in recent_thoughts:
+                content = thought.content[:100] + "..." if len(thought.content) > 100 else thought.content
+                lines.append(f"#{thought.number}: {content}")
+            
+            return "\n".join(lines)
+    
+    def _find_system_message_position(self, messages: list) -> int:
+        """Find position to insert system message (after first system message)."""
+        for i, msg in enumerate(messages):
+            role = msg.role if hasattr(msg, 'role') else msg.get('role')
+            if role == 'system':
+                return i + 1
+        return 0  # No system message found, insert at start
