@@ -339,12 +339,19 @@ async def register_plugin_hooks(
         logger.debug(f"Plugin '{plugin_name}' declares no hooks in metadata")
         return registered_hooks
     
-    # Verify plugin implements PluginHook interface
+    # Verify plugin implements PluginHook interface OR has the required hook methods
+    # Duck-typing: Plugin doesn't need to inherit from PluginHook if it has the hook methods
     if not isinstance(plugin_instance, PluginHook):
-        raise TypeError(
-            f"Plugin '{plugin_name}' declares hooks but does not implement PluginHook interface. "
-            "The plugin class must inherit from PluginHook and implement async hook methods."
-        )
+        # Check if plugin has hook methods (duck typing for hybrid plugins)
+        hook_method_name = f"on_{hooks_list[0].get('type', '').lower()}"
+        if not hasattr(plugin_instance, hook_method_name):
+            raise TypeError(
+                f"Plugin '{plugin_name}' declares hooks but does not implement PluginHook interface "
+                f"and is missing hook method '{hook_method_name}'. "
+                "The plugin class must either inherit from PluginHook or implement async hook methods."
+            )
+        logger.debug(f"Plugin '{plugin_name}' uses duck-typed hooks (has {hook_method_name} method)")
+
     
     # Use provided registry or get global one
     if registry is None:
@@ -378,6 +385,7 @@ async def register_plugin_hooks(
             enabled = hook_metadata.get('enabled', True)
             timeout = hook_metadata.get('timeout', 30.0)
             description = hook_metadata.get('description', '')
+            category = hook_metadata.get('category', None)  # Optional category/tag
             order_spec = hook_metadata.get('order', {})
             
             # Apply global hooks configuration overrides
@@ -424,21 +432,22 @@ async def register_plugin_hooks(
             # Register with HookRegistry (it expects a PluginHook instance)
             await registry.register_hook(
                 hook_type=hook_type,
-                hook_name=hook_name,
+                hook_name=full_hook_name,  # Use full name with plugin prefix
                 hook=plugin_instance,  # Pass the PluginHook instance
                 order_spec=order,
                 enabled=enabled,
                 timeout=timeout,
                 description=description,
+                category=category,  # Pass category for grouping
                 # Additional metadata for tracking
                 plugin=plugin_name,
                 source="plugin_discovery"
             )
             
-            registered_hooks.append(hook_name)
+            registered_hooks.append(full_hook_name)  # Track full name
             logger.debug(
-                f"Registered hook '{hook_name}' from plugin '{plugin_name}' "
-                f"(type={hook_type.name.lower()}, enabled={enabled}, description='{description}')"
+                f"Registered hook '{full_hook_name}' from plugin '{plugin_name}' "
+                f"(type={hook_type.value}, enabled={enabled}, description='{description}')"
             )
             
         except Exception as e:

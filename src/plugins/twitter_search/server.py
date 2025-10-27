@@ -25,7 +25,11 @@ class TwitterSearchServer(SchemaBasedMCPServer):
         # Extract SSL verification setting from system config if available
         self.ssl_verify = getattr(system_config, 'ssl_verify', True)
     
-    async def search_tweets(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def tweets(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Search tweets by query (tool method).
+        
+        Tool name: {{ name }}_tweets → Method: tweets (after stripping {{ name }}_ prefix)
+        """
         """
         Search recent tweets.
         

@@ -321,9 +321,14 @@ class Agent(MCPServer):
     # ------------------------------------------------------------------
     # Central prompt rendering utilities (using strategy pattern)
     # ------------------------------------------------------------------
-    def _render_prompts(self, usable_tools: List[str], max_steps: int) -> tuple[str, Optional[str]]:
+    def _render_prompts(self, usable_tools: List[str], max_steps: int, current_step: int) -> tuple[str, Optional[str]]:
         """
         Render (system_prompt, tools_prompt) using strategy pattern.
+
+        Args:
+            usable_tools: List of tool names available to the agent
+            max_steps: Maximum steps allowed for the agent
+            current_step: Current step number (1-indexed, for dynamic per-step rendering)
 
         Order of precedence:
           1. Subclass hook `get_custom_system_prompt`
@@ -341,6 +346,7 @@ class Agent(MCPServer):
             system_config=self.system_config,
             available_tools=usable_tools,
             max_steps=max_steps,
+            current_step=current_step,
             agent_instance=self  # Pass self for hook access
         )
         return renderer.render(context)
@@ -353,7 +359,7 @@ class Agent(MCPServer):
             logger.warning(f"Failed to list usable tools for system prompt: {e}", exc_info=True)
             usable_tools = []
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
-        system_msg, _ = self._render_prompts(usable_tools, max_steps)
+        system_msg, _ = self._render_prompts(usable_tools, max_steps, current_step=0)
         return system_msg
 
 
@@ -706,7 +712,8 @@ class Agent(MCPServer):
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
         # Centralized prompt rendering (system + optional tools) using helper.
-        system_msg, tools_msg = self._render_prompts(usable_tools, max_steps)
+        # Initial render with step 0 (before loop starts)
+        system_msg, tools_msg = self._render_prompts(usable_tools, max_steps, current_step=0)
 
         # Initialize conversation from persisted session history
         session_msgs = self._session_tracker.get_session_messages(session_id)
@@ -757,14 +764,14 @@ class Agent(MCPServer):
             server_getter_func=self._get_server_from_any_registry
         )
         
-        tools_schema, tool_name_mapping, usable_tools = await schema_builder.build_schemas(
+        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
             usable_tools
         )
 
         # Return initialized context
         return ConversationContext(
             messages=messages,
-            available_tools=usable_tools,
+            available_tools=display_tools,  # Use display_tools for prompt (individual tool names only)
             tools_schema=tools_schema,
             tool_name_mapping=tool_name_mapping,
             max_steps=max_steps,
@@ -961,6 +968,13 @@ class Agent(MCPServer):
                 llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
             await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
 
+            # Update system message with current step number
+            updated_system_msg, _ = self._render_prompts(context.available_tools, max_steps, current_step=step + 1)
+            messages[0] = ChatMessage(role="system", content=updated_system_msg)
+
+            # Emit thinking event before LLM call (for UI step display)
+            yield {"type": "thinking", "step": step + 1}
+
             # Execute pre-LLM hooks to transform messages
             try:
                 modified_messages = await self._hook_manager.execute_pre_llm_hooks(
@@ -1011,23 +1025,44 @@ class Agent(MCPServer):
             content = assistant.get("content")
             tool_calls = assistant.get("tool_calls", [])
 
+            # Create assistant message and add it BEFORE post_llm hooks
+            # so message debugger can capture the complete conversation
+            assistant_msg = ChatMessage(
+                role="assistant",
+                content=content or "",
+                tool_calls=tool_calls if tool_calls else None
+            )
+            messages.append(assistant_msg)
+            context.messages.append(assistant_msg)
+
             # Execute post-LLM hooks to transform the response
             try:
-                modified_response = await self._hook_manager.execute_post_llm_hooks(
+                modified_response, hook_metadata = await self._hook_manager.execute_post_llm_hooks(
                     messages=messages,
-                    llm_response={"content": content, "tool_calls": tool_calls},
+                    llm_response=llm_out,  # Pass full LLM response including usage data
                     step=step,
                     request_id=request_id,
                     session_id=session_id,
                     llm=active_llm
                 )
                 if modified_response is not None:
-                    content = modified_response.get("content", content)
-                    tool_calls = modified_response.get("tool_calls", tool_calls)
+                    # Extract assistant data from modified response
+                    modified_assistant = modified_response.get("assistant", {})
+                    content = modified_assistant.get("content", content)
+                    tool_calls = modified_assistant.get("tool_calls", tool_calls)
+                    # Update the assistant message if hooks modified the response
+                    assistant_msg.content = content or ""
+                    assistant_msg.tool_calls = tool_calls if tool_calls else None
+                    # Set content_format from hook metadata (e.g., 'html', 'markdown', 'text')
+                    if "content_format" in hook_metadata:
+                        assistant_msg.content_format = hook_metadata["content_format"]
             except Exception as e:
                 logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
 
-            # Emit thinking event if we have content and no tool calls (final answer)
+            # Emit thinking event with LLM response (for UI to show assistant reasoning)
+            yield {"type": "thinking", "step": step + 1, "assistant": {"content": content, "tool_calls": tool_calls}}
+
+            # Also emit simplified thinking event if we have content and no tool calls (final answer)
             if content and not tool_calls:
                 yield {"type": "thinking", "content": content}
 
@@ -1040,8 +1075,7 @@ class Agent(MCPServer):
                 consecutive_no_tool_calls += 1
                 if consecutive_no_tool_calls >= max_consecutive_no_tools:
                     logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls")
-                    # Treat final content as answer
-                    messages.append(ChatMessage(role="assistant", content=content or ""))
+                    # Treat final content as answer (assistant_msg already added above)
                     results["summary"] = content
                     self._current_messages = messages.copy()
                     yield {"type": "final", "summary": content, "content_format": "markdown"}
@@ -1066,12 +1100,7 @@ class Agent(MCPServer):
                 # Signal tool execution start
                 await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
                 
-                # Add assistant message with ALL tool calls to conversation
-                messages.append(ChatMessage(
-                    role="assistant",
-                    content=content or "",
-                    tool_calls=tool_calls
-                ))
+                # Assistant message with tool calls was already added above before post_llm hooks
                 
                 # Update tracked messages
                 self._current_messages = messages.copy()
@@ -1084,7 +1113,8 @@ class Agent(MCPServer):
                     tool_name_mapping=tool_name_mapping,
                     available_tools=context.available_tools,
                     step=step,
-                    request_id=request_id
+                    request_id=request_id,
+                    session_id=session_id
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution
@@ -1103,6 +1133,7 @@ class Agent(MCPServer):
                 
                 # Add tool messages to conversation
                 messages.extend(tool_messages)
+                context.messages.extend(tool_messages)  # FIX: Also extend context.messages
                 
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
@@ -1116,8 +1147,7 @@ class Agent(MCPServer):
             
             # No tool calls - this is the final answer
             if content:
-                # Append assistant final message to conversation history
-                messages.append(ChatMessage(role="assistant", content=content or ""))
+                # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
                 self._current_messages = messages.copy()
@@ -1132,14 +1162,49 @@ class Agent(MCPServer):
             # Drain any final appended messages before next step  
             messages = await self._drain_appended_messages(request_id, messages)
 
-        # Max steps reached - get final answer
+        # Max steps reached - warning and try to get final answer
+        logger.warning(
+            f"Max steps ({max_steps}) reached. Agent may not have completed the task. "
+            f"Making one final LLM call to attempt completion."
+        )
+        
+        # Add explicit user message requesting final answer WITHOUT tools
+        final_user_message = ChatMessage(
+            role="user",
+            content=(
+                f"You have reached the maximum number of steps ({max_steps}). "
+                "Please provide your final answer NOW based on the information you have gathered. "
+                "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
+            )
+        )
+        messages.append(final_user_message)
+        
+        # Try final call with tools still available (but instructed not to use them)
         try:
-            final_llm_out = await active_llm.chat_tools(messages, [], cancellation_token=main_token)
+            final_llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
             final_assistant = final_llm_out.get("assistant", {})
             final_content = final_assistant.get("content")
+            final_tool_calls = final_assistant.get("tool_calls", [])
+            
+            if final_tool_calls:
+                # Agent still wants to use tools after max_steps!
+                logger.error(
+                    f"Agent returned tool calls after max_steps limit! "
+                    f"Tools: {[tc.get('function', {}).get('name') for tc in final_tool_calls]}. "
+                    f"Increase max_steps or simplify the task."
+                )
+                results.setdefault("errors", []).append(
+                    f"Agent needs more steps to complete task (wanted to call: "
+                    f"{', '.join([tc.get('function', {}).get('name', '?') for tc in final_tool_calls])})"
+                )
+                yield {"type": "error", "message": f"Agent incomplete: max steps ({max_steps}) reached but still has work to do."}
+                return
+            
             if final_content:
                 # Append final assistant message to conversation history
-                messages.append(ChatMessage(role="assistant", content=final_content or ""))
+                assistant_msg = ChatMessage(role="assistant", content=final_content or "")
+                messages.append(assistant_msg)
+                context.messages.append(assistant_msg)  # Also append to context.messages
                 results["summary"] = final_content
                 # Update tracked messages and emit final event
                 self._current_messages = messages.copy()

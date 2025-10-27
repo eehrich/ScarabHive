@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import logging
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set
@@ -77,6 +78,7 @@ class HookRegistry:
         enabled: bool = True,
         timeout: Optional[float] = None,
         description: str = "",
+        category: Optional[str] = None,
         **extra_metadata
     ) -> None:
         """
@@ -90,6 +92,7 @@ class HookRegistry:
             enabled: Whether the hook is enabled (default: True)
             timeout: Hook-specific timeout in seconds (default: use registry default)
             description: Human-readable description of the hook
+            category: Optional category/tag for grouping hooks (e.g., "inject", "optimize")
             **extra_metadata: Additional metadata to store with the hook
             
         Raises:
@@ -116,6 +119,7 @@ class HookRegistry:
                 "enabled": enabled,
                 "timeout": timeout if timeout is not None else self.default_timeout,
                 "description": description,
+                "category": category,  # Store category for dependency resolution
                 **extra_metadata  # Include any additional metadata
             }
             
@@ -124,7 +128,7 @@ class HookRegistry:
             
             logger.debug(
                 f"Registered hook '{hook_name}' for {hook_type.value} "
-                f"(before={order_spec.get('before', [])}, after={order_spec.get('after', [])}), enabled={enabled}"
+                f"(category={category}, before={order_spec.get('before', [])}, after={order_spec.get('after', [])}), enabled={enabled}"
             )
     
     async def unregister_hook(self, hook_type: HookType, hook_name: str) -> bool:
@@ -198,14 +202,47 @@ class HookRegistry:
         # Execute hooks in order
         current_context = context
         for hook_name, hook_instance, metadata in ordered_hooks:
-            if not metadata.get("enabled", True):
-                logger.debug(f"Skipping disabled hook '{hook_name}'")
-                continue
+            # Get default enabled state from hook metadata
+            hook_enabled_by_default = metadata.get("enabled", True)
             
             # Apply agent-specific hook filter if provided
-            if hook_filter and not hook_filter(hook_name):
-                logger.debug(f"Skipping hook '{hook_name}' (filtered by agent config)")
-                continue
+            # Pass default state so filter can make informed decision
+            if hook_filter:
+                # Try calling filter with default_enabled parameter (new signature)
+                # Fall back to old signature if filter doesn't accept it
+                try:
+                    sig = inspect.signature(hook_filter)
+                    if len(sig.parameters) >= 2:
+                        # New signature: hook_filter(hook_name, default_enabled)
+                        should_execute = hook_filter(hook_name, hook_enabled_by_default)
+                    else:
+                        # Old signature: hook_filter(hook_name)
+                        # Filter will handle override logic internally
+                        agent_wants_hook = hook_filter(hook_name)
+                        
+                        if agent_wants_hook and not hook_enabled_by_default:
+                            logger.debug(f"Enabling hook '{hook_name}' (enabled by agent config override)")
+                            should_execute = True
+                        elif not agent_wants_hook and hook_enabled_by_default:
+                            logger.debug(f"Skipping hook '{hook_name}' (disabled by agent config override)")
+                            should_execute = False
+                        elif not agent_wants_hook:
+                            logger.debug(f"Skipping disabled hook '{hook_name}'")
+                            should_execute = False
+                        else:
+                            should_execute = True
+                except Exception as e:
+                    # Fallback: assume new signature and log error
+                    logger.warning(f"Error inspecting hook_filter signature: {e}. Assuming new signature.")
+                    should_execute = hook_filter(hook_name, hook_enabled_by_default)
+                
+                if not should_execute:
+                    continue
+            else:
+                # No filter - use default enabled state
+                if not hook_enabled_by_default:
+                    logger.debug(f"Skipping disabled hook '{hook_name}'")
+                    continue
             
             # Use hook-specific timeout if available, otherwise use registry default
             hook_timeout = metadata.get("timeout", timeout)
@@ -329,6 +366,13 @@ class HookRegistry:
         order_specs = {name: spec for name, _, spec, _ in hooks_list}
         metadata_map = {name: meta for name, _, _, meta in hooks_list}
         
+        # Build category map: category -> set of hook names
+        category_map: Dict[str, Set[str]] = defaultdict(set)
+        for hook_name, meta in metadata_map.items():
+            category = meta.get("category")
+            if category:
+                category_map[category].add(hook_name)
+        
         # Build adjacency list (hook -> hooks that must come after it)
         # and track in-degree (number of dependencies)
         graph: Dict[str, Set[str]] = defaultdict(set)
@@ -347,17 +391,46 @@ class HookRegistry:
         # Use a set to track which edges we've already added to avoid duplicates
         edges_added: Set[tuple[str, str]] = set()
         
+        # Helper function to resolve a reference to actual hook names
+        def resolve_reference(ref: str) -> List[str]:
+            """Resolve a reference to hook name(s). Can be hook name, category, or virtual node."""
+            if ref in hooks_map or ref in ("begin", "end"):
+                return [ref]
+            elif ref in category_map:
+                # Resolve category to all hooks in that category
+                return list(category_map[ref])
+            else:
+                return []
+        
         for hook_name, order_spec in order_specs.items():
             # "after" relationships: hook comes after these predecessors
             # If hook says "after: [A]", then A -> hook (A must execute before hook)
             for predecessor in order_spec.get("after", []):
                 pred_key = str(predecessor)
-                # Only process if the predecessor exists or is a virtual node
-                if pred_key in hooks_map or pred_key in ("begin", "end"):
-                    edge = (pred_key, hook_name)
+                resolved_preds = resolve_reference(pred_key)
+                
+                if not resolved_preds:
+                    # Warn about non-existent hook/category reference
+                    logger.warning(
+                        f"Hook '{hook_name}' references non-existent hook/category '{pred_key}' in 'after' clause. "
+                        f"This dependency will be ignored."
+                    )
+                    continue
+                
+                # Add edges for all resolved predecessors
+                for resolved_pred in resolved_preds:
+                    edge = (resolved_pred, hook_name)
+                    # Check for conflicting reverse edge
+                    reverse_edge = (hook_name, resolved_pred)
+                    if reverse_edge in edges_added:
+                        logger.warning(
+                            f"Hook ordering conflict: '{hook_name}' wants to run after '{resolved_pred}', "
+                            f"but '{hook_name}' is already scheduled before '{resolved_pred}'. "
+                            f"This may cause circular dependencies."
+                        )
                     if edge not in edges_added:
                         # Add edge: predecessor -> hook_name
-                        graph[pred_key].add(hook_name)
+                        graph[resolved_pred].add(hook_name)
                         in_degree[hook_name] += 1
                         edges_added.add(edge)
             
@@ -365,13 +438,31 @@ class HookRegistry:
             # If hook says "before: [B]", then hook -> B (hook must execute before B)
             for successor in order_spec.get("before", []):
                 succ_key = str(successor)
-                # Only process if the successor exists or is a virtual node
-                if succ_key in hooks_map or succ_key in ("begin", "end"):
-                    edge = (hook_name, succ_key)
+                resolved_succs = resolve_reference(succ_key)
+                
+                if not resolved_succs:
+                    # Warn about non-existent hook/category reference
+                    logger.warning(
+                        f"Hook '{hook_name}' references non-existent hook/category '{succ_key}' in 'before' clause. "
+                        f"This dependency will be ignored."
+                    )
+                    continue
+                
+                # Add edges for all resolved successors
+                for resolved_succ in resolved_succs:
+                    edge = (hook_name, resolved_succ)
+                    # Check for conflicting reverse edge
+                    reverse_edge = (resolved_succ, hook_name)
+                    if reverse_edge in edges_added:
+                        logger.warning(
+                            f"Hook ordering conflict: '{hook_name}' wants to run before '{resolved_succ}', "
+                            f"but '{hook_name}' is already scheduled after '{resolved_succ}'. "
+                            f"This may cause circular dependencies."
+                        )
                     if edge not in edges_added:
                         # Add edge: hook_name -> successor
-                        graph[hook_name].add(succ_key)
-                        in_degree[succ_key] += 1
+                        graph[hook_name].add(resolved_succ)
+                        in_degree[resolved_succ] += 1
                         edges_added.add(edge)
         
         # Kahn's algorithm for topological sort

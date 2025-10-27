@@ -30,8 +30,8 @@ web_ui:
   # Panel configuration
   panel:
     enabled: true
-    title: "User Management Dashboard" 
-    endpoint: "/plugins/user_management/"
+    title: "User Management"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"  # Load as iframe - X-Frame-Options set to SAMEORIGIN in endpoints.py
     description: "Admin dashboard for managing user accounts, roles, and permissions"
   

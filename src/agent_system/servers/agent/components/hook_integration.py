@@ -7,7 +7,7 @@ Provides centralized hook execution at agent lifecycle points.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ....hooks import get_hook_registry, HookContext, HookType
 from ....llm.models import ChatMessage
@@ -48,23 +48,29 @@ class HookIntegrationManager:
             return self._hooks_config.enabled
         return self._enabled
     
-    def is_hook_enabled(self, hook_name: str) -> bool:
-        """Check if a specific hook is enabled for this agent.
+    def is_hook_enabled(self, hook_name: str, default_enabled: bool = True) -> bool:
+        """Check if a specific hook should execute for this agent.
+        
+        This method properly handles per-agent hook overrides:
+        - If agent has explicit override: use it (ignores everything else)
+        - If no override: use hook metadata default_enabled
         
         Args:
-            hook_name: Full hook name (e.g., 'markdown_formatter.format_markdown_output')
+            hook_name: Full hook name (e.g., 'todo_management.inject_todo_tasks')
+            default_enabled: Global enabled state from hook metadata (registry passes this)
             
         Returns:
             True if hook should execute, False otherwise
         """
-        # Check per-hook override first (highest priority)
+        # Check for agent-specific override (highest priority)
         if self._hooks_config and hook_name in self._hooks_config.overrides:
             override = self._hooks_config.overrides[hook_name]
             if 'enabled' in override:
+                # Agent has explicit override - use it regardless of global state
                 return override.get('enabled', True)
         
-        # Fall back to global enabled setting
-        return self.is_enabled()
+        # No override - use global enabled state from metadata
+        return default_enabled
     
     async def execute_pre_llm_hooks(
         self,
@@ -120,7 +126,7 @@ class HookIntegrationManager:
         request_id: str,
         session_id: str,
         llm: Optional[Any] = None
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Execute post-LLM hooks.
         
@@ -133,7 +139,8 @@ class HookIntegrationManager:
             llm: LLM client instance
             
         Returns:
-            Potentially modified LLM response
+            Tuple of (potentially modified LLM response, metadata dict)
+            Metadata may include 'content_format' if hooks modified the output format
         """
         if not self.is_enabled():
             return llm_response
@@ -156,10 +163,10 @@ class HookIntegrationManager:
             hook_filter=self.is_hook_enabled
         )
         
-        # Return modified LLM response if hooks changed it
+        # Return modified LLM response and metadata if hooks changed it
         if modified_context.llm_response is not None:
-            return modified_context.llm_response
-        return llm_response
+            return modified_context.llm_response, modified_context.metadata
+        return llm_response, {}
     
     async def execute_pre_tool_hooks(
         self,

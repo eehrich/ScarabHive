@@ -142,7 +142,7 @@ class LogViewerWebEndpoints(PluginWebInterface):
             return {"logs": available_logs}
         
         @router.get("/logs/content/{log_name:path}")
-        async def get_log_content(log_name: str, lines: int = 50, since_timestamp: float = None):
+        async def get_log_content(log_name: str, lines: int = 500, since_timestamp: float = None):
             """Get log file content with optional filtering by timestamp"""
             # Use the silent logger to avoid recursive logging
             log_viewer_logger.debug(f"Fetching log content for {log_name}, lines={lines}, since_timestamp={since_timestamp}")

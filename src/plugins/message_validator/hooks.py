@@ -35,7 +35,7 @@ from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
-# OpenAI tool name pattern requirement
+# Pattern for valid OpenAI tool names (alphanumeric, underscore, hyphen)
 OPENAI_TOOL_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
@@ -323,6 +323,7 @@ class InternalMessageValidator:
                 repaired.pop(idx)
                 
         return repaired
+    
     
     def _sanitize_tool_name(self, name: str) -> str:
         """Attempt to sanitize an invalid tool name."""

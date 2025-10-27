@@ -48,6 +48,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             if not llm_response:
                 return HookResult(success=True, modified=False, context=context)
             
+            # llm_response contains full response {"assistant": {...}, "usage": {...}}
             usage = llm_response.get("usage")
             if not usage:
                 return HookResult(success=True, modified=False, context=context)
@@ -110,8 +111,8 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
         
         plugin_dir = Path(__file__).parent
         
-        # Initialize shared tracker
-        self.tracker = UsageTracker(max_history=1000)
+        # Initialize shared tracker with plugin name for dynamic routing
+        self.tracker = UsageTracker(max_history=1000, name=name)
         
         # Initialize hooks (schema-based)
         self.hooks_plugin = ContextUsageTrackerHooks(plugin_dir, self.tracker)

@@ -21,14 +21,16 @@ class ContextSummarizerWebFactory:
     before/after message comparison and statistics.
     """
     
-    def __init__(self, summarization_history: List[Dict[str, Any]]):
+    def __init__(self, summarization_history: List[Dict[str, Any]], name: str = "context_summarizer"):
         """Initialize web factory.
         
         Args:
             summarization_history: Shared list for tracking summarization events
+            name: Plugin instance name for dynamic routing
         """
+        self.name = name
         self.summarization_history = summarization_history
-        self.router = APIRouter(prefix="/plugins/context_summarizer")
+        self.router = APIRouter(prefix=f"/plugins/{self.name}")
         
         # Register API routes
         self.router.add_api_route(

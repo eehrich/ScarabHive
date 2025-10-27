@@ -35,7 +35,20 @@ class OpenAIAsyncClient(LLMClient):
         if verify is not None:
             try:
                 import httpx as _httpx
-                httpx_client = _httpx.AsyncClient(verify=verify, timeout=timeout)
+                import ssl as _ssl
+                # If verify explicitly False, create an SSLContext that disables
+                # certificate verification to ensure behavior across backends
+                verify_arg = verify
+                if verify is False:
+                    try:
+                        ctx = _ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = _ssl.CERT_NONE
+                        verify_arg = ctx
+                    except Exception:
+                        verify_arg = False
+
+                httpx_client = _httpx.AsyncClient(verify=verify_arg, timeout=timeout)
             except Exception as e:
                 logger = logging.getLogger(__name__)
                 logger.warning(f"Failed to create custom httpx client for OpenAI, will use SDK default: {e}", exc_info=True)
@@ -82,18 +95,18 @@ class OpenAIAsyncClient(LLMClient):
 
     async def _execute_with_cancellation(self, llm_task: asyncio.Task, cancellation_token):
         """Execute LLM task with efficient event-based cancellation monitoring.
-        
+
         Instead of polling with timeouts (which throws exceptions every 0.5s),
         uses asyncio.wait() to efficiently wait for either completion or cancellation.
-        
+
         Returns:
             The result of llm_task when completed
-            
+
         Raises:
             Exception: When cancelled by user
         """
         cancel_event = asyncio.Event()
-        
+
         async def check_cancellation():
             """Background task that monitors cancellation without polling exceptions"""
             while not llm_task.done():
@@ -101,15 +114,15 @@ class OpenAIAsyncClient(LLMClient):
                     cancel_event.set()
                     break
                 await asyncio.sleep(0.1)  # Check every 100ms, doesn't block main task
-        
+
         cancel_task = asyncio.create_task(check_cancellation())
-        
+
         # Wait for either LLM completion or cancellation (efficient, no exceptions!)
         done, pending = await asyncio.wait(
             {llm_task, cancel_task},
             return_when=asyncio.FIRST_COMPLETED
         )
-        
+
         if cancel_event.is_set():
             # Cancellation requested - clean up LLM task
             llm_task.cancel()
@@ -124,14 +137,14 @@ class OpenAIAsyncClient(LLMClient):
                 except asyncio.CancelledError:
                     pass
             raise Exception("Request cancelled by user during LLM call")
-        
+
         # LLM completed - clean up cancel task
         cancel_task.cancel()
         try:
             await cancel_task
         except asyncio.CancelledError:
             pass
-        
+
         return await llm_task
 
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
@@ -308,12 +321,12 @@ class OpenAIAsyncClient(LLMClient):
         tools = normalized_tools
         try:
             opts = {"model": self.model, "messages": msgs}
-            
+
             # Only include tools if we have at least one tool (some providers reject empty arrays)
             if tools:
                 opts["tools"] = tools
                 opts["tool_choice"] = "auto"
-                
+
             opts.update(self._default_extra)
             max_attempts = self._retry_max_attempts
             base_backoff = self._retry_base_backoff

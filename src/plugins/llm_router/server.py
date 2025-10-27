@@ -128,12 +128,12 @@ class LLMRouterServer(SchemaBasedMCPServer):
         except Exception as e:
             raise ValueError(f"Failed to create LLM client for profile '{profile}': {e}")
 
-    async def chat_agent(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def chat(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Route chat requests to LLM profiles.
+        Handle consultant-style chat requests via LLM profiles.
         
-        Tool method - automatically called by generic dispatcher.
-        Method name matches tool name in schema.yaml.
+        Tool name: {{ name }}_chat → e.g., 'llm_router_chat'
+        Method called after dispatcher strips prefix → 'chat'
         """
         status = params["_status"]
         

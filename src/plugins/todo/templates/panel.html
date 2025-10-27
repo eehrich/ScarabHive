@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TODO Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #1177bb;
+        }
+        
+        button.icon-only {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+        
+        button.icon-only.active {
+            background: #16825d;
+        }
+        
+        button.icon-only.active:hover {
+            background: #1a9970;
+        }
+        
+        button.danger {
+            background: #c72e2e;
+        }
+        
+        button.danger:hover {
+            background: #e81123;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 28px;
+            font-weight: 600;
+            color: #4ec9b0;
+        }
+        
+        .progress-section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .progress-section h2 {
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: #dcdcaa;
+        }
+        
+        .progress-bar {
+            background: #3e3e42;
+            height: 30px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 10px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .progress-fill {
+            background: linear-gradient(90deg, #16825d, #4ec9b0);
+            height: 100%;
+            transition: width 0.3s;
+            position: absolute;
+            left: 0;
+            top: 0;
+        }
+        
+        .progress-bar::after {
+            content: attr(data-progress);
+            position: relative;
+            z-index: 1;
+            color: white;
+            font-weight: 600;
+            font-size: 14px;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        }
+        
+        .tasks-section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .tasks-section h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #ce9178;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .filter-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-bar select {
+            background: #3e3e42;
+            color: #d4d4d4;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        
+        .task-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .task-card {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+            transition: border-color 0.2s;
+        }
+        
+        .task-card:hover {
+            border-color: #569cd6;
+        }
+        
+        .task-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .status-icon {
+            font-size: 20px;
+        }
+        
+        .task-id {
+            font-family: 'Consolas', monospace;
+            color: #858585;
+            font-size: 13px;
+        }
+        
+        .task-title {
+            font-weight: 500;
+            color: #d4d4d4;
+            flex: 1;
+        }
+        
+        .priority-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .priority-critical {
+            background: #f48771;
+            color: #000;
+        }
+        
+        .priority-high {
+            background: #ce9178;
+            color: #000;
+        }
+        
+        .priority-medium {
+            background: #dcdcaa;
+            color: #000;
+        }
+        
+        .priority-low {
+            background: #858585;
+            color: #fff;
+        }
+        
+        .task-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .task-description {
+            font-size: 13px;
+            color: #cccccc;
+            margin-bottom: 12px;
+            padding: 8px 12px;
+            background: #2d2d30;
+            border-left: 3px solid #4ec9b0;
+            border-radius: 3px;
+            line-height: 1.5;
+        }
+        
+        .task-progress {
+            margin-bottom: 10px;
+        }
+        
+        .task-progress-bar {
+            background: #3e3e42;
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 5px;
+        }
+        
+        .task-progress-fill {
+            background: #4ec9b0;
+            height: 100%;
+            transition: width 0.3s;
+        }
+        
+        .task-progress-label {
+            font-size: 11px;
+            color: #858585;
+        }
+        
+        .task-dependencies {
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 10px;
+        }
+        
+        .task-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .task-actions button {
+            font-size: 13px;
+            padding: 6px 12px;
+        }
+        
+        .error {
+            color: #f48771;
+            padding: 10px;
+            background: #3e1e1e;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        
+        .no-data {
+            color: #858585;
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .loading {
+            color: #858585;
+            text-align: center;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📝 TODO Manager</h1>
+        
+        <div class="controls">
+            <button class="icon-only" onclick="refreshData()" title="Refresh">
+                🔄
+            </button>
+            <button class="icon-only active" id="auto-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-Refresh (5s) - Active">
+                ⏱️
+            </button>
+            <button class="icon-only active" id="session-filter-btn" onclick="toggleSessionFilter()" title="Showing: Current Session">
+                🎯
+            </button>
+        </div>
+        
+        <div id="error-container"></div>
+        
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Tasks</div>
+                <div class="stat-value" id="total-tasks">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Not Started</div>
+                <div class="stat-value" id="not-started-tasks">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">In Progress</div>
+                <div class="stat-value" id="in-progress-tasks">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Completed</div>
+                <div class="stat-value" id="completed-tasks">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Blocked</div>
+                <div class="stat-value" id="blocked-tasks">0</div>
+            </div>
+        </div>
+        
+        <div class="progress-section">
+            <h2>📊 Overall Progress</h2>
+            <div class="progress-bar" id="progress-bar" data-progress="0%">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+        </div>
+        
+        <div class="tasks-section">
+            <h2>
+                🎯 Active Tasks
+                <span id="task-count" style="font-size: 14px; color: #858585; font-weight: normal;">0 tasks</span>
+            </h2>
+            
+            <div class="filter-bar">
+                <select id="status-filter" onchange="applyFilters()">
+                    <option value="">All Statuses</option>
+                    <option value="not-started">Not Started</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="blocked">Blocked</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                </select>
+                
+                <select id="priority-filter" onchange="applyFilters()">
+                    <option value="">All Priorities</option>
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                </select>
+            </div>
+            
+            <div class="task-list" id="task-list">
+                <div class="loading">Loading tasks...</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let autoRefreshInterval = null;
+        let currentSessionOnly = true;
+        let allTasks = [];
+        let currentFilters = {
+            status: '',
+            priority: ''
+        };
+        
+        function getCurrentSessionId() {
+            // Method 1: Try to get from parent window's sessionManager
+            try {
+                if (window.parent && window.parent !== window && window.parent.sessionManager) {
+                    const sessionId = window.parent.sessionManager.getCurrentSessionId();
+                    if (sessionId) return sessionId;
+                }
+            } catch (e) {
+                console.log('[TODO Manager] Cannot access parent sessionManager:', e.message);
+            }
+            
+            // Method 2: Parse from parent's DOM
+            try {
+                if (window.parent && window.parent !== window) {
+                    const headerEl = window.parent.document.getElementById('headerSessionId');
+                    if (headerEl && headerEl.textContent && headerEl.textContent !== '--') {
+                        return headerEl.textContent;
+                    }
+                }
+            } catch (e) {
+                console.log('[TODO Manager] Cannot access parent DOM:', e.message);
+            }
+            
+            // Method 3: URL parameter
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlSessionId = urlParams.get('session_id');
+            if (urlSessionId) return urlSessionId;
+            
+            // Method 4: LocalStorage fallback
+            const storedSessionId = localStorage.getItem('currentSessionId');
+            if (storedSessionId) return storedSessionId;
+            
+            return null;
+        }
+        
+        function getStatusIcon(status) {
+            const icons = {
+                'not-started': '☐',
+                'in-progress': '⏳',
+                'completed': '✅',
+                'blocked': '🚫',
+                'cancelled': '❌'
+            };
+            return icons[status] || '•';
+        }
+        
+        function getPriorityClass(priority) {
+            return `priority-${priority}`;
+        }
+        
+        function getPriorityLabel(priority) {
+            const labels = {
+                'critical': '🔴 CRITICAL',
+                'high': '🟠 HIGH',
+                'medium': '🟡 MEDIUM',
+                'low': '🟢 LOW'
+            };
+            return labels[priority] || priority.toUpperCase();
+        }
+        
+        async function refreshData() {
+            try {
+                const sessionId = currentSessionOnly ? getCurrentSessionId() : null;
+                
+                // Fetch stats
+                const statsUrl = `/plugins/{{ name }}/stats${sessionId ? '?session_id=' + sessionId : ''}`;
+                const statsResp = await fetch(statsUrl);
+                const stats = await statsResp.json();
+                
+                // Update stats
+                document.getElementById('total-tasks').textContent = stats.total_tasks || 0;
+                document.getElementById('not-started-tasks').textContent = stats.not_started || 0;
+                document.getElementById('in-progress-tasks').textContent = stats.in_progress || 0;
+                document.getElementById('completed-tasks').textContent = stats.completed || 0;
+                document.getElementById('blocked-tasks').textContent = stats.blocked || 0;
+                
+                // Update progress bar
+                const completionRate = stats.completion_rate || 0;
+                const progressBar = document.getElementById('progress-bar');
+                const progressFill = document.getElementById('progress-fill');
+                progressFill.style.width = `${completionRate}%`;
+                progressBar.setAttribute('data-progress', `${completionRate.toFixed(1)}%`);
+                
+                // Fetch tasks
+                const tasksUrl = `/plugins/{{ name }}/tasks${sessionId ? '?session_id=' + sessionId : ''}`;
+                const tasksResp = await fetch(tasksUrl);
+                const tasksData = await tasksResp.json();
+                
+                // Store all tasks
+                allTasks = Object.values(tasksData.tasks || {});
+                
+                // Apply filters and render
+                renderTasks();
+                
+                document.getElementById('error-container').innerHTML = '';
+                
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                document.getElementById('error-container').innerHTML = 
+                    `<div class="error">Error loading data: ${error.message}</div>`;
+            }
+        }
+        
+        function showError(message) {
+            const container = document.getElementById('error-container');
+            container.innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
+            setTimeout(() => {
+                container.innerHTML = '';
+            }, 5000);
+        }
+        
+        function applyFilters() {
+            currentFilters.status = document.getElementById('status-filter').value;
+            currentFilters.priority = document.getElementById('priority-filter').value;
+            renderTasks();
+        }
+        
+        function renderTasks() {
+            let filteredTasks = allTasks;
+            
+            // Apply status filter
+            if (currentFilters.status) {
+                filteredTasks = filteredTasks.filter(task => task.status === currentFilters.status);
+            }
+            
+            // Apply priority filter
+            if (currentFilters.priority) {
+                filteredTasks = filteredTasks.filter(task => task.priority === currentFilters.priority);
+            }
+            
+            const taskList = document.getElementById('task-list');
+            const taskCount = document.getElementById('task-count');
+            
+            taskCount.textContent = `${filteredTasks.length} task${filteredTasks.length !== 1 ? 's' : ''}`;
+            
+            if (filteredTasks.length === 0) {
+                taskList.innerHTML = '<div class="no-data">No tasks found</div>';
+                return;
+            }
+            
+            taskList.innerHTML = filteredTasks.map(task => {
+                const createdDate = new Date(task.created_at);
+                const timeAgo = getTimeAgo(createdDate);
+                
+                return `
+                    <div class="task-card">
+                        <div class="task-header">
+                            <span class="status-icon">${getStatusIcon(task.status)}</span>
+                            <span class="task-id">${task.task_id}</span>
+                            <span class="task-title">${escapeHtml(task.title)}</span>
+                            <span class="priority-badge ${getPriorityClass(task.priority)}">${getPriorityLabel(task.priority)}</span>
+                        </div>
+                        
+                        <div class="task-meta">
+                            <span>Created: ${timeAgo}</span>
+                            ${task.started_at ? `<span>Started: ${getTimeAgo(new Date(task.started_at))}</span>` : ''}
+                            ${task.status !== 'not-started' ? `<span>Status: ${task.status}</span>` : ''}
+                        </div>
+                        
+                        ${task.description ? `<div class="task-description">${escapeHtml(task.description)}</div>` : ''}
+                        
+                        <div class="task-progress">
+                            <div class="task-progress-bar">
+                                <div class="task-progress-fill" style="width: ${task.progress}%"></div>
+                            </div>
+                            <div class="task-progress-label">${task.progress}% complete</div>
+                        </div>
+                        
+                        ${task.depends_on && task.depends_on.length > 0 ? 
+                            `<div class="task-dependencies">📌 Depends on: ${task.depends_on.join(', ')}</div>` : ''}
+                        ${task.blocks && task.blocks.length > 0 ? 
+                            `<div class="task-dependencies">🔒 Blocks: ${task.blocks.join(', ')}</div>` : ''}
+                        
+                        <div class="task-actions">
+                            ${task.status === 'not-started' ? 
+                                `<button onclick="startTask('${task.task_id}')">▶ Start</button>` : ''}
+                            ${task.status === 'in-progress' || task.status === 'blocked' ? 
+                                `<button onclick="completeTask('${task.task_id}')">✓ Complete</button>` : ''}
+                            ${task.status !== 'completed' ? 
+                                `<button class="danger" onclick="deleteTask('${task.task_id}')">🗑 Delete</button>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function getTimeAgo(date) {
+            const seconds = Math.floor((new Date() - date) / 1000);
+            
+            if (seconds < 60) return `${seconds}s ago`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            return `${Math.floor(seconds / 86400)}d ago`;
+        }
+        
+        async function startTask(taskId) {
+            try {
+                const sessionId = getCurrentSessionId();
+                const url = `/plugins/{{ name }}/tasks/${taskId}/start${sessionId ? '?session_id=' + sessionId : ''}`;
+                const resp = await fetch(url, { method: 'POST' });
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err || `HTTP ${resp.status}`);
+                }
+                await refreshData();
+            } catch (error) {
+                console.error('Error starting task:', error);
+                showError('Error starting task: ' + error.message);
+            }
+        }
+        
+        async function completeTask(taskId) {
+            try {
+                const sessionId = getCurrentSessionId();
+                const url = `/plugins/{{ name }}/tasks/${taskId}/complete${sessionId ? '?session_id=' + sessionId : ''}`;
+                const resp = await fetch(url, { method: 'POST' });
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err || `HTTP ${resp.status}`);
+                }
+                await refreshData();
+            } catch (error) {
+                console.error('Error completing task:', error);
+                showError('Error completing task: ' + error.message);
+            }
+        }
+        
+        async function deleteTask(taskId) {
+            try {
+                const sessionId = getCurrentSessionId();
+                const url = `/plugins/{{ name }}/tasks/${taskId}${sessionId ? '?session_id=' + sessionId : ''}`;
+                const resp = await fetch(url, { method: 'DELETE' });
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err || `HTTP ${resp.status}`);
+                }
+                await refreshData();
+            } catch (error) {
+                console.error('Error deleting task:', error);
+                showError('Error deleting task: ' + error.message);
+            }
+        }
+        
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            const isActive = btn.classList.contains('active');
+            
+            if (isActive) {
+                btn.classList.remove('active');
+                btn.title = 'Auto-Refresh (5s) - Inactive';
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            } else {
+                btn.classList.add('active');
+                btn.title = 'Auto-Refresh (5s) - Active';
+                autoRefreshInterval = setInterval(refreshData, 5000);
+            }
+        }
+        
+        function toggleSessionFilter() {
+            const btn = document.getElementById('session-filter-btn');
+            currentSessionOnly = !currentSessionOnly;
+            
+            if (currentSessionOnly) {
+                btn.classList.add('active');
+                btn.title = 'Showing: Current Session';
+            } else {
+                btn.classList.remove('active');
+                btn.title = 'Showing: All Sessions';
+            }
+            
+            refreshData();
+        }
+        
+        // Initialize
+        refreshData();
+        autoRefreshInterval = setInterval(refreshData, 5000);
+    </script>
+</body>
+</html>

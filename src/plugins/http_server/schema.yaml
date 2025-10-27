@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: http_server_ops
+      name: "{{ name }}_ops"
       description: HTTP adapter for MCP servers - health checks and proxied tool calls via REST API endpoints.
       parameters:
         type: object

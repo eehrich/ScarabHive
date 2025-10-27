@@ -55,7 +55,7 @@ class TestTwitterSearchServer:
         
         tool = tools[0]
         assert tool["type"] == "function"
-        assert tool["function"]["name"] == "search_tweets"
+        assert tool["function"]["name"] == "twitter_tweets"
         assert "description" in tool["function"]
         assert tool["function"]["parameters"]["type"] == "object"
 
@@ -66,7 +66,7 @@ class TestTwitterSearchServer:
         """Test Twitter Search server tool name."""
         server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
         tools = server.get_tools()
-        assert tools[0]["function"]["name"] == "search_tweets"
+        assert tools[0]["function"]["name"] == "twitter_tweets"
 
     @pytest.mark.asyncio
     async def test_twitter_server_search_returns_info(self, mock_system_config, mock_mcp_config):
@@ -74,7 +74,7 @@ class TestTwitterSearchServer:
         server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
-        result = await server.call("search_tweets", {"query": "test", "_status": mock_status})
+        result = await server.call("twitter_tweets", {"query": "test", "_status": mock_status})
         
         # Should return informational message about Twitter API restrictions
         assert "engine" in result
@@ -99,7 +99,7 @@ class TestTwitterSearchServer:
         server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
-        result = await server.call("search_tweets", {"query": "", "_status": mock_status})
+        result = await server.call("twitter_tweets", {"query": "", "_status": mock_status})
         
         # Should still return informational message
         assert "engine" in result
@@ -112,7 +112,7 @@ class TestTwitterSearchServer:
         server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
-        result = await server.call("search_tweets", {"query": "bitcoin", "_status": mock_status})
+        result = await server.call("twitter_tweets", {"query": "bitcoin", "_status": mock_status})
         
         # Should include query in suggestion
         assert "suggestion" in result

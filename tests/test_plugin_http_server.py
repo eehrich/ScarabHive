@@ -87,7 +87,6 @@ class TestHTTPServer:
     def test_create_fastapi_app_with_wrapped_server(self, mock_system_config, mock_mcp_config):
         """Test creating FastAPI app with wrapped server."""
         # Create mock wrapped server (use regular Mock for FastAPI tests)
-        from unittest.mock import Mock
         mock_server = Mock()
         mock_server.name = "test_server"
 
@@ -112,7 +111,6 @@ class TestHTTPServer:
     async def test_create_fastapi_app_call_endpoint(self, mock_system_config, mock_mcp_config):
         """Test FastAPI app call endpoint."""
         # Create mock wrapped server (use regular Mock but make call async)
-        from unittest.mock import Mock, AsyncMock
         mock_server = Mock()
         mock_server.name = "test_server"
         # Make the call method async
@@ -231,7 +229,6 @@ class TestHTTPCLI:
     def test_cli_main_success(self, mock_asyncio_run, mock_discover):
         """Test successful CLI execution."""
         # Mock plugin discovery (use regular Mocks for CLI testing)
-        from unittest.mock import Mock
         mock_factory = Mock()
         mock_server = Mock()
         mock_server.name = "test_server"

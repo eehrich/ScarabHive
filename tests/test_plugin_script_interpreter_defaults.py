@@ -26,7 +26,7 @@ def server():
     from unittest.mock import Mock
     system_config = Mock(spec=AgentSystemConfig)
     mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    return ScriptInterpreterServer("test", system_config, mcp_config)
+    return ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ result2 = greet("Bob", "Hi")
 print(f"Default: {result1}")
 print(f"Custom: {result2}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -72,7 +72,7 @@ print(f"All defaults: {result1}")
 print(f"One default: {result2}")
 print(f"No defaults: {result3}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -103,7 +103,7 @@ def fibonacci_memo(n, memo=None):
 result = fibonacci_memo(6)
 print(f"F(6) = {result}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -127,7 +127,7 @@ try:
 except Exception as e:
     print(f"Error as expected: {type(e).__name__}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -150,7 +150,7 @@ print(f"Total iterations: {total}")
 squares = [x*x for x in range(4)]
 print(f"Squares: {squares}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -178,7 +178,7 @@ for val in test_values:
     result = type_checker(val)
     print(result)
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result

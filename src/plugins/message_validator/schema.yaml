@@ -6,18 +6,20 @@ hooks:
     enabled: true
     timeout: 10.0
     description: "Validates and sanitizes messages before LLM calls"
+    category: "message_validation"
     order:
-      after: ["optimize_context"]
-      before: ["end"]
+      after: ["prompt_injection"]
+      before: ["message_debugging"]
   
   - name: validate_structure
     type: pre_llm_call
     enabled: true
     timeout: 10.0
     description: "Validates message structure and role sequences"
+    category: "message_validation"
     order:
-      after: ["begin"]
-      before: ["validate_messages"]
+      after: ["prompt_injection"]
+      before: ["message_validator.validate_messages"]  # Run before validate_messages hook (use full hook name to avoid category cycle)
 
 # Configuration schema for this plugin
 config:

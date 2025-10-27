@@ -26,7 +26,7 @@ def server():
     from unittest.mock import Mock
     system_config = Mock(spec=AgentSystemConfig)
     mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    return ScriptInterpreterServer("test", system_config, mcp_config)
+    return ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ result8 = isinstance({1, 2, 3}, set)
 print(f"int: {result1}, str: {result2}, float: {result3}, bool: {result4}")
 print(f"list: {result5}, dict: {result6}, tuple: {result7}, set: {result8}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -71,7 +71,7 @@ print(f"3.14 is int or float: {result2}")
 print(f"'hello' is int or float: {result3}")
 print(f"True is int or bool: {result4}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -92,7 +92,7 @@ print(f"type(True): {type(True).__name__}")
 print(f"type([1,2,3]): {type([1,2,3]).__name__}")
 print(f"type({{'a': 1}}): {type({'a': 1}).__name__}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -133,7 +133,7 @@ result12 = bool("hello")
 result13 = bool("")
 print(f"bool(1): {result10}, bool(0): {result11}, bool('hello'): {result12}, bool(''): {result13}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -148,7 +148,7 @@ async def test_isinstance_error_cases(server, mock_status):
     """Test isinstance error handling."""
     # Test with wrong number of arguments
     code = "isinstance(42)"
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" in result
     assert "isinstance() takes exactly 2 arguments" in str(result["error"])
@@ -159,7 +159,7 @@ async def test_type_error_cases(server, mock_status):
     """Test type() error handling."""
     # Test with wrong number of arguments
     code = "type()"
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" in result
     assert "type() takes exactly 1 argument" in str(result["error"])
@@ -185,7 +185,7 @@ for item in inputs:
     result = process_value(item)
     print(result)
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -224,7 +224,7 @@ print(f"Strings: {strings}")
 print(f"Lists: {lists}")
 print(f"Others: {others}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -248,7 +248,7 @@ try:
 except ValueError as e:
     print(f"ValueError caught: {e}")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result
@@ -284,7 +284,7 @@ nested_data = [
 
 analyze_nested_structure(nested_data)
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "result" in result

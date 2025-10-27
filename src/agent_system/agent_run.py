@@ -180,10 +180,11 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         # Generate or use provided session ID
         from .utils.id import short_id
         actual_session_id = session_id or short_id()
-        was_new_session = (session_id is None)
         
         # Load existing session if --session provided, otherwise initialize empty
         session_exists = False
+        was_new_session = False
+        
         if session_id:
             logger.info(f"Loading session: {session_id}")
             try:
@@ -193,19 +194,22 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 if session_exists:
                     logger.info(f"Loaded session {session_id} with {msg_count} messages")
                     print(f"Continuing session '{session_id}' ({msg_count} messages)")
+                    was_new_session = False
                 else:
-                    print(f"Warning: Session '{session_id}' not found, creating new session", file=sys.stderr)
-                    logger.warning(f"Session {session_id} not found")
-                    # Initialize empty session for new session ID
+                    # Session ID provided but doesn't exist - create it
+                    logger.info(f"Session '{session_id}' not found, creating new session with this ID")
+                    print(f"Creating new session '{session_id}'")
                     agent._session_tracker.set_session_messages(actual_session_id, [])
+                    was_new_session = True  # Will be saved at end
             except Exception as e:
                 logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
                 print(f"Error loading session: {e}", file=sys.stderr)
                 return
         else:
-            # For new sessions, initialize empty session list
+            # No session ID provided - create new one with auto-generated ID
             logger.debug(f"Creating new session: {actual_session_id}")
             agent._session_tracker.set_session_messages(actual_session_id, [])
+            was_new_session = True
         
         # Create LLM override if profile specified
         llm_override = None

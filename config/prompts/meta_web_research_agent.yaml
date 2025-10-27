@@ -7,7 +7,9 @@ system_prompt: |
   3. **duckduckgo_search**: Simple factual queries (prefer web_research_agent)
   4. **web_scraper**: Extract content from specific URLs (prefer web_research_agent)
    
-  Max steps: {{ max_steps }}
+  Current step: {{ current_step }}/{{ max_steps }}
+  
+  When approaching max steps, provide the best possible answer with available information.
 
 tools_prompt: |
   Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(no tools configured){% endif %}

@@ -28,7 +28,7 @@ def server():
     from unittest.mock import Mock
     system_config = Mock(spec=AgentSystemConfig)
     mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    return ScriptInterpreterServer("test", system_config, mcp_config)
+    return ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ print(f"Lower: {lower_text}")
 print(f"Title: {title_text}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Upper: HELLO WORLD" in result["result"]
@@ -72,7 +72,7 @@ print(f"Left stripped: '{lstripped}'")
 print(f"Right stripped: '{rstripped}'")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Original length: 17" in result["result"]
@@ -96,7 +96,7 @@ print(f"Find Python: {find_missing}")
 print(f"Count Hello: {count_hello}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Find Hello: 0" in result["result"]
@@ -120,7 +120,7 @@ print(f"Ends with World: {ends_world}")
 print(f"Ends with Hello: {ends_hello}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Starts with Hello: True" in result["result"]
@@ -140,7 +140,7 @@ print(f"Replace all: {replace_all}")
 print(f"Replace count 2: {replace_count}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Replace all: Hi Hi Hi" in result["result"]
@@ -162,7 +162,7 @@ words2 = sentence.split()
 print(f"Split whitespace: {words2}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Split: ['Hello', 'World', 'Python']" in result["result"]
@@ -182,7 +182,7 @@ print(f"'HELLO'.isupper(): {'HELLO'.isupper()}")
 print(f"'hello'.islower(): {'hello'.islower()}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "'Hello'.isalpha(): True" in result["result"]
@@ -210,7 +210,7 @@ print(f"Rjust: '{rjust_result}'")
 print(f"Zfill: '{zfill_result}'")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Center 10: '    Hi    '" in result["result"]
@@ -245,7 +245,7 @@ print(f"Filtered: {filtered_words}")
 print(f"Final: {result}")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Hello" in result["result"]
@@ -271,7 +271,7 @@ print(f"Email original: '{email}'")
 print(f"Email normalized: '{normalized}'")
 """
     
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Chained: 'HELLO PYTHON'" in result["result"]

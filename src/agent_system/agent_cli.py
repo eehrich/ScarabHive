@@ -1294,7 +1294,6 @@ def main() -> None:
     # Generate or use provided session ID
     from .utils.id import short_id
     actual_session_id = session_id or short_id()
-    was_new_session = (session_id is None)
     
     # Initialize SessionManager and SessionService
     from pathlib import Path as PathLib
@@ -1307,7 +1306,8 @@ def main() -> None:
     
     # Helper async function for session operations
     async def handle_session_operations():
-        nonlocal actual_session_id, was_new_session
+        nonlocal actual_session_id
+        was_new_session = False  # Track if we're creating a new session
         
         # Handle --list-sessions flag
         if list_sessions:
@@ -1317,7 +1317,7 @@ def main() -> None:
                 
                 if not sessions:
                     print(f"No sessions found for user '{session_user}'")
-                    return False  # Signal to exit
+                    return False, was_new_session  # Signal to exit
                 
                 print(f"\nSessions for user '{session_user}':")
                 print("-" * 80)
@@ -1334,11 +1334,11 @@ def main() -> None:
                     print(f"  Agent: {agent_name}, LLM: {llm_profile}")
                     print(f"  Messages: {msg_count}, Created: {created}")
                     print()
-                return False  # Signal to exit
+                return False, was_new_session  # Signal to exit
             except Exception as e:
                 logger.error(f"Failed to list sessions: {e}", exc_info=True)
                 print(f"Error listing sessions: {e}", file=sys.stderr)
-                return False  # Signal to exit
+                return False, was_new_session  # Signal to exit
         
         # Load existing session if --session provided
         session_exists = False
@@ -1351,27 +1351,30 @@ def main() -> None:
                 if session_exists:
                     vprint(f"[cli] loaded session with {msg_count} messages")
                     logger.info(f"Loaded session {session_id} with {msg_count} messages")
+                    was_new_session = False
                 else:
-                    print(f"Warning: Session '{session_id}' not found, creating new session", file=sys.stderr)
-                    logger.warning(f"Session {session_id} not found")
-                    # Initialize empty session for new session ID
+                    # Session ID provided but doesn't exist - create it
+                    logger.info(f"Session '{session_id}' not found, creating new session with this ID")
+                    print(f"Creating new session '{session_id}'")
+                    was_new_session = True  # Will be saved at end
                 # Initialize session in agent if it doesn't exist
                 if hasattr(agent, '_session_tracker'):
                     agent._session_tracker.set_session_messages(actual_session_id, [])
             except Exception as e:
                 logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
                 print(f"Error loading session: {e}", file=sys.stderr)
-                return False  # Signal to exit
+                return False, was_new_session  # Signal to exit
         else:
-            # For new sessions, initialize empty session list
+            # No session ID provided - create new one with auto-generated ID
             logger.debug(f"Creating new session: {actual_session_id}")
+            was_new_session = True
             if hasattr(agent, '_session_tracker'):
                 agent._session_tracker.set_session_messages(actual_session_id, [])
         
-        return True  # Continue with task execution
+        return True, was_new_session  # Continue with task execution
     
     # Run session operations
-    should_continue = asyncio.run(handle_session_operations())
+    should_continue, was_new_session = asyncio.run(handle_session_operations())
     if not should_continue:
         return
     

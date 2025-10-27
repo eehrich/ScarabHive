@@ -451,6 +451,39 @@ hooks:
 
 ## Configuration
 
+### Hook Naming Convention
+
+**CRITICAL:** Hooks are registered and referenced using the **full name** format: `plugin_name.hook_name`
+
+**Examples:**
+- `todo_management.inject_todo_tasks`
+- `markdown_formatter.format_markdown_output`
+- `context_optimizer.optimize_context`
+
+**Why This Matters:**
+- Enables multiple plugins to have hooks with the same base name
+- Required for per-agent hook overrides to work correctly
+- Ensures proper hook filtering and execution control
+
+**Convention Breakdown:**
+```yaml
+# In plugin schema.yaml (just the hook name)
+hooks:
+  - name: inject_todo_tasks
+    type: pre_llm_call
+    enabled: false
+
+# In registry (full name with plugin prefix)
+# Registered as: todo_management.inject_todo_tasks
+
+# In agent config overrides (full name required)
+agent_config:
+  hooks:
+    overrides:
+      todo_management.inject_todo_tasks:
+        enabled: true
+```
+
 ### Plugin-Level Config
 
 Defined in plugin's `schema.yaml`:
@@ -483,17 +516,62 @@ hooks:
 
 ### Agent-Level Config
 
-Per-agent configuration:
+Per-agent hook configuration with overrides:
 
 ```yaml
-# config/agents.yaml
+# config/plugins.yaml
 agents:
-  my_agent:
-    hooks:
-      enabled: true
-      include: ["optimize_context", "validate_messages"]
-      exclude: ["summarize_context"]
+  meta_agent:
+    agent_config:
+      hooks:
+        enabled: true
+        overrides:
+          # Enable globally disabled hook for this agent
+          todo_management.inject_todo_tasks:
+            enabled: true
+            max_tasks: 20
+            filter_status: ["not-started", "in-progress", "blocked"]
+          
+          # Disable globally enabled hook for this agent
+          markdown_formatter.format_markdown_output:
+            enabled: false
+  
+  simple_agent:
+    agent_config:
+      hooks:
+        enabled: true
+        overrides: {}  # Uses all global defaults
 ```
+
+**Override Logic:**
+1. **Hook has agent override** → Use override value (ignores global state)
+2. **No agent override** → Use global `enabled` state from schema.yaml
+3. **Hook globally disabled + agent enables** → Hook executes for this agent only
+4. **Hook globally enabled + agent disables** → Hook skipped for this agent only
+
+**Example Scenario:**
+
+```yaml
+# schema.yaml (global)
+hooks:
+  - name: inject_todo_tasks
+    enabled: false  # Disabled by default
+
+# config/plugins.yaml
+meta_agent:
+  hooks:
+    overrides:
+      todo_management.inject_todo_tasks:
+        enabled: true  # Enabled ONLY for meta_agent
+
+sysadmin_agent:
+  hooks:
+    overrides: {}  # No override, uses global (disabled)
+```
+
+**Result:**
+- ✅ `meta_agent`: Hook executes (override enabled)
+- ❌ `sysadmin_agent`: Hook skipped (global disabled, no override)
 
 ## Best Practices
 
@@ -588,6 +666,54 @@ result = HookResult(
 - Verify `order` specifications are correct
 - Check for conflicting order constraints
 - Use CLI to inspect actual order: `backlog hooks list --type pre_llm_call`
+
+### Agent Override Not Working
+
+**Issue:** Per-agent hook override has no effect
+
+**Common Causes & Solutions:**
+
+1. **Incorrect Hook Name Format**
+   ```yaml
+   # ❌ WRONG - Missing plugin prefix
+   hooks:
+     overrides:
+       inject_todo_tasks:
+         enabled: true
+   
+   # ✅ CORRECT - Full plugin.hook_name format
+   hooks:
+     overrides:
+       todo_management.inject_todo_tasks:
+         enabled: true
+   ```
+
+2. **Plugin Type Not Hybrid**
+   - Plugin must have `type: hybrid` (not `type: mcp_only`)
+   - Check `src/plugins/{plugin}/plugin.yaml`
+   
+3. **Missing PLUGIN_FACTORY**
+   - Ensure `plugin.py` exports `PLUGIN_FACTORY` function
+   - Standard pattern: `def PLUGIN_FACTORY(...) -> ServerClass`
+
+4. **Hook Filter Signature**
+   - Filter must accept `(hook_name: str, default_enabled: bool)` parameters
+   - Registry passes global enabled state to allow proper override logic
+
+**Debug Steps:**
+```bash
+# 1. Check hook registration (should show full name)
+grep "Registered hook" logs/cli.log | grep todo_management
+
+# 2. Check agent config loading
+grep "HookIntegrationManager for meta_agent" logs/cli.log
+
+# 3. Check filter execution
+grep "is_hook_enabled called.*todo_management" logs/cli.log
+
+# 4. Verify hook execution
+grep "TodoHook\|inject_todo" logs/cli.log
+```
 
 ---
 

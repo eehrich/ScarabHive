@@ -41,6 +41,11 @@ plugins:
         tools:
           allowed:
             - "*"
+        hooks:
+          enabled: true
+          overrides:
+            todo.inject_todo_tasks:
+              enabled: true            
       
       metadata:
         visibility: "both"  # Make available as tool for meta_agent
@@ -64,6 +69,10 @@ plugins:
       enable_revisions: true
       max_summary_thoughts: 10
     
+    todo:
+      type: todo
+      enabled: true
+
     http_server:
       type: http_server
       enabled: false
@@ -192,7 +201,7 @@ plugins:
       
       agent_config:
         llm_profile: normal
-        max_steps: 10
+        max_steps: 50
         
         system_template: "config/prompts/meta_agent_prompt.yaml"
         
@@ -206,12 +215,15 @@ plugins:
             - "basic_operations/*"
             - "datetime/*"
             - "sequential_thinking/*"
+            - "todo/*"
         
         hooks:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: true    
+              enabled: true
+            todo.inject_todo_tasks:
+              enabled: true
       
       metadata:
         author: "AgentSystem"
@@ -385,7 +397,9 @@ plugins:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: true    
+              enabled: true
+            todo.inject_todo_tasks:
+              enabled: true
         
         tools:
           allowed:
@@ -396,6 +410,7 @@ plugins:
             - "datetime/*"
             - "basic_operations/*"
             - "sequential_thinking/*"
+            - "todo/*"
 
       metadata:
         author: "AgentSystem"

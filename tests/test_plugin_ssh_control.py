@@ -1,7 +1,6 @@
 """Tests for SSH Control plugin."""
 
 import pytest
-from pathlib import Path
 
 from plugins.ssh_control.plugin import PLUGIN_FACTORY as ssh_control_factory
 

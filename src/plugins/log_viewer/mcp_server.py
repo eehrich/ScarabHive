@@ -39,14 +39,17 @@ class LogViewerMCPServer(SchemaBasedMCPServer):
         await status.progress(f"Processing {tool} operation")
 
         try:
-            if tool == "list_log_files":
+            # Map tools to methods - strip {name}_ prefix if present
+            method_name = self._get_method_name(tool)
+            
+            if method_name == "list":
                 result = await self._list_log_files(params)
-            elif tool == "get_log_tail":
+            elif method_name == "tail":
                 result = await self._get_log_tail(params)
-            elif tool == "search_logs":
+            elif method_name == "search":
                 result = await self._search_logs(params)
             else:
-                result = {"error": f"Unknown tool: {tool}"}
+                result = {"error": f"Unknown tool: {tool} (method: {method_name})"}
         except Exception as e:
             result = {"error": str(e)}
             logger.exception(f"Error in tool {tool}: {e}")
@@ -74,7 +77,7 @@ class LogViewerMCPServer(SchemaBasedMCPServer):
             return {"error": "Log tail request cancelled by user", "cancelled": True}
 
         log_file = params.get("log_file")
-        lines = params.get("lines", 50)
+        lines = params.get("lines", 500)
         
         if not log_file:
             raise ValueError("Missing required parameter: log_file")

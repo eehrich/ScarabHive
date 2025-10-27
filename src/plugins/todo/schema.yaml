@@ -1,0 +1,172 @@
+# TODO Management Plugin - Schema (Tools, Hooks, Config, Web UI)
+
+web_ui:
+  button:
+    enabled: true
+    text: "TODOs"
+    icon: "✅"
+  
+  panel:
+    enabled: true
+    title: "TODO Management"
+    endpoint: "/plugins/{{ name }}/panel"
+    type: "iframe"
+    width: "1000px"
+    height: "800px"
+
+hooks:
+  - name: inject_todo_tasks
+    type: pre_llm_call
+    enabled: false # default is disabled
+    timeout: 5.0
+    description: "Inject active TODO tasks into system prompt before LLM calls"
+    category: "prompt_injection"
+    order:
+      after: ["context_optimization"]
+      before: ["message_validation"]
+
+config:
+  max_tasks:
+    type: integer
+    default: 20
+    description: "Maximum number of tasks to inject into system prompt"
+    minimum: 1
+    maximum: 100
+  
+  filter_status:
+    type: array
+    default: ["not-started", "in-progress", "blocked"]
+    description: "Task statuses to include in injection (active tasks)"
+  
+  include_completed:
+    type: boolean
+    default: false
+    description: "Include completed tasks in injection"
+  
+  format:
+    type: string
+    default: "markdown"
+    description: "Format for task injection: 'markdown' or 'text'"
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}"
+      description: |
+        Unified TODO management tool supporting all task operations.
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: ["create", "update", "delete", "list", "get", "summary"]
+            description: "Operation to perform: 'create' (new task), 'update' (modify task), 'delete' (remove task), 'list' (filter tasks), 'get' (single task), 'summary' (statistics)"
+          
+          task_id:
+            type: string
+            description: "Task ID (required for: get, update, delete)"
+          
+          title:
+            type: string
+            minLength: 1
+            maxLength: 200
+            description: "Task title (required for: create)"
+          
+          description:
+            type: string
+            maxLength: 2000
+            description: "Task description (optional)"
+          
+          status:
+            type: string
+            enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
+            description: "Task status (optional)"
+          
+          progress:
+            type: integer
+            minimum: 0
+            maximum: 100
+            description: "Completion percentage 0-100 (optional)"
+          
+          priority:
+            type: string
+            enum: ["low", "medium", "high", "critical"]
+            default: "medium"
+            description: "Task priority (optional, default: medium)"
+          
+          tags:
+            type: array
+            items:
+              type: string
+              maxLength: 50
+            maxItems: 20
+            description: "Task tags (optional)"
+          
+          depends_on:
+            type: array
+            items:
+              type: string
+              pattern: "^task_\\d{3}$"
+            maxItems: 50
+            description: "Task dependencies - other task IDs (optional)"
+          
+          allow_duplicates:
+            type: boolean
+            default: false
+            description: "Allow creating duplicate tasks (for create operation). When false (default), tasks with 80%+ title similarity return existing task instead of creating duplicate."
+          
+          idempotency_key:
+            type: string
+            maxLength: 100
+            description: "Idempotency key to prevent duplicate creation on retries (for create operation). Tasks with same key return existing instead of creating new."
+          
+          note:
+            type: string
+            maxLength: 1000
+            description: "Add note to task (for update operation)"
+          
+          cascade:
+            type: boolean
+            default: false
+            description: "Also delete dependent tasks (for delete operation)"
+          
+          filter_status:
+            type: array
+            items:
+              type: string
+              enum: ["not-started", "in-progress", "completed", "blocked", "cancelled"]
+            description: "Filter by status (for list operation)"
+          
+          filter_priority:
+            type: array
+            items:
+              type: string
+              enum: ["low", "medium", "high", "critical"]
+            description: "Filter by priority (for list operation)"
+          
+          filter_tags:
+            type: array
+            items:
+              type: string
+            description: "Filter by tags (for list operation)"
+          
+          only_unblocked:
+            type: boolean
+            default: false
+            description: "Only show unblocked tasks (for list operation)"
+          
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+            description: "Max results (for list operation)"
+          
+          offset:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "Number of results to skip for pagination (for list operation)"
+        
+        required: ["operation"]
+        additionalProperties: false

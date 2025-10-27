@@ -26,7 +26,7 @@ def server():
     from unittest.mock import Mock
     system_config = Mock(spec=AgentSystemConfig)
     mcp_config = MCPConfig(type="script_interpreter", enabled=True)
-    return ScriptInterpreterServer("test", system_config, mcp_config)
+    return ScriptInterpreterServer("script_interpreter", system_config, mcp_config)
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ async def test_print_function(server, mock_status):
 print("Hello, World!")
 print("Line 2")
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert result["result"] is not None
     assert "Hello, World!" in result["result"]
@@ -61,7 +61,7 @@ max_val = max(data)
 print("Mean:", mean_val)
 print("Median:", median_val)
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Mean: 3.0" in result["result"]
@@ -78,7 +78,7 @@ maxv = max(temps)
 print("Min:", minv)
 print("Max:", maxv)
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Min: 7.8" in result["result"]
@@ -94,7 +94,7 @@ value = 23.456
 formatted = name + ": " + str(round(value, 1)) + " °C"
 print(formatted)
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     assert "error" not in result
     assert "Temperature: 23.5 °C" in result["result"]
@@ -107,7 +107,7 @@ async def test_no_none_output_from_print(server, mock_status):
 print("Test message")
 x = 42
 """
-    result = await server.call("execute_python_sandbox", {"code": code, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code, "_status": mock_status})
     
     # Should not contain "None" from print statement
     assert "Test message" in result["result"]
@@ -119,12 +119,12 @@ async def test_variables_preserved_between_calls(server, mock_status):
     """Test that variables are preserved between calls."""
     # First call
     code1 = "x = 10"
-    result1 = await server.call("execute_python_sandbox", {"code": code1, "_status": mock_status})
+    result1 = await server.call("script_interpreter_execute", {"code": code1, "_status": mock_status})
     assert "error" not in result1
     
     # Second call should see the variable
     code2 = "print('x is:', x)"
-    result2 = await server.call("execute_python_sandbox", {"code": code2, "_status": mock_status})
+    result2 = await server.call("script_interpreter_execute", {"code": code2, "_status": mock_status})
     assert "x is: 10" in result2["result"]
 
 
@@ -133,14 +133,14 @@ async def test_reset_sandbox(server, mock_status):
     """Test sandbox reset functionality."""
     # Set a variable
     code1 = "test_var = 123"
-    result1 = await server.call("execute_python_sandbox", {"code": code1, "_status": mock_status})
+    result1 = await server.call("script_interpreter_execute", {"code": code1, "_status": mock_status})
     assert "error" not in result1
     
     # Reset sandbox
-    reset_result = await server.call("reset_python_sandbox", {"_status": mock_status})
+    reset_result = await server.call("script_interpreter_reset", {"_status": mock_status})
     assert "error" not in reset_result
     
     # Try to access the variable - should cause an error
     code2 = "print(test_var)"
-    result = await server.call("execute_python_sandbox", {"code": code2, "_status": mock_status})
+    result = await server.call("script_interpreter_execute", {"code": code2, "_status": mock_status})
     assert "error" in result  # Variable should not exist after reset

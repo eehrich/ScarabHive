@@ -35,14 +35,14 @@ class TestToolFilteringPatterns:
         )
     
     def test_server_wildcard_pattern(self, mock_mcp_integration_manager):
-        """Test that web_scraper/* matches web_scraper/scrape_webpage."""
+        """Test that web_scraper/* matches web_scraper/web_scraper."""
         service = self.create_discovery_service(
             ["web_scraper/*"],
             mock_mcp_integration_manager
         )
         
         # Test the pattern matching
-        assert service._matches_any_pattern("web_scraper/scrape_webpage", ["web_scraper/*"])
+        assert service._matches_any_pattern("web_scraper/web_scraper", ["web_scraper/*"])
         assert service._matches_any_pattern("web_scraper/extract_text", ["web_scraper/*"])
         assert not service._matches_any_pattern("duckduckgo_search/search", ["web_scraper/*"])
     
@@ -53,19 +53,19 @@ class TestToolFilteringPatterns:
             mock_mcp_integration_manager
         )
         
-        assert service._matches_any_pattern("web_scraper/scrape_webpage", ["web_sc*/*scrape*"])
+        assert service._matches_any_pattern("web_scraper/web_scraper", ["web_sc*/*scrape*"])
         assert service._matches_any_pattern("web_scraper/scrape_content", ["web_sc*/*scrape*"])
         assert not service._matches_any_pattern("web_scraper/extract_text", ["web_sc*/*scrape*"])
     
     def test_exact_match_pattern(self, mock_mcp_integration_manager):
         """Test exact tool name matching."""
         service = self.create_discovery_service(
-            ["web_scraper/scrape_webpage"],
+            ["web_scraper/web_scraper"],
             mock_mcp_integration_manager
         )
         
-        assert service._matches_any_pattern("web_scraper/scrape_webpage", ["web_scraper/scrape_webpage"])
-        assert not service._matches_any_pattern("web_scraper/extract_text", ["web_scraper/scrape_webpage"])
+        assert service._matches_any_pattern("web_scraper/web_scraper", ["web_scraper/web_scraper"])
+        assert not service._matches_any_pattern("web_scraper/extract_text", ["web_scraper/web_scraper"])
     
     def test_multiple_patterns(self, mock_mcp_integration_manager):
         """Test multiple patterns."""
@@ -74,7 +74,7 @@ class TestToolFilteringPatterns:
             mock_mcp_integration_manager
         )
         
-        assert service._matches_any_pattern("web_scraper/scrape_webpage", ["web_scraper/*", "duckduckgo_search/*"])
+        assert service._matches_any_pattern("web_scraper/web_scraper", ["web_scraper/*", "duckduckgo_search/*"])
         assert service._matches_any_pattern("duckduckgo_search/search", ["web_scraper/*", "duckduckgo_search/*"])
         assert not service._matches_any_pattern("weather/get_forecast", ["web_scraper/*", "duckduckgo_search/*"])
     
@@ -100,4 +100,4 @@ class TestToolFilteringPatterns:
         # Exact server name match
         assert service._matches_any_pattern("web_scraper", ["web_scraper"])
         # But not its tools (they need explicit pattern)
-        assert not service._matches_any_pattern("web_scraper/scrape_webpage", ["web_scraper"])
+        assert not service._matches_any_pattern("web_scraper/web_scraper", ["web_scraper"])

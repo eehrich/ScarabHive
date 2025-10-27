@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: "wait"
+      name: "{{ name }}_wait"
       description: Wait for a specified number of seconds with countdown status updates.
       parameters:
         type: object
@@ -21,7 +21,7 @@ tools:
 
   - type: function
     function:
-      name: "ping"
+      name: "{{ name }}_ping"
       description: Simple ping operation that returns current timestamp and server status.
       parameters:
         type: object

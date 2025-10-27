@@ -6,17 +6,20 @@ hooks:
     enabled: true
     timeout: 30.0
     description: "Optimizes context before LLM calls by removing duplicates, truncating messages, and enforcing token limits"
+    category: "context_optimization"
     order:
-      after: ["context_summarizer"]
-      before: ["validate_messages"]
+      after: ["context_summarization"]
+      before: ["prompt_injection"]
     
   - name: log_context_stats
     type: post_llm_call
     enabled: false
     timeout: 5.0
     description: "Logs context statistics after LLM calls (disabled by default)"
+    category: "context_optimization"    
     order:
       after: ["begin"]
+      before: ["end"]
 
 # Configuration schema for this plugin
 config:

@@ -1,7 +1,7 @@
 tools:
   - type: function
     function:
-      name: search_tweets
+      name: "{{ name }}_tweets"
       description: Search recent tweets by query and return structured tweet metadata with user info, content, and engagement stats.
       parameters:
         type: object

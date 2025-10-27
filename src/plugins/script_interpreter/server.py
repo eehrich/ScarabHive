@@ -44,12 +44,12 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
         self.script_config = script_config
         self.executor = ScriptExecutor(script_config)
 
-    async def execute_python_sandbox(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Execute Python code in a secure sandbox.
+        Execute Python code in secure sandbox.
         
-        Tool method - automatically called by generic dispatcher.
-        Method name matches tool name in schema.yaml.
+        Tool name: {{ name }}_execute → e.g., 'script_interpreter_execute'
+        Method called after dispatcher strips prefix → 'execute'
         """
         status = params["_status"]  # Status is mandatory from framework
         
@@ -117,12 +117,12 @@ class ScriptInterpreterServer(SchemaBasedMCPServer):
             await status.error(f"Execution failed: {str(e)}")
             return {"error": f"Execution failed: {str(e)}"}
 
-    async def reset_python_sandbox(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def reset(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Reset the Python sandbox, clearing all variables and state.
+        Reset sandbox environment and clear variables.
         
-        Tool method - automatically called by generic dispatcher.
-        Method name matches tool name in schema.yaml.
+        Tool name: {{ name }}_reset → e.g., 'script_interpreter_reset'
+        Method called after dispatcher strips prefix → 'reset'
         """
         status = params["_status"]  # Status is mandatory from framework
         
