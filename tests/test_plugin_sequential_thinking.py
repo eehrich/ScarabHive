@@ -940,7 +940,7 @@ async def test_status_messages_start_end(server, mock_status):
     # Verify end was called (start doesn't exist in StatusScope)
     mock_status.end.assert_called_once()
     end_call = mock_status.end.call_args[0][0]
-    assert "Thought 1 added" in end_call
+    assert "Thought #1 added" in end_call  # Server uses #N format
     assert "Complete" in end_call
 
 

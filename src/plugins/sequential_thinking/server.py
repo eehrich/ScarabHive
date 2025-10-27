@@ -342,6 +342,13 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Get or create session first (for session_id in status messages)
             session = self._get_or_create_session(session_id, agent_session_id)
             
+            # Server-assigned thought number (auto-increment for consistency)
+            # For revisions, use the thought being revised; for new thoughts, auto-increment
+            if is_revision and revises_thought is not None:
+                server_thought_number = revises_thought  # Keep same number for revisions
+            else:
+                server_thought_number = session.actual_thoughts + 1  # New thought gets next number
+            
             # Validate parameters
             if thought_number < 1:
                 await status.error("thought_number must be >= 1")
@@ -397,11 +404,11 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             if is_revision and revises_thought is not None:
                 await status.progress(f"Revising thought {revises_thought} with new insights")
             
-            # Add thought
+            # Add thought with server-assigned number (ensures no gaps)
             self._add_thought(
                 session,
                 thought_content,
-                thought_number,
+                server_thought_number,  # Use server number, not client number
                 is_revision,
                 revises_thought
             )
@@ -431,7 +438,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             result = {
                 "status": "success",
                 "session_id": session.session_id,
-                "current_thought_number": thought_number,
+                "current_thought_number": server_thought_number,  # Return server number
+                "client_thought_number": thought_number,  # Also return client's number for reference
                 "total_thoughts_estimate": session.total_thoughts_estimate,
                 "next_thought_needed": next_thought_needed,
                 "progress": f"Thought {session.actual_thoughts}/{session.total_thoughts_estimate}",
@@ -457,7 +465,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # END status
             complete_msg = "✓ Complete" if not next_thought_needed else "Continue reasoning..."
             await status.end(
-                f"Thought {thought_number} added ({session.actual_thoughts}/{session.total_thoughts_estimate}). "
+                f"Thought #{server_thought_number} added ({session.actual_thoughts}/{session.total_thoughts_estimate}). "
                 f"{complete_msg}"
             )
             
@@ -759,9 +767,10 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
                     other_branches = [b for b in session.branches.keys() if b != session.current_branch]
                     if other_branches:
                         example_branch = other_branches[0]
-                        lines.append(f"- Switch branch: `sequential_thinking(..., branch_id='{example_branch}', ...)`")
+                        lines.append(f"- Switch to '{example_branch}': `sequential_thinking(..., branch_id='{example_branch}', ...)`")
                 
                 lines.append(f"- Get summary: `get_summary(session_id='{session.session_id}')`")
+                lines.append(f"- Clear session: `clear_history(session_id='{session.session_id}')`")
             else:
                 lines.append("\nContinue reasoning with `sequential_thinking()` or summarize findings if complete.")
             

@@ -3,7 +3,7 @@ hooks:
     type: pre_llm_call
     enabled: false # default is disabled
     timeout: 5.0
-    description: "Inject active sequential thinking sessions into system prompt before LLM calls"
+    description: "Inject active sessions into system prompt"
     category: "prompt_injection"
     order:
       after: ["context_optimization"]
@@ -13,45 +13,42 @@ config:
   max_thoughts_in_prompt:
     type: integer
     default: 5
-    description: "Maximum recent thoughts to show per session in system prompt"
+    description: "Recent thoughts per session in system prompt"
     minimum: 1
     maximum: 20
   
   max_sessions_in_prompt:
     type: integer
     default: 1
-    description: "Maximum number of active sessions to show in prompt (most recent first)"
+    description: "Active sessions in prompt (most recent first)"
     minimum: 1
     maximum: 5
   
   show_branch_info:
     type: boolean
     default: true
-    description: "Include branch information in injected prompt"
+    description: "Show branch information"
   
   show_relative_timestamps:
     type: boolean
     default: true
-    description: "Show relative timestamps (e.g., '2m ago') instead of absolute times"
+    description: "Relative timestamps ('2m ago' vs absolute)"
   
   show_quick_actions:
     type: boolean
     default: true
-    description: "Include quick action hints in prompt"
+    description: "Show action hints"
   
   format:
     type: string
     default: "markdown"
-    description: "Format for session injection: 'markdown' or 'text'"
+    description: "Injection format: markdown or text"
 
 tools:
   - type: function
     function:
       name: "{{ name }}"
-      description: |
-        Main reasoning tool for step-by-step problem-solving with dynamic complexity adjustment.
-        Supports branching to explore alternative approaches and revising previous thoughts.
-        Use this when tackling complex problems that require structured, iterative thinking.
+      description: "Step-by-step reasoning with branching and revision. Use for complex problems requiring structured thinking."
       parameters:
         type: object
         properties:
@@ -59,83 +56,77 @@ tools:
             type: string
             minLength: 1
             maxLength: 10000
-            description: "Current thinking step content (1-10000 chars)"
+            description: "Current thinking step (1-10000 chars)"
           next_thought_needed:
             type: boolean
-            description: "Whether another thought step is needed after this one"
+            description: "Continue after this?"
           thought_number:
             type: integer
             minimum: 1
-            description: "Current thought number (1-indexed)"
+            description: "Thought index (server auto-assigns sequential numbers, your value is informational)"
           total_thoughts:
             type: integer
             minimum: 1
-            description: "Estimated total thoughts needed (adjustable during reasoning)"
+            description: "Estimated total (dynamic, update via needs_more_thoughts=true)"
           session_id:
             type: string
-            description: "Session ID (auto-generated if omitted, use to continue existing session)"
+            description: "Session ID (auto-generated if omitted)"
           is_revision:
             type: boolean
             default: false
-            description: "Whether this thought revises previous thinking"
+            description: "Revise previous thought?"
           revises_thought:
             type: integer
             minimum: 1
-            description: "Which thought number is being reconsidered (required if is_revision=true)"
+            description: "Which thought to revise (required if is_revision=true)"
           branch_from_thought:
             type: integer
             minimum: 1
-            description: "Thought number to branch from (creates new exploration path)"
+            description: "Branch from this thought (creates exploration path)"
           branch_id:
             type: string
             maxLength: 100
             description: |
-              Branch identifier for creating new branch or switching to existing branch.
-              - To create new branch: Set both 'branch_from_thought' AND 'branch_id'
-              - To switch to existing branch: Set only 'branch_id' (e.g., 'main' to return to main)
-              - Branch names: any alphanumeric string (e.g., 'alternative_approach', 'cloud_first')
+              Branch name. Create: set both branch_from_thought + branch_id. Switch: branch_id only.
+              Examples: 'main', 'alternative_approach', 'cloud_first'
           needs_more_thoughts:
             type: boolean
             default: false
-            description: "Flag indicating more thoughts are needed beyond initial estimate"
+            description: "Update estimate upward"
         required: ["thought", "next_thought_needed", "thought_number", "total_thoughts"]
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_clear_history"
-      description: |
-        Clear thought history for a specific session or all sessions.
-        Use when starting fresh or cleaning up expired sessions.
+      description: "Clear session(s). Omit session_id to clear all."
       parameters:
         type: object
         properties:
           session_id:
             type: string
-            description: "Specific session to clear (if omitted, clears all sessions)"
+            description: "Session to clear (omit for all)"
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_get_summary"
-      description: |
-        Get condensed summary of thought chain for a session.
-        Returns recent thoughts with metadata, branch information, and session statistics.
+      description: "Get session summary with thoughts, branches, statistics."
       parameters:
         type: object
         properties:
           session_id:
             type: string
-            description: "Session ID to summarize"
+            description: "Session to summarize"
           max_thoughts:
             type: integer
             minimum: 1
             maximum: {{ max_history_size }}
             default: 10
-            description: "Maximum thoughts to include in summary (default: 10)"
+            description: "Thoughts in summary (default: 10)"
           include_branches:
             type: boolean
             default: true
-            description: "Include branch tree visualization in summary"
+            description: "Include branch tree"
         required: ["session_id"]
         additionalProperties: false
