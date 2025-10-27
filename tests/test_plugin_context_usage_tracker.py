@@ -193,6 +193,62 @@ def test_tracker_history(plugin):
     assert history_last_3[-1]["agent_id"] == "agent-4"
 
 
+def test_tracker_persistence(tmp_path):
+    """Test that tracker persists and loads history correctly."""
+    storage_path = tmp_path / "tracker_persist.json"
+    
+    # Create tracker and record data
+    tracker1 = UsageTracker(max_history=10, storage_path=storage_path)
+    tracker1.record_usage(
+        agent_id="agent-1",
+        agent_name="Agent 1",
+        session_id="session-1",
+        total_tokens=500,
+        prompt_tokens=300,
+        completion_tokens=200,
+        message_count=3,
+        context_window=8000,
+    )
+    tracker1.record_usage(
+        agent_id="agent-1",
+        agent_name="Agent 1",
+        session_id="session-1",
+        total_tokens=800,
+        prompt_tokens=500,
+        completion_tokens=300,
+        message_count=5,
+        context_window=8000,
+    )
+    
+    # Verify data in first tracker
+    assert len(tracker1.get_history()) == 2
+    latest1 = tracker1.get_latest()
+    assert latest1["total_tokens"] == 800
+    agent_stats1 = tracker1.get_agent_stats()
+    assert agent_stats1["agent-1"]["total_calls"] == 2
+    assert agent_stats1["agent-1"]["total_tokens"] == 1300
+    
+    # Create new tracker instance (simulates restart)
+    tracker2 = UsageTracker(max_history=10, storage_path=storage_path)
+    
+    # Verify data was loaded
+    history2 = tracker2.get_history()
+    assert len(history2) == 2
+    assert history2[0]["total_tokens"] == 500
+    assert history2[1]["total_tokens"] == 800
+    
+    latest2 = tracker2.get_latest()
+    assert latest2 is not None
+    assert latest2["total_tokens"] == 800
+    assert latest2["agent_id"] == "agent-1"
+    
+    agent_stats2 = tracker2.get_agent_stats()
+    assert "agent-1" in agent_stats2
+    assert agent_stats2["agent-1"]["total_calls"] == 2
+    assert agent_stats2["agent-1"]["total_tokens"] == 1300
+    assert agent_stats2["agent-1"]["peak_tokens"] == 800
+
+
 def test_tracker_clear_history(plugin):
     """Test that tracker can clear history."""
     # Record some usage

@@ -48,6 +48,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             if not llm_response:
                 return HookResult(success=True, modified=False, context=context)
             
+            # llm_response contains full response {"assistant": {...}, "usage": {...}}
             usage = llm_response.get("usage")
             if not usage:
                 return HookResult(success=True, modified=False, context=context)

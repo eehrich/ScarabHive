@@ -184,7 +184,7 @@ class UsageTracker:
         logger.info("🗑️  Context usage history cleared")
     
     def _save_to_disk(self) -> None:
-        """Save agent stats to disk."""
+        """Save agent stats and history to disk."""
         try:
             # Capture data while holding lock briefly
             with self._lock:
@@ -200,22 +200,30 @@ class UsageTracker:
                     }
                     for agent_id, stats in self._agent_stats.items()
                 }
+                
+                # Save history snapshots (as list of dicts)
+                history_data = [asdict(snapshot) for snapshot in self._history]
+                
+                # Save latest snapshot
+                latest_data = asdict(self._latest_snapshot) if self._latest_snapshot else None
             
             # Write to disk WITHOUT holding lock
             data = {
                 "agents": agents_data,
+                "history": history_data,
+                "latest": latest_data,
                 "last_updated": time.time()
             }
             
             with open(self.storage_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
             
-            logger.debug(f"💾 Saved usage data to {self.storage_path}")
+            logger.debug(f"💾 Saved usage data to {self.storage_path} ({len(history_data)} snapshots)")
         except Exception as e:
             logger.error(f"Failed to save usage data: {e}")
     
     def _load_from_disk(self) -> None:
-        """Load agent stats from disk."""
+        """Load agent stats and history from disk."""
         if not self.storage_path.exists():
             logger.debug(f"No existing usage data at {self.storage_path}")
             return
@@ -224,6 +232,7 @@ class UsageTracker:
             with open(self.storage_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
+            # Load agent stats
             agents_data = data.get("agents", {})
             with self._lock:
                 for agent_id, stats_dict in agents_data.items():
@@ -236,7 +245,21 @@ class UsageTracker:
                         message_count=stats_dict.get("message_count", 0),
                         last_activity=stats_dict.get("last_activity", 0)
                     )
+                
+                # Load history snapshots
+                history_data = data.get("history", [])
+                for snapshot_dict in history_data:
+                    snapshot = ContextUsageSnapshot(**snapshot_dict)
+                    self._history.append(snapshot)
+                
+                # Load latest snapshot
+                latest_data = data.get("latest")
+                if latest_data:
+                    self._latest_snapshot = ContextUsageSnapshot(**latest_data)
             
-            logger.info(f"📂 Loaded usage data for {len(agents_data)} agents from {self.storage_path}")
+            logger.info(
+                f"📂 Loaded usage data: {len(agents_data)} agents, "
+                f"{len(history_data)} snapshots from {self.storage_path}"
+            )
         except Exception as e:
             logger.warning(f"Failed to load usage data: {e}")

@@ -1039,15 +1039,17 @@ class Agent(MCPServer):
             try:
                 modified_response = await self._hook_manager.execute_post_llm_hooks(
                     messages=messages,
-                    llm_response={"content": content, "tool_calls": tool_calls},
+                    llm_response=llm_out,  # Pass full LLM response including usage data
                     step=step,
                     request_id=request_id,
                     session_id=session_id,
                     llm=active_llm
                 )
                 if modified_response is not None:
-                    content = modified_response.get("content", content)
-                    tool_calls = modified_response.get("tool_calls", tool_calls)
+                    # Extract assistant data from modified response
+                    modified_assistant = modified_response.get("assistant", {})
+                    content = modified_assistant.get("content", content)
+                    tool_calls = modified_assistant.get("tool_calls", tool_calls)
                     # Update the assistant message if hooks modified the response
                     assistant_msg.content = content or ""
                     assistant_msg.tool_calls = tool_calls if tool_calls else None
