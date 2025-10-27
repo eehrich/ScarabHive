@@ -7,13 +7,13 @@ complex problems dynamically with support for branching and revision.
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.utils.id import short_id
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -133,7 +133,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         """Get existing session or create new one.
         
         Args:
-            session_id: Sequential thinking session ID (UUID)
+            session_id: Sequential thinking session ID (10-char hex)
             agent_session_id: Agent conversation session ID (for hook lookup)
         """
         if session_id and session_id in self._sessions:
@@ -141,15 +141,15 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             session.last_accessed = datetime.now()
             
             # Update agent session mapping if provided
-            if agent_session_id and agent_session_id not in self._agent_session_mapping.get(agent_session_id, []):
+            if agent_session_id and session_id not in self._agent_session_mapping.get(agent_session_id, []):
                 if agent_session_id not in self._agent_session_mapping:
                     self._agent_session_mapping[agent_session_id] = []
                 self._agent_session_mapping[agent_session_id].append(session_id)
             
             return session
         
-        # Create new session
-        new_id = session_id or str(uuid.uuid4())
+        # Create new session with short ID (10 chars like agent sessions)
+        new_id = session_id or short_id(10)
         session = SessionState(
             session_id=new_id,
             created_at=datetime.now(),
@@ -476,7 +476,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 thought_count = len(session.thoughts)
                 
                 await status.progress(
-                    f"Clearing session {session_id[:8]} ({thought_count} thoughts)"
+                    f"Clearing session {session_id} ({thought_count} thoughts)"
                 )
                 
                 del self._sessions[session_id]
@@ -532,7 +532,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             session = self._sessions[session_id]
             
             await status.progress(
-                f"Generating summary for session {session_id[:8]} "
+                f"Generating summary for session {session_id} "
                 f"({len(session.thoughts)} thoughts, {len(session.branches)} branches)"
             )
             
@@ -622,8 +622,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 if valid_sessions:
                     active_session = max(valid_sessions, key=lambda s: s.last_accessed)
                     logger.debug(
-                        f"Found {len(valid_sessions)} thinking session(s) for agent session {agent_session_id[:8]}..., "
-                        f"using most recent: {active_session.session_id[:8]}..."
+                        f"Found {len(valid_sessions)} thinking session(s) for agent session {agent_session_id}, "
+                        f"using most recent: {active_session.session_id}"
                     )
             
             from agent_system.llm.models import ChatMessage
@@ -644,7 +644,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 logger.info(
                     f"[SequentialThinkingHook] Injecting {len(active_session.thoughts)} thoughts "
                     f"(showing last {min(max_thoughts, len(active_session.thoughts))}) "
-                    f"for session {active_session.session_id[:8]}..."
+                    f"for session {active_session.session_id}"
                 )
             else:
                 # No active session - inject reminder about tool
