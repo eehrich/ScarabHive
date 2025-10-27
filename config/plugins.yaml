@@ -371,12 +371,20 @@ plugins:
             - "ssh_control/*"
             - "basic_operations/*"
             - "meta_web_research_agent/*"
+            - "datetime/*"
+            - "sequential_thinking/*"
+            - "todo/*"
 
         hooks:
           enabled: true
           overrides:
             markdown_formatter.format_markdown_output:
-              enabled: true              
+              enabled: true
+            todo.inject_todo_tasks:
+              enabled: true
+            sequential_thinking.inject_active_sessions:
+              enabled: true
+                   
       
       metadata:
         author: "AgentSystem"
