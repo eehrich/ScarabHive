@@ -969,6 +969,12 @@
         eventUrl += `&llm_profile=${encodeURIComponent(selectedLLMProfile)}`;
       }
       
+      // Add authentication token as query parameter (EventSource doesn't support custom headers)
+      const token = localStorage.getItem('token');
+      if (token) {
+        eventUrl += `&token=${encodeURIComponent(token)}`;
+      }
+      
       const es = new EventSource(eventUrl);
       currentEventSource = es; // Track current event source
       
