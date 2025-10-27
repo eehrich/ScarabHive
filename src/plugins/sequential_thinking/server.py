@@ -631,29 +631,33 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
     ) -> str:
         """Format active session for injection into prompt."""
         if format_type == "markdown":
-            lines = [self._format_thinking_reminder().rstrip()]
-            lines.append(f"\n**Active reasoning session** (ID: `{session.session_id[:12]}...`):\n")
+            lines = []
+            lines.append("## Active Sequential Thinking Session\n")
+            lines.append(f"**Session ID**: `{session.session_id[:12]}...`")
+            lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts\n")
             
             # Show recent thoughts
             recent_thoughts = session.thoughts[-max_thoughts:] if max_thoughts > 0 else session.thoughts
             
-            for thought in recent_thoughts:
-                branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
-                revision_tag = f" (revises #{thought.revises_thought})" if thought.is_revision else ""
-                
-                # Truncate long thoughts
-                content = thought.content[:150] + "..." if len(thought.content) > 150 else thought.content
-                
-                lines.append(
-                    f"- **Thought #{thought.number}**{branch_tag}{revision_tag}: {content}"
-                )
+            if recent_thoughts:
+                lines.append("**Recent thoughts:**")
+                for thought in recent_thoughts:
+                    branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
+                    revision_tag = f" (revises #{thought.revises_thought})" if thought.is_revision else ""
+                    
+                    # Truncate long thoughts
+                    content = thought.content[:150] + "..." if len(thought.content) > 150 else thought.content
+                    
+                    lines.append(
+                        f"- **Thought #{thought.number}**{branch_tag}{revision_tag}: {content}"
+                    )
             
             # Show branch info if enabled
             if show_branch_info and len(session.branches) > 1:
                 lines.append(f"\n**Current branch**: `{session.current_branch}`")
                 lines.append(f"**Available branches**: {', '.join(f'`{b}`' for b in session.branches.keys())}")
             
-            lines.append(f"\n**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
+            lines.append("\nContinue reasoning with `sequential_thinking()` or summarize findings if complete.")
             
             return "\n".join(lines)
         else:

@@ -164,7 +164,7 @@ async def test_hook_inject_active_session(server, mock_status):
     # Check injection content
     injected = context.messages[1]
     assert injected.role == "system"
-    assert "Active reasoning session" in injected.content
+    assert "Active Sequential Thinking Session" in injected.content
     assert "Thought #1" in injected.content
     assert "Thought #2" in injected.content
     assert "**Progress**: 2/3 thoughts" in injected.content
@@ -264,9 +264,9 @@ async def test_hook_removes_old_injection(server, mock_status):
     
     # Check that old injection was replaced with new one
     system_messages = [msg for msg in context.messages if msg.role == "system"]
-    injections = [msg for msg in system_messages if "Sequential Thinking Tool Available" in msg.content]
+    injections = [msg for msg in system_messages if "Sequential Thinking" in msg.content]
     assert len(injections) == 1  # Only one injection
-    assert "Active reasoning session" in injections[0].content  # New injection
+    assert "Active Sequential Thinking Session" in injections[0].content  # New injection
 
 
 @pytest.mark.asyncio
@@ -309,7 +309,7 @@ async def test_hook_max_thoughts_limit(server, mock_status):
     assert "Thought #6" in injected.content
     assert "Thought #10" in injected.content
     # Should NOT show earlier thoughts in the list (but may be in example text)
-    thought_list = injected.content.split("**Active reasoning session**")[1]
+    thought_list = injected.content.split("**Recent thoughts:**")[1]
     assert "Thought #1:" not in thought_list
     assert "Thought #5:" not in thought_list
 
