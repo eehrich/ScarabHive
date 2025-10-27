@@ -794,9 +794,23 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         """Format sequential thinking tool reminder when no active session."""
         return """## Sequential Thinking Tool Available
 
-Use `sequential_thinking()` for complex reasoning that requires step-by-step analysis. Break down problems into thoughts, explore alternatives via branching, and revise earlier insights.
+Use `sequential_thinking()` for complex, multi-step reasoning. Break down problems into thoughts, revise earlier insights, and explore alternatives via branching.
 
-Example: `sequential_thinking(thought="First, let's analyze the requirements...", thought_number=1, total_thoughts=5, next_thought_needed=true)`
+**Start new session:**
+```
+sequential_thinking(
+    thought="First, let's analyze the requirements...",
+    thought_number=1,
+    total_thoughts=5,
+    next_thought_needed=true
+)
+```
+
+**Parameter groups:**
+- **Core**: thought, thought_number, total_thoughts, next_thought_needed
+- **Session**: session_id (auto-generated on first call, required for continuation)
+- **Revise**: is_revision=true, revises_thought=<N> (update earlier thought)
+- **Branch**: branch_from_thought=<N>, branch_id='name' (explore alternatives)
 """
     
     def _format_session_for_prompt(
@@ -851,11 +865,15 @@ Example: `sequential_thinking(thought="First, let's analyze the requirements..."
             
             # Add quick actions if enabled
             if show_quick_actions:
-                lines.append("\n**Usage notes:**")
-                lines.append("- `current_thought_number` (server) is canonical; `client_thought_number` is your counter (informational only)")
-                lines.append(f"- `recorded_thoughts_count`={len(session.thoughts)} entries; estimate={session.total_thoughts_estimate}")
-                lines.append("- Revisions: use existing thought's number; creates new entry but keeps original number")
-                lines.append(f"- Continue: `session_id='{session.session_id}'` | Summary: `get_summary()` | Clear: `clear_history()`")
+                lines.append("\n**Parameter Groups:**")
+                lines.append("- **Core**: `thought`, `thought_number`, `total_thoughts`, `next_thought_needed`")
+                lines.append(f"- **Session**: `session_id='{session.session_id}'` (required for continuation)")
+                lines.append("- **Revise**: `is_revision=true`, `revises_thought=<N>` (creates new entry, keeps number)")
+                lines.append("- **Branch**: Create: `branch_from_thought=<N>`, `branch_id='name'` | Switch: `branch_id='name'` only")
+                lines.append("\n**Examples:**")
+                lines.append(f"- Continue: `sequential_thinking(session_id='{session.session_id}', thought='...', thought_number={len(session.thoughts)+1}, ...)`")
+                lines.append(f"- Revise #3: `sequential_thinking(session_id='{session.session_id}', thought='...', thought_number=3, is_revision=true, revises_thought=3, ...)`")
+                lines.append(f"- Branch: `sequential_thinking(session_id='{session.session_id}', thought='...', branch_from_thought=2, branch_id='alt', ...)`")
             else:
                 lines.append("\nContinue reasoning with `sequential_thinking()` or summarize findings if complete.")
             
