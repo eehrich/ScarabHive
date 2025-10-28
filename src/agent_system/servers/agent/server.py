@@ -1323,6 +1323,11 @@ class Agent(MCPServer):
             async for event in loop_generator:
                 yield event
                 
+                # Yield any pending status events after each main event
+                # This ensures status messages are delivered in real-time, not batched at the end
+                for status_event in yield_pending_status_events():
+                    yield status_event
+                
                 # Track messages updates from context during loop execution
                 if context:
                     messages = context.messages
