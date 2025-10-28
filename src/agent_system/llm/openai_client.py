@@ -507,16 +507,10 @@ class OpenAIAsyncClient(LLMClient):
             
             client_any = cast(Any, self._client)
             
-            # Create streaming task (SDK returns async generator directly)
-            if cancellation_token:
-                stream_task = asyncio.create_task(client_any.chat.completions.create(**opts).__anext__())
-                # For OpenAI SDK streaming, we can't use _execute_with_cancellation on the generator
-                # Instead, we create the stream and monitor cancellation during iteration
-                stream = client_any.chat.completions.create(**opts)
-            else:
-                stream = client_any.chat.completions.create(**opts)
+            # OpenAI SDK's create() is async and returns AsyncStream when awaited
+            stream = await client_any.chat.completions.create(**opts)
             
-            # Process stream
+            # Process stream chunks
             async for chunk in stream:
                 if cancellation_token and cancellation_token.is_cancelled:
                     raise Exception("Request cancelled by user")

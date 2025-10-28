@@ -168,14 +168,31 @@ class TestOpenAIClientStreaming:
             def __init__(self, choices):
                 self.choices = choices
         
-        async def mock_create_stream(**kwargs):
-            """Generator that yields chunks."""
-            yield MockChunk([MockChoice(MockDelta(content="Hello"))])
-            yield MockChunk([MockChoice(MockDelta(content=" world"))])
-            yield MockChunk([MockChoice(MockDelta(content="!"))])
+        async def mock_create(**kwargs):
+            """Async function that returns an async generator (like real SDK)."""
+            class AsyncStream:
+                def __init__(self):
+                    self._chunks = [
+                        MockChunk([MockChoice(MockDelta(content="Hello"))]),
+                        MockChunk([MockChoice(MockDelta(content=" world"))]),
+                        MockChunk([MockChoice(MockDelta(content="!"))]),
+                    ]
+                    self._index = 0
+                
+                def __aiter__(self):
+                    return self
+                
+                async def __anext__(self):
+                    if self._index >= len(self._chunks):
+                        raise StopAsyncIteration
+                    chunk = self._chunks[self._index]
+                    self._index += 1
+                    return chunk
+            
+            return AsyncStream()
         
-        # Patch the create method to return our generator
-        with patch.object(openai_client._client.chat.completions, 'create', side_effect=mock_create_stream):
+        # Patch the create method to return our async function
+        with patch.object(openai_client._client.chat.completions, 'create', side_effect=mock_create):
             chunks = []
             async for chunk in openai_client.chat_tools_streaming(messages, tools):
                 chunks.append(chunk)
