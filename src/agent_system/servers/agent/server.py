@@ -871,6 +871,86 @@ class Agent(MCPServer):
         # Clean up status forwarding task AFTER publishing final status
         await self._status_event_forwarder.stop_forwarding()
 
+    async def _call_llm_with_streaming(
+        self,
+        llm: Any,
+        messages: List[ChatMessage],
+        tools_schema: List[Dict[str, Any]],
+        cancellation_token: CancellationToken,
+        step: int,
+        yield_pending_status_fn
+    ):
+        """Call LLM with streaming support and interleaved status events.
+        
+        This method uses chat_tools_streaming() when available, yielding token deltas
+        and checking status events between chunks. For non-streaming LLMs, falls back
+        to regular chat_tools() with periodic status polling.
+        
+        Args:
+            llm: LLM client instance
+            messages: Conversation messages
+            tools_schema: Available tools schema
+            cancellation_token: Cancellation token for interruption
+            step: Current step number
+            yield_pending_status_fn: Function that yields pending status events
+            
+        Yields:
+            - {"type": "thinking_delta", "step": int, "delta": str, "accumulated": str}
+            - {"type": "status", ...}
+            - {"type": "thinking_complete", "assistant": {...}}
+        """
+        if llm.supports_streaming():
+            # Streaming LLM: zero-overhead real-time tokens
+            accumulated_content = []
+            final_assistant = None
+            
+            async for chunk in llm.chat_tools_streaming(messages, tools_schema, cancellation_token=cancellation_token):
+                chunk_type = chunk.get("type")
+                
+                if chunk_type == "content_delta":
+                    # Yield token delta for real-time display
+                    yield {"type": "thinking_delta", "step": step + 1, "delta": chunk["delta"], "accumulated": chunk["accumulated"]}
+                    accumulated_content.append(chunk["delta"])
+                    
+                    # Check status events after each token (zero overhead)
+                    for status_event in yield_pending_status_fn():
+                        yield status_event
+                
+                elif chunk_type == "tool_call_delta":
+                    # Tool calls are accumulated server-side, we can skip yielding deltas for now
+                    # Future: could yield tool_call_delta events for UI to show "Calling get_weather..."
+                    pass
+                
+                elif chunk_type == "final":
+                    final_assistant = chunk["assistant"]
+            
+            # Yield final response
+            if final_assistant:
+                yield {"type": "thinking_complete", "assistant": final_assistant}
+            else:
+                yield {"type": "thinking_complete", "assistant": {"role": "assistant", "content": "".join(accumulated_content)}}
+        
+        else:
+            # Non-streaming LLM: Use polling with 100ms intervals
+            # Create task for LLM call
+            llm_task = asyncio.create_task(llm.chat_tools(messages, tools_schema, cancellation_token=cancellation_token))
+            
+            # Poll for status events while waiting
+            while not llm_task.done():
+                # Check for status events
+                for status_event in yield_pending_status_fn():
+                    yield status_event
+                
+                # Wait 100ms before next poll
+                try:
+                    await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.1)
+                except asyncio.TimeoutError:
+                    pass  # Continue polling
+            
+            # Get result
+            llm_out = await llm_task
+            yield {"type": "thinking_complete", "assistant": llm_out.get("assistant", {})}
+
     async def _execute_llm_loop(
         self,
         context: ConversationContext,
@@ -988,10 +1068,29 @@ class Agent(MCPServer):
                     messages = modified_messages
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
-            
-            # LLM call
+
+            # LLM call with streaming support
+            llm_out = None
             try:
-                llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
+                async for event in self._call_llm_with_streaming(
+                    llm=active_llm,
+                    messages=messages,
+                    tools_schema=tools_schema,
+                    cancellation_token=main_token,
+                    step=step,
+                    yield_pending_status_fn=yield_pending_status_events
+                ):
+                    event_type = event.get("type")
+                    
+                    if event_type == "thinking_delta":
+                        # Yield real-time token deltas to WebUI
+                        yield event
+                    elif event_type == "status":
+                        # Yield interleaved status events
+                        yield event
+                    elif event_type == "thinking_complete":
+                        llm_out = {"assistant": event["assistant"]}
+                        
             except Exception as e:
                 # Check if this is a cancellation exception
                 error_str = str(e).lower()
@@ -1011,7 +1110,7 @@ class Agent(MCPServer):
             # Signal LLM call completion
             await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
 
-            assistant = llm_out.get("assistant", {})
+            assistant = llm_out.get("assistant", {}) if llm_out else {}
             
             # Check if LLM returned an error response
             if "error" in assistant:
