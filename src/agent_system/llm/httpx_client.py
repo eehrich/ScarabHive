@@ -6,6 +6,7 @@ OpenAI client which has known hanging/timeout issues.
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional
 from dataclasses import dataclass
@@ -115,6 +116,27 @@ class HTTPXOpenAIClient(LLMClient):
         """Send chat completion request with tools."""
         return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token)
 
+    async def chat_tools_streaming(
+        self,
+        messages: list,
+        tools: list,
+        cancellation_token: Optional[CancellationToken] = None
+    ):
+        """Stream chat completion request with tools.
+        
+        Yields:
+            dict: Streaming chunks with different types:
+                {"type": "content_delta", "delta": str, "accumulated": str}
+                {"type": "tool_call_delta", "index": int, "delta": dict}
+                {"type": "final", "assistant": dict}
+        """
+        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token):
+            yield chunk
+
+    def supports_streaming(self) -> bool:
+        """Check if this client supports streaming."""
+        return True  # HTTPX client always supports streaming
+
     async def _make_request(
         self,
         messages: list,
@@ -122,6 +144,219 @@ class HTTPXOpenAIClient(LLMClient):
         cancellation_token: Optional[CancellationToken] = None
     ) -> dict:
         """Make the actual HTTP request with proper cancellation and error handling."""
+
+        # Collect all chunks from streaming version
+        final_result = None
+        async for chunk in self._make_request_streaming(messages, tools, cancellation_token):
+            if chunk.get("type") == "final":
+                final_result = chunk.get("assistant")
+                break
+        
+        return {"assistant": final_result} if final_result else {"assistant": {"role": "assistant", "content": ""}}
+
+    async def _make_request_streaming(
+        self,
+        messages: list,
+        tools: list,
+        cancellation_token: Optional[CancellationToken] = None
+    ):
+        """Make streaming HTTP request that yields chunks.
+        
+        Yields:
+            dict: Chunks with types: content_delta, tool_call_delta, final
+        """
+
+        # Build request payload - convert ChatMessage objects to dicts
+        message_dicts = []
+        for msg in messages:
+            if hasattr(msg, 'model_dump'):
+                # ChatMessage object - convert to dict, exclude None values for API compatibility
+                message_dicts.append(msg.model_dump(exclude_none=True))
+            elif isinstance(msg, dict):
+                # Already a dict
+                message_dicts.append(msg)
+            else:
+                # Fallback - try to convert to dict
+                message_dicts.append(dict(msg))
+
+        payload = {
+            "model": self.model,
+            "messages": message_dicts,
+            "stream": True,  # ⚡ Enable streaming
+            **self.extra_params
+        }
+
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        url = f"{self.base_url}/chat/completions"
+
+        # Accumulators for building complete response
+        accumulated_content = []
+        accumulated_tool_calls = {}  # index -> tool call data
+
+        # Retry logic with exponential backoff
+        last_exception = None
+        for attempt in range(self.max_retries + 1):
+            # Check cancellation before each attempt
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise asyncio.CancelledError("Request cancelled by user")
+
+            try:
+                # Create fresh client for each request to avoid connection issues
+                client_kwargs = {"timeout": self._timeout}
+                # Only include verify if explicitly configured (None means use httpx default)
+                if getattr(self, "_verify", None) is not None:
+                    client_kwargs["verify"] = self._verify
+                
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    logger.debug(f"HTTPX streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
+
+                    # Make streaming request
+                    async with client.stream("POST", url=url, headers=self._headers, json=payload) as response:
+                        # Check for HTTP errors
+                        if response.status_code == 429 and attempt < self.max_retries:
+                            # Rate limit - retry with backoff
+                            retry_after = self._parse_retry_after(response.headers.get("retry-after"))
+                            backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+
+                            logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                            await asyncio.sleep(backoff_time)
+                            continue
+
+                        response.raise_for_status()
+
+                        # Parse SSE stream
+                        async for line in response.aiter_lines():
+                            if cancellation_token and cancellation_token.is_cancelled:
+                                raise asyncio.CancelledError("Request cancelled during streaming")
+                            
+                            if not line or not line.startswith("data: "):
+                                continue
+                            
+                            data = line[6:]  # Remove "data: " prefix
+                            
+                            if data == "[DONE]":
+                                # Stream finished - yield final result
+                                assistant = {
+                                    "role": "assistant",
+                                    "content": "".join(accumulated_content) if accumulated_content else ""
+                                }
+                                
+                                # Add tool calls if any
+                                if accumulated_tool_calls:
+                                    tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                    assistant["tool_calls"] = tool_calls_list
+                                
+                                yield {"type": "final", "assistant": assistant}
+                                return  # Success - exit retry loop
+                            
+                            try:
+                                chunk_data = json.loads(data)
+                            except Exception:
+                                logger.debug(f"Failed to parse chunk data: {data[:100]}")
+                                continue
+                            
+                            # Process chunk
+                            choices = chunk_data.get("choices", [])
+                            if not choices:
+                                continue
+                            
+                            delta = choices[0].get("delta", {})
+                            
+                            # Handle content delta
+                            if "content" in delta and delta["content"]:
+                                accumulated_content.append(delta["content"])
+                                yield {
+                                    "type": "content_delta",
+                                    "delta": delta["content"],
+                                    "accumulated": "".join(accumulated_content)
+                                }
+                            
+                            # Handle tool call deltas
+                            if "tool_calls" in delta:
+                                for tc_delta in delta["tool_calls"]:
+                                    index = tc_delta.get("index", 0)
+                                    
+                                    # Initialize tool call buffer if needed
+                                    if index not in accumulated_tool_calls:
+                                        accumulated_tool_calls[index] = {
+                                            "id": "",
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""}
+                                        }
+                                    
+                                    # Accumulate deltas
+                                    if "id" in tc_delta:
+                                        accumulated_tool_calls[index]["id"] = tc_delta["id"]
+                                    
+                                    if "function" in tc_delta:
+                                        func_delta = tc_delta["function"]
+                                        if "name" in func_delta:
+                                            accumulated_tool_calls[index]["function"]["name"] += func_delta["name"]
+                                        if "arguments" in func_delta:
+                                            accumulated_tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
+                                    
+                                    # Yield delta with accumulated state
+                                    yield {
+                                        "type": "tool_call_delta",
+                                        "index": index,
+                                        "delta": tc_delta,
+                                        "accumulated": accumulated_tool_calls[index]
+                                    }
+
+            except asyncio.CancelledError:
+                # Re-raise cancellation without wrapping
+                logger.info("HTTPX streaming request cancelled by user")
+                raise
+
+            except httpx.TimeoutException as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    backoff_time = self.retry_backoff * (2 ** attempt)
+                    logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
+                    await asyncio.sleep(backoff_time)
+                    continue
+                else:
+                    logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
+                    raise Exception(f"Request timed out: {e}") from e
+
+            except httpx.HTTPStatusError as e:
+                last_exception = e
+                if e.response.status_code >= 500 and attempt < self.max_retries:
+                    # Server error - retry
+                    backoff_time = self.retry_backoff * (2 ** attempt)
+                    logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
+                    await asyncio.sleep(backoff_time)
+                    continue
+                else:
+                    # Client error or max retries exceeded
+                    error_detail = self._parse_error_response(e.response)
+                    logger.error(f"HTTP error {e.response.status_code}: {error_detail}")
+                    raise Exception(f"HTTP {e.response.status_code}: {error_detail}") from e
+
+            except (httpx.NetworkError, httpx.ConnectError) as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    backoff_time = self.retry_backoff * (2 ** attempt)
+                    logger.warning(f"Network error, retrying in {backoff_time}s: {e}")
+                    await asyncio.sleep(backoff_time)
+                    continue
+                else:
+                    logger.error(f"Network error after {self.max_retries + 1} attempts: {e}")
+                    raise Exception(f"Network error: {e}") from e
+
+        # Should never reach here, but just in case
+        raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
+
+    async def _make_request_old_nonstreaming(
+        self,
+        messages: list,
+        tools: list,
+        cancellation_token: Optional[CancellationToken] = None
+    ) -> dict:
+        """OLD non-streaming version - kept for reference, will be removed."""
 
         # Build request payload - convert ChatMessage objects to dicts
         message_dicts = []

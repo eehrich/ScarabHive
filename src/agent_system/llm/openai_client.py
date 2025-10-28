@@ -462,3 +462,132 @@ class OpenAIAsyncClient(LLMClient):
                     pass
             logger.exception("OpenAI chat with tools failed: %s", e)
             return {"assistant": {"role": "assistant", "content": "", "error": err_payload}}
+
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+        """Stream LLM responses using OpenAI SDK streaming."""
+        logger = logging.getLogger(__name__)
+        msgs: list[dict] = []
+        for m in messages:
+            d = m.model_dump(exclude_none=True)
+            msgs.append(d)
+
+        # Normalize tools (same as non-streaming)
+        normalized_tools: list[dict] = []
+        for idx, t in enumerate(tools):
+            if not isinstance(t, dict):
+                logger.warning("Skipping non-dict tool schema at index %d: %r", idx, t)
+                continue
+            tool_obj = dict(t)
+            if "type" not in tool_obj:
+                tool_obj["type"] = "function"
+            if tool_obj.get("type") == "function" and "function" not in tool_obj:
+                fn_fields = {k: tool_obj.get(k) for k in ("name", "description", "parameters") if k in tool_obj}
+                if fn_fields:
+                    for k in list(fn_fields.keys()):
+                        tool_obj.pop(k, None)
+                    tool_obj["function"] = fn_fields
+            fn = tool_obj.get("function") if tool_obj.get("type") == "function" else None
+            if tool_obj.get("type") == "function" and (not isinstance(fn, dict) or not fn.get("name")):
+                logger.warning("Tool schema at index %d missing function.name; skipping: %r", idx, tool_obj)
+                continue
+            normalized_tools.append(tool_obj)
+        
+        tools = normalized_tools
+        
+        try:
+            opts = {"model": self.model, "messages": msgs, "stream": True}
+            if tools:
+                opts["tools"] = tools
+                opts["tool_choice"] = "auto"
+            opts.update(self._default_extra)
+            
+            # Accumulated state
+            accumulated_content = []
+            accumulated_tool_calls = {}
+            
+            client_any = cast(Any, self._client)
+            
+            # Create streaming task (SDK returns async generator directly)
+            if cancellation_token:
+                stream_task = asyncio.create_task(client_any.chat.completions.create(**opts).__anext__())
+                # For OpenAI SDK streaming, we can't use _execute_with_cancellation on the generator
+                # Instead, we create the stream and monitor cancellation during iteration
+                stream = client_any.chat.completions.create(**opts)
+            else:
+                stream = client_any.chat.completions.create(**opts)
+            
+            # Process stream
+            async for chunk in stream:
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise Exception("Request cancelled by user")
+                
+                choices = chunk.choices if hasattr(chunk, 'choices') else []
+                if not choices:
+                    continue
+                
+                delta = choices[0].delta if hasattr(choices[0], 'delta') else None
+                if not delta:
+                    continue
+                
+                # Handle content delta
+                if hasattr(delta, 'content') and delta.content:
+                    accumulated_content.append(delta.content)
+                    yield {
+                        "type": "content_delta",
+                        "delta": delta.content,
+                        "accumulated": "".join(accumulated_content)
+                    }
+                
+                # Handle tool call deltas
+                if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        index = tc_delta.index if hasattr(tc_delta, 'index') else 0
+                        
+                        if index not in accumulated_tool_calls:
+                            accumulated_tool_calls[index] = {
+                                "id": getattr(tc_delta, "id", None) or f"call_{short_id()}",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            }
+                        
+                        # Accumulate function name
+                        if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'name') and tc_delta.function.name:
+                            accumulated_tool_calls[index]["function"]["name"] += tc_delta.function.name
+                        
+                        # Accumulate arguments
+                        if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
+                            accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
+                        
+                        # Update ID if provided
+                        if hasattr(tc_delta, 'id') and tc_delta.id:
+                            accumulated_tool_calls[index]["id"] = tc_delta.id
+                        
+                        yield {
+                            "type": "tool_call_delta",
+                            "index": index,
+                            "delta": {
+                                "id": getattr(tc_delta, "id", None),
+                                "function": {
+                                    "name": getattr(getattr(tc_delta, "function", None), "name", None),
+                                    "arguments": getattr(getattr(tc_delta, "function", None), "arguments", None)
+                                }
+                            },
+                            "accumulated": accumulated_tool_calls[index]
+                        }
+            
+            # Build final message
+            assistant = {"role": "assistant", "content": "".join(accumulated_content) if accumulated_content else None}
+            
+            if accumulated_tool_calls:
+                tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
+                assistant["tool_calls"] = tool_calls_list
+            
+            yield {"type": "final", "assistant": assistant}
+            
+        except Exception as e:
+            logger.exception("OpenAI streaming failed: %s", e)
+            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+    
+    def supports_streaming(self) -> bool:
+        """OpenAI SDK supports streaming."""
+        return True
