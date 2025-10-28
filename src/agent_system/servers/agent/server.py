@@ -771,7 +771,7 @@ class Agent(MCPServer):
         # Return initialized context
         return ConversationContext(
             messages=messages,
-            available_tools=display_tools,  # Use display_tools for prompt (individual tool names only)
+            available_tools=usable_tools,  # Use usable_tools for validation (includes both server names and tool names)
             tools_schema=tools_schema,
             tool_name_mapping=tool_name_mapping,
             max_steps=max_steps,
