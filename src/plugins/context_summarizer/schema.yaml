@@ -4,7 +4,7 @@ hooks:
   - name: summarize_context
     type: pre_llm_call
     enabled: true
-    timeout: 60.0
+    timeout: 300.0
     description: "Intelligently summarizes older messages using LLM to reduce context size while preserving key information"
     category: "context_summarization"
     order:

@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.status import publish_status, StatusPhase
+from agent_system.mcp.status import status_bus, StatusScope
 
 logger = logging.getLogger(__name__)
 
@@ -129,21 +129,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             )
 
             # Generate unique request_id for summarizer status messages (like tool calls)
-            # This must be done BEFORE any publish_status calls so all messages use the same unique ID
+            # This must be done BEFORE creating StatusScope so all messages use the same unique ID
             summarizer_request_id = context.request_id
             if context.agent:
                 summarizer_request_id = await context.agent.next_internal_tool_request_id(context.request_id)
 
-            # Publish START status message
-            await publish_status(
-                server="context_summarizer",
-                message=f"Starting context summarization: {total_tokens} tokens → target reduction {self.min_reduction:.0%}",
-                request_id=summarizer_request_id,
-                phase=StatusPhase.START,
-                level="info"
-            )
-
-            # Separate messages into categories
+            # Separate messages into categories first (needed for start message)
             system_msgs, recent_msgs, old_msgs = self._categorize_messages(messages_as_dicts)
 
             if len(old_msgs) < 2:
@@ -157,124 +148,84 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'old_message_count': len(old_msgs)
                     }
                 )
-            
-            # Publish progress status
-            await publish_status(
-                server="context_summarizer",
-                message=f"Summarizing {len(old_msgs)} older messages using LLM (preserving {len(recent_msgs)} recent messages)",
-                request_id=summarizer_request_id,
-                phase=StatusPhase.PROGRESS,
-                level="info"
-            )
 
-            # Summarize old messages in chunks
-            summarized_msgs, summary_stats = await self._summarize_messages(
-                old_msgs,
-                context
-            )
-
-            # Reconstruct message list: system + summarized + recent
-            new_messages_dicts = system_msgs + summarized_msgs + recent_msgs
-
-            # Calculate reduction
-            original_tokens = self._estimate_tokens(messages_as_dicts)
-            new_tokens = self._estimate_tokens(new_messages_dicts)
-            reduction_ratio = 1 - (new_tokens / max(original_tokens, 1))
-
-            # Check if reduction meets minimum threshold
-            if reduction_ratio < self.min_reduction:
-                logger.debug(
-                    f"[ContextSummarizer] Summarization reduction ({reduction_ratio:.2%}) "
-                    f"below minimum ({self.min_reduction:.2%}). Keeping original messages."
-                )
-                return HookResult(
-                    success=True,
-                    modified=False,
-                    context=context,
-                    metadata={
-                        'reason': 'insufficient_reduction',
-                        'reduction_ratio': reduction_ratio,
-                        'min_reduction': self.min_reduction
-                    }
+            # Use StatusScope to ensure START/END pairing even on errors
+            async with StatusScope(
+                status_bus,
+                "context_summarizer",
+                summarizer_request_id,
+                start_msg=f"Summarizing {len(old_msgs)} older messages using LLM (preserving {len(recent_msgs)} recent messages)",
+                end_msg="Context summarization completed"
+            ):
+                # Summarize old messages in chunks
+                summarized_msgs, summary_stats = await self._summarize_messages(
+                    old_msgs,
+                    context
                 )
 
-            # Convert dicts back to ChatMessage objects
-            new_messages = []
-            for msg_dict in new_messages_dicts:
-                if isinstance(msg_dict, dict):
-                    new_messages.append(ChatMessage(**msg_dict))
-                else:
-                    new_messages.append(msg_dict)
+                # Reconstruct message list: system + summarized + recent
+                new_messages_dicts = system_msgs + summarized_msgs + recent_msgs
 
-            # Create modified context
-            modified_context = HookContext(
-                hook_type=context.hook_type,
-                request_id=context.request_id,
-                session_id=context.session_id,
-                agent=context.agent,
-                agent_name=context.agent_name,
-                messages=new_messages,
-                llm_response=context.llm_response,
-                tool_call=context.tool_call,
-                tool_result=context.tool_result,
-                output=context.output,
-                metadata=context.metadata,
-                step=context.step,
-                llm=context.llm
-            )
+                # Calculate reduction
+                original_tokens = self._estimate_tokens(messages_as_dicts)
+                new_tokens = self._estimate_tokens(new_messages_dicts)
+                reduction_ratio = 1 - (new_tokens / max(original_tokens, 1))
 
-            logger.info(
-                f"[ContextSummarizer] Summarization complete: "
-                f"{len(messages)} → {len(new_messages)} messages, "
-                f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
-            )
+                # Check if reduction meets minimum threshold
+                if reduction_ratio < self.min_reduction:
+                    logger.debug(
+                        f"[ContextSummarizer] Summarization reduction ({reduction_ratio:.2%}) "
+                        f"below minimum ({self.min_reduction:.2%}). Keeping original messages."
+                    )
+                    return HookResult(
+                        success=True,
+                        modified=False,
+                        context=context,
+                        metadata={
+                            'reason': 'insufficient_reduction',
+                            'reduction_ratio': reduction_ratio,
+                            'min_reduction': self.min_reduction
+                        }
+                    )
 
-            # Publish END status message
-            await publish_status(
-                server="context_summarizer",
-                message=f"Summarization complete: {len(messages)} → {len(new_messages)} messages, {original_tokens - new_tokens} tokens saved ({reduction_ratio:.1%} reduction)",
-                request_id=summarizer_request_id,
-                phase=StatusPhase.END,
-                level="info",
-                meta={
-                    'original_messages': len(messages),
-                    'new_messages': len(new_messages),
-                    'tokens_saved': original_tokens - new_tokens,
-                    'reduction_ratio': reduction_ratio
-                }
-            )
+                # Convert dicts back to ChatMessage objects
+                new_messages = []
+                for msg_dict in new_messages_dicts:
+                    if isinstance(msg_dict, dict):
+                        new_messages.append(ChatMessage(**msg_dict))
+                    else:
+                        new_messages.append(msg_dict)
 
-            # Record summarization event in history
-            if self.summarization_history is not None:
-                event = {
-                    'timestamp': datetime.now().isoformat(),
-                    'session_id': context.session_id,
-                    'request_id': context.request_id,
-                    'strategy': 'summarize',  # context_summarizer uses LLM summarization
-                    'original_message_count': len(messages),
-                    'summarized_message_count': len(new_messages),
-                    'messages_summarized': len(old_msgs),
-                    'summary_count': summary_stats['summary_count'],
-                    'original_tokens': original_tokens,
-                    'new_tokens': new_tokens,
-                    'tokens_saved': original_tokens - new_tokens,
-                    'reduction_ratio': reduction_ratio,
-                    'before_messages': [self._serialize_message(m) for m in messages[-10:]],  # Last 10 for preview
-                    'after_messages': [self._serialize_message(m) for m in new_messages[-10:]],
-                    'summary_stats': summary_stats
-                }
-                self.summarization_history.append(event)
+                # Create modified context
+                modified_context = HookContext(
+                    hook_type=context.hook_type,
+                    request_id=context.request_id,
+                    session_id=context.session_id,
+                    agent=context.agent,
+                    agent_name=context.agent_name,
+                    messages=new_messages,
+                    llm_response=context.llm_response,
+                    tool_call=context.tool_call,
+                    tool_result=context.tool_result,
+                    output=context.output,
+                    metadata=context.metadata,
+                    step=context.step,
+                    llm=context.llm
+                )
 
-                # Keep only last 1000 events
-                if len(self.summarization_history) > 1000:
-                    self.summarization_history.pop(0)
+                logger.info(
+                    f"[ContextSummarizer] Summarization complete: "
+                    f"{len(messages)} → {len(new_messages)} messages, "
+                    f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
+                )
 
-            return HookResult(
-                success=True,
-                modified=True,
-                context=modified_context,
-                metadata={
-                    'summarization': {
+                # Record summarization event in history
+                if self.summarization_history is not None:
+                    event = {
+                        'timestamp': datetime.now().isoformat(),
+                        'session_id': context.session_id,
+                        'request_id': context.request_id,
+                        'strategy': 'summarize',  # context_summarizer uses LLM summarization
                         'original_message_count': len(messages),
                         'summarized_message_count': len(new_messages),
                         'messages_summarized': len(old_msgs),
@@ -283,10 +234,34 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'new_tokens': new_tokens,
                         'tokens_saved': original_tokens - new_tokens,
                         'reduction_ratio': reduction_ratio,
-                        **summary_stats
+                        'before_messages': [self._serialize_message(m) for m in old_msgs],  # ALL messages that were removed (summarized)
+                        'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
+                        'summary_stats': summary_stats
                     }
-                }
-            )
+                    self.summarization_history.append(event)
+
+                    # Keep only last 1000 events
+                    if len(self.summarization_history) > 1000:
+                        self.summarization_history.pop(0)
+
+                return HookResult(
+                    success=True,
+                    modified=True,
+                    context=modified_context,
+                    metadata={
+                        'summarization': {
+                            'original_message_count': len(messages),
+                            'summarized_message_count': len(new_messages),
+                            'messages_summarized': len(old_msgs),
+                            'summary_count': summary_stats['summary_count'],
+                            'original_tokens': original_tokens,
+                            'new_tokens': new_tokens,
+                            'tokens_saved': original_tokens - new_tokens,
+                            'reduction_ratio': reduction_ratio,
+                            **summary_stats
+                        }
+                    }
+                )
 
         except Exception as e:
             logger.error(f"[ContextSummarizer] Error during summarization: {e}", exc_info=True)

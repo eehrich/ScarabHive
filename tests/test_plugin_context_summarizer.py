@@ -194,24 +194,21 @@ async def test_status_messages_published(summarizer_plugin, mock_agent, mock_llm
         result = await summarizer_plugin.summarize_context(context)
         
         if result.modified:
-            assert len(published_statuses) >= 3, "Should have at least START, PROGRESS, END status messages"
+            # StatusScope only sends START and END (no manual PROGRESS anymore)
+            assert len(published_statuses) >= 2, "Should have at least START and END status messages"
             
             # Check for START message
             start_messages = [s for s in published_statuses if s['phase'].value == 'start']
             assert len(start_messages) > 0, "Should have START status message"
             assert start_messages[0]['server'] == 'context_summarizer'
-            assert 'Starting context summarization' in start_messages[0]['message']
-            
-            # Check for PROGRESS message
-            progress_messages = [s for s in published_statuses if s['phase'].value == 'progress']
-            assert len(progress_messages) > 0, "Should have PROGRESS status message"
-            assert 'Summarizing' in progress_messages[0]['message']
+            assert 'Summarizing' in start_messages[0]['message']
+            assert 'older messages' in start_messages[0]['message']
             
             end_messages = [s for s in published_statuses if s['phase'].value == 'end']
             assert len(end_messages) > 0, "Should have END status message"
             assert end_messages[0]['server'] == 'context_summarizer'
-            assert 'Summarization complete' in end_messages[0]['message']
-            assert 'tokens saved' in end_messages[0]['message']
+            # StatusScope generates generic end message
+            assert 'completed' in end_messages[0]['message'].lower()
             
             # CRITICAL: Verify unique request_id with suffix (like tool calls)
             # All summarizer status messages should use test-status-123_001 instead of test-status-123
