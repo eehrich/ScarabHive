@@ -45,6 +45,13 @@ Uses `record_context_usage()` from `agent_system.context.tracker` to store data 
 - Timestamp
 - Context window utilization percentage
 
+**Context Window Detection**: The plugin intelligently detects the actual context window being used:
+
+1. **Primary source**: Uses `context.llm.context_window` from the actual LLM instance in use (respects `llm_override` from WebUI profile selection)
+2. **Fallback**: If LLM object doesn't have context_window, resolves from `agent_config.llm_profile` (agent's configured default profile)
+
+This ensures accurate tracking when users override the LLM profile via WebUI (e.g., selecting "small" profile with 20k context while agent default is "normal" with 100k).
+
 ## Error Handling
 
 - Gracefully handles missing usage data

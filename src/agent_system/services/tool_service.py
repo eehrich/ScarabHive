@@ -6,6 +6,7 @@ Handles tool blocking, allowing, and filtering across MCP servers.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 from pathlib import Path
@@ -17,6 +18,25 @@ from agent_system.utils.io import atomic_write_text
 
 
 logger = logging.getLogger(__name__)
+
+# Global lock for config file modifications to prevent race conditions
+_config_file_locks: dict[Path, asyncio.Lock] = {}
+
+
+def _get_config_lock(config_path: Path) -> asyncio.Lock:
+    """Get or create a lock for a specific config file path.
+    
+    Args:
+        config_path: Path to the config file
+        
+    Returns:
+        asyncio.Lock for that file
+    """
+    # Resolve to absolute path to avoid duplicates
+    resolved_path = config_path.resolve()
+    if resolved_path not in _config_file_locks:
+        _config_file_locks[resolved_path] = asyncio.Lock()
+    return _config_file_locks[resolved_path]
 
 
 class ToolService:
@@ -165,73 +185,76 @@ class ToolService:
                 "error": f"Configuration file {cfg_path} not found"
             }
         
-        try:
-            # Load raw YAML (preserve formatting and comments)
-            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to read config: {str(e)}"
-            }
-        
-        # Navigate YAML structure (new structure: top-level external_servers key)
-        external_servers_block = raw.get("external_servers", {})
-        remote_servers = external_servers_block.get("remote_servers", {})
-        
-        if server_name not in remote_servers:
-            return {
-                "success": False,
-                "error": f"Server {server_name} not found in config file"
-            }
-        
-        server_cfg = remote_servers[server_name] or {}
-        tools_dict = server_cfg.get("tools", {})
-        if not tools_dict:
-            tools_dict = {}
-            server_cfg["tools"] = tools_dict
-        
-        allowed = list(tools_dict.get("allowed") or [])
-        blocked = list(tools_dict.get("blocked") or [])
-        
-        # Check if already blocked
-        if tool_name in blocked:
-            return {
-                "success": True,
-                "message": "Tool already blocked",
-                "server": server_name,
-                "tool": tool_name
-            }
-        
-        # Remove from allowed if present
-        if tool_name in allowed:
-            allowed.remove(tool_name)
-            tools_dict["allowed"] = allowed
-        
-        # Add to blocked
-        blocked.append(tool_name)
-        tools_dict["blocked"] = blocked
-        
-        # Update YAML structure (new structure: top-level external_servers)
-        remote_servers[server_name] = server_cfg
-        external_servers_block["remote_servers"] = remote_servers
-        raw["external_servers"] = external_servers_block
-        
-        # Write back to file
-        try:
-            data = yaml.safe_dump(raw, sort_keys=False)
-            atomic_write_text(cfg_path, data)
+        # Acquire lock to prevent race conditions on file operations
+        lock = _get_config_lock(cfg_path)
+        async with lock:
+            try:
+                # Load raw YAML (preserve formatting and comments)
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to read config: {str(e)}"
+                }
             
-            return {
-                "success": True,
-                "message": "Tool blocked successfully",
-                "server": server_name,
-                "tool": tool_name
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to write config: {str(e)}"
-            }
+            # Navigate YAML structure (new structure: top-level external_servers key)
+            external_servers_block = raw.get("external_servers", {})
+            remote_servers = external_servers_block.get("remote_servers", {})
+            
+            if server_name not in remote_servers:
+                return {
+                    "success": False,
+                    "error": f"Server {server_name} not found in config file"
+                }
+            
+            server_cfg = remote_servers[server_name] or {}
+            tools_dict = server_cfg.get("tools", {})
+            if not tools_dict:
+                tools_dict = {}
+                server_cfg["tools"] = tools_dict
+            
+            allowed = list(tools_dict.get("allowed") or [])
+            blocked = list(tools_dict.get("blocked") or [])
+            
+            # Check if already blocked
+            if tool_name in blocked:
+                return {
+                    "success": True,
+                    "message": "Tool already blocked",
+                    "server": server_name,
+                    "tool": tool_name
+                }
+            
+            # Remove from allowed if present
+            if tool_name in allowed:
+                allowed.remove(tool_name)
+                tools_dict["allowed"] = allowed
+            
+            # Add to blocked
+            blocked.append(tool_name)
+            tools_dict["blocked"] = blocked
+            
+            # Update YAML structure (new structure: top-level external_servers)
+            remote_servers[server_name] = server_cfg
+            external_servers_block["remote_servers"] = remote_servers
+            raw["external_servers"] = external_servers_block
+            
+            # Write back to file
+            try:
+                data = yaml.safe_dump(raw, sort_keys=False)
+                atomic_write_text(cfg_path, data)
+                
+                return {
+                    "success": True,
+                    "message": "Tool blocked successfully",
+                    "server": server_name,
+                    "tool": tool_name
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to write config: {str(e)}"
+                }
 
     async def allow_tool(
         self,
@@ -268,73 +291,76 @@ class ToolService:
                 "error": f"Configuration file {cfg_path} not found"
             }
         
-        try:
-            # Load raw YAML (preserve formatting and comments)
-            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to read config: {str(e)}"
-            }
-        
-        # Navigate YAML structure (new structure: top-level external_servers key)
-        external_servers_block = raw.get("external_servers", {})
-        remote_servers = external_servers_block.get("remote_servers", {})
-        
-        if server_name not in remote_servers:
-            return {
-                "success": False,
-                "error": f"Server {server_name} not found in config file"
-            }
-        
-        server_cfg = remote_servers[server_name] or {}
-        tools_dict = server_cfg.get("tools", {})
-        if not tools_dict:
-            tools_dict = {}
-            server_cfg["tools"] = tools_dict
-        
-        allowed = list(tools_dict.get("allowed") or [])
-        blocked = list(tools_dict.get("blocked") or [])
-        
-        # Check if already allowed
-        if tool_name in allowed:
-            return {
-                "success": True,
-                "message": "Tool already allowed",
-                "server": server_name,
-                "tool": tool_name
-            }
-        
-        # Remove from blocked if present
-        if tool_name in blocked:
-            blocked.remove(tool_name)
-            tools_dict["blocked"] = blocked
-        
-        # Add to allowed
-        allowed.append(tool_name)
-        tools_dict["allowed"] = allowed
-        
-        # Update YAML structure (new structure: top-level external_servers)
-        remote_servers[server_name] = server_cfg
-        external_servers_block["remote_servers"] = remote_servers
-        raw["external_servers"] = external_servers_block
-        
-        # Write back to file
-        try:
-            data = yaml.safe_dump(raw, sort_keys=False)
-            atomic_write_text(cfg_path, data)
+        # Acquire lock to prevent race conditions on file operations
+        lock = _get_config_lock(cfg_path)
+        async with lock:
+            try:
+                # Load raw YAML (preserve formatting and comments)
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to read config: {str(e)}"
+                }
             
-            return {
-                "success": True,
-                "message": "Tool allowed successfully",
-                "server": server_name,
-                "tool": tool_name
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to write config: {str(e)}"
-            }
+            # Navigate YAML structure (new structure: top-level external_servers key)
+            external_servers_block = raw.get("external_servers", {})
+            remote_servers = external_servers_block.get("remote_servers", {})
+            
+            if server_name not in remote_servers:
+                return {
+                    "success": False,
+                    "error": f"Server {server_name} not found in config file"
+                }
+            
+            server_cfg = remote_servers[server_name] or {}
+            tools_dict = server_cfg.get("tools", {})
+            if not tools_dict:
+                tools_dict = {}
+                server_cfg["tools"] = tools_dict
+            
+            allowed = list(tools_dict.get("allowed") or [])
+            blocked = list(tools_dict.get("blocked") or [])
+            
+            # Check if already allowed
+            if tool_name in allowed:
+                return {
+                    "success": True,
+                    "message": "Tool already allowed",
+                    "server": server_name,
+                    "tool": tool_name
+                }
+            
+            # Remove from blocked if present
+            if tool_name in blocked:
+                blocked.remove(tool_name)
+                tools_dict["blocked"] = blocked
+            
+            # Add to allowed
+            allowed.append(tool_name)
+            tools_dict["allowed"] = allowed
+            
+            # Update YAML structure (new structure: top-level external_servers)
+            remote_servers[server_name] = server_cfg
+            external_servers_block["remote_servers"] = remote_servers
+            raw["external_servers"] = external_servers_block
+            
+            # Write back to file
+            try:
+                data = yaml.safe_dump(raw, sort_keys=False)
+                atomic_write_text(cfg_path, data)
+                
+                return {
+                    "success": True,
+                    "message": "Tool allowed successfully",
+                    "server": server_name,
+                    "tool": tool_name
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to write config: {str(e)}"
+                }
 
     async def get_tool_status(
         self,

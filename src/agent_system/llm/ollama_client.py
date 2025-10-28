@@ -13,11 +13,13 @@ class OllamaNativeAsyncClient(LLMClient):
     Supports per-request options including num_ctx.
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None) -> None:
+    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None, context_window: Optional[int] = None) -> None:
         import httpx  # lazy import
         self._httpx = httpx
         self._base = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
         self.model = model
+        self.provider = "ollama"
+        self.context_window = context_window
         self._options = options or {}
         self._timeout = timeout or 60.0
 

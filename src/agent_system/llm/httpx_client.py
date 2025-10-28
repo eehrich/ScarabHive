@@ -49,12 +49,15 @@ class HTTPXOpenAIClient(LLMClient):
         max_retries: int = 3,
         retry_backoff: float = 1.0,
         verify: Optional[bool] = None,
+        context_window: Optional[int] = None,
         **extra_params
     ):
         # LLMClient doesn't have __init__, so no super() call needed
         self.model = model
+        self.provider = "openai"
+        self.context_window = context_window
         self.api_key = api_key
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.timeout_config = timeout_config or HTTPXTimeoutConfig()
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff

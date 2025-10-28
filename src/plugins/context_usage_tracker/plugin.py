@@ -57,14 +57,22 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
             
+            # Get context_window from the actual LLM instance (respects llm_override)
+            # instead of resolving from agent_config (which uses agent's default profile)
             context_window = 0
-            if context.agent:
+            if context.llm and hasattr(context.llm, 'context_window'):
+                # Use the actual LLM's context_window (handles llm_override correctly)
+                context_window = context.llm.context_window
+                logger.debug(f"Using context_window from actual LLM: {context_window}")
+            elif context.agent:
+                # Fallback: resolve from agent_config (legacy behavior)
                 try:
                     llm_config = resolve_llm_config_for_agent(
                         context.agent.system_config,
                         context.agent.agent_config
                     )
                     context_window = llm_config.get('context_window', 0)
+                    logger.debug(f"Using context_window from agent_config: {context_window}")
                 except Exception as e:
                     logger.debug(f"Could not resolve context_window: {e}")
             

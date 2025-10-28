@@ -293,12 +293,19 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
     def _get_context_window(self, context: HookContext) -> int | None:
         """Extract context window size from agent's LLM config.
 
+        Respects WebUI llm_profile overrides by checking context.llm first.
+
         Args:
             context: Hook context containing agent with config
 
         Returns:
             Context window size in tokens, or None if not available
         """
+        # Check if context has LLM instance with context_window (respects override)
+        if context.llm and hasattr(context.llm, 'context_window') and context.llm.context_window:
+            return context.llm.context_window
+
+        # Fallback: resolve from agent's default config
         if context.agent and hasattr(context.agent, 'agent_config') and hasattr(context.agent, 'system_config'):
             try:
                 from agent_system.llm.factory import resolve_llm_config_for_agent

@@ -19,7 +19,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -90,6 +90,8 @@ class OpenAIAsyncClient(LLMClient):
         self._retry_min_backoff = float(min_backoff)
         self._retry_backoff_cap = float(backoff_cap)
         self.model = model
+        self.provider = "openai"
+        self.context_window = context_window
         self._default_extra = default_extra or {}
         self._timeout = timeout
 

@@ -58,7 +58,8 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
                 timeout_config=timeout_config,
                 max_retries=3,
                 retry_backoff=1.0,
-                verify=ssl_verify
+                verify=ssl_verify,
+                context_window=context_window
             )
         else:
             return OpenAIAsyncClient(
@@ -66,6 +67,7 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
                 api_key=openai_api_key,
                 timeout=float(request_timeout) if request_timeout else None,
                 verify=ssl_verify,
+                context_window=context_window
             )
 
     if provider == "ollama":
@@ -81,6 +83,7 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
                 options=options or None,
                 timeout=float(request_timeout) if request_timeout else None,
                 verify=ssl_verify,
+                context_window=context_window
             )
         base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
         api_key = openai_api_key or "ollama"
@@ -90,6 +93,7 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
             base_url=base,
             timeout=float(request_timeout) if request_timeout else None,
             verify=ssl_verify,
+            context_window=context_window
         )
 
     raise ValueError(f"Unknown LLM provider: {provider}")

@@ -55,6 +55,11 @@ def mock_hook_context():
     context.agent_name = "test_agent"
     context.session_id = "session-456"
     context.messages = [{"role": "user", "content": "Hello"}]
+    
+    # Mock LLM with context_window attribute (handles llm_override)
+    context.llm = Mock()
+    context.llm.context_window = 8000
+    
     context.llm_response = {
         "assistant": {"role": "assistant", "content": "Hi"},
         "usage": {
@@ -271,3 +276,71 @@ def test_tracker_clear_history(plugin):
     assert len(plugin.tracker.get_history()) == 0
     assert plugin.tracker.get_latest() is None
     assert len(plugin.tracker.get_agent_stats()) == 0
+
+
+@pytest.mark.asyncio
+async def test_track_llm_usage_respects_llm_override(plugin):
+    """Test that context_window is taken from llm object (handles llm_override)."""
+    from agent_system.config.models import AgentSystemConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+    
+    # Create context with agent configured for 100k context window
+    context = Mock(spec=HookContext)
+    context.hook_type = HookType.POST_LLM_CALL
+    context.agent = Mock()
+    context.agent.agent_id = "web_research_agent"
+    
+    # Agent has normal profile with 100k context
+    system_config = AgentSystemConfig()
+    system_config.llm_system = LLMSystemConfig(
+        models={
+            'gpt-4': LLMModelConfig(
+                provider='openai',
+                model='gpt-4',
+                context_window=100000  # Agent's default: 100k
+            ),
+            'gpt-4-turbo': LLMModelConfig(
+                provider='openai',
+                model='gpt-4-turbo',
+                context_window=20000  # Override: 20k
+            )
+        },
+        profiles={
+            'normal': LLMProfile(model_ref='gpt-4'),
+            'small': LLMProfile(model_ref='gpt-4-turbo')
+        }
+    )
+    agent_config = AgentConfig(llm_profile='normal')
+    
+    context.agent.system_config = system_config
+    context.agent.agent_config = agent_config
+    context.agent_name = "web_research_agent"
+    context.session_id = "session-test"
+    context.messages = [{"role": "user", "content": "Test"}]
+    
+    # But actual LLM used is the override with 20k context (small profile)
+    context.llm = Mock()
+    context.llm.context_window = 20000  # This should be used!
+    
+    context.llm_response = {
+        "assistant": {"role": "assistant", "content": "Response"},
+        "usage": {
+            "total_tokens": 1096,
+            "prompt_tokens": 997,
+            "completion_tokens": 99,
+        }
+    }
+    
+    # Execute hook
+    result = await plugin.hooks_plugin.track_usage(context)
+    
+    assert result.success is True
+    
+    # Verify that tracker used the override context_window (20k), not agent's default (100k)
+    latest = plugin.tracker.get_latest()
+    assert latest is not None
+    assert latest["context_window"] == 20000  # Should use llm.context_window
+    assert latest["total_tokens"] == 1096
+    # Verify usage percentage is calculated correctly with 20k, not 100k
+    expected_percentage = (1096 / 20000) * 100  # ~5.48%
+    assert abs(latest["usage_percentage"] - expected_percentage) < 0.01
+

@@ -153,31 +153,36 @@ class ContextOptimizerPlugin(SchemaBasedPluginHook):
     
     def _get_context_window(self, context: HookContext) -> int | None:
         """Extract context window size from agent's LLM config.
-        
+
+        Respects WebUI llm_profile overrides by checking context.llm first.
+
         Args:
             context: Hook context containing agent with config
-            
+
         Returns:
             Context window size in tokens, or None if not available
         """
+        # Check if context has LLM instance with context_window (respects override)
+        if context.llm and hasattr(context.llm, 'context_window') and context.llm.context_window:
+            return context.llm.context_window
+
+        # Fallback: resolve from agent's default config
         if context.agent and hasattr(context.agent, 'agent_config') and hasattr(context.agent, 'system_config'):
             try:
                 from agent_system.llm.factory import resolve_llm_config_for_agent
-                
+
                 llm_config = resolve_llm_config_for_agent(
                     context.agent.system_config,
                     context.agent.agent_config
                 )
-                
+
                 if 'context_window' in llm_config and llm_config['context_window']:
                     return llm_config['context_window']
             except Exception as e:
-                logger.debug(f"[ContextOptimizer] Error resolving LLM config: {e}")
-        
+                logger.warning(f"[ContextOptimizer] Error resolving LLM config: {e}")
+
         logger.warning("[ContextOptimizer] Could not determine context window size")
-        return None
-    
-    # Handler for optional stats logging hook
+        return None    # Handler for optional stats logging hook
     async def log_context_stats(self, context: HookContext) -> HookResult:
         """Log context statistics after LLM call (if enabled in schema.yaml)."""
         try:
