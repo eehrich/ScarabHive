@@ -50,6 +50,15 @@ def mock_agent():
     agent.agent_config = agent_config
     agent.agent_id = 'test-agent'
     
+    # Mock next_internal_tool_request_id to generate unique suffixes
+    call_counter = 0
+    async def mock_next_request_id(base_id: str) -> str:
+        nonlocal call_counter
+        call_counter += 1
+        return f"{base_id}_{call_counter:03d}"
+    
+    agent.next_internal_tool_request_id = mock_next_request_id
+    
     return agent
 
 
@@ -203,6 +212,13 @@ async def test_status_messages_published(summarizer_plugin, mock_agent, mock_llm
             assert end_messages[0]['server'] == 'context_summarizer'
             assert 'Summarization complete' in end_messages[0]['message']
             assert 'tokens saved' in end_messages[0]['message']
+            
+            # CRITICAL: Verify unique request_id with suffix (like tool calls)
+            # All summarizer status messages should use test-status-123_001 instead of test-status-123
+            summarizer_events = [s for s in published_statuses if s['server'] == 'context_summarizer']
+            for event in summarizer_events:
+                assert event['request_id'] == 'test-status-123_001', \
+                    f"Expected unique request_id 'test-status-123_001', got '{event['request_id']}'"
     
     finally:
         pass

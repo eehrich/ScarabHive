@@ -127,11 +127,17 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 f"({self.trigger_percentage:.0%} of {context_window}). Starting summarization for session {context.session_id}"
             )
 
+            # Generate unique request_id for summarizer status messages (like tool calls)
+            # This must be done BEFORE any publish_status calls so all messages use the same unique ID
+            summarizer_request_id = context.request_id
+            if context.agent:
+                summarizer_request_id = await context.agent.next_internal_tool_request_id(context.request_id)
+
             # Publish START status message
             await publish_status(
                 server="context_summarizer",
                 message=f"Starting context summarization: {total_tokens} tokens → target reduction {self.min_reduction:.0%}",
-                request_id=context.request_id,
+                request_id=summarizer_request_id,
                 phase=StatusPhase.START,
                 level="info"
             )
@@ -150,12 +156,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'old_message_count': len(old_msgs)
                     }
                 )
-
+            
             # Publish progress status
             await publish_status(
                 server="context_summarizer",
                 message=f"Summarizing {len(old_msgs)} older messages using LLM (preserving {len(recent_msgs)} recent messages)",
-                request_id=context.request_id,
+                request_id=summarizer_request_id,
                 phase=StatusPhase.PROGRESS,
                 level="info"
             )
@@ -176,7 +182,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Check if reduction meets minimum threshold
             if reduction_ratio < self.min_reduction:
-                logger.warning(
+                logger.debug(
                     f"[ContextSummarizer] Summarization reduction ({reduction_ratio:.2%}) "
                     f"below minimum ({self.min_reduction:.2%}). Keeping original messages."
                 )
@@ -226,7 +232,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             await publish_status(
                 server="context_summarizer",
                 message=f"Summarization complete: {len(messages)} → {len(new_messages)} messages, {original_tokens - new_tokens} tokens saved ({reduction_ratio:.1%} reduction)",
-                request_id=context.request_id,
+                request_id=summarizer_request_id,
                 phase=StatusPhase.END,
                 level="info",
                 meta={
