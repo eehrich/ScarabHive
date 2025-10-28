@@ -411,13 +411,14 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 # Create summarization prompt
                 prompt = self.prompt_template.replace('{messages}', formatted_msgs)
 
-                # Call LLM for summarization
-                summary_response = await context.llm.generate(
-                    messages=[{'role': 'user', 'content': prompt}],
-                    profile=self.llm_profile
+                # Call LLM for summarization using chat() method
+                from agent_system.llm.models import ChatMessage
+                summary_response = await context.llm.chat(
+                    messages=[ChatMessage(role='user', content=prompt)],
+                    cancellation_token=None
                 )
 
-                summary_content = summary_response.get('content', '') if isinstance(summary_response, dict) else str(summary_response)
+                summary_content = summary_response if isinstance(summary_response, str) else str(summary_response)
 
                 # Create summary marker
                 start_time = chunk[0].get('timestamp', 'unknown')
