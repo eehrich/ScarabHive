@@ -28,9 +28,9 @@ system_prompt: |
   - Data Sources + Timestamps
   
   Tool Usage Tips:
-  - yahoo_finance: Stock prices, fundamentals, historical data
-  - web_scraper: News articles, company info
-  - duckduckgo_search: Recent news, market sentiment
+  - yahoo_finance_quote: Stock prices, fundamentals, historical data
+  - web_scraper_page: News articles, company info
+  - duckduckgo_search_web_search: Recent news, market sentiment
   - Parallelize tool calls for multiple stocks
   
   Operational Constraints:

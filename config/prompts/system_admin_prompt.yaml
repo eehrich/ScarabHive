@@ -32,12 +32,12 @@ system_prompt: |
   - IMPORTANT: NEVER make fictive assumptions about system state! Honor the actual state of the system. Always rely on verified data.
   
   Tool Usage:
-  - ssh_control: Execute remote commands
+  - ssh_control_execute_command: Execute remote commands
     - run commands in parallel on different servers else in a sequence
     - do not run big scripts if possible. do smaller steps to avoid mistakes
-  - web_research_agent: Documentation, best practices
-  - web_scraper: Specific page extraction
-  - duckduckgo_web_search: Troubleshooting tips
+  - meta_web_research_agent_web_research: Documentation, best practices
+  - web_scraper_page: Specific page extraction
+  - duckduckgo_search_web_search: Troubleshooting tips
   
   Priority: System stability, security, data integrity.
   
