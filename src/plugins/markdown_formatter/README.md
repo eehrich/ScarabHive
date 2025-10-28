@@ -6,11 +6,11 @@ A multi-format output formatter that converts LLM responses from Markdown to var
 
 - **Multi-Format Output**: Convert Markdown to HTML, ANSI, or plain text based on interface needs
 - **System Prompt Injection**: Guides LLM to generate Markdown-formatted responses
-- **Syntax Highlighting**: 
+- **Syntax Highlighting**:
   - HTML: Prism.js-compatible code blocks with `language-*` classes
   - ANSI: Rich library terminal colors and formatting
 - **HTML Sanitization**: XSS protection with configurable allowed tags
-- **Interface-Specific Formatting**: 
+- **Interface-Specific Formatting**:
   - Web API: HTML output with syntax highlighting
   - CLI: ANSI colored terminal output
   - Storage: Messages stored as plain Markdown
@@ -34,8 +34,8 @@ context = HookContext(
   - Sanitized against XSS attacks
   - Tables, autolinks, and rich formatting
 
-- **`ansi`**: Converts to ANSI colored terminal output (requires `rich` library)
-  - Syntax-highlighted code blocks
+- **`ansi`**: Returns Markdown unchanged for Rich library rendering
+  - Syntax-highlighted code blocks via Rich Markdown
   - Bold, italic, and other text formatting
   - Colored headers and lists
   - Falls back to plain text if Rich is unavailable
@@ -44,13 +44,13 @@ context = HookContext(
   - Used for storage and API responses
   - Preserves all Markdown formatting
 
-## Session Start Hook
+## Pre LLM Call Hook
 
-The `session_start` hook injects a system prompt to guide LLM output formatting:
+The `pre_llm_call` hook injects a system prompt to guide LLM output formatting:
 
 ```python
 context = HookContext(
-    hook_type=HookType.SESSION_START,
+    hook_type=HookType.PRE_LLM_CALL,
     messages=[ChatMessage(role='user', content='Hello')]
 )
 ```
@@ -67,34 +67,34 @@ config:
     type: boolean
     default: true
     description: "Inject system prompt to guide LLM to use Markdown"
-    
+
   system_prompt_template:
     type: string
     default: "Format your responses using Markdown for better readability."
-    
+
   convert_to_html:
     type: boolean
     default: true
     description: "Enable Markdown to HTML conversion"
-    
+
   enable_code_highlighting:
     type: boolean
     default: true
     description: "Enable syntax highlighting for code blocks"
-    
+
   enable_tables:
     type: boolean
     default: true
-    
+
   enable_autolinks:
     type: boolean
     default: true
-    
+
   sanitize_html:
     type: boolean
     default: true
     description: "Sanitize HTML output to prevent XSS attacks"
-    
+
   allowed_html_tags:
     type: array
     default: [h1, h2, h3, h4, h5, h6, p, br, strong, em, code, pre, ul, ol, li, table, thead, tbody, tr, th, td, a, blockquote, hr]
@@ -109,12 +109,12 @@ The plugin implements a clean separation between storage and display formats:
 1. **Storage**: Messages stored as Markdown in session files
 2. **Display**: Formatted on-demand based on interface:
    - Web API (`output_format='html'`): HTML with Prism.js highlighting
-   - CLI (`output_format='ansi'`): ANSI colored terminal output
+   - CLI (`output_format='ansi'`): Markdown rendered with Rich library
    - Direct access: Plain Markdown
 
 ### Hook Execution Flow
 
-1. **Session Start** → `inject_markdown_system_prompt()`
+1. **Pre LLM Call** → `inject_markdown_system_prompt()`
    - Adds system prompt to guide LLM
    - Runs once per session
    - Modifies message list before LLM call
@@ -142,15 +142,15 @@ formatted_output, content_format = await hook_manager.execute_format_output_hook
 ```python
 formatted_output, content_format = await hook_manager.execute_format_output_hooks(
     content=llm_response,
-    output_format='ansi'  # Request ANSI for terminal
+    output_format='ansi'  # Request Markdown for Rich rendering
 )
 ```
 
 ## Dependencies
 
-- **Required**: 
+- **Required**:
   - `markdown>=3.5.0` - Markdown to HTML conversion
-  
+
 - **Optional**:
   - `rich>=13.0.0` - ANSI terminal formatting (graceful fallback if missing)
 
@@ -207,17 +207,20 @@ def fibonacci(n):
 
 ### ANSI Output
 ```
-[1m[38;2;139;233;253mExample Code[0m
+# Example Code
 
 Here's a Python function:
 
-[38;2;139;233;253mdef[0m fibonacci(n):
-    [38;2;139;233;253mif[0m n <= 1:
-        [38;2;139;233;253mreturn[0m n
-    [38;2;139;233;253mreturn[0m fibonacci(n-1) + fibonacci(n-2)
-
-[1mTime complexity[0m: O(2^n)
+```python
+def fibonacci(n):
+    if n <= 1:
+        return n
+    return fibonacci(n-1) + fibonacci(n-2)
 ```
+
+**Time complexity**: O(2^n)
+```
+*(Rendered with Rich Markdown library for syntax highlighting and colors)*
 
 ## Testing
 
@@ -247,7 +250,7 @@ Test coverage includes:
 
 1. Check if Rich library installed: `pip list | grep rich`
 2. Verify terminal supports ANSI colors
-3. Check hook execution with `output_format='ansi'`
+3. Check hook execution with `output_format='ansi'` (returns Markdown for Rich rendering)
 4. If Rich unavailable, plugin falls back to plain text
 
 ### HTML Appears Escaped
