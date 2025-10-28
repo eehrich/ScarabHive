@@ -52,6 +52,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self.store_metadata = bool(config.get('store_original_metadata', True))
         self.marker_format = str(config.get('summary_marker_format',
                                         '[Summary of {count} messages from {start_time} to {end_time}]'))
+        self.max_preview_length = int(config.get('max_message_preview_length', 5000))
 
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
@@ -243,7 +244,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 }
             )
 
-            # Track summarization event for web UI
+            # Record summarization event in history
             if self.summarization_history is not None:
                 event = {
                     'timestamp': datetime.now().isoformat(),
@@ -355,6 +356,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         messages: List[Dict]
     ) -> tuple[List[Dict], List[Dict], List[Dict]]:
         """Categorize messages into system, recent, and old.
+        
+        Ensures tool_calls/tool response pairs stay together to prevent
+        orphaned tool responses after summarization.
 
         Args:
             messages: List of all messages
@@ -366,18 +370,77 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         recent_msgs = []
         old_msgs = []
 
+        # Phase 1: Initial categorization
         for i, msg in enumerate(messages):
             is_system = msg.get('role') == 'system'
             is_recent = i >= len(messages) - self.preserve_recent
 
             if is_system and self.preserve_system:
-                system_msgs.append(msg)
+                system_msgs.append((i, msg))
             elif is_recent:
-                recent_msgs.append(msg)
+                recent_msgs.append((i, msg))
             else:
-                old_msgs.append(msg)
+                old_msgs.append((i, msg))
 
-        return system_msgs, recent_msgs, old_msgs
+        # Phase 2: Keep tool_calls/tool response pairs together
+        # Build mapping: tool_call_id -> message index with tool_calls
+        tool_call_map: Dict[str, int] = {}
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                for tc in msg.get('tool_calls', []):
+                    if isinstance(tc, dict) and 'id' in tc:
+                        tool_call_map[tc['id']] = i
+        
+        # Find tool responses and ensure they're in the same category as their tool_calls
+        indices_to_move_to_old: set[int] = set()
+        indices_to_move_to_recent: set[int] = set()
+        
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'tool':
+                tool_call_id = msg.get('tool_call_id')
+                if tool_call_id and tool_call_id in tool_call_map:
+                    assistant_idx = tool_call_map[tool_call_id]
+                    
+                    # Check where assistant and tool are categorized
+                    assistant_in_old = any(idx == assistant_idx for idx, _ in old_msgs)
+                    assistant_in_recent = any(idx == assistant_idx for idx, _ in recent_msgs)
+                    tool_in_old = any(idx == i for idx, _ in old_msgs)
+                    tool_in_recent = any(idx == i for idx, _ in recent_msgs)
+                    
+                    # If assistant is old but tool is recent, move tool to old
+                    if assistant_in_old and tool_in_recent:
+                        indices_to_move_to_old.add(i)
+                    # If assistant is recent but tool is old, move both to recent
+                    elif assistant_in_recent and tool_in_old:
+                        indices_to_move_to_recent.add(i)
+                        indices_to_move_to_recent.add(assistant_idx)
+        
+        # Apply moves
+        if indices_to_move_to_old or indices_to_move_to_recent:
+            # Rebuild categories with moves applied
+            recent_msgs_filtered = [(i, m) for i, m in recent_msgs if i not in indices_to_move_to_old]
+            old_msgs_filtered = [(i, m) for i, m in old_msgs if i not in indices_to_move_to_recent]
+            
+            # Add moved messages
+            for i in indices_to_move_to_old:
+                msg = messages[i]
+                old_msgs_filtered.append((i, msg))
+            
+            for i in indices_to_move_to_recent:
+                msg = messages[i]
+                if not any(idx == i for idx, _ in recent_msgs_filtered):
+                    recent_msgs_filtered.append((i, msg))
+            
+            # Sort by original index to maintain order
+            recent_msgs = sorted(recent_msgs_filtered, key=lambda x: x[0])
+            old_msgs = sorted(old_msgs_filtered, key=lambda x: x[0])
+
+        # Remove indices, return just messages
+        return (
+            [msg for _, msg in system_msgs],
+            [msg for _, msg in recent_msgs],
+            [msg for _, msg in old_msgs]
+        )
 
     async def _summarize_messages(
         self,
@@ -426,14 +489,10 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
                 summary_content = summary_response if isinstance(summary_response, str) else str(summary_response)
 
-                # Create summary marker
-                start_time = chunk[0].get('timestamp', 'unknown')
-                end_time = chunk[-1].get('timestamp', 'unknown')
-                marker = self.marker_format.format(
-                    count=len(chunk),
-                    start_time=start_time,
-                    end_time=end_time
-                )
+                # Create summary marker with message count
+                # Note: Messages typically don't have timestamps, so we just show count
+                chunk_num = chunk_idx // self.chunk_size + 1
+                marker = f"[Summary of {len(chunk)} older messages (chunk {chunk_num}/{total_chunks})]"
 
                 # Create summary message
                 summary_msg = {
@@ -514,7 +573,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         if isinstance(msg, ChatMessage):
             return {
                 'role': msg.role,
-                'content': msg.content[:1000] if msg.content else '',  # Truncate for storage
+                'content': msg.content[:self.max_preview_length] if msg.content else '',
                 'name': msg.name
             }
         else:
@@ -529,6 +588,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             return {
                 'role': msg.get('role', 'unknown'),
-                'content': str(content)[:1000],  # Truncate for storage
+                'content': str(content)[:self.max_preview_length],
                 'name': msg.get('name')
             }

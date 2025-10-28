@@ -12,22 +12,16 @@ The Context Summarizer Plugin intelligently reduces conversation context size by
 
 ## Features
 
-- **Intelligent Summarization**: Uses LLM to create meaningful summaries instead of truncating
-- **Configurable Trigger**: Only activates when context exceeds a token threshold
-- **Chunked Processing**: Summarizes messages in configurable batch sizes
-- **Preservation Logic**: 
-  - Always preserves system messages
-  - Always preserves recent N messages
-  - Only summarizes older conversation history
-- **Quality Control**: Validates that summaries achieve minimum reduction ratio
-- **Audit Trail**: Optionally stores original messages in metadata
-- **Metadata Tracking**: Detailed statistics on summarization results
-- **Web UI Panel**: Interactive visualization of summarization events with:
-  - Real-time history of summarization events
-  - Before/after message comparison
-  - Token savings and reduction ratio statistics
-  - Session-specific tracking
-  - Auto-refresh capability
+- **Intelligent LLM-based Summarization**: Uses configured LLM to create concise, accurate summaries
+- **Percentage-based Triggering**: Activates when context exceeds configurable percentage of LLM window
+- **Smart Message Categorization**: Preserves system messages and recent messages while summarizing older content
+- **Tool Call Preservation**: Ensures `assistant` messages with `tool_calls` stay paired with their `tool` responses to prevent orphaned tool responses
+- **Chunked Processing**: Processes messages in configurable batches for optimal summarization
+- **Quality Guarantees**: Only applies summaries that meet minimum reduction thresholds
+- **Metadata Storage**: Optionally stores original messages for audit trails
+- **Web UI Integration**: Provides visual panel for monitoring summarization history and statistics
+- **Configurable Preview Length**: Adjustable message content length in history preview (100-50000 chars)
+- **No Auto-Refresh**: Manual refresh preserves expanded state in Web UI
 
 ## Status Messages
 

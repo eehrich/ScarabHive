@@ -167,6 +167,8 @@ plugins:
     context_summarizer:
       type: context_summarizer
       enabled: true
+      config:
+        max_message_preview_length: 5000
     
     context_optimizer:
       type: context_optimizer

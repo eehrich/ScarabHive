@@ -336,13 +336,11 @@
 
     <script>
         let currentEvents = [];
-        let autoRefresh = null;
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', function() {
             refreshHistory();
-            // Auto-refresh every 30 seconds
-            autoRefresh = setInterval(refreshHistory, 30000);
+            // Auto-refresh disabled - manually refresh with button to preserve expanded state
         });
 
         async function refreshHistory() {
@@ -507,13 +505,6 @@
             div.textContent = text;
             return div.innerHTML;
         }
-
-        // Cleanup on page unload
-        window.addEventListener('beforeunload', () => {
-            if (autoRefresh) {
-                clearInterval(autoRefresh);
-            }
-        });
     </script>
 </body>
 </html>
