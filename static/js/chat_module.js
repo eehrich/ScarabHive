@@ -531,6 +531,10 @@
   let currentEventSource = null;
   let currentStatusEventSource = null;
   
+  // Streaming state tracking
+  let currentStreamingContent = '';
+  let currentStreamingStep = null;
+  
   // Session and request tracking (shared across init and event listeners)
   let currentRequestId = null;
   let currentSessionId = null;
@@ -754,7 +758,44 @@
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
             break;
+          case 'thinking_delta':
+            // Real-time token streaming from LLM
+            if (data.step !== currentStreamingStep) {
+              // New step - reset accumulator and add typing indicator
+              currentStreamingContent = '';
+              currentStreamingStep = data.step;
+              
+              if (!blk.think) {
+                blk.think = document.createElement('pre');
+                blk.think.className = 'think-section streaming';
+                blk.r.appendChild(blk.think);
+              }
+              
+              blk.think.textContent = `💭 Step ${data.step}: `;
+              blk.think.classList.add('streaming');
+              showSection(blk.think);
+            }
+            
+            // Update with accumulated content + cursor
+            currentStreamingContent = data.accumulated || '';
+            if (blk.think) {
+              blk.think.innerHTML = `💭 Step ${data.step}: ${escapeHtml(currentStreamingContent)}<span class="typing-cursor">|</span>`;
+              // Auto-scroll to keep cursor visible
+              blk.think.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            }
+            break;
           case 'thinking':
+            // Complete thinking event (also handles backward compatibility)
+            // Clear streaming state when we get complete thinking event
+            currentStreamingContent = '';
+            currentStreamingStep = null;
+            if (blk.think) {
+              blk.think.classList.remove('streaming');
+              // Remove typing cursor if present
+              const cursor = blk.think.querySelector('.typing-cursor');
+              if (cursor) cursor.remove();
+            }
+            
             if (data.assistant) {
               if (data.assistant.content) {
                 blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
