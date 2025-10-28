@@ -128,6 +128,19 @@ llm_system:
         streaming: true
         json_mode: true
 
+    deepseek-chat-small:
+      provider: ollama
+      model: deepseek-chat
+      openai_api_key: "***REMOVED***"
+      ollama_url: https://api.deepseek.com
+      ollama_mode: openai_compat
+      context_window: 20000 # for testing small context
+      request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
 
   profiles:
     turbo:
@@ -150,6 +163,10 @@ llm_system:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks"
       max_steps: 100
+    small:
+      model_ref: deepseek-chat-small
+      description: "Cheap and fast none thinking model, for medium complex tasks"
+      max_steps: 100      
     local:
       model_ref: ollama-gpt-oss-20b
       description: "Local hosted model for privacy and offline usage, powerful but slow."
