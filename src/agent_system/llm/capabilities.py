@@ -35,6 +35,13 @@ class ModelCapability(str, Enum):
     JSON_MODE = "json_mode"
 
 
+class OpenAIApiType(str, Enum):
+    """OpenAI API types that a model can use."""
+    CHAT_COMPLETIONS = "chat_completions"  # Standard chat API (default)
+    ASSISTANTS = "assistants"  # Assistants API with built-in memory
+    REALTIME = "realtime"  # Realtime API for speech-to-speech
+
+
 class ImageFormat(str, Enum):
     """Supported image formats."""
     JPEG = "jpeg"
@@ -59,6 +66,16 @@ class ModelCapabilities(BaseModel):
     video_input: bool = False
     streaming: bool = True  # Most models support streaming
     json_mode: bool = False
+    
+    # OpenAI API configuration
+    supported_api_types: List[OpenAIApiType] = Field(
+        default_factory=lambda: [OpenAIApiType.CHAT_COMPLETIONS],
+        description="API types this model supports (chat_completions, assistants, realtime, etc.)"
+    )
+    default_api_type: OpenAIApiType = Field(
+        default=OpenAIApiType.CHAT_COMPLETIONS,
+        description="Default API type to use for this model"
+    )
     
     # Image input configuration
     max_image_size: Optional[int] = None  # bytes
@@ -87,6 +104,16 @@ class ModelCapabilities(BaseModel):
             capability = ModelCapability(capability)
         
         return getattr(self, capability.value, False)
+    
+    def supports_api_type(self, api_type: OpenAIApiType | str) -> bool:
+        """Check if model supports a specific OpenAI API type."""
+        if isinstance(api_type, str):
+            try:
+                api_type = OpenAIApiType(api_type)
+            except ValueError:
+                return False
+        
+        return api_type in self.supported_api_types
     
     def supports_multimodal(self) -> bool:
         """Check if model supports any multimodal input."""

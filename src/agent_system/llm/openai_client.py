@@ -589,3 +589,39 @@ class OpenAIAsyncClient(LLMClient):
         if self.capabilities and hasattr(self.capabilities, 'streaming'):
             return self.capabilities.streaming
         return True  # Default to True if capabilities not set
+    
+    def get_api_type(self) -> str:
+        """Get the API type this client will use based on capabilities.
+        
+        Returns:
+            API type string: 'chat_completions', 'assistants', or 'realtime'
+        """
+        if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
+            return str(self.capabilities.default_api_type)
+        return 'chat_completions'  # Default to chat completions
+    
+    def supports_api_type(self, api_type: str) -> bool:
+        """Check if this client supports a specific API type.
+        
+        Args:
+            api_type: API type to check ('chat_completions', 'assistants', 'realtime')
+        
+        Returns:
+            True if the API type is supported
+        """
+        if not self.capabilities:
+            return api_type == 'chat_completions'  # Default only supports chat
+        
+        if hasattr(self.capabilities, 'supports_api_type'):
+            return self.capabilities.supports_api_type(api_type)
+        
+        # Fallback: check if supported_api_types list exists
+        if hasattr(self.capabilities, 'supported_api_types'):
+            from .capabilities import OpenAIApiType
+            try:
+                api_enum = OpenAIApiType(api_type)
+                return api_enum in self.capabilities.supported_api_types
+            except (ValueError, AttributeError):
+                return False
+        
+        return api_type == 'chat_completions'

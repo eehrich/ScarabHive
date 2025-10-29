@@ -22,6 +22,8 @@ llm_system:
         video_input: false
         streaming: true
         json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
@@ -38,6 +40,8 @@ llm_system:
         image_input: false
         streaming: false
         json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
 
     gpt-5-mini:
       provider: openai_httpx
@@ -56,6 +60,8 @@ llm_system:
         image_input: true
         streaming: false
         json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
@@ -74,6 +80,8 @@ llm_system:
         video_input: false
         streaming: false
         json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
@@ -88,7 +96,28 @@ llm_system:
         tools: true
         function_calling: true
         audio_input: true
-        streaming: false
+        image_input: true
+        streaming: true
+        supported_api_types: [realtime]
+        default_api_type: realtime
+
+    gpt-realtime-mini:
+      provider: openai
+      model: gpt-realtime-mini
+      openai_api_key: ***REMOVED***
+      context_window: 27900
+      request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        audio_input: true
+        streaming: true
+        supported_api_types: [realtime]
+        default_api_type: realtime
+        function_calling: true
+        audio_input: true
+        image_input: true
+        streaming: true
 
     gpt-audio:
       provider: openai
@@ -158,11 +187,15 @@ llm_system:
     big:
       model_ref: gpt-4.1
       description: "Expensive model with big context window, legacy and medium powerful."
-      max_steps: 100
+      max_steps: 100      
     chat:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks"
       max_steps: 100
+    realtime:
+      model_ref: gpt-realtime-mini
+      description: "Realtime answers, for medium complex tasks"
+      max_steps: 100      
     small:
       model_ref: deepseek-chat-small
       description: "Cheap and fast none thinking model, for medium complex tasks"
