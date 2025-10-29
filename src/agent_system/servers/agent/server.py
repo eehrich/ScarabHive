@@ -166,6 +166,7 @@ class Agent(MCPServer):
                         llm_kwargs["request_timeout"],
                         ssl_verify=getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None,
                         httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
+                        capabilities=llm_kwargs.get("capabilities"),
                     )
                 except Exception as e:
                     # Missing API key is an expected situation in test/dev
