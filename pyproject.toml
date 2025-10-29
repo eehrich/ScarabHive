@@ -45,6 +45,7 @@ dependencies = [
     "markdownify>=0.11.0",
     "pygments>=2.15.0",
     "websockets>=15.0.0",
+    "chromadb>=0.4.0",
 ]
 
 [project.urls]
@@ -93,6 +94,7 @@ test = [
     "pytest>=8.4",
     "pytest-asyncio>=1.1.0",
     "pytest-timeout>=2.4.0",
+    "pytest-cov>=6.0.0",
     "anyio>=3.0",
 ]
 
