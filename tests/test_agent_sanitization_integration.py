@@ -55,12 +55,16 @@ class TestAgentSanitizationIntegration:
         
         # Mock the LLM to capture what messages it receives
         captured_messages = []
-        async def mock_chat_tools(messages, tools, cancellation_token=None):
+        
+        async def mock_chat_tools_streaming(messages, tools, cancellation_token=None):
             captured_messages.extend(messages)
-            return {"assistant": {"content": "Test response"}}
+            # Yield streaming chunks
+            yield {"type": "content_delta", "delta": "Test", "accumulated": "Test"}
+            yield {"type": "final", "assistant": {"role": "assistant", "content": "Test response"}}
         
         agent.llm = AsyncMock()
-        agent.llm.chat_tools = mock_chat_tools
+        agent.llm.supports_streaming = lambda: True
+        agent.llm.chat_tools_streaming = mock_chat_tools_streaming
         
         # Test with problematic input containing null bytes and control characters
         problematic_input = "Hello\x00world\x01test\u200Bdata"

@@ -1294,3 +1294,37 @@ div .container-section .container-header .toggle-arrow {
 .operation-progress .progress-line {
   align-items: center;
 }
+
+/* ============================================================
+   LLM Streaming Styles
+   ============================================================ */
+
+/* Typing cursor animation for streaming LLM responses */
+.typing-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  font-weight: bold;
+  color: var(--accent-primary, #4a9eff);
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Streaming indicator for thinking sections */
+.think-section.streaming {
+  border-left: 3px solid var(--accent-primary, #4a9eff);
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-left-color: var(--accent-primary, #4a9eff); }
+  50% { border-left-color: var(--accent-secondary, #66b3ff); }
+}
+
+/* Smooth scrolling for streaming content */
+.think-section.streaming {
+  scroll-behavior: smooth;
+}

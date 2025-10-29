@@ -177,8 +177,27 @@ class ChatMessage(BaseModel):
 
 
 class LLMClient:
+    """Base class for LLM clients with streaming support."""
+    
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         raise NotImplementedError
 
     async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
         raise NotImplementedError
+    
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+        """Stream LLM responses with tool calls.
+        
+        Yields chunks in the format:
+        - {"type": "content_delta", "delta": str, "accumulated": str}
+        - {"type": "tool_call_delta", "index": int, "delta": {...}, "accumulated": {...}}
+        - {"type": "final", "assistant": {...}}
+        
+        Default implementation falls back to non-streaming.
+        """
+        result = await self.chat_tools(messages, tools, cancellation_token)
+        yield {"type": "final", "assistant": result["assistant"]}
+    
+    def supports_streaming(self) -> bool:
+        """Return True if this client implements true streaming."""
+        return False
