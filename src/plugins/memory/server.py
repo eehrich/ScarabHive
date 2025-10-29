@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import re
 
 from pydantic import BaseModel, Field, field_serializer
-import chromadb
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
