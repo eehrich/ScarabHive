@@ -35,7 +35,7 @@ config:
   
   max_memories_per_session:
     type: integer
-    default: 1000
+    default: 5000
     description: "Maximum memories allowed per session"
     minimum: 10
     maximum: 10000
@@ -62,7 +62,7 @@ tools:
     function:
       name: "{{ name }}"
       description: |
-        Unified memory management tool for storing and retrieving important information.
+        Unified memory tool for storing and retrieving information.
         Supports semantic search via vector embeddings.
       parameters:
         type: object
@@ -71,12 +71,12 @@ tools:
             type: string
             enum: ["store", "recall", "search", "list", "delete", "update"]
             description: |
-              Operation to perform:
+              Operations:
               - store: Save a new memory with title and content
               - recall: Get memory by ID (also updates access count)
-              - search: Semantic search by query string (returns results with similarity score 0.0-1.0, where 1.0 = perfect match)
-              - list: Show all memories for current session
-              - delete: Remove a memory permanently
+              - search: Semantic search by query string (returns results with similarity score 0.0-1.0, 1.0 = perfect match)
+              - list: Show all memories
+              - delete: Remove a memory
               - update: Edit an existing memory (partial update supported - only provide fields to change)
           
           # For store operation
@@ -132,7 +132,7 @@ tools:
             type: integer
             minimum: 1
             maximum: 20
-            default: 5
+            default: 3
             description: "Number of search results to return (for search operation)"
           
           # For list operation
