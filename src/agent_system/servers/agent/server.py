@@ -1090,7 +1090,11 @@ class Agent(MCPServer):
                         # Yield interleaved status events
                         yield event
                     elif event_type == "thinking_complete":
-                        llm_out = {"assistant": event["assistant"]}
+                        # CRITICAL: Make a deep copy of assistant dict to prevent
+                        # format_output hooks in app.py from modifying the stored message!
+                        # app.py formats events for display, but we need raw Markdown in messages
+                        import copy
+                        llm_out = {"assistant": copy.deepcopy(event["assistant"])}
                         # Yield thinking_complete to WebUI for final formatting
                         yield event
                         
@@ -1150,11 +1154,17 @@ class Agent(MCPServer):
                 if modified_response is not None:
                     # Extract assistant data from modified response
                     modified_assistant = modified_response.get("assistant", {})
-                    content = modified_assistant.get("content", content)
-                    tool_calls = modified_assistant.get("tool_calls", tool_calls)
-                    # Update the assistant message if hooks modified the response
-                    assistant_msg.content = content or ""
-                    assistant_msg.tool_calls = tool_calls if tool_calls else None
+                    new_content = modified_assistant.get("content")
+                    new_tool_calls = modified_assistant.get("tool_calls")
+                    
+                    # Update content and tool_calls if hooks modified them
+                    if new_content is not None:
+                        content = new_content
+                        assistant_msg.content = content or ""
+                    if new_tool_calls is not None:
+                        tool_calls = new_tool_calls
+                        assistant_msg.tool_calls = tool_calls if tool_calls else None
+                    
                     # Set content_format from hook metadata (e.g., 'html', 'markdown', 'text')
                     if "content_format" in hook_metadata:
                         assistant_msg.content_format = hook_metadata["content_format"]
