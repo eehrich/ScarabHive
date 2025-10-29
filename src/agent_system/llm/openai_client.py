@@ -889,6 +889,9 @@ class OpenAIAsyncClient(LLMClient):
         
         Returns:
             API type string: 'chat_completions', 'assistants', or 'realtime'
+            
+        Raises:
+            NotImplementedError: If 'assistants' API type is configured
         """
         if not self.capabilities:
             return 'chat_completions'
@@ -901,9 +904,20 @@ class OpenAIAsyncClient(LLMClient):
         
         # Extract value from enum if it's an enum
         if hasattr(api_type, 'value'):
-            return api_type.value
+            api_type = api_type.value
+        else:
+            api_type = str(api_type)
         
-        return str(api_type)
+        # Validate that Assistants API is not used
+        if api_type == 'assistants':
+            raise NotImplementedError(
+                "Assistants API is not implemented. "
+                "The AgentSystem already provides its own session management and state handling. "
+                "Please use 'chat_completions' (default) or 'realtime' API instead. "
+                f"Current model: {self.model}"
+            )
+        
+        return api_type
     
     def supports_api_type(self, api_type: str) -> bool:
         """Check if this client supports a specific API type.
