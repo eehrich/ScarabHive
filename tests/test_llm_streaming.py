@@ -56,6 +56,7 @@ class TestHTTPXClientStreaming:
         
         mock_response = MagicMock()
         mock_response.aiter_lines = mock_aiter_lines
+        mock_response.status_code = 200  # Add status code
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=None)
         
@@ -102,6 +103,7 @@ class TestHTTPXClientStreaming:
         
         mock_response = MagicMock()
         mock_response.aiter_lines = mock_aiter_lines
+        mock_response.status_code = 200  # Add status code
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=None)
         

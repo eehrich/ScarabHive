@@ -215,7 +215,7 @@ class HTTPXOpenAIClient(LLMClient):
 
                     # Make streaming request
                     async with client.stream("POST", url=url, headers=self._headers, json=payload) as response:
-                        # Check for HTTP errors
+                        # Check status code (don't use raise_for_status() - it tries to read the body)
                         if response.status_code == 429 and attempt < self.max_retries:
                             # Rate limit - retry with backoff
                             retry_after = self._parse_retry_after(response.headers.get("retry-after"))
@@ -224,8 +224,12 @@ class HTTPXOpenAIClient(LLMClient):
                             logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                             await asyncio.sleep(backoff_time)
                             continue
-
-                        response.raise_for_status()
+                        
+                        # Check for errors without reading body (streaming response)
+                        if response.status_code >= 400:
+                            error_msg = f"HTTP {response.status_code}"
+                            logger.error(f"HTTPX streaming request failed: {error_msg}")
+                            raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
                         # Parse SSE stream
                         async for line in response.aiter_lines():
