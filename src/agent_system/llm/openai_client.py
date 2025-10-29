@@ -9,6 +9,7 @@ import httpx
 
 from ..utils.id import short_id
 from .models import ChatMessage, LLMClient
+from ..config.models import ModelCapabilitiesConfig
 
 
 class OpenAIAsyncClient(LLMClient):
@@ -19,7 +20,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[Any] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -90,11 +91,12 @@ class OpenAIAsyncClient(LLMClient):
         self._retry_min_backoff = float(min_backoff)
         self._retry_backoff_cap = float(backoff_cap)
         self.model = model
+        self.api_key = api_key  # Store for Realtime API
         self.provider = "openai"
         self.context_window = context_window
         self._default_extra = default_extra or {}
         self._timeout = timeout
-        self.capabilities = capabilities or {}
+        self.capabilities = capabilities  # Pydantic model or None
 
     async def _execute_with_cancellation(self, llm_task: asyncio.Task, cancellation_token):
         """Execute LLM task with efficient event-based cancellation monitoring.
@@ -293,6 +295,20 @@ class OpenAIAsyncClient(LLMClient):
                 return ""
 
     async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+        """Dispatch to appropriate API based on model capabilities.
+        
+        Routes to either Chat Completions API or Realtime API based on
+        the model's default_api_type capability.
+        """
+        api_type = self.get_api_type()
+        
+        if api_type == 'realtime':
+            return await self._chat_tools_realtime(messages, tools, cancellation_token)
+        else:
+            return await self._chat_tools_chat_completions(messages, tools, cancellation_token)
+    
+    async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+        """Original Chat Completions API implementation."""
         logger = logging.getLogger(__name__)
         msgs: list[dict] = []
         for m in messages:
@@ -463,9 +479,137 @@ class OpenAIAsyncClient(LLMClient):
                     pass
             logger.exception("OpenAI chat with tools failed: %s", e)
             return {"assistant": {"role": "assistant", "content": "", "error": err_payload}}
+    
+    async def _chat_tools_realtime(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
+        """Realtime API implementation (non-streaming).
+        
+        Connects to Realtime API via WebSocket, sends conversation items,
+        and collects all response events until completion.
+        """
+        logger = logging.getLogger(__name__)
+        
+        try:
+            from .realtime_session import RealtimeSession
+            from .realtime_adapter import RealtimeMessageAdapter
+        except ImportError as e:
+            logger.error("Failed to import Realtime API modules: %s", e)
+            return {"assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": "Realtime API modules not available"}}}
+        
+        try:
+            # Create and connect session
+            async with RealtimeSession(self.model, self.api_key) as session:
+                # Check for cancellation
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise Exception("Request cancelled by user")
+                
+                # Extract system instructions
+                instructions = RealtimeMessageAdapter.extract_system_instructions(messages)
+                
+                # Configure session
+                session_config: dict[str, Any] = {
+                    "modalities": ["text"],  # Text-only mode
+                }
+                if instructions:
+                    session_config["instructions"] = instructions
+                if tools:
+                    realtime_tools = RealtimeMessageAdapter.tools_to_realtime_tools(tools)
+                    if realtime_tools:
+                        session_config["tools"] = realtime_tools
+                        session_config["tool_choice"] = "auto"
+                
+                # Apply default_extra config (temperature, etc.)
+                session_config.update(self._default_extra)
+                
+                await session.configure_session(session_config)
+                
+                # Check for cancellation
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise Exception("Request cancelled by user")
+                
+                # Convert messages to conversation items
+                items = RealtimeMessageAdapter.messages_to_conversation_items(messages)
+                
+                # Add conversation items
+                for item in items:
+                    await session.add_conversation_item(item)
+                    
+                    # Check for cancellation
+                    if cancellation_token and cancellation_token.is_cancelled:
+                        raise Exception("Request cancelled by user")
+                
+                # Request response
+                await session.create_response()
+                
+                # Collect all response events
+                response_events = []
+                async for event in session.receive_events():
+                    # Check for cancellation
+                    if cancellation_token and cancellation_token.is_cancelled:
+                        raise Exception("Request cancelled by user")
+                    
+                    event_type = event.get("type")
+                    response_events.append(event)
+                    
+                    # Check for errors
+                    if event_type == "error":
+                        error_data = event.get("error", {})
+                        logger.error(f"Realtime API error: {error_data}")
+                        return {
+                            "assistant": {
+                                "role": "assistant",
+                                "content": "",
+                                "error": {
+                                    "error": True,
+                                    "message": error_data.get("message", "Unknown error"),
+                                    "type": error_data.get("type", "unknown")
+                                }
+                            }
+                        }
+                    
+                    # Stop when response is done
+                    if event_type == "response.done":
+                        break
+                
+                # Parse response content from events
+                content, tool_calls = RealtimeMessageAdapter.parse_response_content(response_events)
+                
+                # Build assistant message
+                assistant_msg = RealtimeMessageAdapter.build_assistant_message(content, tool_calls)
+                
+                return {"assistant": assistant_msg}
+                
+        except Exception as e:
+            error_str = str(e).lower()
+            if "cancelled" in error_str:
+                logger.info(f"Realtime API request cancelled: {e}")
+                raise
+            
+            logger.exception("Realtime API call failed: %s", e)
+            return {
+                "assistant": {
+                    "role": "assistant",
+                    "content": "",
+                    "error": {
+                        "error": True,
+                        "message": str(e),
+                        "type": "realtime_api_error"
+                    }
+                }
+            }
 
     async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
-        """Stream LLM responses using OpenAI SDK streaming."""
+        """Dispatch streaming to appropriate API based on model capabilities."""
+        api_type = self.get_api_type()
+        
+        if api_type == 'realtime':
+            async for event in self._chat_tools_streaming_realtime(messages, tools, cancellation_token):
+                yield event
+        else:
+            async for event in self._chat_tools_streaming_chat_completions(messages, tools, cancellation_token):
+                yield event
+    
+    async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+        """Original Chat Completions API streaming implementation."""
         logger = logging.getLogger(__name__)
         msgs: list[dict] = []
         for m in messages:
@@ -583,6 +727,156 @@ class OpenAIAsyncClient(LLMClient):
             logger.exception("OpenAI streaming failed: %s", e)
             yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
     
+    async def _chat_tools_streaming_realtime(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
+        """Realtime API streaming implementation.
+        
+        Connects to Realtime API and yields events in real-time as they arrive.
+        """
+        logger = logging.getLogger(__name__)
+        
+        try:
+            from .realtime_session import RealtimeSession
+            from .realtime_adapter import RealtimeMessageAdapter
+        except ImportError as e:
+            logger.error("Failed to import Realtime API modules: %s", e)
+            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": "Realtime API modules not available"}}}
+            return
+        
+        try:
+            # Create and connect session
+            async with RealtimeSession(self.model, self.api_key) as session:
+                # Check for cancellation
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise Exception("Request cancelled by user")
+                
+                # Extract system instructions
+                instructions = RealtimeMessageAdapter.extract_system_instructions(messages)
+                
+                # Configure session
+                session_config: dict[str, Any] = {
+                    "modalities": ["text"],  # Text-only mode
+                }
+                if instructions:
+                    session_config["instructions"] = instructions
+                
+                # Convert and configure tools
+                if tools:
+                    realtime_tools = RealtimeMessageAdapter.tools_to_realtime_tools(tools)
+                    if realtime_tools:
+                        session_config["tools"] = realtime_tools
+                        session_config["tool_choice"] = "auto"
+                
+                # Apply default_extra config
+                session_config.update(self._default_extra)
+                
+                # Configure session
+                await session.configure_session(session_config)
+                # Check for cancellation
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise Exception("Request cancelled by user")
+                
+                # Convert messages to conversation items
+                items = RealtimeMessageAdapter.messages_to_conversation_items(messages)
+                
+                # Add conversation items
+                for item in items:
+                    await session.add_conversation_item(item)
+                    if cancellation_token and cancellation_token.is_cancelled:
+                        raise Exception("Request cancelled by user")
+                
+                # Request response
+                await session.create_response()
+                
+                # Stream events in real-time
+                accumulated_content = []
+                accumulated_tool_calls = {}
+                
+                async for event in session.receive_events():
+                    # Check for cancellation
+                    if cancellation_token and cancellation_token.is_cancelled:
+                        raise Exception("Request cancelled by user")
+                    
+                    event_type = event.get("type")
+                    
+                    # Yield text deltas
+                    if event_type == "response.text.delta":
+                        delta = event.get("delta", "")
+                        accumulated_content.append(delta)
+                        yield {
+                            "type": "content_delta",
+                            "delta": delta,
+                            "accumulated": "".join(accumulated_content)
+                        }
+                    
+                    # Handle tool call deltas
+                    elif event_type == "response.function_call_arguments.delta":
+                        call_id = event.get("call_id")
+                        if call_id not in accumulated_tool_calls:
+                            accumulated_tool_calls[call_id] = {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": event.get("name"),
+                                    "arguments": ""
+                                }
+                            }
+                        accumulated_tool_calls[call_id]["function"]["arguments"] += event.get("delta", "")
+                        
+                        yield {
+                            "type": "tool_call_delta",
+                            "index": len(accumulated_tool_calls) - 1,
+                            "accumulated": accumulated_tool_calls[call_id]
+                        }
+                    
+                    # Check for errors
+                    elif event_type == "error":
+                        error_data = event.get("error", {})
+                        logger.error(f"Realtime API error: {error_data}")
+                        yield {
+                            "type": "final",
+                            "assistant": {
+                                "role": "assistant",
+                                "content": "",
+                                "error": {
+                                    "error": True,
+                                    "message": error_data.get("message", "Unknown error"),
+                                    "type": error_data.get("type", "unknown")
+                                }
+                            }
+                        }
+                        return
+                    
+                    # Response complete
+                    elif event_type == "response.done":
+                        # Build final assistant message
+                        content = "".join(accumulated_content) if accumulated_content else None
+                        tool_calls = [accumulated_tool_calls[cid] for cid in sorted(accumulated_tool_calls.keys())] if accumulated_tool_calls else None
+                        
+                        assistant_msg = RealtimeMessageAdapter.build_assistant_message(content, tool_calls)
+                        
+                        yield {"type": "final", "assistant": assistant_msg}
+                        return
+                        
+        except Exception as e:
+            error_str = str(e).lower()
+            if "cancelled" in error_str:
+                logger.info(f"Realtime API streaming cancelled: {e}")
+                raise
+            
+            logger.exception("Realtime API streaming failed: %s", e)
+            yield {
+                "type": "final",
+                "assistant": {
+                    "role": "assistant",
+                    "content": "",
+                    "error": {
+                        "error": True,
+                        "message": str(e),
+                        "type": "realtime_api_error"
+                    }
+                }
+            }
+    
     def supports_streaming(self) -> bool:
         """Check if this client supports streaming based on model capabilities."""
         # Check if capabilities explicitly disable streaming
@@ -596,9 +890,20 @@ class OpenAIAsyncClient(LLMClient):
         Returns:
             API type string: 'chat_completions', 'assistants', or 'realtime'
         """
-        if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
-            return str(self.capabilities.default_api_type)
-        return 'chat_completions'  # Default to chat completions
+        if not self.capabilities:
+            return 'chat_completions'
+        
+        # Access Pydantic model attribute
+        if not hasattr(self.capabilities, 'default_api_type') or not self.capabilities.default_api_type:
+            return 'chat_completions'
+        
+        api_type = self.capabilities.default_api_type
+        
+        # Extract value from enum if it's an enum
+        if hasattr(api_type, 'value'):
+            return api_type.value
+        
+        return str(api_type)
     
     def supports_api_type(self, api_type: str) -> bool:
         """Check if this client supports a specific API type.
@@ -612,16 +917,9 @@ class OpenAIAsyncClient(LLMClient):
         if not self.capabilities:
             return api_type == 'chat_completions'  # Default only supports chat
         
-        if hasattr(self.capabilities, 'supports_api_type'):
-            return self.capabilities.supports_api_type(api_type)
+        # Check if supported_api_types list exists in Pydantic model
+        if not hasattr(self.capabilities, 'supported_api_types') or not self.capabilities.supported_api_types:
+            return api_type == 'chat_completions'
         
-        # Fallback: check if supported_api_types list exists
-        if hasattr(self.capabilities, 'supported_api_types'):
-            from .capabilities import OpenAIApiType
-            try:
-                api_enum = OpenAIApiType(api_type)
-                return api_enum in self.capabilities.supported_api_types
-            except (ValueError, AttributeError):
-                return False
-        
-        return api_type == 'chat_completions'
+        # supported_api_types is List[str] in Pydantic model
+        return api_type in self.capabilities.supported_api_types

@@ -54,7 +54,7 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
         "context_window": model_config.context_window,
         "ollama_mode": model_config.ollama_mode,
         "request_timeout": model_config.request_timeout,
-        "capabilities": model_config.capabilities,  # Pass capabilities to client
+        "capabilities": model_config.capabilities,  # Pass Pydantic model directly
     }
 
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)

@@ -5,6 +5,7 @@ import asyncio
 from ..utils.id import short_id
 
 from .models import ChatMessage, LLMClient
+from ..config.models import ModelCapabilitiesConfig
 
 
 class OllamaNativeAsyncClient(LLMClient):
@@ -13,7 +14,7 @@ class OllamaNativeAsyncClient(LLMClient):
     Supports per-request options including num_ctx.
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[Any] = None) -> None:
+    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None) -> None:
         import httpx  # lazy import
         self._httpx = httpx
         self._base = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
@@ -22,7 +23,7 @@ class OllamaNativeAsyncClient(LLMClient):
         self.context_window = context_window
         self._options = options or {}
         self._timeout = timeout or 60.0
-        self.capabilities = capabilities or {}
+        self.capabilities = capabilities  # Pydantic model or None
 
         # Store verify parameter and create SSLContext if needed
         self._verify = verify if verify is not None else True

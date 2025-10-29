@@ -33,6 +33,10 @@ class ModelCapabilitiesConfig(BaseModel):
     streaming: bool = True
     json_mode: bool = False
     
+    # API type support (OpenAI specific)
+    supported_api_types: Optional[List[str]] = None  # e.g. ['chat_completions', 'realtime']
+    default_api_type: Optional[str] = None  # e.g. 'realtime'
+    
     # Image input limits
     max_image_size: Optional[int] = None  # bytes
     max_image_resolution: Optional[List[int]] = None  # [width, height]

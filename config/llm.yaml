@@ -88,7 +88,7 @@ llm_system:
 
     gpt-realtime:
       provider: openai
-      model: gpt-realtime
+      model: gpt-4o-realtime-preview-2024-12-17
       openai_api_key: ***REMOVED***
       context_window: 27900
       request_timeout: 180
@@ -103,7 +103,7 @@ llm_system:
 
     gpt-realtime-mini:
       provider: openai
-      model: gpt-realtime-mini
+      model: gpt-4o-mini-realtime-preview-2024-12-17
       openai_api_key: ***REMOVED***
       context_window: 27900
       request_timeout: 180
@@ -114,8 +114,6 @@ llm_system:
         streaming: true
         supported_api_types: [realtime]
         default_api_type: realtime
-        function_calling: true
-        audio_input: true
         image_input: true
         streaming: true
 

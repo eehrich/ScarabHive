@@ -15,9 +15,10 @@ from .models import LLMClient
 from .openai_client import OpenAIAsyncClient  # type: ignore
 from .ollama_client import OllamaNativeAsyncClient  # type: ignore
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig  # type: ignore
+from ..config.models import ModelCapabilitiesConfig
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[dict] = None) -> LLMClient:
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[ModelCapabilitiesConfig] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
