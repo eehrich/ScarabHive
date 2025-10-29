@@ -1090,6 +1090,8 @@ class Agent(MCPServer):
                         yield event
                     elif event_type == "thinking_complete":
                         llm_out = {"assistant": event["assistant"]}
+                        # Yield thinking_complete to WebUI for final formatting
+                        yield event
                         
             except Exception as e:
                 # Check if this is a cancellation exception

@@ -769,7 +769,7 @@
             // Update with accumulated content + cursor directly in response box
             currentStreamingContent = data.accumulated || '';
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text streaming">${escapeHtml(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
+            blk.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
             
             // Auto-scroll to keep cursor visible
             blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -781,9 +781,15 @@
             
             if (data.assistant && data.assistant.content) {
               // Content was already displayed via thinking_delta
-              // Just remove cursor and update final content
+              // Now show final formatted content (HTML from format_output hook)
+              const contentFormat = data.content_format || 'text';
               showSection(blk.t);
-              blk.t.innerHTML = `<div class="response-text">${escapeHtml(data.assistant.content)}</div>`;
+              blk.t.innerHTML = `<div class="response-text">${formatContent(data.assistant.content, contentFormat)}</div>`;
+              
+              // Apply Prism.js syntax highlighting if available and content is HTML
+              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+                Prism.highlightAllUnder(blk.t);
+              }
             }
             
             // Show tool calls in thinking section if any

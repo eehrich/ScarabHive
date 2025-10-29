@@ -1112,19 +1112,35 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     else:
                         payload = ev
 
-                    # Format final event summary to HTML
-                    if ev.get("type") == "final" and ev.get("summary") and selected_agent._hook_manager:
-                        try:
-                            formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                                output=payload["summary"],
-                                request_id=request_id,
-                                session_id=actual_session_id or "unknown",
-                                output_format='html'
-                            )
-                            payload["summary"] = formatted_summary
-                            payload["content_format"] = content_format
-                        except Exception as e:
-                            logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+                    # Format output for final event and thinking_complete event
+                    if selected_agent._hook_manager:
+                        # Format final event summary to HTML
+                        if ev.get("type") == "final" and ev.get("summary"):
+                            try:
+                                formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                                    output=payload["summary"],
+                                    request_id=request_id,
+                                    session_id=actual_session_id or "unknown",
+                                    output_format='html'
+                                )
+                                payload["summary"] = formatted_summary
+                                payload["content_format"] = content_format
+                            except Exception as e:
+                                logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+                        
+                        # Also format thinking_complete content to HTML (for streaming)
+                        elif ev.get("type") == "thinking_complete" and ev.get("assistant", {}).get("content"):
+                            try:
+                                formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                                    output=payload["assistant"]["content"],
+                                    request_id=request_id,
+                                    session_id=actual_session_id or "unknown",
+                                    output_format='html'
+                                )
+                                payload["assistant"]["content"] = formatted_content
+                                payload["content_format"] = content_format
+                            except Exception as e:
+                                logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
 
                     try:
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
