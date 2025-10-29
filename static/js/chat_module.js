@@ -784,9 +784,8 @@
               blk.think.scrollIntoView({ behavior: 'smooth', block: 'end' });
             }
             break;
-          case 'thinking':
-            // Complete thinking event (also handles backward compatibility)
-            // Clear streaming state when we get complete thinking event
+          case 'thinking_complete':
+            // Final thinking event from streaming (replaces thinking with assistant)
             currentStreamingContent = '';
             currentStreamingStep = null;
             if (blk.think) {
@@ -796,7 +795,50 @@
               if (cursor) cursor.remove();
             }
             
+            // Create think section if not exists
+            if (!blk.think) {
+              blk.think = document.createElement('pre');
+              blk.think.className = 'think-section';
+              blk.r.appendChild(blk.think);
+            }
+            
             if (data.assistant) {
+              if (data.assistant.content) {
+                // Content was already displayed via thinking_delta, just show final
+                blk.think.textContent = `💭 Step ${data.step || currentStreamingStep || '?'}: ${data.assistant.content}\n\n`;
+              }
+              if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
+                blk.think.textContent += `🧠 Step ${data.step || currentStreamingStep || '?'}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+                data.assistant.tool_calls.forEach((tc, i) => {
+                  const func = tc.function || {};
+                  blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
+                });
+                blk.think.textContent += '\n';
+              }
+            }
+            showSection(blk.think);
+            break;
+          case 'thinking':
+            // Complete thinking event (also handles backward compatibility)
+            // Only clear streaming state if this has actual content (final thinking event)
+            if (data.assistant) {
+              // Final thinking event with content - clear streaming state
+              currentStreamingContent = '';
+              currentStreamingStep = null;
+              if (blk.think) {
+                blk.think.classList.remove('streaming');
+                // Remove typing cursor if present
+                const cursor = blk.think.querySelector('.typing-cursor');
+                if (cursor) cursor.remove();
+              }
+              
+              // Create think section if not exists
+              if (!blk.think) {
+                blk.think = document.createElement('pre');
+                blk.think.className = 'think-section';
+                blk.r.appendChild(blk.think);
+              }
+              
               if (data.assistant.content) {
                 blk.think.textContent += `💭 Step ${data.step}: ${data.assistant.content}\n\n`;
               }
@@ -808,8 +850,15 @@
                 });
                 blk.think.textContent += '\n';
               }
+              showSection(blk.think);
             } else {
-              blk.think.textContent += `🤔 Step ${data.step}: Analyzing task...\n`;
+              // Step marker event (before LLM call) - don't interfere with streaming
+              // Just ensure think section exists
+              if (!blk.think) {
+                blk.think = document.createElement('pre');
+                blk.think.className = 'think-section';
+                blk.r.appendChild(blk.think);
+              }
             }
             break;
           case 'status':
