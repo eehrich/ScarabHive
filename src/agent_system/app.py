@@ -1148,6 +1148,24 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         logger.error("Failed to serialize event %s: %s", ev, e)
                         error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+            except asyncio.CancelledError:
+                # Stream was cancelled - send cancellation event to WebUI
+                logger.info(f"Stream cancelled for request {request_id}, sending cancellation event")
+                cancelled_payload = {"type": "cancelled", "request_id": request_id, "message": "Request cancelled by user"}
+                try:
+                    yield f"data: {json.dumps(cancelled_payload, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.warning(f"Failed to send cancellation event: {e}")
+                raise  # Re-raise to ensure proper cleanup
+            except Exception as e:
+                # Other errors - send error event
+                logger.error(f"Error in event stream for request {request_id}: {e}", exc_info=True)
+                error_payload = {"type": "error", "message": str(e), "request_id": request_id}
+                try:
+                    yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                except Exception:
+                    pass  # Best effort
+                raise
             finally:
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")

@@ -323,5 +323,75 @@ class TestCancellationRobustness:
         assert manager.get_token(request_id) is None
 
 
+class TestSSECancellationEvent:
+    """Test SSE cancellation event is sent to WebUI."""
+    
+    @pytest.mark.asyncio
+    async def test_sse_stream_sends_cancelled_event_on_cancellation(self):
+        """Test that SSE stream sends 'cancelled' event when request is cancelled."""
+        import json
+        from fastapi.testclient import TestClient
+        from agent_system.app import build_app
+        
+        # Build app
+        app = build_app()
+        client = TestClient(app)
+        
+        # Start a streaming request in background
+        import threading
+        events_received = []
+        stream_started = threading.Event()
+        
+        def stream_reader():
+            """Read SSE stream in background thread."""
+            with client.stream("POST", "/events", json={"task": "test long running task"}) as response:
+                stream_started.set()
+                for line in response.iter_lines():
+                    if line.startswith("data: "):
+                        try:
+                            event_data = json.loads(line[6:])  # Remove "data: " prefix
+                            events_received.append(event_data)
+                            print(f"Event received: {event_data.get('type')}")
+                        except json.JSONDecodeError:
+                            pass
+        
+        # Start stream reader thread
+        thread = threading.Thread(target=stream_reader, daemon=True)
+        thread.start()
+        
+        # Wait for stream to start
+        stream_started.wait(timeout=2.0)
+        
+        # Give it a moment to process
+        await asyncio.sleep(0.5)
+        
+        # Find the request_id from start event
+        request_id = None
+        for event in events_received:
+            if event.get("type") == "start":
+                request_id = event.get("request_id")
+                break
+        
+        assert request_id is not None, "No start event with request_id received"
+        
+        # Send cancellation request
+        cancel_response = client.post(f"/cancel/{request_id}")
+        assert cancel_response.status_code == 200
+        
+        # Wait for cancellation event
+        await asyncio.sleep(0.5)
+        
+        # Check that we received a 'cancelled' event
+        event_types = [e.get("type") for e in events_received]
+        assert "cancelled" in event_types, f"No 'cancelled' event received. Events: {event_types}"
+        
+        # Find the cancelled event and verify its structure
+        cancelled_event = next(e for e in events_received if e.get("type") == "cancelled")
+        assert cancelled_event.get("request_id") == request_id
+        assert "message" in cancelled_event
+        
+        thread.join(timeout=2.0)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

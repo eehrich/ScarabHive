@@ -949,6 +949,28 @@
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
             break;
+          case 'cancelled':
+            // Request was cancelled - clean up and reset UI
+            console.log('Request cancelled:', data.request_id);
+            if (currentEventSource) {
+              currentEventSource.close();
+              currentEventSource = null;
+            }
+            if (currentStatusEventSource) {
+              currentStatusEventSource.close();
+              currentStatusEventSource = null;
+            }
+            // Show cancelled status briefly, then reset
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled</div>`;
+            runBtn.style.display = 'block'; // Show run button
+            stopBtn.style.display = 'none'; // Hide stop button
+            // Reset stop button state
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            break;
         }
         scrollBottom();
       };
