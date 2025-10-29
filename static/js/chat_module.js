@@ -321,8 +321,45 @@
 
   function insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel) {
     if (!parentId) {
-      // Root level - append at end
-      container.appendChild(operationDiv);
+      // Root level - insert in sorted order by request ID
+      if (!requestId) {
+        container.appendChild(operationDiv);
+        return;
+      }
+      
+      // Find all root-level operations (those with same depth)
+      const rootElements = [];
+      for (const [nodeId, nodeInfo] of treeNodes.entries()) {
+        if (nodeInfo.depth === depthLevel && !nodeInfo.parent && container.contains(nodeInfo.element)) {
+          rootElements.push({ id: nodeId, element: nodeInfo.element });
+        }
+      }
+      
+      // Sort by request ID
+      rootElements.sort((a, b) => {
+        const aSeq = a.id.split('_').pop();
+        const bSeq = b.id.split('_').pop();
+        return aSeq.localeCompare(bSeq);
+      });
+      
+      // Find insertion position
+      const newSeq = requestId.split('_').pop();
+      let insertBefore = null;
+      
+      for (const root of rootElements) {
+        const rootSeq = root.id.split('_').pop();
+        if (rootSeq.localeCompare(newSeq) > 0) {
+          insertBefore = root.element;
+          break;
+        }
+      }
+      
+      // Insert at correct position
+      if (insertBefore) {
+        container.insertBefore(operationDiv, insertBefore);
+      } else {
+        container.appendChild(operationDiv);
+      }
       return;
     }
     
