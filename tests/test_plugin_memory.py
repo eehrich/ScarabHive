@@ -16,7 +16,7 @@ Target: >80% code coverage
 import pytest
 from pathlib import Path
 from typing import Dict, Any
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 import json
 
 from plugins.memory.server import (
@@ -62,20 +62,48 @@ def mock_mcp_config(temp_storage: Path) -> MagicMock:
 
 
 @pytest.fixture
-def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock) -> MemoryServer:
-    """MemoryServer instance"""
-    return MemoryServer(
+def server(mock_system_config: MagicMock, mock_mcp_config: MagicMock, temp_storage: Path) -> MemoryServer:
+    """MemoryServer instance with clean state for each test"""
+    # Update mock config to use temp storage
+    mock_mcp_config.storage_path = str(temp_storage)
+    
+    srv = MemoryServer(
         name="memory",
         system_config=mock_system_config,
         mcp_config=mock_mcp_config,
     )
+    
+    # Clear all cached collections and reset ChromaDB
+    srv._collections_cache.clear()
+    srv._memory_counters.clear()
+    
+    # Reset ChromaDB client (deletes all in-memory collections, not persistence files)
+    try:
+        srv.chroma_client.reset()
+    except Exception:
+        pass  # Ignore if reset fails
+    
+    # Delete ChromaDB persistence files
+    chroma_path = temp_storage / "chroma"
+    if chroma_path.exists():
+        import shutil
+        shutil.rmtree(chroma_path, ignore_errors=True)
+    
+    # Delete all JSON session files
+    for json_file in temp_storage.glob("*.json"):
+        json_file.unlink(missing_ok=True)
+    
+    return srv
 
 
 @pytest.fixture
-def mock_context() -> Dict[str, Any]:
-    """Mock MCP tool call context"""
+def mock_context(request) -> Dict[str, Any]:
+    """Mock MCP tool call context with unique session ID per test"""
+    # Use test function name to generate unique session ID
+    test_name = request.node.name
+    session_id = f"test_session_{hash(test_name) % 10000:04d}"
     return {
-        "session_id": "test_session_001",
+        "session_id": session_id,
         "agent_name": "test_agent",
     }
 
@@ -220,9 +248,10 @@ async def test_search_semantic(server: MemoryServer, mock_context: Dict[str, Any
     assert result["count"] > 0
     assert len(result["results"]) <= 2
     
-    # Results should have similarity scores (distance)
+    # Results should have similarity scores (0.0-1.0, higher=better)
     for mem in result["results"]:
-        assert "distance" in mem
+        assert "similarity" in mem
+        assert 0.0 <= mem["similarity"] <= 1.0
         assert "title" in mem
         assert "content" in mem
 
@@ -378,22 +407,139 @@ async def test_delete_nonexistent(server: MemoryServer, mock_context: Dict[str, 
 
 
 # =============================================================================
+# Test: Update Operation
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_operation_update_partial(server: MemoryServer, mock_context: Dict[str, Any]):
+    """Test partial update (only title)"""
+    # Store memory
+    stored = await server._operation_store(
+        session_id=mock_context["session_id"],
+        agent_name=mock_context["agent_name"],
+        title="Original Title",
+        content="Original content",
+        keywords=["original", "test"],
+        importance=5,
+        tags=["tag1"],
+    )
+    memory_id = stored["memory_id"]
+    
+    # Update only title
+    result = await server._operation_update(
+        session_id=mock_context["session_id"],
+        memory_id=memory_id,
+        title="Updated Title",
+    )
+    
+    assert "updated_fields" in result
+    assert "title" in result["updated_fields"]
+    assert len(result["updated_fields"]) == 1
+    
+    # Verify update
+    recalled = await server._operation_recall(
+        session_id=mock_context["session_id"],
+        memory_id=memory_id,
+    )
+    assert recalled["title"] == "Updated Title"
+    assert recalled["content"] == "Original content"  # Unchanged
+    assert recalled["keywords"] == ["original", "test"]  # Unchanged
+
+
+@pytest.mark.asyncio
+async def test_operation_update_multiple_fields(server: MemoryServer, mock_context: Dict[str, Any]):
+    """Test update multiple fields"""
+    # Store memory
+    stored = await server._operation_store(
+        session_id=mock_context["session_id"],
+        agent_name=mock_context["agent_name"],
+        title="Test Memory",
+        content="Test content",
+        importance=5,
+    )
+    memory_id = stored["memory_id"]
+    
+    # Update multiple fields
+    result = await server._operation_update(
+        session_id=mock_context["session_id"],
+        memory_id=memory_id,
+        title="New Title",
+        importance=8,
+        tags=["new_tag"],
+    )
+    
+    assert len(result["updated_fields"]) == 3
+    assert "title" in result["updated_fields"]
+    assert "importance" in result["updated_fields"]
+    assert "tags" in result["updated_fields"]
+    
+    # Verify
+    recalled = await server._operation_recall(
+        session_id=mock_context["session_id"],
+        memory_id=memory_id,
+    )
+    assert recalled["title"] == "New Title"
+    assert recalled["importance"] == 8
+    assert recalled["tags"] == ["new_tag"]
+
+
+@pytest.mark.asyncio
+async def test_operation_update_content_reindexes_chromadb(server: MemoryServer, mock_context: Dict[str, Any]):
+    """Test that updating content re-indexes in ChromaDB"""
+    # Store memory
+    stored = await server._operation_store(
+        session_id=mock_context["session_id"],
+        agent_name=mock_context["agent_name"],
+        title="Python",
+        content="Python is great for data science",
+    )
+    memory_id = stored["memory_id"]
+    
+    # Update content to something completely different
+    await server._operation_update(
+        session_id=mock_context["session_id"],
+        memory_id=memory_id,
+        content="JavaScript is great for web development",
+    )
+    
+    # Search for new topic - should find updated memory
+    search_result = await server._operation_search(
+        session_id=mock_context["session_id"],
+        query="web development JavaScript",
+        n_results=5,
+    )
+    
+    assert search_result["count"] > 0
+    assert any(m["memory_id"] == memory_id for m in search_result["results"])
+
+
+@pytest.mark.asyncio
+async def test_operation_update_nonexistent(server: MemoryServer, mock_context: Dict[str, Any]):
+    """Test update non-existent memory"""
+    with pytest.raises(ValidationError) as exc_info:
+        await server._operation_update(
+            session_id=mock_context["session_id"],
+            memory_id="nonexistent_id",
+            title="New Title",
+        )
+    
+    assert "not found" in str(exc_info.value).lower()
+
+
+# =============================================================================
 # Test: Multi-Operation Tool
 # =============================================================================
 
 @pytest.mark.asyncio
 async def test_call_tool_store(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with store operation"""
-    result = await server.call_tool(
-        tool_name="memory",
-        arguments={
-            "operation": "store",
-            "session_id": mock_context["session_id"],
-            "title": "Tool Test",
-            "content": "Content",
-            "importance": 5,
-        }
-    )
+    result = await server.memory({
+        "operation": "store",
+        "session_id": mock_context["session_id"],
+        "title": "Tool Test",
+        "content": "Content",
+        "importance": 5,
+    })
     
     assert "memory_id" in result
     assert result["title"] == "Tool Test"
@@ -403,26 +549,20 @@ async def test_call_tool_store(server: MemoryServer, mock_context: Dict[str, Any
 async def test_call_tool_recall(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with recall operation"""
     # Store first
-    stored = await server.call_tool(
-        "memory",
-        {
-            "operation": "store",
-            "session_id": mock_context["session_id"],
-            "title": "Test",
-            "content": "Content",
-        }
-    )
+    stored = await server.memory({
+        "operation": "store",
+        "session_id": mock_context["session_id"],
+        "title": "Test",
+        "content": "Content",
+    })
     memory_id = stored["memory_id"]
     
     # Recall
-    result = await server.call_tool(
-        "memory",
-        {
-            "operation": "recall",
-            "session_id": mock_context["session_id"],
-            "memory_id": memory_id,
-        }
-    )
+    result = await server.memory({
+        "operation": "recall",
+        "session_id": mock_context["session_id"],
+        "memory_id": memory_id,
+    })
     
     assert result["memory_id"] == memory_id
 
@@ -430,24 +570,18 @@ async def test_call_tool_recall(server: MemoryServer, mock_context: Dict[str, An
 @pytest.mark.asyncio
 async def test_call_tool_search(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with search operation"""
-    await server.call_tool(
-        "memory",
-        {
-            "operation": "store",
-            "session_id": mock_context["session_id"],
-            "title": "Python",
-            "content": "Python programming",
-        }
-    )
+    await server.memory({
+        "operation": "store",
+        "session_id": mock_context["session_id"],
+        "title": "Python",
+        "content": "Python programming",
+    })
     
-    result = await server.call_tool(
-        "memory",
-        {
-            "operation": "search",
-            "session_id": mock_context["session_id"],
-            "query": "programming",
-        }
-    )
+    result = await server.memory({
+        "operation": "search",
+        "session_id": mock_context["session_id"],
+        "query": "programming",
+    })
     
     assert "results" in result
 
@@ -455,13 +589,10 @@ async def test_call_tool_search(server: MemoryServer, mock_context: Dict[str, An
 @pytest.mark.asyncio
 async def test_call_tool_invalid_operation(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with invalid operation"""
-    result = await server.call_tool(
-        "memory",
-        {
-            "operation": "invalid_op",
-            "session_id": mock_context["session_id"],
-        }
-    )
+    result = await server.memory({
+        "operation": "invalid_op",
+        "session_id": mock_context["session_id"],
+    })
     
     assert result["error"] is True
     assert "unknown operation" in result["message"].lower()
@@ -470,13 +601,12 @@ async def test_call_tool_invalid_operation(server: MemoryServer, mock_context: D
 @pytest.mark.asyncio
 async def test_call_tool_missing_operation(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call without operation"""
-    result = await server.call_tool(
-        "memory",
-        {"session_id": mock_context["session_id"]}
-    )
+    with pytest.raises(ValidationError) as exc_info:
+        await server.memory({
+            "session_id": mock_context["session_id"]
+        })
     
-    assert result["error"] is True
-    assert "missing" in result["message"].lower()
+    assert "operation" in str(exc_info.value).lower()
 
 
 # =============================================================================
@@ -564,21 +694,25 @@ async def test_empty_session(server: MemoryServer, mock_context: Dict[str, Any])
 @pytest.mark.asyncio
 async def test_session_isolation(server: MemoryServer):
     """Test memories are isolated per session"""
+    # Use unique session IDs based on test name to avoid conflicts
+    session_1 = f"isolation_test_session_1_{hash('test_session_isolation') % 10000:04d}"
+    session_2 = f"isolation_test_session_2_{hash('test_session_isolation') % 10000:04d}"
+    
     await server._operation_store(
-        session_id="session_1",
+        session_id=session_1,
         title="Session 1 Memory",
         content="Content",
     )
     
     await server._operation_store(
-        session_id="session_2",
+        session_id=session_2,
         title="Session 2 Memory",
         content="Content",
     )
     
     # Verify isolation
-    result1 = await server._operation_list(session_id="session_1")
-    result2 = await server._operation_list(session_id="session_2")
+    result1 = await server._operation_list(session_id=session_1)
+    result2 = await server._operation_list(session_id=session_2)
     
     assert result1["total"] == 1
     assert result2["total"] == 1

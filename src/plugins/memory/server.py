@@ -506,6 +506,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 return {
                     "query": query,
                     "results": [],
+                    "count": 0,
                     "message": "No memories found"
                 }
             
@@ -541,7 +542,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             return {
                 "query": query,
                 "results": memories,
-                "count": len(memories)
+                "count": len(memories),
+                "message": f"Found {len(memories)} memories" if len(memories) > 0 else "No memories found matching your query"
             }
         
         except Exception as e:
