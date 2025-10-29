@@ -36,7 +36,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: false
-        streaming: true
+        streaming: false
         json_mode: true
 
     gpt-5-mini:
@@ -54,7 +54,7 @@ llm_system:
         tools: true
         function_calling: true
         image_input: true
-        streaming: true
+        streaming: false
         json_mode: true
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
@@ -72,7 +72,7 @@ llm_system:
         image_input: true
         audio_input: false
         video_input: false
-        streaming: true
+        streaming: false
         json_mode: true
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
@@ -88,7 +88,7 @@ llm_system:
         tools: true
         function_calling: true
         audio_input: true
-        streaming: true
+        streaming: false
 
     gpt-audio:
       provider: openai
@@ -100,7 +100,7 @@ llm_system:
         tools: true
         function_calling: true
         audio_input: true
-        streaming: true
+        streaming: false
 
     ollama-gpt-oss-20b:
       provider: ollama
@@ -148,7 +148,7 @@ llm_system:
       description: "Turbo model for high-speed responses and cheap, but less powerful"
       max_steps: 100
     normal:
-      model_ref: gpt-5-mini #deepseek-chat
+      model_ref: gpt-5-mini
       description: "Fast model for quick responses"
       max_steps: 100
     think:

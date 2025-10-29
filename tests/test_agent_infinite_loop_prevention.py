@@ -31,6 +31,10 @@ class MockLLMClient:
         self.response_type = response_type
         self.call_count = 0
     
+    def supports_streaming(self):
+        """Mock LLM doesn't support streaming."""
+        return False
+    
     async def chat_tools(self, messages, tools, cancellation_token=None):
         self.call_count += 1
         
@@ -136,6 +140,10 @@ async def test_agent_normal_execution_not_affected():
     class NormalMockLLM:
         def __init__(self):
             self.call_count = 0
+        
+        def supports_streaming(self):
+            """Mock LLM doesn't support streaming."""
+            return False
         
         async def chat_tools(self, messages, tools, cancellation_token=None):
             self.call_count += 1

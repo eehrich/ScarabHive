@@ -54,6 +54,7 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
         "context_window": model_config.context_window,
         "ollama_mode": model_config.ollama_mode,
         "request_timeout": model_config.request_timeout,
+        "capabilities": model_config.capabilities,  # Pass capabilities to client
     }
 
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)
@@ -116,4 +117,5 @@ class LLMFactory:
             llm_kwargs["request_timeout"],
             ssl_verify=ssl_verify,
             httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
+            capabilities=llm_kwargs.get("capabilities"),
         )

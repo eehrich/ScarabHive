@@ -17,7 +17,7 @@ from .ollama_client import OllamaNativeAsyncClient  # type: ignore
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig  # type: ignore
 
 
-def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None) -> LLMClient:
+def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_url: Optional[str] = None, context_window: Optional[int] = None, ollama_mode: Optional[str] = None, request_timeout: Optional[int] = None, ssl_verify: Optional[bool] = None, client_type: Optional[str] = None, httpx_timeouts: Optional[dict] = None, capabilities: Optional[dict] = None) -> LLMClient:
     """Factory creating an async LLM client.
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
@@ -59,7 +59,8 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
                 max_retries=3,
                 retry_backoff=1.0,
                 verify=ssl_verify,
-                context_window=context_window
+                context_window=context_window,
+                capabilities=capabilities
             )
         else:
             return OpenAIAsyncClient(
@@ -67,7 +68,8 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
                 api_key=openai_api_key,
                 timeout=float(request_timeout) if request_timeout else None,
                 verify=ssl_verify,
-                context_window=context_window
+                context_window=context_window,
+                capabilities=capabilities
             )
 
     if provider == "ollama":
@@ -83,7 +85,8 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
                 options=options or None,
                 timeout=float(request_timeout) if request_timeout else None,
                 verify=ssl_verify,
-                context_window=context_window
+                context_window=context_window,
+                capabilities=capabilities
             )
         base = (ollama_url.rstrip("/") + "/v1") if ollama_url else "http://127.0.0.1:11434/v1"
         api_key = openai_api_key or "ollama"
@@ -93,7 +96,8 @@ def make_llm(provider: str, model: str, openai_api_key: Optional[str], ollama_ur
             base_url=base,
             timeout=float(request_timeout) if request_timeout else None,
             verify=ssl_verify,
-            context_window=context_window
+            context_window=context_window,
+            capabilities=capabilities
         )
 
     raise ValueError(f"Unknown LLM provider: {provider}")

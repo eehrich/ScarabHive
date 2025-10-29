@@ -51,6 +51,7 @@ class HTTPXOpenAIClient(LLMClient):
         retry_backoff: float = 1.0,
         verify: Optional[bool] = None,
         context_window: Optional[int] = None,
+        capabilities: Optional[dict] = None,
         **extra_params
     ):
         # LLMClient doesn't have __init__, so no super() call needed
@@ -64,6 +65,7 @@ class HTTPXOpenAIClient(LLMClient):
         self.retry_backoff = retry_backoff
         self.verify = verify
         self.extra_params = extra_params
+        self.capabilities = capabilities or {}
 
         # Normalize verify: when explicitly False, create an SSLContext that disables
         # certificate verification. This is more robust across httpx/httpcore
@@ -134,8 +136,11 @@ class HTTPXOpenAIClient(LLMClient):
             yield chunk
 
     def supports_streaming(self) -> bool:
-        """Check if this client supports streaming."""
-        return True  # HTTPX client always supports streaming
+        """Check if this client supports streaming based on model capabilities."""
+        # Check if capabilities explicitly disable streaming
+        if self.capabilities and hasattr(self.capabilities, 'streaming'):
+            return self.capabilities.streaming
+        return True  # Default to True if capabilities not set
 
     async def _make_request(
         self,
@@ -145,7 +150,12 @@ class HTTPXOpenAIClient(LLMClient):
     ) -> dict:
         """Make the actual HTTP request with proper cancellation and error handling."""
 
-        # Collect all chunks from streaming version
+        # Check if streaming is disabled in capabilities
+        if self.capabilities and hasattr(self.capabilities, 'streaming') and not self.capabilities.streaming:
+            # Use non-streaming request
+            return await self._make_request_non_streaming(messages, tools, cancellation_token)
+        
+        # Use streaming request (default behavior)
         final_result = None
         async for chunk in self._make_request_streaming(messages, tools, cancellation_token):
             if chunk.get("type") == "final":
@@ -153,6 +163,104 @@ class HTTPXOpenAIClient(LLMClient):
                 break
         
         return {"assistant": final_result} if final_result else {"assistant": {"role": "assistant", "content": ""}}
+
+    async def _make_request_non_streaming(
+        self,
+        messages: list,
+        tools: list,
+        cancellation_token: Optional[CancellationToken] = None
+    ) -> dict:
+        """Make non-streaming HTTP POST request for models that don't support streaming.
+        
+        Returns:
+            dict: Response with 'assistant' key containing the assistant message
+        """
+        
+        # Build request payload - convert ChatMessage objects to dicts
+        message_dicts = []
+        for msg in messages:
+            if hasattr(msg, 'model_dump'):
+                message_dicts.append(msg.model_dump(exclude_none=True))
+            elif isinstance(msg, dict):
+                message_dicts.append(msg)
+            else:
+                message_dicts.append(dict(msg))
+
+        payload = {
+            "model": self.model,
+            "messages": message_dicts,
+            "stream": False,  # ⚡ Disable streaming
+            **self.extra_params
+        }
+
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        url = f"{self.base_url}/chat/completions"
+
+        # Retry logic with exponential backoff
+        last_exception = None
+        for attempt in range(self.max_retries + 1):
+            # Check cancellation before each attempt
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise asyncio.CancelledError("Request cancelled by user")
+
+            try:
+                # Create fresh client for each request
+                client_kwargs = {"timeout": self._timeout}
+                if getattr(self, "_verify", None) is not None:
+                    client_kwargs["verify"] = self._verify
+                
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    logger.debug(f"HTTPX non-streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
+
+                    # Make regular POST request (not streaming)
+                    response = await client.post(url=url, headers=self._headers, json=payload)
+                    
+                    # Handle rate limiting
+                    if response.status_code == 429 and attempt < self.max_retries:
+                        retry_after = self._parse_retry_after(response.headers.get("retry-after"))
+                        backoff_time = retry_after or (self.retry_backoff * (2 ** attempt))
+                        logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
+                        await asyncio.sleep(backoff_time)
+                        continue
+                    
+                    # Check for HTTP errors
+                    if response.status_code >= 400:
+                        error_text = response.text[:200] if response.text else ""
+                        error_msg = f"HTTP {response.status_code}: {error_text}"
+                        logger.error(f"HTTPX non-streaming request failed: {error_msg}")
+                        raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
+                    
+                    # Parse successful response
+                    response_data = response.json()
+                    
+                    # Extract assistant message from choices
+                    if "choices" in response_data and len(response_data["choices"]) > 0:
+                        assistant_msg = response_data["choices"][0]["message"]
+                        return {"assistant": assistant_msg}
+                    else:
+                        # Unexpected response format
+                        logger.error(f"Unexpected response format: {response_data}")
+                        return {"assistant": {"role": "assistant", "content": ""}}
+                    
+            except httpx.HTTPStatusError:
+                raise  # Re-raise HTTP errors immediately
+            except asyncio.CancelledError:
+                raise  # Re-raise cancellation
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    backoff_time = self.retry_backoff * (2 ** attempt)
+                    logger.warning(f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. Retrying in {backoff_time}s")
+                    await asyncio.sleep(backoff_time)
+                else:
+                    logger.error(f"Request failed after {self.max_retries + 1} attempts")
+                    raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception}") from last_exception
+
+        # Should never reach here
+        raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception}") from last_exception
 
     async def _make_request_streaming(
         self,

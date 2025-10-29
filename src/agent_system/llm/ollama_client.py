@@ -13,7 +13,7 @@ class OllamaNativeAsyncClient(LLMClient):
     Supports per-request options including num_ctx.
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None, context_window: Optional[int] = None) -> None:
+    def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[Any] = None) -> None:
         import httpx  # lazy import
         self._httpx = httpx
         self._base = (base_url.rstrip("/")) if base_url else "http://127.0.0.1:11434"
@@ -22,6 +22,7 @@ class OllamaNativeAsyncClient(LLMClient):
         self.context_window = context_window
         self._options = options or {}
         self._timeout = timeout or 60.0
+        self.capabilities = capabilities or {}
 
         # Store verify parameter and create SSLContext if needed
         self._verify = verify if verify is not None else True
@@ -285,5 +286,8 @@ class OllamaNativeAsyncClient(LLMClient):
             yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
 
     def supports_streaming(self) -> bool:
-        """Ollama supports streaming via native API."""
-        return True
+        """Check if this client supports streaming based on model capabilities."""
+        # Check if capabilities explicitly disable streaming
+        if self.capabilities and hasattr(self.capabilities, 'streaming'):
+            return self.capabilities.streaming
+        return True  # Default to True if capabilities not set

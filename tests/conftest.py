@@ -70,7 +70,7 @@ try:
             txt = await self.chat(messages, cancellation_token=cancellation_token)
             return {"assistant": {"content": txt}}
 
-    def _fake_make_llm(provider, model, openai_api_key, ollama_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None):
+    def _fake_make_llm(provider, model, openai_api_key, ollama_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None, capabilities=None):
         return _FakeLLMClient(provider=provider, model=model, context_window=context_window)
 
     # Preserve original for debugging if needed

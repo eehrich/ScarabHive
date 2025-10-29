@@ -19,7 +19,7 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None) -> None:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[Any] = None) -> None:
         try:
             from openai import AsyncOpenAI  # type: ignore
         except Exception as e:
@@ -94,6 +94,7 @@ class OpenAIAsyncClient(LLMClient):
         self.context_window = context_window
         self._default_extra = default_extra or {}
         self._timeout = timeout
+        self.capabilities = capabilities or {}
 
     async def _execute_with_cancellation(self, llm_task: asyncio.Task, cancellation_token):
         """Execute LLM task with efficient event-based cancellation monitoring.
@@ -583,5 +584,8 @@ class OpenAIAsyncClient(LLMClient):
             yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
     
     def supports_streaming(self) -> bool:
-        """OpenAI SDK supports streaming."""
-        return True
+        """Check if this client supports streaming based on model capabilities."""
+        # Check if capabilities explicitly disable streaming
+        if self.capabilities and hasattr(self.capabilities, 'streaming'):
+            return self.capabilities.streaming
+        return True  # Default to True if capabilities not set
