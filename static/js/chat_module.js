@@ -951,7 +951,7 @@
             break;
           case 'cancelled':
             // Request was cancelled - clean up and reset UI
-            console.log('Request cancelled:', data.request_id);
+            console.log('Request cancelled:', data.request_id, 'at step', data.step);
             if (currentEventSource) {
               currentEventSource.close();
               currentEventSource = null;
@@ -960,9 +960,10 @@
               currentStatusEventSource.close();
               currentStatusEventSource = null;
             }
-            // Show cancelled status briefly, then reset
+            // Show cancelled status with step number
             showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled</div>`;
+            const stepInfo = data.step ? ` at step ${data.step}` : '';
+            blk.t.innerHTML = `<div class="response-text" style="opacity: 0.6;">Request cancelled${stepInfo}</div>`;
             runBtn.style.display = 'block'; // Show run button
             stopBtn.style.display = 'none'; // Hide stop button
             // Reset stop button state

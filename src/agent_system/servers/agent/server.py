@@ -1021,12 +1021,18 @@ class Agent(MCPServer):
             # Check for cancellation at the start of each step
             if self._is_cancelled(request_id):
                 logger.info("Request %s cancelled at step %d", request_id, step + 1)
-                yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
-                # Signal cancellation using status contexts
+                # Signal cancellation using status contexts FIRST (so events are queued)
                 await status_worker.error(f"cancelled at step {step + 1}", 
                                       meta={"step": step + 1, "reason": "cancelled"})
                 await status_coordinator.error(f"cancelled at step {step + 1}",
                                             meta={"step": step + 1, "reason": "cancelled"})
+                # Give status events a moment to be captured by forwarder
+                await asyncio.sleep(0.01)
+                # Yield all pending status events before cancelled event
+                for status_event in self._status_event_forwarder.get_pending_events():
+                    yield status_event
+                # Now yield the cancelled event
+                yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
                 return
 
             # Progress heartbeat using status_coordinator
@@ -1098,21 +1104,18 @@ class Agent(MCPServer):
                         # Yield thinking_complete to WebUI for final formatting
                         yield event
                         
-            except Exception as e:
-                # Check if this is a cancellation exception
-                error_str = str(e).lower()
-                if "cancelled" in error_str or "timeout" in error_str:
-                    logger.info(f"Request {request_id} cancelled during LLM call: {e}")
-                    # Signal cancellation using status contexts
-                    await status_worker.error(f"cancelled at step {step + 1}: {e}", 
-                                          meta={"step": step + 1, "reason": "cancelled"})
-                    await status_coordinator.error(f"cancelled at step {step + 1}",
-                                                meta={"step": step + 1, "reason": "cancelled"})
-                    yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
-                    return
-                
-                # Propagate other exceptions
-                raise
+            except asyncio.CancelledError:
+                # Streaming was cancelled - send proper status events and cancelled event
+                logger.info(f"Request {request_id} cancelled during LLM call at step {step + 1}")
+                await status_worker.error(f"cancelled at step {step + 1}", 
+                                      meta={"step": step + 1, "reason": "cancelled"})
+                await status_coordinator.error(f"cancelled at step {step + 1}",
+                                            meta={"step": step + 1, "reason": "cancelled"})
+                await asyncio.sleep(0.01)
+                for status_event in self._status_event_forwarder.get_pending_events():
+                    yield status_event
+                yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                return
 
             # Signal LLM call completion
             await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
