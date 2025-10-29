@@ -759,64 +759,47 @@
             blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;
             break;
           case 'thinking_delta':
-            // Real-time token streaming from LLM
+            // Real-time token streaming from LLM - stream directly to response box
             if (data.step !== currentStreamingStep) {
-              // New step - reset accumulator and add typing indicator
+              // New step - reset accumulator
               currentStreamingContent = '';
               currentStreamingStep = data.step;
-              
-              if (!blk.think) {
-                blk.think = document.createElement('pre');
-                blk.think.className = 'think-section streaming';
-                blk.r.appendChild(blk.think);
-              }
-              
-              blk.think.textContent = `💭 Step ${data.step}: `;
-              blk.think.classList.add('streaming');
-              showSection(blk.think);
             }
             
-            // Update with accumulated content + cursor
+            // Update with accumulated content + cursor directly in response box
             currentStreamingContent = data.accumulated || '';
-            if (blk.think) {
-              blk.think.innerHTML = `💭 Step ${data.step}: ${escapeHtml(currentStreamingContent)}<span class="typing-cursor">|</span>`;
-              // Auto-scroll to keep cursor visible
-              blk.think.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            }
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text streaming">${escapeHtml(currentStreamingContent)}<span class="typing-cursor">|</span></div>`;
+            
+            // Auto-scroll to keep cursor visible
+            blk.t.scrollIntoView({ behavior: 'smooth', block: 'end' });
             break;
           case 'thinking_complete':
-            // Final thinking event from streaming (replaces thinking with assistant)
+            // Final thinking event from streaming - remove cursor, keep content
             currentStreamingContent = '';
             currentStreamingStep = null;
-            if (blk.think) {
-              blk.think.classList.remove('streaming');
-              // Remove typing cursor if present
-              const cursor = blk.think.querySelector('.typing-cursor');
-              if (cursor) cursor.remove();
+            
+            if (data.assistant && data.assistant.content) {
+              // Content was already displayed via thinking_delta
+              // Just remove cursor and update final content
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text">${escapeHtml(data.assistant.content)}</div>`;
             }
             
-            // Create think section if not exists
-            if (!blk.think) {
-              blk.think = document.createElement('pre');
-              blk.think.className = 'think-section';
-              blk.r.appendChild(blk.think);
-            }
-            
-            if (data.assistant) {
-              if (data.assistant.content) {
-                // Content was already displayed via thinking_delta, just show final
-                blk.think.textContent = `💭 Step ${data.step || currentStreamingStep || '?'}: ${data.assistant.content}\n\n`;
+            // Show tool calls in thinking section if any
+            if (data.assistant && data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
+              if (!blk.think) {
+                blk.think = document.createElement('pre');
+                blk.think.className = 'think-section';
+                blk.r.appendChild(blk.think);
               }
-              if (data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-                blk.think.textContent += `🧠 Step ${data.step || currentStreamingStep || '?'}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
-                data.assistant.tool_calls.forEach((tc, i) => {
-                  const func = tc.function || {};
-                  blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-                });
-                blk.think.textContent += '\n';
-              }
+              blk.think.textContent = `🧠 Step ${data.step || '?'}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
+              data.assistant.tool_calls.forEach((tc, i) => {
+                const func = tc.function || {};
+                blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
+              });
+              showSection(blk.think);
             }
-            showSection(blk.think);
             break;
           case 'thinking':
             // Complete thinking event (also handles backward compatibility)
@@ -868,15 +851,22 @@
             }
             break;
           case 'final':
+            // Only show final if content box is still empty (no streaming happened)
+            // or if it's a different format
             const content = data.summary || data.content || '';
             const contentFormat = data.content_format || 'text';
-            showSection(blk.t);
-            blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
             
-            // Apply Prism.js syntax highlighting if available and content is HTML
-            if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-              Prism.highlightAllUnder(blk.t);
+            if (!blk.t.innerHTML || blk.t.innerHTML.trim() === '') {
+              // No streaming happened, show final content
+              showSection(blk.t);
+              blk.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
+              
+              // Apply Prism.js syntax highlighting if available and content is HTML
+              if (contentFormat === 'html' && typeof Prism !== 'undefined') {
+                Prism.highlightAllUnder(blk.t);
+              }
             }
+            // If streaming already filled the content, skip this (content already there)
             break;
           case 'end':
             if (currentEventSource) {
