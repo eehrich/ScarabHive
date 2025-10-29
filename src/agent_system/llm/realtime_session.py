@@ -123,6 +123,9 @@ class RealtimeSession:
     
     async def _receive_loop(self) -> None:
         """Background task to receive events from WebSocket and queue them."""
+        if not self.ws:
+            return
+            
         try:
             async for message in self.ws:
                 try:
@@ -278,7 +281,7 @@ class RealtimeSession:
         }
         
         if instructions or modalities:
-            response_config = {}
+            response_config: dict[str, Any] = {}
             if instructions:
                 response_config["instructions"] = instructions
             if modalities:

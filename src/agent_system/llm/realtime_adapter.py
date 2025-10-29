@@ -96,7 +96,18 @@ class RealtimeMessageAdapter:
         """
         for msg in messages:
             if msg.role == "system":
-                return msg.content
+                # Extract text content from content field (str or list)
+                if isinstance(msg.content, str):
+                    return msg.content
+                elif isinstance(msg.content, list):
+                    # Extract text from content array
+                    text_parts = []
+                    for item in msg.content:
+                        if isinstance(item, str):
+                            text_parts.append(item)
+                        elif isinstance(item, dict) and item.get("type") == "text":
+                            text_parts.append(item.get("text", ""))
+                    return " ".join(text_parts) if text_parts else None
         return None
     
     @staticmethod
