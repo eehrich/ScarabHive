@@ -69,7 +69,7 @@ tools:
         properties:
           operation:
             type: string
-            enum: ["store", "recall", "search", "list", "delete"]
+            enum: ["store", "recall", "search", "list", "delete", "update"]
             description: |
               Operation to perform:
               - store: Save a new memory with title and content
@@ -77,19 +77,20 @@ tools:
               - search: Semantic search by query string (returns results with similarity score 0.0-1.0, where 1.0 = perfect match)
               - list: Show all memories for current session
               - delete: Remove a memory permanently
+              - update: Edit an existing memory (partial update supported - only provide fields to change)
           
           # For store operation
           title:
             type: string
             minLength: 1
             maxLength: 200
-            description: "Memory title (required for store operation)"
+            description: "Memory title (required for store, optional for update)"
           
           content:
             type: string
             minLength: 1
             maxLength: 5000
-            description: "Memory content (required for store operation)"
+            description: "Memory content (required for store, optional for update)"
           
           keywords:
             type: array
@@ -97,14 +98,14 @@ tools:
               type: string
               maxLength: 50
             maxItems: 20
-            description: "Keywords for categorization (optional, auto-extracted if not provided)"
+            description: "Keywords for categorization (optional for store/update, auto-extracted if not provided)"
           
           importance:
             type: integer
             minimum: 1
             maximum: 10
             default: 5
-            description: "Importance level 1-10 (optional, default: 5)"
+            description: "Importance level 1-10 (optional for store/update, default: 5)"
           
           tags:
             type: array
@@ -112,13 +113,13 @@ tools:
               type: string
               maxLength: 50
             maxItems: 20
-            description: "Tags for categorization (optional)"
+            description: "Tags for categorization (optional for store/update)"
           
-          # For recall/delete operations
+          # For recall/delete/update operations
           memory_id:
             type: string
-            pattern: "^mem_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$"
-            description: "Memory ID (required for recall/delete operations)"
+            pattern: "^mem_[0-9]{3,8}(_[0-9]{6}_[a-f0-9]{8})?$"
+            description: "Memory ID (required for recall/delete/update operations)"
           
           # For search operation
           query:

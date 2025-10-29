@@ -630,6 +630,67 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             "message": f"Memory {memory_id} deleted successfully"
         }
     
+    async def _operation_update(
+        self,
+        session_id: str,
+        memory_id: str,
+        title: Optional[str] = None,
+        content: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+        importance: Optional[int] = None,
+        tags: Optional[List[str]] = None
+    ) -> Dict:
+        """Update an existing memory (partial update supported)"""
+        collection = await self._load_collection(session_id)
+        
+        if memory_id not in collection.memories:
+            raise ValidationError(f"Memory {memory_id} not found")
+        
+        memory = collection.memories[memory_id]
+        
+        # Track what changed
+        changed_fields = []
+        
+        # Update fields if provided
+        if title is not None:
+            memory.title = title
+            changed_fields.append("title")
+        
+        if content is not None:
+            memory.content = content
+            changed_fields.append("content")
+            
+            # Re-index in ChromaDB if content changed
+            await self._store_memory_in_chroma(session_id, memory)
+        
+        if keywords is not None:
+            memory.keywords = keywords
+            changed_fields.append("keywords")
+        
+        if importance is not None:
+            memory.importance = importance
+            changed_fields.append("importance")
+        
+        if tags is not None:
+            memory.tags = tags
+            changed_fields.append("tags")
+        
+        # Update timestamp
+        memory.updated_at = datetime.now(UTC)
+        
+        # Save metadata
+        await self._save_collection(collection)
+        
+        logger.info(f"Updated memory {memory_id}: {', '.join(changed_fields)}")
+        
+        return {
+            "memory_id": memory_id,
+            "title": memory.title,
+            "updated_fields": changed_fields,
+            "updated_at": memory.updated_at.isoformat(),
+            "message": f"Memory {memory_id} updated successfully"
+        }
+    
     # =========================================================================
     # MCP Tool Interface
     # =========================================================================
@@ -733,6 +794,25 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 
                 if status:
                     await status.end(f"Deleted: {memory_id}")
+                return result
+            
+            elif operation == "update":
+                memory_id = arguments["memory_id"]
+                if status:
+                    await status.progress(f"Updating: {memory_id}")
+                
+                result = await self._operation_update(
+                    session_id=session_id,
+                    memory_id=memory_id,
+                    title=arguments.get("title"),
+                    content=arguments.get("content"),
+                    keywords=arguments.get("keywords"),
+                    importance=arguments.get("importance"),
+                    tags=arguments.get("tags")
+                )
+                
+                if status:
+                    await status.end(f"Updated: {memory_id}")
                 return result
             
             else:

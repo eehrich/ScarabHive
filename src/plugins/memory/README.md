@@ -131,7 +131,7 @@ await agent.call_tool("memory", {
             "memory_id": "mem_20240129_143022_a1b2c3",
             "title": "Python Best Practices",
             "content": "Always use type hints...",
-            "distance": 0.23,  # Lower = more similar
+            "similarity": 0.883,  # 0.0-1.0, higher = better match
             "importance": 8,
             "keywords": ["python", "type-hints", "best-practices"],
             "access_count": 3
@@ -140,7 +140,7 @@ await agent.call_tool("memory", {
             "memory_id": "mem_20240130_091015_d4e5f6",
             "title": "Code Style Guide",
             "content": "Follow PEP 8 for Python...",
-            "distance": 0.31,
+            "similarity": 0.756,
             "importance": 7,
             "keywords": ["python", "pep8", "style"],
             "access_count": 1
@@ -200,6 +200,34 @@ await agent.call_tool("memory", {
     "message": "Memory mem_20240129_143022_a1b2c3 deleted successfully"
 }
 ```
+
+### Update a Memory
+
+Edit an existing memory without deleting and recreating it. Partial updates are supported - only provide the fields you want to change.
+
+```python
+await agent.call_tool("memory", {
+    "operation": "update",
+    "memory_id": "mem_001",
+    "title": "Updated Title",  # Optional
+    "content": "Updated content with corrections",  # Optional
+    "importance": 9,  # Optional
+    "tags": ["updated", "corrected"]  # Optional
+})
+```
+
+**Response:**
+```json
+{
+    "memory_id": "mem_001",
+    "title": "Updated Title",
+    "updated_fields": ["title", "content", "importance", "tags"],
+    "updated_at": "2024-01-29T15:45:30.789Z",
+    "message": "Memory mem_001 updated successfully"
+}
+```
+
+**Note:** When you update the `content` field, the memory is automatically re-indexed in ChromaDB for semantic search.
 
 ## Hook: System Prompt Injection
 
@@ -280,18 +308,19 @@ Single unified tool with operation-based routing.
 - `search`: Semantic search by query
 - `list`: List all memories (paginated, sorted)
 - `delete`: Remove memory
+- `update`: Edit existing memory (partial updates supported)
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| operation | enum | Yes | - | store \| recall \| search \| list \| delete |
-| title | string | For `store` | - | Memory title (max 200 chars) |
-| content | string | For `store` | - | Memory content (max 5000 chars) |
-| keywords | array | No | auto-extracted | List of keywords |
-| importance | int | No | 5 | Importance score (1-10) |
-| tags | array | No | [] | List of tags |
-| memory_id | string | For `recall`, `delete` | - | Memory ID |
+| operation | enum | Yes | - | store \| recall \| search \| list \| delete \| update |
+| title | string | For `store`; optional for `update` | - | Memory title (max 200 chars) |
+| content | string | For `store`; optional for `update` | - | Memory content (max 5000 chars) |
+| keywords | array | No | auto-extracted | List of keywords (for store/update) |
+| importance | int | No | 5 | Importance score 1-10 (for store/update) |
+| tags | array | No | [] | List of tags (for store/update) |
+| memory_id | string | For `recall`, `delete`, `update` | - | Memory ID |
 | query | string | For `search` | - | Search query |
 | n_results | int | For `search` | 5 | Max results |
 | limit | int | For `list` | 50 | Max memories |
