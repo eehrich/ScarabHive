@@ -227,7 +227,10 @@ class HTTPXOpenAIClient(LLMClient):
                         
                         # Check for errors without reading body (streaming response)
                         if response.status_code >= 400:
-                            error_msg = f"HTTP {response.status_code}"
+                            # Read the error body for streaming responses
+                            error_body = await response.aread()
+                            error_text = error_body.decode('utf-8', errors='replace')
+                            error_msg = f"HTTP {response.status_code}: {error_text[:200]}"
                             logger.error(f"HTTPX streaming request failed: {error_msg}")
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
@@ -336,9 +339,10 @@ class HTTPXOpenAIClient(LLMClient):
                     continue
                 else:
                     # Client error or max retries exceeded
-                    error_detail = self._parse_error_response(e.response)
-                    logger.error(f"HTTP error {e.response.status_code}: {error_detail}")
-                    raise Exception(f"HTTP {e.response.status_code}: {error_detail}") from e
+                    # Error message already in exception (we read it before raising in streaming mode)
+                    error_msg = str(e)
+                    logger.error(f"HTTP error (streaming): {error_msg}")
+                    raise Exception(error_msg) from e
 
             except (httpx.NetworkError, httpx.ConnectError) as e:
                 last_exception = e
