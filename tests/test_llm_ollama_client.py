@@ -323,6 +323,68 @@ class TestOllamaClientChat:
             # Should return empty string
             assert result == ""
 
+    @pytest.mark.asyncio
+    async def test_chat_tools_usage_tracking(self):
+        """Test that usage information is tracked in non-streaming mode."""
+        with patch("httpx.AsyncClient") as mock_async_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            
+            mock_client_instance = MagicMock()
+            mock_response = MagicMock()
+            # Mock response with usage metadata (Ollama format)
+            mock_response.json.return_value = {
+                "message": {"role": "assistant", "content": "Test response"},
+                "prompt_eval_count": 12,  # prompt tokens
+                "eval_count": 18,         # completion tokens
+            }
+            mock_response.raise_for_status = MagicMock()
+            
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.post = AsyncMock(return_value=mock_response)
+            
+            mock_async_client_class.return_value = mock_client_instance
+            
+            messages = [ChatMessage(role="user", content="Test")]
+            tools = []
+            
+            result = await client.chat_tools(messages, tools)
+            
+            # Verify usage is included and normalized to standard format
+            assert "usage" in result
+            assert result["usage"]["prompt_tokens"] == 12
+            assert result["usage"]["completion_tokens"] == 18
+            assert result["usage"]["total_tokens"] == 30  # 12 + 18
+
+    @pytest.mark.asyncio
+    async def test_chat_tools_without_usage(self):
+        """Test that chat_tools works correctly when no usage data is provided."""
+        with patch("httpx.AsyncClient") as mock_async_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            
+            mock_client_instance = MagicMock()
+            mock_response = MagicMock()
+            # Mock response WITHOUT usage metadata
+            mock_response.json.return_value = {
+                "message": {"role": "assistant", "content": "Test response"}
+            }
+            mock_response.raise_for_status = MagicMock()
+            
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.post = AsyncMock(return_value=mock_response)
+            
+            mock_async_client_class.return_value = mock_client_instance
+            
+            messages = [ChatMessage(role="user", content="Test")]
+            tools = []
+            
+            result = await client.chat_tools(messages, tools)
+            
+            # Verify usage is NOT included
+            assert "usage" not in result
+            assert result["assistant"]["content"] == "Test response"
+
 
 class TestOllamaClientVerifyParameter:
     """Test SSL verification parameter."""
@@ -391,3 +453,111 @@ class TestOllamaClientCancellation:
             result = await client.chat(messages, cancellation_token=cancellation_token)
             
             assert result == "Response"
+
+
+class TestOllamaClientStreamingUsageTracking:
+    """Test usage tracking in streaming mode."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_usage_tracking(self):
+        """Test that usage information is tracked and returned in streaming mode."""
+        with patch("httpx.AsyncClient") as mock_async_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            
+            # Mock streaming response with usage in final chunk
+            streaming_data = [
+                '{"message": {"content": "Hello"}, "done": false}\n',
+                '{"message": {"content": " world"}, "done": false}\n',
+                '{"message": {"content": "!"}, "done": false}\n',
+                '{"done": true, "prompt_eval_count": 15, "eval_count": 25}\n',  # Final chunk with usage
+            ]
+            
+            mock_client_instance = MagicMock()
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            
+            async def mock_aiter_lines():
+                for line in streaming_data:
+                    yield line
+            
+            mock_response.aiter_lines = mock_aiter_lines
+            
+            mock_stream_context = MagicMock()
+            mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream_context.__aexit__ = AsyncMock()
+            
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.stream = MagicMock(return_value=mock_stream_context)
+            
+            mock_async_client_class.return_value = mock_client_instance
+            
+            messages = [ChatMessage(role="user", content="Test")]
+            tools = []
+            
+            # Collect all events
+            events = []
+            async for event in client.chat_tools_streaming(messages, tools):
+                events.append(event)
+            
+            # Verify content deltas
+            content_deltas = [e for e in events if e.get("type") == "content_delta"]
+            assert len(content_deltas) == 3
+            assert content_deltas[0]["delta"] == "Hello"
+            assert content_deltas[1]["delta"] == " world"
+            assert content_deltas[2]["delta"] == "!"
+            
+            # Verify final event has usage (Ollama format: prompt_eval_count, eval_count)
+            final_event = [e for e in events if e.get("type") == "final"][0]
+            assert "usage" in final_event
+            assert final_event["usage"]["prompt_tokens"] == 15
+            assert final_event["usage"]["completion_tokens"] == 25
+            assert final_event["usage"]["total_tokens"] == 40  # 15 + 25
+            assert final_event["assistant"]["content"] == "Hello world!"
+
+    @pytest.mark.asyncio
+    async def test_streaming_without_usage(self):
+        """Test that streaming works correctly when no usage data is provided."""
+        with patch("httpx.AsyncClient") as mock_async_client_class:
+            client = OllamaNativeAsyncClient(model="llama2")
+            
+            # Mock streaming response WITHOUT usage metrics
+            streaming_data = [
+                '{"message": {"content": "Test"}, "done": false}\n',
+                '{"message": {"content": " response"}, "done": false}\n',
+                '{"done": true}\n',  # Final chunk WITHOUT usage
+            ]
+            
+            mock_client_instance = MagicMock()
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            
+            async def mock_aiter_lines():
+                for line in streaming_data:
+                    yield line
+            
+            mock_response.aiter_lines = mock_aiter_lines
+            
+            mock_stream_context = MagicMock()
+            mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream_context.__aexit__ = AsyncMock()
+            
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock()
+            mock_client_instance.stream = MagicMock(return_value=mock_stream_context)
+            
+            mock_async_client_class.return_value = mock_client_instance
+            
+            messages = [ChatMessage(role="user", content="Test")]
+            tools = []
+            
+            # Collect all events
+            events = []
+            async for event in client.chat_tools_streaming(messages, tools):
+                events.append(event)
+            
+            # Verify final event does NOT have usage
+            final_event = [e for e in events if e.get("type") == "final"][0]
+            assert "usage" not in final_event
+            assert final_event["assistant"]["content"] == "Test response"
+

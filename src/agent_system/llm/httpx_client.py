@@ -176,10 +176,11 @@ class HTTPXOpenAIClient(LLMClient):
         final_result = None
         async for chunk in self._make_request_streaming(messages, tools, cancellation_token):
             if chunk.get("type") == "final":
-                final_result = chunk.get("assistant")
+                # Extract all fields from final chunk (assistant, usage, etc.)
+                final_result = {k: v for k, v in chunk.items() if k != "type"}
                 break
         
-        return {"assistant": final_result} if final_result else {"assistant": {"role": "assistant", "content": ""}}
+        return final_result if final_result else {"assistant": {"role": "assistant", "content": ""}}
 
     async def _make_request_non_streaming(
         self,
@@ -320,6 +321,7 @@ class HTTPXOpenAIClient(LLMClient):
         # Accumulators for building complete response
         accumulated_content = []
         accumulated_tool_calls = {}  # index -> tool call data
+        accumulated_usage = None  # usage information from final chunk
 
         # Retry logic with exponential backoff
         last_exception = None
@@ -381,7 +383,13 @@ class HTTPXOpenAIClient(LLMClient):
                                     tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                                     assistant["tool_calls"] = tool_calls_list
                                 
-                                yield {"type": "final", "assistant": assistant}
+                                final_result = {"assistant": assistant}
+                                
+                                # Add usage if available
+                                if accumulated_usage:
+                                    final_result["usage"] = accumulated_usage
+                                
+                                yield {"type": "final", **final_result}
                                 return  # Success - exit retry loop
                             
                             try:
@@ -389,6 +397,10 @@ class HTTPXOpenAIClient(LLMClient):
                             except Exception:
                                 logger.debug(f"Failed to parse chunk data: {data[:100]}")
                                 continue
+                            
+                            # Track usage if available in chunk
+                            if "usage" in chunk_data:
+                                accumulated_usage = chunk_data["usage"]
                             
                             # Process chunk
                             choices = chunk_data.get("choices", [])

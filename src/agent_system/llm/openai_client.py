@@ -640,7 +640,7 @@ class OpenAIAsyncClient(LLMClient):
         tools = normalized_tools
         
         try:
-            opts = {"model": self.model, "messages": msgs, "stream": True}
+            opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
             if tools:
                 opts["tools"] = tools
                 opts["tool_choice"] = "auto"
@@ -649,6 +649,7 @@ class OpenAIAsyncClient(LLMClient):
             # Accumulated state
             accumulated_content = []
             accumulated_tool_calls = {}
+            accumulated_usage = None  # usage information from final chunk
             
             client_any = cast(Any, self._client)
             
@@ -659,6 +660,14 @@ class OpenAIAsyncClient(LLMClient):
             async for chunk in stream:
                 if cancellation_token and cancellation_token.is_cancelled:
                     raise Exception("Request cancelled by user")
+                
+                # Extract usage if available (appears in final chunk when stream_options={'include_usage': True})
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    accumulated_usage = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens
+                    }
                 
                 choices = chunk.choices if hasattr(chunk, 'choices') else []
                 if not choices:
@@ -721,7 +730,12 @@ class OpenAIAsyncClient(LLMClient):
                 tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
                 assistant["tool_calls"] = tool_calls_list
             
-            yield {"type": "final", "assistant": assistant}
+            # Build final result with usage
+            final_result = {"assistant": assistant}
+            if accumulated_usage:
+                final_result["usage"] = accumulated_usage
+            
+            yield {"type": "final", **final_result}
             
         except Exception as e:
             logger.exception("OpenAI streaming failed: %s", e)

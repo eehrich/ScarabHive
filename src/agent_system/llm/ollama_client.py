@@ -198,7 +198,23 @@ class OllamaNativeAsyncClient(LLMClient):
                     },
                 })
             out["tool_calls"] = out_calls
-        return {"assistant": out}
+        
+        # Build result with usage information
+        result = {"assistant": out}
+        
+        # Extract usage metadata if available (Ollama format)
+        # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
+        if "eval_count" in data or "prompt_eval_count" in data:
+            usage = {}
+            if "prompt_eval_count" in data:
+                usage["prompt_tokens"] = data["prompt_eval_count"]
+            if "eval_count" in data:
+                usage["completion_tokens"] = data["eval_count"]
+            if "prompt_eval_count" in data and "eval_count" in data:
+                usage["total_tokens"] = data["prompt_eval_count"] + data["eval_count"]
+            result["usage"] = usage
+        
+        return result
 
     async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
         """Stream LLM responses from Ollama using native streaming API.
@@ -222,6 +238,7 @@ class OllamaNativeAsyncClient(LLMClient):
 
         accumulated_content = []
         accumulated_tool_calls = {}
+        accumulated_usage = None  # usage information from final chunk (done=true)
         
         try:
             async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
@@ -244,8 +261,18 @@ class OllamaNativeAsyncClient(LLMClient):
                             except Exception:
                                 continue
                         
-                        # Check if stream is done
+                        # Check if stream is done - final chunk may contain usage info
                         if chunk_data.get("done"):
+                            # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
+                            # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
+                            if "eval_count" in chunk_data or "prompt_eval_count" in chunk_data:
+                                accumulated_usage = {}
+                                if "prompt_eval_count" in chunk_data:
+                                    accumulated_usage["prompt_tokens"] = chunk_data["prompt_eval_count"]
+                                if "eval_count" in chunk_data:
+                                    accumulated_usage["completion_tokens"] = chunk_data["eval_count"]
+                                if "prompt_eval_count" in chunk_data and "eval_count" in chunk_data:
+                                    accumulated_usage["total_tokens"] = chunk_data["prompt_eval_count"] + chunk_data["eval_count"]
                             break
                         
                         message = chunk_data.get("message", {})
@@ -295,7 +322,12 @@ class OllamaNativeAsyncClient(LLMClient):
                 tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
                 assistant["tool_calls"] = tool_calls_list
             
-            yield {"type": "final", "assistant": assistant}
+            # Build final result with usage
+            final_result = {"assistant": assistant}
+            if accumulated_usage:
+                final_result["usage"] = accumulated_usage
+            
+            yield {"type": "final", **final_result}
             
         except Exception as e:
             import logging

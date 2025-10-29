@@ -267,3 +267,117 @@ class TestOpenAIClientCancellation:
         result = await client.chat(messages, cancellation_token=cancellation_token)
         
         assert result == "Response"
+
+
+class TestOpenAIClientStreamingUsageTracking:
+    """Test usage tracking in streaming mode."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_usage_tracking(self, openai_client):
+        """Test that usage information is tracked and returned in streaming mode."""
+        client, mock_instance = openai_client
+        
+        # Create mock streaming chunks with usage in final chunk
+        class MockChunk:
+            def __init__(self, content=None, usage=None):
+                self.choices = []
+                if content:
+                    delta = MagicMock()
+                    delta.content = content
+                    delta.tool_calls = None
+                    choice = MagicMock()
+                    choice.delta = delta
+                    self.choices.append(choice)
+                self.usage = usage
+        
+        # Mock chunks: content chunks + final chunk with usage
+        chunks = [
+            MockChunk(content="Hello"),
+            MockChunk(content=" world"),
+            MockChunk(content="!"),
+            MockChunk(usage=MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30))
+        ]
+        
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
+        
+        mock_stream_obj = MagicMock()
+        mock_stream_obj.__aiter__ = lambda self: mock_stream()
+        
+        mock_chat = MagicMock()
+        mock_chat.completions = MagicMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_stream_obj)
+        mock_instance.chat = mock_chat
+        
+        messages = [ChatMessage(role="user", content="Test")]
+        tools = []
+        
+        # Collect all events
+        events = []
+        async for event in client.chat_tools_streaming(messages, tools):
+            events.append(event)
+        
+        # Verify content deltas
+        content_deltas = [e for e in events if e.get("type") == "content_delta"]
+        assert len(content_deltas) == 3
+        assert content_deltas[0]["delta"] == "Hello"
+        assert content_deltas[1]["delta"] == " world"
+        assert content_deltas[2]["delta"] == "!"
+        
+        # Verify final event has usage
+        final_event = [e for e in events if e.get("type") == "final"][0]
+        assert "usage" in final_event
+        assert final_event["usage"]["prompt_tokens"] == 10
+        assert final_event["usage"]["completion_tokens"] == 20
+        assert final_event["usage"]["total_tokens"] == 30
+        assert final_event["assistant"]["content"] == "Hello world!"
+
+    @pytest.mark.asyncio
+    async def test_streaming_without_usage(self, openai_client):
+        """Test that streaming works correctly when no usage data is provided."""
+        client, mock_instance = openai_client
+        
+        # Create mock streaming chunks WITHOUT usage
+        class MockChunk:
+            def __init__(self, content=None):
+                self.choices = []
+                if content:
+                    delta = MagicMock()
+                    delta.content = content
+                    delta.tool_calls = None
+                    choice = MagicMock()
+                    choice.delta = delta
+                    self.choices.append(choice)
+                self.usage = None  # No usage data
+        
+        chunks = [
+            MockChunk(content="Test"),
+            MockChunk(content=" response"),
+        ]
+        
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
+        
+        mock_stream_obj = MagicMock()
+        mock_stream_obj.__aiter__ = lambda self: mock_stream()
+        
+        mock_chat = MagicMock()
+        mock_chat.completions = MagicMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_stream_obj)
+        mock_instance.chat = mock_chat
+        
+        messages = [ChatMessage(role="user", content="Test")]
+        tools = []
+        
+        # Collect all events
+        events = []
+        async for event in client.chat_tools_streaming(messages, tools):
+            events.append(event)
+        
+        # Verify final event does NOT have usage
+        final_event = [e for e in events if e.get("type") == "final"][0]
+        assert "usage" not in final_event
+        assert final_event["assistant"]["content"] == "Test response"
+
