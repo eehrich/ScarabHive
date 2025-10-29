@@ -66,6 +66,23 @@ class HTTPXOpenAIClient(LLMClient):
         self.verify = verify
         self.extra_params = extra_params
         self.capabilities = capabilities or {}
+        
+        # Validate API type - HTTPX client only supports chat_completions
+        if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
+            api_type = self.capabilities.default_api_type
+            # Extract value from enum if it's an enum
+            if hasattr(api_type, 'value'):
+                api_type = api_type.value
+            else:
+                api_type = str(api_type) if api_type else 'chat_completions'
+            
+            if api_type != 'chat_completions':
+                raise NotImplementedError(
+                    f"HTTPX client only supports 'chat_completions' API. "
+                    f"Requested API type: '{api_type}'. "
+                    f"For Realtime API, use provider='openai' instead of 'openai_httpx'. "
+                    f"Current model: {self.model}"
+                )
 
         # Normalize verify: when explicitly False, create an SSLContext that disables
         # certificate verification. This is more robust across httpx/httpcore

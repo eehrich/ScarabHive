@@ -24,6 +24,23 @@ class OllamaNativeAsyncClient(LLMClient):
         self._options = options or {}
         self._timeout = timeout or 60.0
         self.capabilities = capabilities  # Pydantic model or None
+        
+        # Validate API type - Ollama only supports chat_completions (native API)
+        if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
+            api_type = self.capabilities.default_api_type
+            # Extract value from enum if it's an enum
+            if hasattr(api_type, 'value'):
+                api_type = api_type.value
+            else:
+                api_type = str(api_type) if api_type else 'chat_completions'
+            
+            if api_type not in ('chat_completions', None):
+                raise NotImplementedError(
+                    f"Ollama client only supports 'chat_completions' API (native Ollama API). "
+                    f"Requested API type: '{api_type}'. "
+                    f"Ollama does not support OpenAI's Realtime or Assistants APIs. "
+                    f"Current model: {self.model}"
+                )
 
         # Store verify parameter and create SSLContext if needed
         self._verify = verify if verify is not None else True
