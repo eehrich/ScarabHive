@@ -15,8 +15,9 @@ tools:
         - info: Get detailed status and recent activity of specific sub-agent
         - delete: Archive sub-agent instance
 
-        IMPORTANT: 'create' and 'continue' operations execute immediately and wait for completion.
-        You receive the full result from the sub-agent before this tool returns.
+        IMPORTANT: 
+        - Operations are BLOCKING - you receive full result before tool returns.
+        - Same instance_id cannot run concurrently. Use different instances for parallel work.
 
       parameters:
         type: object
