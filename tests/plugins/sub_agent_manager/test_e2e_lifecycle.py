@@ -12,10 +12,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
 import json
 
-from src.agent_system.services.session_manager import SessionManager
-from src.agent_system.services.session_service import SessionService
-from src.agent_system.mcp.base import MCPRegistry
-from src.plugins.sub_agent_manager.manager import SubAgentManager
+from agent_system.services.session_manager import SessionManager
+from agent_system.services.session_service import SessionService
+from agent_system.mcp.base import MCPRegistry
+from plugins.sub_agent_manager.manager import SubAgentManager
 
 
 @pytest.fixture

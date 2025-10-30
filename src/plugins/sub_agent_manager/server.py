@@ -49,6 +49,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         
         # Configuration
         self.max_sub_agents = int(getattr(mcp_config, 'max_sub_agents_per_session', 10))
+        self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
         self.max_history = int(getattr(mcp_config, 'max_message_history', 100))
         self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
         
@@ -72,15 +73,24 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     def _get_manager(self) -> SubAgentManager:
         """Lazy-load SubAgentManager."""
         if self._manager is None:
-            # Get session_service from system_config
-            session_service = getattr(self.system_config, 'session_service', None)
-            if session_service is None:
-                raise RuntimeError("session_service not available in system_config")
+            # Create session_service locally with default storage path
+            from pathlib import Path
+            from agent_system.services.session_manager import SessionManager
+            from agent_system.services.session_service import SessionService
+            from agent_system.mcp.base import MCPRegistry
             
-            # Get registry
+            # Use default storage path (same as CLI)
+            storage_path = Path(__file__).parents[3] / "data" / "sessions"
+            session_manager = SessionManager(storage_path=str(storage_path))
+            session_service = SessionService(session_manager)
+            logger.debug(f"Created SessionService with storage_path={storage_path}")
+            
+            # Get or create registry
             registry = getattr(self.system_config, 'registry', None)
             if registry is None:
-                raise RuntimeError("registry not available in system_config")
+                # Create a new registry instance (will access shared plugin servers)
+                registry = MCPRegistry()
+                logger.debug("Created new MCPRegistry instance")
             
             self._manager = SubAgentManager(session_service, registry, self.max_nesting_depth)
             logger.debug("SubAgentManager lazy-loaded")

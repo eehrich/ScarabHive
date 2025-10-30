@@ -2,8 +2,8 @@
 import pytest
 from unittest.mock import MagicMock
 
-from src.plugins.sub_agent_manager.manager import SubAgentManager
-from src.agent_system.services.session_manager import SessionManager
+from plugins.sub_agent_manager.manager import SubAgentManager
+from agent_system.services.session_manager import SessionManager
 
 
 @pytest.fixture
@@ -93,8 +93,8 @@ async def test_extract_user_id_fallback_for_missing_session(temp_session_storage
 @pytest.mark.asyncio
 async def test_user_id_injection_in_tool_execution():
     """Test that user_id is injected into tool parameters during execution."""
-    from src.agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-    from src.agent_system.mcp.base import MCPRegistry
+    from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
+    from agent_system.mcp.base import MCPRegistry
     
     # Create mock registry
     registry = MCPRegistry()
@@ -152,7 +152,7 @@ async def test_user_id_injection_in_tool_execution():
 @pytest.mark.asyncio
 async def test_session_metadata_stored_on_restore():
     """Test that SessionTracker stores metadata including user_id when session is restored."""
-    from src.agent_system.servers.agent.components.session_tracking import SessionTracker
+    from agent_system.servers.agent.components.session_tracking import SessionTracker
     
     tracker = SessionTracker()
     

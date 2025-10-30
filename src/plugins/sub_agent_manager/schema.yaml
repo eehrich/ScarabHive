@@ -1,76 +1,78 @@
 # MCP tool definition for Sub-Agent Manager (unified tool approach).
 
 tools:
-  - name: manage_sub_agent
-    description: |
-      Manage persistent sub-agent instances for delegation of specialized tasks.
-      Sub-agents maintain conversation history and can be continued across multiple requests.
-      
-      Operations:
-      - create: Spawn new sub-agent and execute initial task (BLOCKING - returns result)
-      - continue: Send new message to existing sub-agent (BLOCKING - returns result)
-      - list: Get all active sub-agents for current session
-      - info: Get detailed status and recent activity of specific sub-agent
-      - delete: Archive sub-agent instance
-      
-      IMPORTANT: 'create' and 'continue' operations execute immediately and wait for completion.
-      You receive the full result from the sub-agent before this tool returns.
-    
-    inputSchema:
-      type: object
-      properties:
-        operation:
-          type: string
-          enum: [create, continue, list, info, delete]
-          description: |
-            Operation to perform:
-            - create: Create and execute new sub-agent
-            - continue: Continue existing sub-agent with new message
-            - list: List all active sub-agents
-            - info: Get detailed info about specific sub-agent
-            - delete: Archive sub-agent instance
+  - type: function
+    function:
+      name: manage_sub_agent
+      description: |
+        Manage persistent sub-agent instances for delegation of specialized tasks.
+        Sub-agents maintain conversation history and can be continued across multiple requests.
+
+        Operations:
+        - create: Spawn new sub-agent and execute initial task (BLOCKING - returns result)
+        - continue: Send new message to existing sub-agent (BLOCKING - returns result)
+        - list: Get all active sub-agents for current session
+        - info: Get detailed status and recent activity of specific sub-agent
+        - delete: Archive sub-agent instance
+
+        IMPORTANT: 'create' and 'continue' operations execute immediately and wait for completion.
+        You receive the full result from the sub-agent before this tool returns.
+
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: [create, continue, list, info, delete]
+            description: |
+              Operation to perform:
+              - create: Create and execute new sub-agent
+              - continue: Continue existing sub-agent with new message
+              - list: List all active sub-agents
+              - info: Get detailed info about specific sub-agent
+              - delete: Archive sub-agent instance
+          
+          # Parameters for 'create' operation
+          agent_type:
+            type: string
+            description: |
+              Agent type to spawn (required for 'create').
+              Examples: 'web_research_agent', 'basic_agent', 'financial_analyst_agent'
+              The agent must exist in the registry.
+          
+          task:
+            type: string
+            description: |
+              Initial task description (required for 'create').
+              This will be the first message in the sub-agent's session.
+          
+          instance_label:
+            type: string
+            description: |
+              Optional custom label for readability (create only).
+              Auto-generated if omitted. Format: alphanumeric, underscore, hyphen.
+          
+          # Parameters for 'continue', 'info', 'delete' operations
+          instance_id:
+            type: string
+            description: |
+              Sub-agent instance ID (required for continue/info/delete).
+              This was returned when the sub-agent was created.
+          
+          message:
+            type: string
+            description: |
+              New message for sub-agent (required for 'continue').
+              The sub-agent sees this in context of previous conversation.
+          
+          # Parameters for 'list' operation
+          include_completed:
+            type: boolean
+            description: |
+              Include archived sub-agents in list (list only, default: false).
+            default: false
         
-        # Parameters for 'create' operation
-        agent_type:
-          type: string
-          description: |
-            Agent type to spawn (required for 'create').
-            Examples: 'web_research_agent', 'basic_agent', 'financial_analyst_agent'
-            The agent must exist in the registry.
-        
-        task:
-          type: string
-          description: |
-            Initial task description (required for 'create').
-            This will be the first message in the sub-agent's session.
-        
-        instance_label:
-          type: string
-          description: |
-            Optional custom label for readability (create only).
-            Auto-generated if omitted. Format: alphanumeric, underscore, hyphen.
-        
-        # Parameters for 'continue', 'info', 'delete' operations
-        instance_id:
-          type: string
-          description: |
-            Sub-agent instance ID (required for continue/info/delete).
-            This was returned when the sub-agent was created.
-        
-        message:
-          type: string
-          description: |
-            New message for sub-agent (required for 'continue').
-            The sub-agent sees this in context of previous conversation.
-        
-        # Parameters for 'list' operation
-        include_completed:
-          type: boolean
-          description: |
-            Include archived sub-agents in list (list only, default: false).
-          default: false
-      
-      required: [operation]
+        required: [operation]
 
 # Hook configuration
 hooks:

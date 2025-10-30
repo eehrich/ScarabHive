@@ -3,10 +3,10 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, UTC
 
-from src.plugins.sub_agent_manager.server import SubAgentManagerServer
-from src.agent_system.hooks.plugin_hook import HookContext, HookType
-from src.agent_system.llm.models import ChatMessage
-from src.agent_system.config.models import MCPConfig
+from plugins.sub_agent_manager.server import SubAgentManagerServer
+from agent_system.hooks.plugin_hook import HookContext, HookType
+from agent_system.llm.models import ChatMessage
+from agent_system.config.models import MCPConfig
 
 
 @pytest.fixture
