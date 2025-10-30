@@ -155,7 +155,7 @@ plugins:
     sub_agent_manager:
       type: sub_agent_manager
       enabled: true
-      max_nesting_depth: 5
+      max_nesting_depth: 5      
       hook_config:
         enabled: true
         inject_sub_agent_context:
@@ -486,8 +486,6 @@ plugins:
         tools:
           allowed:
             - "sub_agent_manager/*"
-            - "basic_operations/*"
-            - "todo/*"
         
         hooks:
           enabled: true

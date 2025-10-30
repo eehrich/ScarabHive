@@ -502,6 +502,12 @@ class ToolExecutionManager:
                     params["_agent_name"] = self._agent.name
                     logger.debug(f"✓ Injected agent_name '{self._agent.name}' into tool params")
                 
+                # CRITICAL: Inject the agent instance itself for tools that need it
+                # Tools can access agent._session_service, agent.registry, etc.
+                if self._agent:
+                    params["_agent"] = self._agent
+                    logger.debug("✓ Injected agent instance into tool params")
+                
                 # CRITICAL: Inject registry for tools that need to look up other agents/servers
                 if self._agent and hasattr(self._agent, 'registry'):
                     params["_registry"] = self._agent.registry

@@ -83,6 +83,33 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             f"allowed_agents={self.allowed_agents}, blocked_agents={self.blocked_agents}"
         )
     
+    def _extract_session_service(self, params: dict[str, Any]):
+        """Extract session_service from params (_session_service or _agent._session_service).
+        
+        Args:
+            params: Tool parameters with either _session_service or _agent
+            
+        Returns:
+            SessionService instance
+            
+        Raises:
+            RuntimeError: If session_service cannot be found
+        """
+        # Try direct injection first (from WebUI endpoints)
+        session_service = params.get("_session_service")
+        if session_service:
+            return session_service
+            
+        # Try getting from agent instance (from ToolExecutionManager)
+        agent = params.get("_agent")
+        if agent and hasattr(agent, '_session_service'):
+            return agent._session_service
+            
+        raise RuntimeError(
+            "No session_service available - neither _session_service nor _agent._session_service found. "
+            "This tool must be called from an agent or with explicit session_service injection."
+        )
+    
     def _get_manager(self, session_service, registry=None) -> SubAgentManager:
         """Get SubAgentManager with injected dependencies.
         
@@ -178,9 +205,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             # Get manager with injected dependencies
             registry = self._extract_registry(params)
-            session_service = params.get("_session_service")
-            if not session_service:
-                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
             
             # Create sub-session (pass params for user_id extraction)
@@ -269,9 +294,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             # Get manager with injected dependencies
             registry = self._extract_registry(params)
-            session_service = params.get("_session_service")
-            if not session_service:
-                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
             user_id = manager._extract_user_id(parent_session_id, params)
             session_manager = manager._session_service.session_manager
@@ -353,11 +376,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             include_completed = params.get("include_completed", False)
             
+            # Get session_service from params (supports both WebUI and tool calls)
+            session_service = self._extract_session_service(params)
+            
             # Get manager with injected dependencies (registry optional for list)
             registry = params.get("_registry")  # Optional - won't fail if missing
-            session_service = params.get("_session_service")
-            if not session_service:
-                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
             manager = self._get_manager(session_service, registry)
             
             # List sub-sessions
@@ -416,9 +439,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             # Get manager with injected dependencies (registry optional for delete)
             registry = params.get("_registry")  # Optional
-            session_service = params.get("_session_service")
-            if not session_service:
-                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
             user_id = manager._extract_user_id(parent_session_id, params)
             session_manager = manager._session_service.session_manager
@@ -475,9 +496,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             instance_id = params["instance_id"]
             
             # Extract dependencies from injected params
-            session_service = params.get("_session_service")
-            if not session_service:
-                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            session_service = self._extract_session_service(params)
             
             # Get manager (registry is optional for info operation)
             registry = params.get("_registry")
