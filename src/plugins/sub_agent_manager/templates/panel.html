@@ -338,8 +338,25 @@
         let currentSessionId = '';
         let currentInstanceId = '';
         
+        // Get session ID from parent window if available (iframe context)
+        function getSessionId() {
+            try {
+                if (window.parent && window.parent.AgentSystem && window.parent.AgentSystem.ChatModule) {
+                    const sessionId = window.parent.AgentSystem.ChatModule.getCurrentSessionId();
+                    if (sessionId) {
+                        return sessionId;
+                    }
+                }
+            } catch (e) {
+                console.warn('Cannot access parent window session ID:', e);
+            }
+            
+            // Fallback to manual input
+            return document.getElementById('sessionIdInput').value.trim();
+        }
+        
         async function loadAgents() {
-            currentSessionId = document.getElementById('sessionIdInput').value.trim();
+            currentSessionId = getSessionId();
             if (!currentSessionId) {
                 showError('Please enter a session ID');
                 return;
@@ -507,6 +524,24 @@
         function showSuccess(message) {
             console.log('Success:', message);
         }
+        
+        // Auto-load on page load if session ID is available from parent
+        window.addEventListener('DOMContentLoaded', () => {
+            const sessionId = getSessionId();
+            if (sessionId) {
+                // Hide session ID input if we got it from parent
+                const inputContainer = document.querySelector('.controls');
+                const sessionInput = document.getElementById('sessionIdInput');
+                if (sessionInput && sessionInput.value === '') {
+                    sessionInput.style.display = 'none';
+                    const label = inputContainer.querySelector('label');
+                    if (label) label.style.display = 'none';
+                }
+                
+                // Auto-load agents
+                loadAgents();
+            }
+        });
     </script>
 </body>
 </html>
