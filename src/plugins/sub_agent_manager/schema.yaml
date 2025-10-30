@@ -71,3 +71,16 @@ tools:
           default: false
       
       required: [operation]
+
+# Hook configuration
+hooks:
+  - name: inject_sub_agent_context
+    type: pre_llm_call
+    enabled: true
+    description: |
+      Injects active sub-agent information into system prompt before LLM calls.
+      Provides coordinator agent with awareness of available sub-agents.
+    timeout: 5.0
+    order:
+      after: ["begin"]  # Run after initialization hooks
+      before: ["end"]   # Run before finalization hooks

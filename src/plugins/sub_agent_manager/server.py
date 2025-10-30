@@ -7,18 +7,20 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 from agent_system.utils.id import short_id
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
+    from .hooks import SubAgentContextInjector
 
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 logger = logging.getLogger(__name__)
 
 
-class SubAgentManagerServer(SchemaBasedMCPServer):
-    """MCP server for sub-agent management.
+class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
+    """MCP server for sub-agent management with hook support.
     
     Provides a unified tool `manage_sub_agent` with 5 operations:
     - create: Create and execute new sub-agent
@@ -26,6 +28,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
     - list: List active sub-agents
     - info: Get detailed status
     - delete: Archive sub-agent
+    
+    Also implements pre_llm_call hook to inject sub-agent context into system prompt.
     """
     
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
@@ -36,7 +40,12 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
             system_config: System-wide configuration
             mcp_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        # Initialize MCP server
+        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+        
+        # Initialize hook
+        hook_config = getattr(mcp_config, 'hook_config', {})
+        PluginHook.__init__(self, name, config=hook_config)
         
         # Configuration
         self.max_sub_agents = int(getattr(mcp_config, 'max_sub_agents_per_session', 10))
@@ -49,6 +58,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
         
         # Initialize manager (will be lazy-loaded when first tool is called)
         self._manager: SubAgentManager | None = None
+        
+        # Initialize hook injector (lazy-loaded)
+        self._hook_injector: SubAgentContextInjector | None = None
         
         logger.info(
             f"SubAgentManagerServer '{name}' initialized - "
@@ -453,3 +465,43 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
         
         logger.debug(f"Agent '{agent_name}' not in allowed list: {self.allowed_agents}")
         return False
+    
+    # =========================================================================
+    # Hook Implementation - Pre-LLM Call
+    # =========================================================================
+    
+    async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+        """Inject sub-agent context into system prompt before LLM call.
+        
+        This hook adds information about active sub-agents to the conversation
+        context, allowing the coordinator agent to be aware of its sub-agents.
+        
+        Args:
+            context: Hook context with session_id and messages
+            
+        Returns:
+            HookResult with modified=True if context was injected
+        """
+        try:
+            # Lazy-load hook injector
+            if self._hook_injector is None:
+                from plugins.sub_agent_manager.hooks import SubAgentContextInjector
+                manager = self._get_manager()
+                # Get hook-specific configuration from plugin_config
+                plugin_config = getattr(self.mcp_config, 'plugin_config', {})
+                hooks_config = plugin_config.get("hooks", {})
+                hook_config = hooks_config.get("inject_sub_agent_context", {})
+                self._hook_injector = SubAgentContextInjector(manager, hook_config)
+                logger.debug("SubAgentContextInjector lazy-loaded")
+            
+            # Delegate to injector
+            return await self._hook_injector.inject_sub_agent_context(context)
+            
+        except Exception as e:
+            logger.error(f"[SubAgentManager] Hook execution failed: {e}", exc_info=True)
+            return HookResult(
+                success=False,
+                modified=False,
+                context=context,
+                metadata={"error": str(e)}
+            )
