@@ -105,10 +105,11 @@ class SubAgentManager:
         sub_session_id = await self._generate_instance_id(agent_type, instance_label)
         
         # Create session via existing SessionManager
+        # Note: Title will be updated after execution based on conversation
         await session_manager.create_session(
             user_id=user_id,
             session_id=sub_session_id,
-            title=f"{initial_message[:50]}..." if len(initial_message) > 50 else initial_message,
+            title=initial_message[:100] if len(initial_message) <= 100 else f"{initial_message[:97]}...",
             agent_name=agent_type,
             llm_profile="default"  # Will be overridden by agent config
         )

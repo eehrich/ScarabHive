@@ -318,6 +318,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     if event.get("type") == "final":
                         result_text = event.get("summary", "")
                 
+                # Save session with messages after execution
+                user_id = manager._extract_user_id(parent_session_id, params)
+                await session_service.save_session(
+                    agent=agent,
+                    user_id=user_id,
+                    session_id=sub_session_id,
+                    agent_name=agent_name,
+                    llm_profile="default",  # Sub-agents use their configured profile
+                    was_new_session=True
+                )
+                logger.debug(f"Saved sub-agent session {sub_session_id} with messages")
+                
                 # Update metadata after execution
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
@@ -424,6 +436,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # Collect final result (event type is "final" not "result")
                     if event.get("type") == "final":
                         result_text = event.get("summary", "")
+                
+                # Save session with updated messages after execution
+                user_id = manager._extract_user_id(parent_session_id, params)
+                await session_service.save_session(
+                    agent=agent,
+                    user_id=user_id,
+                    session_id=instance_id,
+                    agent_name=agent_type,
+                    llm_profile="default",
+                    was_new_session=False  # Updating existing session
+                )
+                logger.debug(f"Saved continued sub-agent session {instance_id} with messages")
                 
                 # Update last_used timestamp
                 await manager.update_sub_session_metadata(
