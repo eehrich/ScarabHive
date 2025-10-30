@@ -205,10 +205,12 @@ class SubAgentManager:
         
         try:
             parent_data = await session_manager.load_session(user_id, parent_session_id)
-        except FileNotFoundError:
-            # Parent session doesn't exist yet (new session) - normal during initialization
-            logger.debug(f"Parent session {parent_session_id} not found (likely new session)")
-            return []
+        except (FileNotFoundError, Exception) as e:
+            # Parent session doesn't exist yet (new session) or other session error - normal during initialization
+            if "not found" in str(e).lower():
+                logger.debug(f"Parent session {parent_session_id} not found (likely new session)")
+                return []
+            raise
         
         sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
         
