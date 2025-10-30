@@ -34,9 +34,10 @@ def manager(mock_session_service, mock_registry):
 @pytest.mark.asyncio
 async def test_create_sub_session_generates_unique_id(manager, mock_session_service):
     """Test that create_sub_session generates unique IDs."""
-    # Setup mocks
+    # Setup mocks - parent session with depth
     mock_session_service.session_manager.load_session.return_value = {
-        "session_id": "test_sub_agent_001",
+        "session_id": "parent123",
+        "depth": 1,  # Root session
         "metadata": {}
     }
     
@@ -47,21 +48,16 @@ async def test_create_sub_session_generates_unique_id(manager, mock_session_serv
         initial_message="Search for AI news"
     )
     
-    assert sub_id1 == "parent123_sub_web_research_001"
+    assert sub_id1 == "sub_web_research_001"  # New short format
     
     # Create second sub-session with same type
-    mock_session_service.session_manager.load_session.return_value = {
-        "session_id": "test_sub_agent_002",
-        "metadata": {}
-    }
-    
     sub_id2 = await manager.create_sub_session(
         parent_session_id="parent123",
         agent_type="web_research",
         initial_message="Search for ML papers"
     )
     
-    assert sub_id2 == "parent123_sub_web_research_002"
+    assert sub_id2 == "sub_web_research_002"  # Global counter increments
     assert sub_id1 != sub_id2
 
 
@@ -69,7 +65,8 @@ async def test_create_sub_session_generates_unique_id(manager, mock_session_serv
 async def test_create_sub_session_creates_session_file(manager, mock_session_service):
     """Test that create_sub_session calls SessionManager.create_session."""
     mock_session_service.session_manager.load_session.return_value = {
-        "session_id": "test_sub",
+        "session_id": "parent123",
+        "depth": 1,
         "metadata": {}
     }
     
@@ -84,7 +81,8 @@ async def test_create_sub_session_creates_session_file(manager, mock_session_ser
     call_kwargs = mock_session_service.session_manager.create_session.call_args.kwargs
     
     assert call_kwargs["user_id"] == "admin"
-    assert call_kwargs["session_id"] == "parent123_sub_financial_analyst_001"
+    # Each test gets fresh manager, so counter starts at 1
+    assert call_kwargs["session_id"].startswith("sub_financial_analyst_")
     assert call_kwargs["agent_name"] == "financial_analyst"
     assert "Analyze TSLA stock" in call_kwargs["title"]
 
@@ -93,17 +91,18 @@ async def test_create_sub_session_creates_session_file(manager, mock_session_ser
 async def test_create_sub_session_links_to_parent(manager, mock_session_service):
     """Test that parent metadata includes sub-agent references."""
     sub_session_data = {
-        "session_id": "parent123_sub_web_research_001",
+        "session_id": "sub_web_research_004",  # Next in sequence
         "metadata": {}
     }
     parent_session_data = {
         "session_id": "parent123",
+        "depth": 1,
         "metadata": {}
     }
     
     # Mock load_session to return different data for sub vs parent
     async def load_session_side_effect(user_id, session_id):
-        if session_id.startswith("parent123_sub"):
+        if session_id.startswith("sub_"):
             return sub_session_data.copy()
         else:
             return parent_session_data.copy()
@@ -126,12 +125,14 @@ async def test_create_sub_session_links_to_parent(manager, mock_session_service)
     # Verify parent metadata contains sub-agent
     assert "metadata" in parent_data_saved
     assert "sub_agents" in parent_data_saved["metadata"]
-    assert "parent123_sub_web_research_001" in parent_data_saved["metadata"]["sub_agents"]
+    # Counter resets per test, so instance_id is 001
+    assert "sub_web_research_001" in parent_data_saved["metadata"]["sub_agents"]
     
-    sub_metadata = parent_data_saved["metadata"]["sub_agents"]["parent123_sub_web_research_001"]
+    sub_metadata = parent_data_saved["metadata"]["sub_agents"]["sub_web_research_001"]
     assert sub_metadata["agent_type"] == "web_research"
     assert sub_metadata["status"] == "active"
     assert "Search AI" in sub_metadata["task_summary"]
+    assert sub_metadata["depth"] == 2  # Parent is depth 1, child is 2
 
 
 @pytest.mark.asyncio
@@ -207,27 +208,28 @@ async def test_list_sub_sessions_returns_metadata(manager, mock_session_service)
 
 @pytest.mark.asyncio
 async def test_generate_instance_id_increments_counter(manager):
-    """Test counter increments per agent type."""
-    id1 = await manager._generate_instance_id("parent", "web_research", None)
-    assert id1 == "parent_sub_web_research_001"
+    """Test global counter increments."""
+    id1 = await manager._generate_instance_id("web_research", None)
+    assert id1 == "sub_web_research_001"
     
-    id2 = await manager._generate_instance_id("parent", "web_research", None)
-    assert id2 == "parent_sub_web_research_002"
+    id2 = await manager._generate_instance_id("web_research", None)
+    assert id2 == "sub_web_research_002"
     
-    # Different agent type resets counter
-    id3 = await manager._generate_instance_id("parent", "financial_analyst", None)
-    assert id3 == "parent_sub_financial_analyst_001"
+    # Different agent type uses same global counter
+    id3 = await manager._generate_instance_id("financial_analyst", None)
+    assert id3 == "sub_financial_analyst_003"
 
 
 @pytest.mark.asyncio
 async def test_generate_instance_id_with_label(manager):
     """Test instance ID generation with custom label."""
-    id1 = await manager._generate_instance_id("parent", "web_research", "my_research")
-    assert id1 == "parent_sub_my_research"
+    id1 = await manager._generate_instance_id("web_research", "my_research")
+    # Fresh manager, counter starts at 1
+    assert id1 == "sub_my_research_001"
     
     # Sanitize label
-    id2 = await manager._generate_instance_id("parent", "web", "task#2@test")
-    assert id2 == "parent_sub_task_2_test"
+    id2 = await manager._generate_instance_id("web", "task#2@test")
+    assert id2 == "sub_task_2_test_002"  # Counter increments
 
 
 def test_extract_user_id_handles_formats(manager):
