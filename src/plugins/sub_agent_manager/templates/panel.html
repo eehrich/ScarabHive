@@ -341,18 +341,31 @@
         // Get session ID from parent window if available (iframe context)
         function getSessionId() {
             try {
-                if (window.parent && window.parent.AgentSystem && window.parent.AgentSystem.ChatModule) {
-                    const sessionId = window.parent.AgentSystem.ChatModule.getCurrentSessionId();
-                    if (sessionId) {
-                        return sessionId;
+                console.log('[SubAgentPanel] Checking parent window for session ID...');
+                if (window.parent && window.parent.AgentSystem) {
+                    console.log('[SubAgentPanel] Parent AgentSystem found:', window.parent.AgentSystem);
+                    if (window.parent.AgentSystem.ChatModule) {
+                        console.log('[SubAgentPanel] ChatModule found');
+                        const sessionId = window.parent.AgentSystem.ChatModule.getCurrentSessionId();
+                        console.log('[SubAgentPanel] getCurrentSessionId() returned:', sessionId);
+                        if (sessionId) {
+                            console.log('[SubAgentPanel] Using session ID from parent:', sessionId);
+                            return sessionId;
+                        }
+                    } else {
+                        console.warn('[SubAgentPanel] ChatModule not available on parent');
                     }
+                } else {
+                    console.warn('[SubAgentPanel] Parent window or AgentSystem not available');
                 }
             } catch (e) {
-                console.warn('Cannot access parent window session ID:', e);
+                console.error('[SubAgentPanel] Error accessing parent window session ID:', e);
             }
             
             // Fallback to manual input
-            return document.getElementById('sessionIdInput').value.trim();
+            const manualInput = document.getElementById('sessionIdInput').value.trim();
+            console.log('[SubAgentPanel] Fallback to manual input:', manualInput || '(empty)');
+            return manualInput;
         }
         
         async function loadAgents() {
@@ -527,8 +540,12 @@
         
         // Auto-load on page load if session ID is available from parent
         window.addEventListener('DOMContentLoaded', () => {
+            console.log('[SubAgentPanel] DOMContentLoaded fired');
             const sessionId = getSessionId();
+            console.log('[SubAgentPanel] Session ID retrieved:', sessionId || '(none)');
+            
             if (sessionId) {
+                console.log('[SubAgentPanel] Session ID found, hiding manual input and loading agents');
                 // Hide session ID input if we got it from parent
                 const inputContainer = document.querySelector('.controls');
                 const sessionInput = document.getElementById('sessionIdInput');
@@ -540,6 +557,8 @@
                 
                 // Auto-load agents
                 loadAgents();
+            } else {
+                console.warn('[SubAgentPanel] No session ID available - manual input required');
             }
         });
     </script>
