@@ -51,6 +51,9 @@ class SessionTracker:
         # Persisted sessions: session_id -> List[ChatMessage]
         self._sessions: Dict[str, List[ChatMessage]] = {}
         
+        # Session metadata: session_id -> Dict[str, Any] (user_id, etc.)
+        self._session_metadata: Dict[str, Dict[str, Any]] = {}
+        
         # Request-to-session mapping: request_id -> session_id
         self._request_to_session: Dict[str, str] = {}
         
@@ -207,6 +210,28 @@ class SessionTracker:
             messages: The messages to persist
         """
         self._sessions[session_id] = messages
+    
+    def set_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
+        """
+        Set metadata for a session (e.g., user_id).
+        
+        Args:
+            session_id: The session ID
+            metadata: Metadata dict (user_id, agent_name, etc.)
+        """
+        self._session_metadata[session_id] = metadata
+    
+    def get_session_metadata(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get metadata for a session.
+        
+        Args:
+            session_id: The session ID
+            
+        Returns:
+            Metadata dict or None if not found
+        """
+        return self._session_metadata.get(session_id)
 
     def has_session(self, session_id: str) -> bool:
         """

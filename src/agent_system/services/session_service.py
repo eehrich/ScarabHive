@@ -68,6 +68,13 @@ class SessionService:
             # Restore conversation history to agent using component API
             agent._session_tracker.set_session_messages(session_id, messages_objects)
             
+            # Store session metadata for later use (e.g., user_id for tool execution context)
+            agent._session_tracker.set_session_metadata(session_id, {
+                "user_id": user_id,
+                "agent_name": session_data.get("agent_name"),
+                "llm_profile": session_data.get("llm_profile")
+            })
+            
             logger.info(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
             

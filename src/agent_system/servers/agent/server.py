@@ -1223,13 +1223,22 @@ class Agent(MCPServer):
                 # Execute all tools using streaming to get real-time status events from sub-agents
                 tool_messages = []
                 tool_results = []
+                
+                # Extract user_id from session metadata for multi-user tool isolation
+                user_id: Optional[str] = None
+                if self._session_tracker:
+                    session_meta = self._session_tracker.get_session_metadata(session_id)
+                    if session_meta:
+                        user_id = session_meta.get("user_id")
+                
                 async for item in self._tool_execution_manager.execute_tools_streaming(
                     tool_calls=tool_calls,
                     tool_name_mapping=tool_name_mapping,
                     available_tools=context.available_tools,
                     step=step,
                     request_id=request_id,
-                    session_id=session_id
+                    session_id=session_id,
+                    user_id=user_id
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution

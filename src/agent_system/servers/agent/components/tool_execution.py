@@ -33,8 +33,9 @@ class ToolExecutionManager:
         self._agent = agent
         # Optional StatusEventForwarder for real-time status streaming during tool execution
         self._status_forwarder = status_forwarder
-        # Current session ID for tool execution context
+        # Current session ID and user ID for tool execution context
         self._current_session_id: Optional[str] = None
+        self._current_user_id: Optional[str] = None
 
     def _make_params_serializable(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create a JSON-serializable copy of params by excluding non-serializable objects.
@@ -141,7 +142,8 @@ class ToolExecutionManager:
         available_tools: List[str],
         step: int,
         request_id: str | None = None,
-        session_id: str | None = None
+        session_id: str | None = None,
+        user_id: str | None = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
         
@@ -151,6 +153,7 @@ class ToolExecutionManager:
         
         Args:
             session_id: Agent session ID to inject into tool params for session-aware tools
+            user_id: User ID to inject into tool params for multi-user isolation
         
         Yields:
             Dict with either:
@@ -158,8 +161,9 @@ class ToolExecutionManager:
             - {"type": "tool_events", "events": [...]} - Tool execution events  
             - {"type": "complete", "messages": [...], "results": [...]} - Final results
         """
-        # Store session_id for use in tool execution
+        # Store session_id and user_id for use in tool execution
         self._current_session_id = session_id
+        self._current_user_id = user_id
         
         tool_messages = []
         events_to_yield = []
@@ -478,13 +482,17 @@ class ToolExecutionManager:
         try:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
             
-            # Inject session_id and agent_name from current execution context if available
-            if self._current_session_id or (self._agent and hasattr(self._agent, 'name')):
+            # Inject session context from current execution context if available
+            if self._current_session_id or self._current_user_id or (self._agent and hasattr(self._agent, 'name')):
                 params = params.copy()  # Don't mutate original
                 
                 if self._current_session_id:
                     params["_session_id"] = self._current_session_id
                     logger.debug(f"✓ Injected session_id '{self._current_session_id}' into tool params")
+                
+                if self._current_user_id:
+                    params["_user_id"] = self._current_user_id
+                    logger.debug(f"✓ Injected user_id '{self._current_user_id}' into tool params")
                 
                 if self._agent and hasattr(self._agent, 'name'):
                     params["_agent_name"] = self._agent.name

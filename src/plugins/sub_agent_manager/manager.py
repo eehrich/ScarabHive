@@ -273,19 +273,34 @@ class SubAgentManager:
             return instance_id
     
     def _extract_user_id(self, session_id: str) -> str:
-        """Extract user_id from session ID.
+        """Extract user_id from session ID by searching user directories.
         
-        For now, assumes sessions are stored per-user but session_id
-        doesn't embed user_id. Returns default user 'admin'.
-        
-        TODO: Improve this based on actual session ID format.
+        Searches all user directories in session storage to find which user
+        owns the given session_id. This works because session_ids are globally
+        unique across all users.
         
         Args:
-            session_id: Session ID
+            session_id: Session ID to search for
             
         Returns:
-            User ID (currently hardcoded to 'admin')
+            User ID (directory name containing the session file)
+            Falls back to 'admin' if session not found
         """
-        # FIXME: This should extract from session_id or context
-        # For MVP, all sessions belong to 'admin' user
+        storage_path = self._session_service.session_manager.storage_path
+        
+        # Search all user directories for this session_id
+        for user_dir in storage_path.iterdir():
+            if user_dir.is_dir() and not user_dir.name.startswith('.'):
+                session_file = user_dir / f"{session_id}.json"
+                if session_file.exists():
+                    logger.debug(
+                        f"Found session {session_id} in user directory: {user_dir.name}"
+                    )
+                    return user_dir.name
+        
+        # Fallback to 'admin' if not found (shouldn't happen in normal operation)
+        logger.warning(
+            f"Could not find user_id for session {session_id}, "
+            f"falling back to 'admin'"
+        )
         return "admin"
