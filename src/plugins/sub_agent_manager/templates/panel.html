@@ -333,6 +333,19 @@
         </div>
     </div>
     
+    <!-- Details Modal -->
+    <div class="modal" id="detailsModal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">Sub-Agent Details</div>
+            <div id="detailsContent" style="padding: 20px;">
+                <div class="loading">Loading...</div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" onclick="closeDetailsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+    
     <script>
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
@@ -495,6 +508,12 @@
         }
         
         async function viewDetails(instanceId) {
+            const modal = document.getElementById('detailsModal');
+            const content = document.getElementById('detailsContent');
+            
+            modal.style.display = 'flex';
+            content.innerHTML = '<div class="loading">Loading...</div>';
+            
             try {
                 const response = await fetch(`${API_BASE}/sub-agents/${instanceId}?session_id=${currentSessionId}`);
                 const data = await response.json();
@@ -504,15 +523,45 @@
                 }
                 
                 const recentActivity = data.recent_activity || [];
-                const activityHtml = recentActivity.map(msg => 
-                    `<div style="margin-bottom: 10px;"><strong>${msg.role}:</strong> ${msg.content}</div>`
-                ).join('');
+                const activityHtml = recentActivity.length > 0
+                    ? recentActivity.map(msg => `
+                        <div style="margin-bottom: 15px; padding: 10px; background: #2a2a2a; border-radius: 6px;">
+                            <div style="color: #58a6ff; font-weight: 500; margin-bottom: 5px;">${escapeHtml(msg.role)}</div>
+                            <div style="color: #e6edf3; white-space: pre-wrap;">${escapeHtml(msg.content)}</div>
+                        </div>
+                    `).join('')
+                    : '<div style="color: #858585;">No recent activity</div>';
                 
-                alert(`Instance: ${data.instance_id}\nAgent Type: ${data.agent_type}\nStatus: ${data.status}\nMessages: ${data.message_count}\n\nRecent Activity:\n${recentActivity.map(m => `${m.role}: ${m.content}`).join('\n')}`);
+                content.innerHTML = `
+                    <div style="display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; margin-bottom: 20px; color: #e6edf3;">
+                        <div style="color: #858585;">Instance ID:</div>
+                        <div style="font-family: monospace;">${escapeHtml(data.instance_id)}</div>
+                        <div style="color: #858585;">Agent Type:</div>
+                        <div>${escapeHtml(data.agent_type)}</div>
+                        <div style="color: #858585;">Status:</div>
+                        <div style="color: ${data.status === 'active' ? '#56d364' : '#858585'};">${escapeHtml(data.status)}</div>
+                        <div style="color: #858585;">Messages:</div>
+                        <div>${data.message_count}</div>
+                    </div>
+                    <div style="border-top: 1px solid #30363d; padding-top: 15px;">
+                        <div style="color: #858585; margin-bottom: 10px; font-weight: 500;">Recent Activity:</div>
+                        <div style="max-height: 300px; overflow-y: auto;">${activityHtml}</div>
+                    </div>
+                `;
             } catch (error) {
                 console.error('Error viewing details:', error);
-                showError(error.message);
+                content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(error.message)}</div>`;
             }
+        }
+        
+        function closeDetailsModal() {
+            document.getElementById('detailsModal').style.display = 'none';
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
         
         function showError(message) {
