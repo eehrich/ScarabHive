@@ -156,10 +156,10 @@ plugins:
       type: sub_agent_manager
       enabled: true
       max_nesting_depth: 5      
-      allowed_agents:
-        - basic_agent
-        - web_research_agent
-        - financial_analyst_agent      
+#      allowed_agents:
+#        - basic_agent
+#        - web_research_agent
+#        - financial_analyst_agent      
       hook_config:
         enabled: true
         inject_sub_agent_context:

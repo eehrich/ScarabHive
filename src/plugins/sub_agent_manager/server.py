@@ -59,26 +59,40 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     def get_template_vars(self) -> dict:
         """Return template variables for schema rendering.
         
-        Queries the MCP registry to list all configured agents dynamically.
-        Excludes known tool/hook plugins by name pattern.
+        Uses same filtering logic as GET /agents endpoint:
+        - Check if server is an Agent instance
+        - Respect _mcp_public visibility flag
+        
+        This is called dynamically at runtime (not cached) to ensure
+        the agent list is always up-to-date.
         """
         from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+        from agent_system.servers.agent.server import Agent
         
-        # Known non-agent plugins (tools, hooks, utilities)
-        NON_AGENT_PLUGINS = {
-            'basic_operations', 'datetime', 'weather', 'duckduckgo_search',
-            'context_optimizer', 'markdown_formatter', 'message_validator',
-            'message_debugger', 'request_logger', 'ssh_control', 'todo',
-            'memory', 'user_management', 'log_viewer', 'sequential_thinking',
-            'script_interpreter', 'web_scraper', 'llm_router', 'sub_agent_manager'
-        }
-        
-        agent_names = [
-            name for name in plugin_mcp_registry.list_servers()
-            if not name.startswith('_')  # Skip internal plugins
-            and name not in self.blocked_agents
-            and name not in NON_AGENT_PLUGINS  # Skip tools/hooks
-        ]
+        agent_names = []
+        for name in plugin_mcp_registry.list_servers():
+            if name.startswith('_') or name in self.blocked_agents:
+                continue
+            
+            try:
+                # Access plugin_servers dict directly (PluginMCPRegistry has no .get() method)
+                adapter = plugin_mcp_registry.plugin_servers.get(name)
+                if not adapter:
+                    continue
+                
+                # Get the actual plugin instance from the adapter
+                srv = adapter.plugin_server  # PluginMCPAdapter.plugin_server is the actual server instance
+                
+                # Same logic as GET /agents endpoint
+                if isinstance(srv, Agent):
+                    # Check _mcp_public flag (visibility control)
+                    if hasattr(srv, '_mcp_public') and not srv._mcp_public:
+                        continue  # Skip visibility='tool' or 'private'
+                    agent_names.append(name)
+            except Exception as e:
+                # Unexpected error - log and skip
+                logger.debug(f"SubAgentManagerServer '{self.name}' skipping server '{name}': {type(e).__name__}: {e}")    
+                continue
         
         if self.allowed_agents and '*' not in self.allowed_agents:
             # Apply allowed_agents filter if specified
@@ -87,6 +101,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         return {
             "allowed_agents": agent_names
         }
+    
+    async def list_tools(self) -> list:
+        """Override list_tools() to re-render schema dynamically.
+        
+        This ensures the agent list in the schema is always up-to-date,
+        since agents are registered after this plugin is initialized.
+        """
+        # Invalidate schema cache to force re-rendering
+        self._schema_cache = None
+        
+        # Call parent implementation (will re-render with fresh template vars)
+        return await super().list_tools()
         
         # NOTE: Registry and SessionService will be injected via params during tool/hook calls
         # by the ToolExecutionManager or via HookContext.agent
