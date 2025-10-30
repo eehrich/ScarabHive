@@ -346,6 +346,11 @@
         </div>
     </div>
     
+    <!-- Toast Notification -->
+    <div id="toast" style="display: none; position: fixed; bottom: 20px; right: 20px; background: #333; color: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 10001; min-width: 250px;">
+        <span id="toastMessage"></span>
+    </div>
+    
     <script>
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
@@ -565,11 +570,24 @@
         }
         
         function showError(message) {
-            alert('Error: ' + message);
+            showToast(message, 'error');
         }
         
         function showSuccess(message) {
-            console.log('Success:', message);
+            showToast(message, 'success');
+        }
+        
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toastMessage');
+            
+            toastMessage.textContent = message;
+            toast.style.display = 'block';
+            toast.style.background = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : '#333';
+            
+            setTimeout(() => {
+                toast.style.display = 'none';
+            }, 3000);
         }
         
         // Auto-load on page load if session ID is available from parent
