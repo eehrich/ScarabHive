@@ -12,7 +12,6 @@ from agent_system.utils.id import short_id
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
-    from .hooks import SubAgentContextInjector
 
 from plugins.sub_agent_manager.manager import SubAgentManager
 
@@ -56,9 +55,6 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # Agent filtering (multi-instance support - by instance name, not type)
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
         self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
-        
-        # Initialize hook injector (lazy-loaded)
-        self._hook_injector: SubAgentContextInjector | None = None
     
     def get_template_vars(self) -> dict[str, Any]:
         """Provide template variables for schema rendering.
@@ -588,27 +584,27 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             HookResult with modified=True if context was injected
         """
         try:
-            # Lazy-load hook injector
-            if self._hook_injector is None:
-                from plugins.sub_agent_manager.hooks import SubAgentContextInjector
-                
-                # Get session_service from agent in context
-                if not context.agent or not hasattr(context.agent, '_session_service'):
-                    logger.warning("[SubAgentManager] No session_service available from agent, skipping hook")
-                    return HookResult(success=True, modified=False, context=context)
-                
-                session_service = context.agent._session_service
-                manager = self._get_manager(session_service, registry=None)  # No registry needed for hooks
-                
-                # Get hook-specific configuration from plugin_config
-                plugin_config = getattr(self.mcp_config, 'plugin_config', {})
-                hooks_config = plugin_config.get("hooks", {})
-                hook_config = hooks_config.get("inject_sub_agent_context", {})
-                self._hook_injector = SubAgentContextInjector(manager, hook_config)
-                logger.debug("SubAgentContextInjector lazy-loaded")
+            from plugins.sub_agent_manager.hooks import SubAgentContextInjector
+            
+            # Get session_service from agent in context
+            # IMPORTANT: Don't cache the injector! Each agent has its own session_service
+            if not context.agent or not hasattr(context.agent, '_session_service'):
+                logger.warning("[SubAgentManager] No session_service available from agent, skipping hook")
+                return HookResult(success=True, modified=False, context=context)
+            
+            session_service = context.agent._session_service
+            manager = self._get_manager(session_service, registry=None)  # No registry needed for hooks
+            
+            # Get hook-specific configuration from plugin_config
+            plugin_config = getattr(self.mcp_config, 'plugin_config', {})
+            hooks_config = plugin_config.get("hooks", {})
+            hook_config = hooks_config.get("inject_sub_agent_context", {})
+            
+            # Create fresh injector for this call (each agent has different session_service)
+            injector = SubAgentContextInjector(manager, hook_config)
             
             # Delegate to injector
-            return await self._hook_injector.inject_sub_agent_context(context)
+            return await injector.inject_sub_agent_context(context)
             
         except Exception as e:
             logger.error(f"[SubAgentManager] Hook execution failed: {e}", exc_info=True)
