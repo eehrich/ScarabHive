@@ -152,6 +152,17 @@ plugins:
       host: 127.0.0.1
       port: 4002
     
+    sub_agent_manager:
+      type: sub_agent_manager
+      enabled: true
+      max_nesting_depth: 5
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 5
+          format: "markdown"
+    
     ssh_control:
       type: ssh_control
       enabled: true
@@ -237,6 +248,7 @@ plugins:
             - "sequential_thinking/*"
             - "todo/*"
             - "memory/*"
+            - "sub_agent_manager/*"
         
         hooks:
           enabled: true
