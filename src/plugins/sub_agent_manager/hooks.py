@@ -65,12 +65,13 @@ class SubAgentContextInjector:
                     parent_session_id=context.session_id,
                     include_completed=self.show_completed
                 )
-            except FileNotFoundError:
-                # Session file doesn't exist yet (new session) - this is normal
-                logger.debug(f"[SubAgentContext] Session {context.session_id} not found (likely new session), skipping")
-                return HookResult(success=True, modified=False, context=context)
-            except Exception as e:
-                logger.warning(f"[SubAgentContext] Unexpected error listing sub-agents: {e}")
+            except (FileNotFoundError, Exception) as e:
+                # Session file doesn't exist yet (new session) or other session-related error
+                # This is normal - sessions are created on first save
+                if "not found" in str(e).lower():
+                    logger.debug(f"[SubAgentContext] Session {context.session_id} not found (likely new session), skipping")
+                else:
+                    logger.warning(f"[SubAgentContext] Unexpected error listing sub-agents: {e}")
                 return HookResult(success=True, modified=False, context=context)
             
             # Skip if no sub-agents
