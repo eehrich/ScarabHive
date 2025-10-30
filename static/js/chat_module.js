@@ -1232,6 +1232,10 @@
   // attach to global
   global.chatModule = chatModule;
   
+  // Also attach to AgentSystem namespace for consistency with other modules
+  global.AgentSystem = global.AgentSystem || {};
+  global.AgentSystem.ChatModule = chatModule;
+  
   // Cleanup on page unload
   window.addEventListener('beforeunload', cleanup);
   
