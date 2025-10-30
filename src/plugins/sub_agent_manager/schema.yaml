@@ -37,8 +37,7 @@ tools:
             type: string
             description: |
               Agent type to spawn (required for 'create').
-              Examples: 'web_research_agent', 'basic_agent', 'financial_analyst_agent'
-              The agent must exist in the registry.
+              Available agents: {{ allowed_agents }}
           
           task:
             type: string

@@ -59,12 +59,29 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         
         # Initialize hook injector (lazy-loaded)
         self._hook_injector: SubAgentContextInjector | None = None
+    
+    def get_template_vars(self) -> dict[str, Any]:
+        """Provide template variables for schema rendering.
+        
+        Returns available agents list for dynamic tool description.
+        """
+        # Format allowed agents list for schema
+        if self.allowed_agents == ['*']:
+            agents_list = "all configured agents"
+        else:
+            agents_list = ", ".join(f"'{agent}'" for agent in self.allowed_agents)
+        
+        return {
+            "name": self.name,
+            "allowed_agents": agents_list,
+            "max_nesting_depth": self.max_nesting_depth
+        }
         
         # NOTE: Registry and SessionService will be injected via params during tool/hook calls
         # by the ToolExecutionManager or via HookContext.agent
         
         logger.info(
-            f"SubAgentManagerServer '{name}' initialized - "
+            f"SubAgentManagerServer '{self.name}' initialized - "
             f"max_sub_agents={self.max_sub_agents}, max_history={self.max_history}, "
             f"max_nesting_depth={self.max_nesting_depth}, "
             f"allowed_agents={self.allowed_agents}, blocked_agents={self.blocked_agents}"
