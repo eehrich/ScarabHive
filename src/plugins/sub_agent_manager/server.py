@@ -60,27 +60,25 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         """Return template variables for schema rendering.
         
         Queries the MCP registry to list all configured agents dynamically.
-        Uses same filtering as GET /agents endpoint: only Agent instances with _mcp_public=True.
-        This ensures the LLM sees only spawneable agents, not tools or hooks.
+        Excludes known tool/hook plugins by name pattern.
         """
         from agent_system.plugins.mcp_adapter import plugin_mcp_registry
-        from agent_system.servers.agent.server import Agent
         
-        agent_names = []
-        for name in plugin_mcp_registry.list_servers():
-            if name.startswith('_') or name in self.blocked_agents:
-                continue
-            
-            try:
-                srv = plugin_mcp_registry.get(name)
-                # Filter by Agent class type (same logic as GET /agents)
-                if isinstance(srv, Agent):
-                    # Check _mcp_public flag (visibility control)
-                    if hasattr(srv, '_mcp_public') and not srv._mcp_public:
-                        continue  # Skip visibility='tool' or 'private' agents
-                    agent_names.append(name)
-            except Exception:
-                continue  # Skip servers we can't inspect
+        # Known non-agent plugins (tools, hooks, utilities)
+        NON_AGENT_PLUGINS = {
+            'basic_operations', 'datetime', 'weather', 'duckduckgo_search',
+            'context_optimizer', 'markdown_formatter', 'message_validator',
+            'message_debugger', 'request_logger', 'ssh_control', 'todo',
+            'memory', 'user_management', 'log_viewer', 'sequential_thinking',
+            'script_interpreter', 'web_scraper', 'llm_router', 'sub_agent_manager'
+        }
+        
+        agent_names = [
+            name for name in plugin_mcp_registry.list_servers()
+            if not name.startswith('_')  # Skip internal plugins
+            and name not in self.blocked_agents
+            and name not in NON_AGENT_PLUGINS  # Skip tools/hooks
+        ]
         
         if self.allowed_agents and '*' not in self.allowed_agents:
             # Apply allowed_agents filter if specified
