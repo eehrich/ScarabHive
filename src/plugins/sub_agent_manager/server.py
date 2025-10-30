@@ -176,18 +176,23 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         """Extract and validate registry from params.
         
         Args:
-            params: Tool parameters with injected _registry
+            params: Tool parameters with injected _agent
             
         Returns:
             MCPRegistry instance
             
         Raises:
-            RuntimeError: If registry not found in params
-        """
-        registry = params.get("_registry")
-        if not registry:
-            raise RuntimeError("No registry available - _registry must be injected by ToolExecutionManager")
-        return registry
+            RuntimeError: If registry not found
+        """        
+        # Extract from agent instance (new pattern - same as session_service)
+        agent = params.get("_agent")
+        if agent and hasattr(agent, 'registry'):
+            return agent.registry
+        
+        raise RuntimeError(
+            "No registry available - neither _registry nor _agent.registry found. "
+            "This tool must be called from an agent."
+        )
     
     async def manage_sub_agent(self, params: dict[str, Any]) -> dict[str, Any]:
         """Unified handler for all sub-agent operations.
