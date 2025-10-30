@@ -131,13 +131,21 @@ class SessionService:
             # Determine title from first user message
             title = self._extract_session_title(messages_dicts)
             
+            # Check if session already exists and find its owner
+            # This is critical for sub-agent sessions which may have different user_ids
+            session_owner = self.session_manager._find_session_owner(session_id)
+            session_exists = session_owner is not None
+            
+            # Use the actual owner's user_id for existing sessions
+            actual_user_id = session_owner if session_exists else user_id
+            
             # Save or update session
-            if was_new_session:
-                logger.debug(f"[SESSION] Creating new session {session_id}")
+            if not session_exists:
+                logger.debug(f"[SESSION] Creating new session {session_id} for user {actual_user_id}")
                 # Step 1: Create empty session
                 session_data = await self.session_manager.create_session(
                     session_id=session_id,
-                    user_id=user_id,
+                    user_id=actual_user_id,
                     title=title,
                     agent_name=agent_name,
                     llm_profile=llm_profile
@@ -147,9 +155,9 @@ class SessionService:
                 # Step 3: Save back
                 await self.session_manager.save_session(session_data)
             else:
-                logger.debug(f"[SESSION] Updating existing session {session_id}")
-                # Load existing session
-                session_data = await self.session_manager.load_session(user_id, session_id)
+                logger.debug(f"[SESSION] Updating existing session {session_id} (owner: {actual_user_id})")
+                # Load existing session with correct owner
+                session_data = await self.session_manager.load_session(actual_user_id, session_id)
                 # Update messages and title
                 session_data["messages"] = messages_dicts
                 session_data["title"] = title

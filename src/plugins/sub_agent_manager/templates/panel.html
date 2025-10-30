@@ -287,7 +287,6 @@
         <div class="controls">
             <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
             <button onclick="loadAgents()">🔄 Refresh</button>
-            <button onclick="showCreateModal()">➕ Create Sub-Agent</button>
             <label style="color: #858585; margin-left: auto; display: flex; align-items: center; gap: 5px;">
                 <input type="checkbox" id="includeArchived" onchange="loadAgents()">
                 Show Archived
@@ -317,35 +316,18 @@
         </div>
     </div>
     
-    <!-- Create/Continue Modal -->
+    <!-- Continue Modal -->
     <div class="modal" id="createModal">
         <div class="modal-content">
-            <div class="modal-header" id="modalTitle">Create Sub-Agent</div>
+            <div class="modal-header" id="modalTitle">Continue Sub-Agent</div>
             <form id="agentForm" onsubmit="submitForm(event)">
-                <div class="form-group">
-                    <label for="agentType">Agent Type *</label>
-                    <select id="agentType" required>
-                        <option value="">Select agent type...</option>
-                        <option value="web_research_agent">Web Research Agent</option>
-                        <option value="basic_agent">Basic Agent</option>
-                        <option value="financial_analyst_agent">Financial Analyst Agent</option>
-                    </select>
-                </div>
-                <div class="form-group" id="taskGroup">
-                    <label for="task">Task *</label>
-                    <textarea id="task" required placeholder="Describe the task for the sub-agent..."></textarea>
-                </div>
-                <div class="form-group" id="messageGroup" style="display: none;">
+                <div class="form-group" id="messageGroup">
                     <label for="message">Message *</label>
-                    <textarea id="message" placeholder="Enter follow-up message..."></textarea>
-                </div>
-                <div class="form-group" id="labelGroup">
-                    <label for="instanceLabel">Instance Label (optional)</label>
-                    <input type="text" id="instanceLabel" placeholder="e.g., researcher_alpha">
+                    <textarea id="message" required placeholder="Enter follow-up message..."></textarea>
                 </div>
                 <div class="modal-actions">
                     <button type="button" onclick="closeModal()">Cancel</button>
-                    <button type="submit" id="submitBtn">Create</button>
+                    <button type="submit" id="submitBtn">Continue</button>
                 </div>
             </form>
         </div>
@@ -354,7 +336,6 @@
     <script>
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
-        let modalMode = 'create';
         let currentInstanceId = '';
         
         async function loadAgents() {
@@ -430,29 +411,13 @@
             `).join('');
         }
         
-        function showCreateModal() {
+        function showContinueModal(instanceId) {
             if (!currentSessionId) {
                 showError('Please enter a session ID first');
                 return;
             }
-            modalMode = 'create';
-            currentInstanceId = '';
-            document.getElementById('modalTitle').textContent = 'Create Sub-Agent';
-            document.getElementById('taskGroup').style.display = 'block';
-            document.getElementById('messageGroup').style.display = 'none';
-            document.getElementById('labelGroup').style.display = 'block';
-            document.getElementById('submitBtn').textContent = 'Create';
-            document.getElementById('agentForm').reset();
-            document.getElementById('createModal').classList.add('active');
-        }
-        
-        function showContinueModal(instanceId) {
-            modalMode = 'continue';
             currentInstanceId = instanceId;
             document.getElementById('modalTitle').textContent = `Continue Sub-Agent: ${instanceId}`;
-            document.getElementById('taskGroup').style.display = 'none';
-            document.getElementById('messageGroup').style.display = 'block';
-            document.getElementById('labelGroup').style.display = 'none';
             document.getElementById('submitBtn').textContent = 'Continue';
             document.getElementById('agentForm').reset();
             document.getElementById('createModal').classList.add('active');
@@ -464,39 +429,7 @@
         
         async function submitForm(event) {
             event.preventDefault();
-            
-            if (modalMode === 'create') {
-                await createAgent();
-            } else {
-                await continueAgent();
-            }
-        }
-        
-        async function createAgent() {
-            const agentType = document.getElementById('agentType').value;
-            const task = document.getElementById('task').value;
-            const instanceLabel = document.getElementById('instanceLabel').value;
-            
-            try {
-                const response = await fetch(`${API_BASE}/sub-agents?session_id=${currentSessionId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ agent_type: agentType, task, instance_label: instanceLabel })
-                });
-                
-                const result = await response.json();
-                
-                if (!response.ok || result.error) {
-                    throw new Error(result.error || 'Failed to create sub-agent');
-                }
-                
-                closeModal();
-                await loadAgents();
-                showSuccess(`Created sub-agent: ${result.instance_id}`);
-            } catch (error) {
-                console.error('Error creating agent:', error);
-                showError(error.message);
-            }
+            await continueAgent();
         }
         
         async function continueAgent() {

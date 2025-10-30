@@ -274,23 +274,35 @@ class SubAgentManager:
             Unique instance ID (short format, no parent ID)
         """
         async with self._lock:
-            # Increment global counter
-            self._global_counter += 1
-            counter = self._global_counter
+            session_manager = self._session_service.session_manager
             
-            # Use custom label or auto-generate
-            if instance_label:
-                # Sanitize label (alphanumeric, underscore, hyphen only)
-                import re
-                sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', instance_label)
-                instance_id = f"sub_{sanitized}_{counter:03d}"
-            else:
-                # Auto-generate: sub_{agent_type}_{counter}
-                instance_id = f"sub_{agent_type}_{counter:03d}"
+            # Keep incrementing counter until we find a unique ID
+            max_attempts = 1000
+            for _ in range(max_attempts):
+                # Increment global counter
+                self._global_counter += 1
+                counter = self._global_counter
+                
+                # Use custom label or auto-generate
+                if instance_label:
+                    # Sanitize label (alphanumeric, underscore, hyphen only)
+                    import re
+                    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', instance_label)
+                    instance_id = f"sub_{sanitized}_{counter:03d}"
+                else:
+                    # Auto-generate: sub_{agent_type}_{counter}
+                    instance_id = f"sub_{agent_type}_{counter:03d}"
+                
+                # Check if this ID is already taken
+                if not session_manager._session_id_exists_globally(instance_id):
+                    logger.debug(f"Generated unique instance ID: {instance_id} (global counter: {counter})")
+                    return instance_id
+                else:
+                    logger.debug(f"Instance ID {instance_id} already exists, trying next counter...")
             
-            logger.debug(f"Generated instance ID: {instance_id} (global counter: {counter})")
-            
-            return instance_id
+            # Fallback if we somehow can't find a unique ID
+            raise ValueError(f"Failed to generate unique instance ID after {max_attempts} attempts")
+
     
     def _extract_user_id(self, session_id: str, params: Optional[dict] = None) -> str:
         """Extract user_id from injected params or session file location.

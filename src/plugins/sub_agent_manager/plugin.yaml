@@ -4,19 +4,6 @@ description: "Manages persistent sub-agent instances for coordinator agents"
 plugin_type: sub_agent_manager
 author: "AgentSystem Team"
 
-# Web UI configuration
-web_ui:
-  button:
-    enabled: true
-    text: "Sub-Agents"
-    icon: "🤖"
-  panel:
-    title: "Sub-Agent Manager"
-    endpoint: "/plugins/sub_agent_manager/panel"
-    type: "iframe"  # iframe for full isolation, no session_service injection needed
-    width: "1000px"
-    height: "800px"
-
 # Server configuration
 server_config:
   # Maximum sub-agents per parent session

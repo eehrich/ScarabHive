@@ -99,7 +99,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             agent_names = [name for name in agent_names if name in self.allowed_agents]
         
         return {
-            "allowed_agents": agent_names
+            'name': self.name,  # CRITICAL: Must include 'name' for {{ name }} template variable in schema.yaml
+            'allowed_agents': agent_names
         }
     
     async def list_tools(self) -> list:
@@ -270,6 +271,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             if not agent:
                 raise ValueError(f"Agent '{agent_name}' not found in registry")
             
+            # Inject session_service into agent (same pattern as app.py and agent_cli.py)
+            # ALWAYS inject, even if already set, to ensure correct reference
+            agent._session_service = session_service
+            
             # Execute sub-agent with initial task (blocking)
             if status:
                 await status.progress(f"Executing {agent_name} with initial task...")
@@ -292,9 +297,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Note: config_overrides would go here if Agent.run_events supported them
                 # For now, sub-agent uses its default configuration
             ):
-                # Collect final result
-                if event.get("type") == "result":
-                    result_text = event.get("text", "")
+                # Collect final result (event type is "final" not "result")
+                if event.get("type") == "final":
+                    result_text = event.get("summary", "")
             
             # Update metadata after execution
             await manager.update_sub_session_metadata(
@@ -361,6 +366,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
             
+            # Inject session_service into agent (same pattern as app.py and agent_cli.py)
+            # ALWAYS inject, even if already set, to ensure correct reference
+            agent._session_service = session_service
+            
             if status:
                 await status.progress(f"Continuing {agent_type} with new message...")
             
@@ -379,8 +388,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 request_id=sub_request_id,
                 session_id=instance_id  # Continue existing session
             ):
-                if event.get("type") == "result":
-                    result_text = event.get("text", "")
+                # Collect final result (event type is "final" not "result")
+                if event.get("type") == "final":
+                    result_text = event.get("summary", "")
             
             # Update last_used timestamp
             await manager.update_sub_session_metadata(
@@ -653,7 +663,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             # Get session_service from agent in context
             # IMPORTANT: Don't cache the injector! Each agent has its own session_service
-            if not context.agent or not hasattr(context.agent, '_session_service'):
+            if not context.agent or not hasattr(context.agent, '_session_service') or not context.agent._session_service:
                 logger.warning("[SubAgentManager] No session_service available from agent, skipping hook")
                 return HookResult(success=True, modified=False, context=context)
             

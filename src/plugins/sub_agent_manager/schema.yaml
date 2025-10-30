@@ -73,6 +73,21 @@ tools:
         
         required: [operation]
 
+# Web UI configuration
+web_ui:
+  button:
+    enabled: true
+    text: "Sub-Agents"
+    icon: "🤖"
+  
+  panel:
+    enabled: true
+    title: "Sub-Agent Manager"
+    endpoint: "/plugins/{{ name }}/panel"
+    type: "iframe"
+    width: "1000px"
+    height: "800px"
+
 # Hook configuration
 hooks:
   - name: inject_sub_agent_context

@@ -122,59 +122,6 @@ class SubAgentManagerWebFactory:
                 logger.error(f"Error fetching sub-agent {instance_id}: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=str(e))
         
-        @router.post("/sub-agents")
-        async def create_sub_agent(
-            request: Request,
-            session_id: str = Query(..., description="Parent session ID")
-        ):
-            """
-            Create and execute new sub-agent (JSON).
-            
-            Args:
-                session_id: Parent session ID
-                
-            Request body:
-                {
-                    "agent_type": "web_research_agent",
-                    "task": "Research topic X",
-                    "instance_label": "optional_label"
-                }
-            """
-            try:
-                # Get session_service and registry from app
-                session_service = get_session_service()
-                registry = get_registry()
-                
-                body = await request.json()
-                
-                params = {
-                    "_session_id": session_id,
-                    "_session_service": session_service,
-                    "_registry": registry,
-                    "agent_type": body.get("agent_type"),
-                    "task": body.get("task"),
-                    "instance_label": body.get("instance_label")
-                }
-                
-                # Validate required fields
-                if not params["agent_type"]:
-                    raise HTTPException(status_code=400, detail="Missing 'agent_type'")
-                if not params["task"]:
-                    raise HTTPException(status_code=400, detail="Missing 'task'")
-                
-                result = await self.server._handle_create(params)
-                
-                if result.get("status") == "error":
-                    raise HTTPException(status_code=400, detail=result.get("error"))
-                
-                return JSONResponse(result, status_code=201)
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error creating sub-agent: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
-        
         @router.post("/sub-agents/{instance_id}/continue")
         async def continue_sub_agent(
             instance_id: str,

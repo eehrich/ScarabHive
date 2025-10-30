@@ -63,6 +63,10 @@ class SubAgentManagerHybridPlugin:
         """List available tools (delegate to server)."""
         return self.server.list_tools()
     
+    def get_schema_data(self) -> dict[str, Any]:
+        """Get schema data (delegate to server)."""
+        return self.server.get_schema_data()
+    
     # =========================================================================
     # Hook Interface (delegate to server)
     # =========================================================================

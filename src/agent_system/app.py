@@ -350,6 +350,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from .servers.agent.server import Agent as _Agent
             if isinstance(candidate, _Agent):
                 selected_agent = candidate
+                # CRITICAL: Inject _session_service into existing agent (same as CLI does)
+                # Agents from bootstrap_servers were created without session_service
+                # ALWAYS inject, even if attribute exists, to refresh the reference
+                selected_agent._session_service = _session_service
                 # Apply server-level configuration overrides
                 try:
                     # Check if this is a config-based agent first, then fallback to MCP server config
@@ -642,6 +646,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from .servers.agent.server import Agent as _Agent
                 if not isinstance(selected_agent, _Agent):
                     raise HTTPException(status_code=400, detail=f"'{agent_name}' is not an agent")
+                # CRITICAL: Inject _session_service (same as CLI line 1252 and build_app line 354-357)
+                # ALWAYS inject, even if attribute exists, to refresh the reference
+                selected_agent._session_service = _session_service
+                logger.debug(f"Injected SessionService into agent '{agent_name}' via /run endpoint")
             except KeyError:
                 raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
             except Exception as e:
