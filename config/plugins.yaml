@@ -495,7 +495,7 @@ plugins:
             sub_agent_manager.inject_sub_agent_context:
               enabled: true
             markdown_formatter.format_markdown_output:
-              enabled: false
+              enabled: true
       
       metadata:
         author: "AgentSystem"

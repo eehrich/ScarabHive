@@ -510,7 +510,9 @@ class ToolExecutionManager:
                 # CRITICAL: Inject session_service for tools that need to access sessions
                 if self._agent and hasattr(self._agent, '_session_service'):
                     params["_session_service"] = self._agent._session_service
-                    logger.debug("✓ Injected session_service into tool params")
+                    logger.debug(f"✓ Injected session_service into tool params (service={self._agent._session_service})")
+                else:
+                    logger.warning(f"⚠ Agent has no _session_service attribute - injection skipped (agent={self._agent})")
             
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)

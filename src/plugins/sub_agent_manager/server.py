@@ -220,7 +220,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             )
             
             if status:
-                await status.end(f"Sub-agent {sub_session_id} created and executed")
+                await status.end(f"Created sub-agent {sub_session_id} (type: {agent_name})")
             
             return {
                 "instance_id": sub_session_id,
@@ -311,7 +311,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             messages = sub_session_data.get("messages", [])
             
             if status:
-                await status.end(f"Sub-agent {instance_id} continued")
+                await status.end(f"Continued sub-agent {instance_id} (type: {agent_type})")
             
             return {
                 "instance_id": instance_id,
@@ -332,6 +332,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     
     async def _handle_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'list' operation - list all sub-agents."""
+        status = params.get("_status")
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
@@ -364,6 +365,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "task_summary": metadata["task_summary"]
                 })
             
+            # Emit descriptive status
+            count = len(instances)
+            if status:
+                if count == 0:
+                    await status.end("No sub-agents found")
+                elif count == 1:
+                    await status.end(f"Listed 1 sub-agent: {instances[0]['instance_id']}")
+                else:
+                    agent_ids = ", ".join(inst["instance_id"] for inst in instances[:3])
+                    suffix = f", +{count-3} more" if count > 3 else ""
+                    await status.end(f"Listed {count} sub-agents: {agent_ids}{suffix}")
+            
             return {
                 "instances": instances,
                 "count": len(instances)
@@ -371,6 +384,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
         except Exception as e:
             logger.exception(f"Error in list_sub_agents: {e}")
+            if status:
+                await status.error(f"Failed to list sub-agents: {e}")
             return {
                 "status": "error",
                 "error": str(e)
@@ -378,6 +393,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     
     async def _handle_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'delete' operation - archive sub-agent."""
+        status = params.get("_status")
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
@@ -404,6 +420,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             if parent_link != parent_session_id:
                 raise ValueError(f"Sub-agent '{instance_id}' does not belong to current session")
             
+            # Get agent type for status message
+            agent_type = sub_session_data.get("agent_name", "unknown")
+            
             # Update parent metadata (mark as archived)
             await manager.update_sub_session_metadata(
                 parent_session_id=parent_session_id,
@@ -414,6 +433,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             # Note: We keep the session file (don't delete) for audit trail
             
+            if status:
+                await status.end(f"Archived sub-agent {instance_id} (type: {agent_type})")
+            
             return {
                 "instance_id": instance_id,
                 "status": "archived",
@@ -422,6 +444,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
         except Exception as e:
             logger.exception(f"Error in delete_sub_agent: {e}")
+            if status:
+                await status.error(f"Failed to delete sub-agent: {e}")
             return {
                 "status": "error",
                 "error": str(e)
@@ -429,6 +453,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
     
     async def _handle_info(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'info' operation - get detailed sub-agent info."""
+        status = params.get("_status")
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
@@ -474,6 +499,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "content": msg.get("content", "")[:200]  # Truncate long messages
                 })
             
+            if status:
+                await status.end(f"Retrieved info for {instance_id} (type: {agent_type}, {len(messages)} messages)")
+            
             return {
                 "instance_id": instance_id,
                 "agent_type": agent_type,
@@ -487,6 +515,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
         except Exception as e:
             logger.exception(f"Error in get_sub_agent_info: {e}")
+            if status:
+                await status.error(f"Failed to get sub-agent info: {e}")
             return {
                 "status": "error",
                 "error": str(e)

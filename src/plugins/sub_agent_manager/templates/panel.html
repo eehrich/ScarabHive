@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sub-Agent Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #1177bb;
+        }
+        
+        button.danger {
+            background: #c72e2e;
+        }
+        
+        button.danger:hover {
+            background: #e81123;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 28px;
+            font-weight: 600;
+            color: #4ec9b0;
+        }
+        
+        .agents-list {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        
+        .agent-item {
+            border-bottom: 1px solid #3e3e42;
+            padding: 15px 20px;
+            transition: background 0.2s;
+        }
+        
+        .agent-item:last-child {
+            border-bottom: none;
+        }
+        
+        .agent-item:hover {
+            background: #2d2d30;
+        }
+        
+        .agent-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .agent-id {
+            font-family: 'Monaco', 'Courier New', monospace;
+            color: #dcdcaa;
+            font-size: 14px;
+        }
+        
+        .agent-type {
+            display: inline-block;
+            background: #264f78;
+            color: #9cdcfe;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .agent-status {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-active {
+            background: #16825d;
+            color: #fff;
+        }
+        
+        .status-archived {
+            background: #6e6e6e;
+            color: #d4d4d4;
+        }
+        
+        .agent-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 8px;
+        }
+        
+        .agent-task {
+            font-size: 13px;
+            color: #d4d4d4;
+            margin-bottom: 10px;
+            font-style: italic;
+        }
+        
+        .agent-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .agent-actions button {
+            font-size: 12px;
+            padding: 5px 10px;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #858585;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        
+        input[type="text"], select {
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            width: 250px;
+        }
+        
+        input[type="text"]:focus, select:focus {
+            outline: none;
+            border-color: #0e639c;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 8px;
+            padding: 25px;
+            max-width: 600px;
+            width: 90%;
+        }
+        
+        .modal-header {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #858585;
+            font-size: 12px;
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Sub-Agent Manager</h1>
+        
+        <div class="controls">
+            <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
+            <button onclick="loadAgents()">🔄 Refresh</button>
+            <button onclick="showCreateModal()">➕ Create Sub-Agent</button>
+            <label style="color: #858585; margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <input type="checkbox" id="includeArchived" onchange="loadAgents()">
+                Show Archived
+            </label>
+        </div>
+        
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <div class="stat-label">Total Sub-Agents</div>
+                <div class="stat-value" id="statTotal">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Active</div>
+                <div class="stat-value" id="statActive">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Archived</div>
+                <div class="stat-value" id="statArchived">0</div>
+            </div>
+        </div>
+        
+        <div class="agents-list" id="agentsList">
+            <div class="empty-state">
+                <div class="empty-state-icon">📦</div>
+                <div>No sub-agents yet. Enter a session ID and create one.</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Create/Continue Modal -->
+    <div class="modal" id="createModal">
+        <div class="modal-content">
+            <div class="modal-header" id="modalTitle">Create Sub-Agent</div>
+            <form id="agentForm" onsubmit="submitForm(event)">
+                <div class="form-group">
+                    <label for="agentType">Agent Type *</label>
+                    <select id="agentType" required>
+                        <option value="">Select agent type...</option>
+                        <option value="web_research_agent">Web Research Agent</option>
+                        <option value="basic_agent">Basic Agent</option>
+                        <option value="financial_analyst_agent">Financial Analyst Agent</option>
+                    </select>
+                </div>
+                <div class="form-group" id="taskGroup">
+                    <label for="task">Task *</label>
+                    <textarea id="task" required placeholder="Describe the task for the sub-agent..."></textarea>
+                </div>
+                <div class="form-group" id="messageGroup" style="display: none;">
+                    <label for="message">Message *</label>
+                    <textarea id="message" placeholder="Enter follow-up message..."></textarea>
+                </div>
+                <div class="form-group" id="labelGroup">
+                    <label for="instanceLabel">Instance Label (optional)</label>
+                    <input type="text" id="instanceLabel" placeholder="e.g., researcher_alpha">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" onclick="closeModal()">Cancel</button>
+                    <button type="submit" id="submitBtn">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = `/plugins/{{ plugin_name }}`;
+        let currentSessionId = '';
+        let modalMode = 'create';
+        let currentInstanceId = '';
+        
+        async function loadAgents() {
+            currentSessionId = document.getElementById('sessionIdInput').value.trim();
+            if (!currentSessionId) {
+                showError('Please enter a session ID');
+                return;
+            }
+            
+            const includeArchived = document.getElementById('includeArchived').checked;
+            const agentsList = document.getElementById('agentsList');
+            agentsList.innerHTML = '<div class="loading">Loading...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents?session_id=${currentSessionId}&include_completed=${includeArchived}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                renderAgents(data.instances || []);
+                await loadStats();
+            } catch (error) {
+                console.error('Error loading agents:', error);
+                agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>Error: ${error.message}</div></div>`;
+            }
+        }
+        
+        async function loadStats() {
+            if (!currentSessionId) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/stats?session_id=${currentSessionId}`);
+                const stats = await response.json();
+                
+                document.getElementById('statTotal').textContent = stats.total || 0;
+                document.getElementById('statActive').textContent = stats.active || 0;
+                document.getElementById('statArchived').textContent = stats.archived || 0;
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        function renderAgents(agents) {
+            const agentsList = document.getElementById('agentsList');
+            
+            if (!agents.length) {
+                agentsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div>No sub-agents found</div></div>';
+                return;
+            }
+            
+            agentsList.innerHTML = agents.map(agent => `
+                <div class="agent-item">
+                    <div class="agent-header">
+                        <span class="agent-id">${agent.instance_id}</span>
+                        <span class="agent-status status-${agent.status}">${agent.status}</span>
+                    </div>
+                    <div class="agent-meta">
+                        <span class="agent-type">${agent.agent_type}</span>
+                        <span>Created: ${new Date(agent.created_at).toLocaleString()}</span>
+                        <span>Last used: ${new Date(agent.last_used).toLocaleString()}</span>
+                    </div>
+                    <div class="agent-task">"${agent.task_summary || 'No task summary'}"</div>
+                    <div class="agent-actions">
+                        ${agent.status === 'active' ? `
+                            <button onclick="showContinueModal('${agent.instance_id}')">▶️ Continue</button>
+                            <button onclick="viewDetails('${agent.instance_id}')">ℹ️ Details</button>
+                            <button class="danger" onclick="archiveAgent('${agent.instance_id}')">🗑️ Archive</button>
+                        ` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function showCreateModal() {
+            if (!currentSessionId) {
+                showError('Please enter a session ID first');
+                return;
+            }
+            modalMode = 'create';
+            currentInstanceId = '';
+            document.getElementById('modalTitle').textContent = 'Create Sub-Agent';
+            document.getElementById('taskGroup').style.display = 'block';
+            document.getElementById('messageGroup').style.display = 'none';
+            document.getElementById('labelGroup').style.display = 'block';
+            document.getElementById('submitBtn').textContent = 'Create';
+            document.getElementById('agentForm').reset();
+            document.getElementById('createModal').classList.add('active');
+        }
+        
+        function showContinueModal(instanceId) {
+            modalMode = 'continue';
+            currentInstanceId = instanceId;
+            document.getElementById('modalTitle').textContent = `Continue Sub-Agent: ${instanceId}`;
+            document.getElementById('taskGroup').style.display = 'none';
+            document.getElementById('messageGroup').style.display = 'block';
+            document.getElementById('labelGroup').style.display = 'none';
+            document.getElementById('submitBtn').textContent = 'Continue';
+            document.getElementById('agentForm').reset();
+            document.getElementById('createModal').classList.add('active');
+        }
+        
+        function closeModal() {
+            document.getElementById('createModal').classList.remove('active');
+        }
+        
+        async function submitForm(event) {
+            event.preventDefault();
+            
+            if (modalMode === 'create') {
+                await createAgent();
+            } else {
+                await continueAgent();
+            }
+        }
+        
+        async function createAgent() {
+            const agentType = document.getElementById('agentType').value;
+            const task = document.getElementById('task').value;
+            const instanceLabel = document.getElementById('instanceLabel').value;
+            
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents?session_id=${currentSessionId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agent_type: agentType, task, instance_label: instanceLabel })
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || 'Failed to create sub-agent');
+                }
+                
+                closeModal();
+                await loadAgents();
+                showSuccess(`Created sub-agent: ${result.instance_id}`);
+            } catch (error) {
+                console.error('Error creating agent:', error);
+                showError(error.message);
+            }
+        }
+        
+        async function continueAgent() {
+            const message = document.getElementById('message').value;
+            
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents/${currentInstanceId}/continue?session_id=${currentSessionId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || 'Failed to continue sub-agent');
+                }
+                
+                closeModal();
+                await loadAgents();
+                showSuccess(`Continued sub-agent: ${currentInstanceId}`);
+            } catch (error) {
+                console.error('Error continuing agent:', error);
+                showError(error.message);
+            }
+        }
+        
+        async function archiveAgent(instanceId) {
+            if (!confirm(`Archive sub-agent ${instanceId}?`)) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents/${instanceId}?session_id=${currentSessionId}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || 'Failed to archive sub-agent');
+                }
+                
+                await loadAgents();
+                showSuccess(`Archived sub-agent: ${instanceId}`);
+            } catch (error) {
+                console.error('Error archiving agent:', error);
+                showError(error.message);
+            }
+        }
+        
+        async function viewDetails(instanceId) {
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents/${instanceId}?session_id=${currentSessionId}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                const recentActivity = data.recent_activity || [];
+                const activityHtml = recentActivity.map(msg => 
+                    `<div style="margin-bottom: 10px;"><strong>${msg.role}:</strong> ${msg.content}</div>`
+                ).join('');
+                
+                alert(`Instance: ${data.instance_id}\nAgent Type: ${data.agent_type}\nStatus: ${data.status}\nMessages: ${data.message_count}\n\nRecent Activity:\n${recentActivity.map(m => `${m.role}: ${m.content}`).join('\n')}`);
+            } catch (error) {
+                console.error('Error viewing details:', error);
+                showError(error.message);
+            }
+        }
+        
+        function showError(message) {
+            alert('Error: ' + message);
+        }
+        
+        function showSuccess(message) {
+            console.log('Success:', message);
+        }
+    </script>
+</body>
+</html>
