@@ -502,24 +502,12 @@ class ToolExecutionManager:
                     params["_agent_name"] = self._agent.name
                     logger.debug(f"✓ Injected agent_name '{self._agent.name}' into tool params")
                 
-                # CRITICAL: Inject the agent instance itself for tools that need it
+                # Inject the agent instance itself for tools that need it
                 # Tools can access agent._session_service, agent.registry, etc.
                 if self._agent:
                     params["_agent"] = self._agent
                     logger.debug("✓ Injected agent instance into tool params")
                 
-                # CRITICAL: Inject registry for tools that need to look up other agents/servers
-                if self._agent and hasattr(self._agent, 'registry'):
-                    params["_registry"] = self._agent.registry
-                    logger.debug(f"✓ Injected registry with {len(self._agent.registry._servers)} servers into tool params")
-                
-                # CRITICAL: Inject session_service for tools that need to access sessions
-                if self._agent and hasattr(self._agent, '_session_service'):
-                    params["_session_service"] = self._agent._session_service
-                    logger.debug(f"✓ Injected session_service into tool params (service={self._agent._session_service})")
-                else:
-                    logger.warning(f"⚠ Agent has no _session_service attribute - injection skipped (agent={self._agent})")
-            
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)
             else:
