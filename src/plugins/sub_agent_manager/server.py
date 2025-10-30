@@ -55,6 +55,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # Agent filtering (multi-instance support - by instance name, not type)
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
         self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
+        
+        # Track running sub-agent instances to prevent concurrent execution
+        # Format: {sub_session_id: True}
+        self._running_agents: set[str] = set()
+        self._running_lock = __import__('asyncio').Lock()
     
     def get_template_vars(self) -> dict:
         """Return template variables for schema rendering.
@@ -266,58 +271,74 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             logger.info(f"Created sub-session {sub_session_id} for parent {parent_session_id}")
             
-            # Get agent from registry
-            agent = registry.get(agent_name)
-            if not agent:
-                raise ValueError(f"Agent '{agent_name}' not found in registry")
+            # Check if sub-agent is already running (prevent concurrent execution)
+            async with self._running_lock:
+                if sub_session_id in self._running_agents:
+                    raise ValueError(
+                        f"Sub-agent '{sub_session_id}' is already running. "
+                        "Cannot execute the same sub-agent instance concurrently. "
+                        "Wait for current execution to complete or use a different instance."
+                    )
+                # Mark as running
+                self._running_agents.add(sub_session_id)
             
-            # Inject session_service into agent (same pattern as app.py and agent_cli.py)
-            # ALWAYS inject, even if already set, to ensure correct reference
-            agent._session_service = session_service
-            
-            # Execute sub-agent with initial task (blocking)
-            if status:
-                await status.progress(f"Executing {agent_name} with initial task...")
-            
-            result_text = ""
-            
-            # Generate hierarchical request ID: parent_request_id + "_sub_" + counter
-            parent_request_id = params.get("_request_id")
-            if parent_request_id:
-                # Use parent's request ID as base
-                sub_request_id = f"{parent_request_id}_sub_{short_id(6)}"
-            else:
-                # Fallback to simple ID if no parent request_id
-                sub_request_id = f"sub_{short_id()}"
-            
-            async for event in agent.run_events(
-                task=task,
-                request_id=sub_request_id,
-                session_id=sub_session_id
-                # Note: config_overrides would go here if Agent.run_events supported them
-                # For now, sub-agent uses its default configuration
-            ):
-                # Collect final result (event type is "final" not "result")
-                if event.get("type") == "final":
-                    result_text = event.get("summary", "")
-            
-            # Update metadata after execution
-            await manager.update_sub_session_metadata(
-                parent_session_id=parent_session_id,
-                sub_session_id=sub_session_id,
-                last_used=datetime.now(UTC).isoformat()
-            )
-            
-            if status:
-                await status.end(f"Created sub-agent {sub_session_id} (type: {agent_name})")
-            
-            return {
-                "instance_id": sub_session_id,
-                "status": "completed",
-                "result": result_text,
-                "message_count": 2,  # user + assistant
-                "agent_type": agent_name
-            }
+            try:
+                # Get agent from registry
+                agent = registry.get(agent_name)
+                if not agent:
+                    raise ValueError(f"Agent '{agent_name}' not found in registry")
+                
+                # Inject session_service into agent (same pattern as app.py and agent_cli.py)
+                # ALWAYS inject, even if already set, to ensure correct reference
+                agent._session_service = session_service
+                
+                # Execute sub-agent with initial task (blocking)
+                if status:
+                    await status.progress(f"Executing {agent_name} with initial task...")
+                
+                result_text = ""
+                
+                # Generate hierarchical request ID: parent_request_id + "_sub_" + counter
+                parent_request_id = params.get("_request_id")
+                if parent_request_id:
+                    # Use parent's request ID as base
+                    sub_request_id = f"{parent_request_id}_sub_{short_id(6)}"
+                else:
+                    # Fallback to simple ID if no parent request_id
+                    sub_request_id = f"sub_{short_id()}"
+                
+                async for event in agent.run_events(
+                    task=task,
+                    request_id=sub_request_id,
+                    session_id=sub_session_id
+                    # Note: config_overrides would go here if Agent.run_events supported them
+                    # For now, sub-agent uses its default configuration
+                ):
+                    # Collect final result (event type is "final" not "result")
+                    if event.get("type") == "final":
+                        result_text = event.get("summary", "")
+                
+                # Update metadata after execution
+                await manager.update_sub_session_metadata(
+                    parent_session_id=parent_session_id,
+                    sub_session_id=sub_session_id,
+                    last_used=datetime.now(UTC).isoformat()
+                )
+                
+                if status:
+                    await status.end(f"Created sub-agent {sub_session_id} (type: {agent_name})")
+                
+                return {
+                    "instance_id": sub_session_id,
+                    "status": "completed",
+                    "result": result_text,
+                    "message_count": 2,  # user + assistant
+                    "agent_type": agent_name
+                }
+            finally:
+                # ALWAYS release lock, even on error
+                async with self._running_lock:
+                    self._running_agents.discard(sub_session_id)
             
         except Exception as e:
             logger.exception(f"Error in create_sub_agent: {e}")
@@ -366,52 +387,68 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
             
-            # Inject session_service into agent (same pattern as app.py and agent_cli.py)
-            # ALWAYS inject, even if already set, to ensure correct reference
-            agent._session_service = session_service
+            # Check if sub-agent is already running (prevent concurrent execution)
+            async with self._running_lock:
+                if instance_id in self._running_agents:
+                    raise ValueError(
+                        f"Sub-agent '{instance_id}' is already running. "
+                        "Cannot execute the same sub-agent instance concurrently. "
+                        "Wait for current execution to complete."
+                    )
+                # Mark as running
+                self._running_agents.add(instance_id)
             
-            if status:
-                await status.progress(f"Continuing {agent_type} with new message...")
-            
-            # Execute sub-agent with new message (continues existing session)
-            result_text = ""
-            
-            # Generate hierarchical request ID for continue operation
-            parent_request_id = params.get("_request_id")
-            if parent_request_id:
-                sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
-            else:
-                sub_request_id = f"sub_cont_{short_id()}"
-            
-            async for event in agent.run_events(
-                task=message,
-                request_id=sub_request_id,
-                session_id=instance_id  # Continue existing session
-            ):
-                # Collect final result (event type is "final" not "result")
-                if event.get("type") == "final":
-                    result_text = event.get("summary", "")
-            
-            # Update last_used timestamp
-            await manager.update_sub_session_metadata(
-                parent_session_id=parent_session_id,
-                sub_session_id=instance_id,
-                last_used=datetime.now(UTC).isoformat()
-            )
-            
-            # Get current message count
-            messages = sub_session_data.get("messages", [])
-            
-            if status:
-                await status.end(f"Continued sub-agent {instance_id} (type: {agent_type})")
-            
-            return {
-                "instance_id": instance_id,
-                "status": "completed",
-                "result": result_text,
-                "message_count": len(messages) + 2,  # existing + user + assistant
-                "agent_type": agent_type
-            }
+            try:
+                # Inject session_service into agent (same pattern as app.py and agent_cli.py)
+                # ALWAYS inject, even if already set, to ensure correct reference
+                agent._session_service = session_service
+                
+                if status:
+                    await status.progress(f"Continuing {agent_type} with new message...")
+                
+                # Execute sub-agent with new message (continues existing session)
+                result_text = ""
+                
+                # Generate hierarchical request ID for continue operation
+                parent_request_id = params.get("_request_id")
+                if parent_request_id:
+                    sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
+                else:
+                    sub_request_id = f"sub_cont_{short_id()}"
+                
+                async for event in agent.run_events(
+                    task=message,
+                    request_id=sub_request_id,
+                    session_id=instance_id  # Continue existing session
+                ):
+                    # Collect final result (event type is "final" not "result")
+                    if event.get("type") == "final":
+                        result_text = event.get("summary", "")
+                
+                # Update last_used timestamp
+                await manager.update_sub_session_metadata(
+                    parent_session_id=parent_session_id,
+                    sub_session_id=instance_id,
+                    last_used=datetime.now(UTC).isoformat()
+                )
+                
+                # Get current message count
+                messages = sub_session_data.get("messages", [])
+                
+                if status:
+                    await status.end(f"Continued sub-agent {instance_id} (type: {agent_type})")
+                
+                return {
+                    "instance_id": instance_id,
+                    "status": "completed",
+                    "result": result_text,
+                    "message_count": len(messages) + 2,  # existing + user + assistant
+                    "agent_type": agent_type
+                }
+            finally:
+                # ALWAYS release lock, even on error
+                async with self._running_lock:
+                    self._running_agents.discard(instance_id)
             
         except Exception as e:
             logger.exception(f"Error in continue_sub_agent: {e}")
