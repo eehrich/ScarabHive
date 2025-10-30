@@ -56,35 +56,38 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
         self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
     
-    def get_template_vars(self) -> dict[str, Any]:
-        """Provide template variables for schema rendering.
+    def get_template_vars(self) -> dict:
+        """Return template variables for schema rendering.
         
-        Returns available agents list for dynamic tool description.
+        Queries the MCP registry to list all configured agents dynamically.
+        Uses same filtering as GET /agents endpoint: only Agent instances with _mcp_public=True.
+        This ensures the LLM sees only spawneable agents, not tools or hooks.
         """
-        # Format allowed agents list for schema
-        if self.allowed_agents == ['*']:
-            # Wildcard: Get actual agent list from plugin registry
+        from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+        from agent_system.servers.agent.server import Agent
+        
+        agent_names = []
+        for name in plugin_mcp_registry.list_servers():
+            if name.startswith('_') or name in self.blocked_agents:
+                continue
+            
             try:
-                from agent_system.plugins.mcp_adapter import plugin_mcp_registry
-                agent_names = [
-                    name for name in plugin_mcp_registry.list_servers()
-                    if not name.startswith('_')  # Skip internal plugins
-                    and name not in self.blocked_agents
-                ]
-                if agent_names:
-                    agents_list = ", ".join(f"'{agent}'" for agent in sorted(agent_names))
-                else:
-                    agents_list = "all configured agents"
+                srv = plugin_mcp_registry.get(name)
+                # Filter by Agent class type (same logic as GET /agents)
+                if isinstance(srv, Agent):
+                    # Check _mcp_public flag (visibility control)
+                    if hasattr(srv, '_mcp_public') and not srv._mcp_public:
+                        continue  # Skip visibility='tool' or 'private' agents
+                    agent_names.append(name)
             except Exception:
-                # Fallback if registry not available yet
-                agents_list = "all configured agents"
-        else:
-            agents_list = ", ".join(f"'{agent}'" for agent in self.allowed_agents)
+                continue  # Skip servers we can't inspect
+        
+        if self.allowed_agents and '*' not in self.allowed_agents:
+            # Apply allowed_agents filter if specified
+            agent_names = [name for name in agent_names if name in self.allowed_agents]
         
         return {
-            "name": self.name,
-            "allowed_agents": agents_list,
-            "max_nesting_depth": self.max_nesting_depth
+            "allowed_agents": agent_names
         }
         
         # NOTE: Registry and SessionService will be injected via params during tool/hook calls
