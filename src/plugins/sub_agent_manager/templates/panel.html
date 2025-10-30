@@ -316,23 +316,6 @@
         </div>
     </div>
     
-    <!-- Continue Modal -->
-    <div class="modal" id="createModal">
-        <div class="modal-content">
-            <div class="modal-header" id="modalTitle">Continue Sub-Agent</div>
-            <form id="agentForm" onsubmit="submitForm(event)">
-                <div class="form-group" id="messageGroup">
-                    <label for="message">Message *</label>
-                    <textarea id="message" required placeholder="Enter follow-up message..."></textarea>
-                </div>
-                <div class="modal-actions">
-                    <button type="button" onclick="closeModal()">Cancel</button>
-                    <button type="submit" id="submitBtn">Continue</button>
-                </div>
-            </form>
-        </div>
-    </div>
-    
     <!-- Details Modal -->
     <div class="modal" id="detailsModal">
         <div class="modal-content" style="max-width: 700px;">
@@ -354,7 +337,6 @@
     <script>
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
-        let currentInstanceId = '';
         
         // Get session ID from parent window if available (iframe context)
         function getSessionId() {
@@ -437,59 +419,12 @@
                     <div class="agent-task">"${agent.task_summary || 'No task summary'}"</div>
                     <div class="agent-actions">
                         ${agent.status === 'active' ? `
-                            <button onclick="showContinueModal('${agent.instance_id}')">▶️ Continue</button>
                             <button onclick="viewDetails('${agent.instance_id}')">ℹ️ Details</button>
                             <button class="danger" onclick="archiveAgent('${agent.instance_id}')">🗑️ Archive</button>
                         ` : ''}
                     </div>
                 </div>
             `).join('');
-        }
-        
-        function showContinueModal(instanceId) {
-            if (!currentSessionId) {
-                showError('Please enter a session ID first');
-                return;
-            }
-            currentInstanceId = instanceId;
-            document.getElementById('modalTitle').textContent = `Continue Sub-Agent: ${instanceId}`;
-            document.getElementById('submitBtn').textContent = 'Continue';
-            document.getElementById('agentForm').reset();
-            document.getElementById('createModal').classList.add('active');
-        }
-        
-        function closeModal() {
-            document.getElementById('createModal').classList.remove('active');
-        }
-        
-        async function submitForm(event) {
-            event.preventDefault();
-            await continueAgent();
-        }
-        
-        async function continueAgent() {
-            const message = document.getElementById('message').value;
-            
-            try {
-                const response = await fetch(`${API_BASE}/sub-agents/${currentInstanceId}/continue?session_id=${currentSessionId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message })
-                });
-                
-                const result = await response.json();
-                
-                if (!response.ok || result.error) {
-                    throw new Error(result.error || 'Failed to continue sub-agent');
-                }
-                
-                closeModal();
-                await loadAgents();
-                showSuccess(`Continued sub-agent: ${currentInstanceId}`);
-            } catch (error) {
-                console.error('Error continuing agent:', error);
-                showError(error.message);
-            }
         }
         
         async function archiveAgent(instanceId) {

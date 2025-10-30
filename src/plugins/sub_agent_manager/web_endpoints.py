@@ -122,55 +122,6 @@ class SubAgentManagerWebFactory:
                 logger.error(f"Error fetching sub-agent {instance_id}: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=str(e))
         
-        @router.post("/sub-agents/{instance_id}/continue")
-        async def continue_sub_agent(
-            instance_id: str,
-            request: Request,
-            session_id: str = Query(..., description="Parent session ID")
-        ):
-            """
-            Continue existing sub-agent with new message (JSON).
-            
-            Args:
-                instance_id: Sub-agent instance ID
-                session_id: Parent session ID
-                
-            Request body:
-                {
-                    "message": "Follow-up question or task"
-                }
-            """
-            try:
-                # Get session_service and registry from app
-                session_service = get_session_service()
-                registry = get_registry()
-                
-                body = await request.json()
-                
-                params = {
-                    "_session_id": session_id,
-                    "_session_service": session_service,
-                    "_registry": registry,
-                    "instance_id": instance_id,
-                    "message": body.get("message")
-                }
-                
-                if not params["message"]:
-                    raise HTTPException(status_code=400, detail="Missing 'message'")
-                
-                result = await self.server._handle_continue(params)
-                
-                if result.get("status") == "error":
-                    raise HTTPException(status_code=400, detail=result.get("error"))
-                
-                return JSONResponse(result)
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error continuing sub-agent {instance_id}: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
-        
         @router.delete("/sub-agents/{instance_id}")
         async def delete_sub_agent(
             instance_id: str,
