@@ -63,7 +63,21 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         """
         # Format allowed agents list for schema
         if self.allowed_agents == ['*']:
-            agents_list = "all configured agents"
+            # Wildcard: Get actual agent list from plugin registry
+            try:
+                from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+                agent_names = [
+                    name for name in plugin_mcp_registry.list_servers()
+                    if not name.startswith('_')  # Skip internal plugins
+                    and name not in self.blocked_agents
+                ]
+                if agent_names:
+                    agents_list = ", ".join(f"'{agent}'" for agent in sorted(agent_names))
+                else:
+                    agents_list = "all configured agents"
+            except Exception:
+                # Fallback if registry not available yet
+                agents_list = "all configured agents"
         else:
             agents_list = ", ".join(f"'{agent}'" for agent in self.allowed_agents)
         
