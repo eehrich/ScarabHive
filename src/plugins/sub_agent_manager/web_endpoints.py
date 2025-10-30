@@ -271,8 +271,12 @@ class SubAgentManagerWebFactory:
                 session_id: Parent session ID
             """
             try:
+                # Get session_service from app
+                session_service = get_session_service()
+                
                 params = {
                     "_session_id": session_id,
+                    "_session_service": session_service,
                     "include_completed": True  # Get all for stats
                 }
                 
