@@ -889,8 +889,17 @@
             break;
           case 'status':
             // Status events are now delivered through /events stream
+            // Show status events for this request AND all hierarchical children (sub-agents)
+            // e.g., if currentRequestId is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
             if (blk && blk.status) {
-              addStatusEvent(blk.status, data);
+              const eventRequestId = data.request_id || '';
+              // Check if this event belongs to current request hierarchy
+              // Either exact match OR starts with current request_id followed by underscore (child operation)
+              if (eventRequestId === currentRequestId || 
+                  (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'))) {
+                addStatusEvent(blk.status, data);
+              }
+              // Otherwise silently ignore status from other requests/sessions
             }
             break;
           case 'final':
