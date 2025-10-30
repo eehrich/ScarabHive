@@ -69,14 +69,20 @@ async def initialize_system(config):
     return registry
 
 
-async def create_agent(config, registry, agent_name: str):
+async def create_agent(config, registry, agent_name: str, session_service=None):
     """Create and initialize the specified agent.
     
     This function is a wrapper around the shared cli_utils.agent_runner.create_and_register_agent
     to maintain backward compatibility with existing code.
+    
+    Args:
+        config: System configuration
+        registry: MCP registry
+        agent_name: Name of agent to create
+        session_service: Optional SessionService to inject into agent
     """
     from .cli_utils.agent_runner import create_and_register_agent
-    return await create_and_register_agent(config, registry, agent_name)
+    return await create_and_register_agent(config, registry, agent_name, session_service=session_service)
 
 
 async def run_agent_request(agent: Agent, request: str, session_id: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
@@ -175,7 +181,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         
         # Create and initialize agent
         logger.info("Creating agent...")
-        agent = await create_agent(config, registry, agent_name)
+        agent = await create_agent(config, registry, agent_name, session_service=session_service)
         
         # Generate or use provided session ID
         from .utils.id import short_id

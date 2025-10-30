@@ -76,7 +76,8 @@ class Agent(MCPServer):
 
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
                  registry: MCPRegistry | None = None,
-                 llm: object | None = None, llm_factory: object | None = None) -> None:
+                 llm: object | None = None, llm_factory: object | None = None,
+                 session_service: object | None = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
         
@@ -84,6 +85,7 @@ class Agent(MCPServer):
         - system_config: Complete system configuration
         - mcp_config: MCP configuration object (contains agent_config, type, enabled)
         - registry: MCP Registry with available tools (required for agents)
+        - session_service: SessionService for managing agent sessions (optional, will be injected if available)
 
         Args:
             name: Name of this agent (used when serving as MCP Server)
@@ -92,6 +94,7 @@ class Agent(MCPServer):
             registry: MCP Registry with available tools
             llm: Optional LLM client instance (for testing)
             llm_factory: Optional LLM factory for creating client (for testing)
+            session_service: Optional SessionService for session management (injected by CLI/App)
         """
         # Initialize as MCPServer with MCPConfig object
         super().__init__(name, system_config, mcp_config)
@@ -105,6 +108,10 @@ class Agent(MCPServer):
         if registry is None:
             raise ValueError(f"Agent '{name}' requires MCPRegistry instance")
         self.registry = registry
+        
+        # Store session_service for tools that need session access (e.g., sub-agent manager)
+        # This is optional - if None, tools that need it will fail gracefully
+        self._session_service = session_service
         
         # Visibility flags control where the agent appears
         # _mcp_public: Show in UI agent dropdown (GET /agents endpoint)

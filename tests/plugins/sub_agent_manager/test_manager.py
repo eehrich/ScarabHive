@@ -80,7 +80,7 @@ async def test_create_sub_session_creates_session_file(manager, mock_session_ser
     mock_session_service.session_manager.create_session.assert_called_once()
     call_kwargs = mock_session_service.session_manager.create_session.call_args.kwargs
     
-    assert call_kwargs["user_id"] == "admin"
+    assert call_kwargs["user_id"] == "anonymous"  # No user_id injected, falls back to anonymous
     # Each test gets fresh manager, so counter starts at 1
     assert call_kwargs["session_id"].startswith("sub_financial_analyst_")
     assert call_kwargs["agent_name"] == "financial_analyst"
@@ -234,6 +234,10 @@ async def test_generate_instance_id_with_label(manager):
 
 def test_extract_user_id_handles_formats(manager):
     """Test user ID extraction."""
-    # Currently hardcoded to 'admin'
-    assert manager._extract_user_id("any_session_id") == "admin"
-    assert manager._extract_user_id("another_session") == "admin"
+    # Falls back to 'anonymous' when no user_id found
+    assert manager._extract_user_id("any_session_id") == "anonymous"
+    assert manager._extract_user_id("another_session") == "anonymous"
+    
+    # With injected params, uses the provided user_id
+    params_with_user = {"_user_id": "test_user"}
+    assert manager._extract_user_id("session_123", params_with_user) == "test_user"

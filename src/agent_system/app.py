@@ -444,12 +444,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             agent_cfg = AgentConfig(llm_profile="normal", tools=tool_cfg)
             mcp_cfg = MCPConfig(type="agent", enabled=True, agent_config=agent_cfg)
 
-        selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry)
+        selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry, session_service=_session_service)
         registry.register(entry_name, selected_agent)
     else:
-        # Bind reused agent to current registry
+        # Bind reused agent to current registry and update session_service
         try:
             selected_agent.registry = registry
+            # Update session_service for existing agent
+            if _session_service and hasattr(selected_agent, '_session_service'):
+                selected_agent._session_service = _session_service
         except Exception as e:
             logger.warning(f"Failed to bind registry to agent: {e}", exc_info=True)
 

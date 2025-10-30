@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from agent_system.services.session_manager import SessionNotFoundError
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -48,7 +49,8 @@ class SubAgentManager:
         parent_session_id: str,
         agent_type: str,
         initial_message: str,
-        instance_label: Optional[str] = None
+        instance_label: Optional[str] = None,
+        params: Optional[dict] = None
     ) -> str:
         """Create sub-session file via SessionManager.
         
@@ -57,6 +59,7 @@ class SubAgentManager:
             agent_type: Type of agent to create (e.g., "web_research_agent")
             initial_message: Initial task/message for sub-agent
             instance_label: Optional human-readable label
+            params: Optional tool call params with injected _user_id
             
         Returns:
             Sub-session ID (format: sub_{agent_type}_{global_counter})
@@ -64,15 +67,29 @@ class SubAgentManager:
         Raises:
             ValueError: If parent session not found, agent type invalid, or max depth exceeded
         """
-        # Extract user_id from parent session
-        user_id = self._extract_user_id(parent_session_id)
+        # Extract user_id from params or session file
+        user_id = self._extract_user_id(parent_session_id, params)
         session_manager = self._session_service.session_manager
         
         # Load parent session to check depth
+        # If parent session doesn't exist yet (e.g., CLI ephemeral session),
+        # create it automatically with minimal metadata
         try:
             parent_data = await session_manager.load_session(user_id, parent_session_id)
-        except FileNotFoundError:
-            raise ValueError(f"Parent session '{parent_session_id}' not found")
+        except SessionNotFoundError:
+            logger.info(
+                f"Parent session {parent_session_id} not found in storage, creating it now"
+            )
+            # Create parent session with minimal metadata
+            # This handles CLI/ephemeral sessions that haven't been saved yet
+            await session_manager.create_session(
+                user_id=user_id,
+                session_id=parent_session_id,
+                title="Coordinator Session",
+                agent_name="unknown",  # Will be updated when parent saves
+                llm_profile="default"
+            )
+            parent_data = await session_manager.load_session(user_id, parent_session_id)
         
         # Check nesting depth
         parent_depth = parent_data.get("depth", 1)
@@ -272,23 +289,30 @@ class SubAgentManager:
             
             return instance_id
     
-    def _extract_user_id(self, session_id: str) -> str:
-        """Extract user_id from session ID by searching user directories.
+    def _extract_user_id(self, session_id: str, params: Optional[dict] = None) -> str:
+        """Extract user_id from injected params or session file location.
         
-        Searches all user directories in session storage to find which user
-        owns the given session_id. This works because session_ids are globally
-        unique across all users.
+        Priority:
+        1. Use _user_id from injected params (from ToolExecutionManager)
+        2. Search session file in user directories
+        3. Use 'anonymous' as fallback (NOT 'admin' for security)
         
         Args:
             session_id: Session ID to search for
+            params: Optional tool call params with injected _user_id
             
         Returns:
-            User ID (directory name containing the session file)
-            Falls back to 'admin' if session not found
+            User ID (from params, directory name, or 'anonymous')
         """
+        # Priority 1: Use injected user_id from tool params
+        if params and "_user_id" in params:
+            user_id = params["_user_id"]
+            logger.debug(f"Using user_id '{user_id}' from injected params")
+            return user_id
+        
+        # Priority 2: Search all user directories for this session_id
         storage_path = self._session_service.session_manager.storage_path
         
-        # Search all user directories for this session_id
         for user_dir in storage_path.iterdir():
             if user_dir.is_dir() and not user_dir.name.startswith('.'):
                 session_file = user_dir / f"{session_id}.json"
@@ -298,9 +322,9 @@ class SubAgentManager:
                     )
                     return user_dir.name
         
-        # Fallback to 'admin' if not found (shouldn't happen in normal operation)
-        logger.warning(
-            f"Could not find user_id for session {session_id}, "
-            f"falling back to 'admin'"
+        # Priority 3: Use 'anonymous' as safe fallback (NOT 'admin' for security)
+        # This happens when session doesn't exist yet (e.g., CLI ephemeral sessions)
+        logger.info(
+            f"No user_id found for session {session_id}, using 'anonymous'"
         )
-        return "admin"
+        return "anonymous"

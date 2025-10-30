@@ -57,11 +57,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
         self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
         
-        # Initialize manager (will be lazy-loaded when first tool is called)
-        self._manager: SubAgentManager | None = None
-        
         # Initialize hook injector (lazy-loaded)
         self._hook_injector: SubAgentContextInjector | None = None
+        
+        # NOTE: Registry and SessionService will be injected via params during tool/hook calls
+        # by the ToolExecutionManager or via HookContext.agent
         
         logger.info(
             f"SubAgentManagerServer '{name}' initialized - "
@@ -70,32 +70,43 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             f"allowed_agents={self.allowed_agents}, blocked_agents={self.blocked_agents}"
         )
     
-    def _get_manager(self) -> SubAgentManager:
-        """Lazy-load SubAgentManager."""
-        if self._manager is None:
-            # Create session_service locally with default storage path
-            from pathlib import Path
-            from agent_system.services.session_manager import SessionManager
-            from agent_system.services.session_service import SessionService
-            from agent_system.mcp.base import MCPRegistry
-            
-            # Use default storage path (same as CLI)
-            storage_path = Path(__file__).parents[3] / "data" / "sessions"
-            session_manager = SessionManager(storage_path=str(storage_path))
-            session_service = SessionService(session_manager)
-            logger.debug(f"Created SessionService with storage_path={storage_path}")
-            
-            # Get or create registry
-            registry = getattr(self.system_config, 'registry', None)
-            if registry is None:
-                # Create a new registry instance (will access shared plugin servers)
-                registry = MCPRegistry()
-                logger.debug("Created new MCPRegistry instance")
-            
-            self._manager = SubAgentManager(session_service, registry, self.max_nesting_depth)
-            logger.debug("SubAgentManager lazy-loaded")
+    def _get_manager(self, session_service, registry=None) -> SubAgentManager:
+        """Get SubAgentManager with injected dependencies.
         
-        return self._manager
+        Args:
+            session_service: SessionService instance (injected from params["_session_service"])
+            registry: MCPRegistry instance (injected from params["_registry"], optional for some ops)
+        
+        Returns:
+            SubAgentManager instance
+        
+        Note:
+            Uses injected session_service from Agent instead of creating a new one.
+            This ensures all tools use the same session storage and avoids duplication.
+        """
+        # Use injected session_service (passed from Agent via ToolExecutionManager)
+        if not session_service:
+            raise RuntimeError("session_service is required but was not injected")
+        
+        # Create manager with injected dependencies
+        return SubAgentManager(session_service, registry, self.max_nesting_depth)
+    
+    def _extract_registry(self, params: dict[str, Any]):
+        """Extract and validate registry from params.
+        
+        Args:
+            params: Tool parameters with injected _registry
+            
+        Returns:
+            MCPRegistry instance
+            
+        Raises:
+            RuntimeError: If registry not found in params
+        """
+        registry = params.get("_registry")
+        if not registry:
+            raise RuntimeError("No registry available - _registry must be injected by ToolExecutionManager")
+        return registry
     
     async def manage_sub_agent(self, params: dict[str, Any]) -> dict[str, Any]:
         """Unified handler for all sub-agent operations.
@@ -152,21 +163,26 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             if status:
                 await status.progress(f"Creating sub-agent: {agent_name}")
             
-            # Get manager
-            manager = self._get_manager()
+            # Get manager with injected dependencies
+            registry = self._extract_registry(params)
+            session_service = params.get("_session_service")
+            if not session_service:
+                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            manager = self._get_manager(session_service, registry)
             
-            # Create sub-session
+            # Create sub-session (pass params for user_id extraction)
             sub_session_id = await manager.create_sub_session(
                 parent_session_id=parent_session_id,
                 agent_type=agent_name,
                 initial_message=task,
-                instance_label=instance_label
+                instance_label=instance_label,
+                params=params  # Pass params for user_id extraction
             )
             
             logger.info(f"Created sub-session {sub_session_id} for parent {parent_session_id}")
             
             # Get agent from registry
-            agent = self.registry.get(agent_name)
+            agent = registry.get(agent_name)
             if not agent:
                 raise ValueError(f"Agent '{agent_name}' not found in registry")
             
@@ -238,9 +254,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             # Get status context
             status = params.get("_status")
             
-            # Get manager and verify instance
-            manager = self._get_manager()
-            user_id = manager._extract_user_id(parent_session_id)
+            # Get manager with injected dependencies
+            registry = self._extract_registry(params)
+            session_service = params.get("_session_service")
+            if not session_service:
+                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            manager = self._get_manager(session_service, registry)
+            user_id = manager._extract_user_id(parent_session_id, params)
             session_manager = manager._session_service.session_manager
             
             try:
@@ -255,7 +275,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             # Get agent type from session data
             agent_type = sub_session_data.get("agent_name")
-            agent = self.registry.get(agent_type)
+            agent = registry.get(agent_type)
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
             
@@ -319,8 +339,12 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             include_completed = params.get("include_completed", False)
             
-            # Get manager
-            manager = self._get_manager()
+            # Get manager with injected dependencies (registry optional for list)
+            registry = params.get("_registry")  # Optional - won't fail if missing
+            session_service = params.get("_session_service")
+            if not session_service:
+                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            manager = self._get_manager(session_service, registry)
             
             # List sub-sessions
             sub_sessions = await manager.list_sub_sessions(
@@ -361,9 +385,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             instance_id = params["instance_id"]
             
-            # Get manager
-            manager = self._get_manager()
-            user_id = manager._extract_user_id(parent_session_id)
+            # Get manager with injected dependencies (registry optional for delete)
+            registry = params.get("_registry")  # Optional
+            session_service = params.get("_session_service")
+            if not session_service:
+                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            manager = self._get_manager(session_service, registry)
+            user_id = manager._extract_user_id(parent_session_id, params)
             session_manager = manager._session_service.session_manager
             
             # Verify ownership
@@ -408,9 +436,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             instance_id = params["instance_id"]
             
-            # Get manager
-            manager = self._get_manager()
-            user_id = manager._extract_user_id(parent_session_id)
+            # Extract dependencies from injected params
+            session_service = params.get("_session_service")
+            if not session_service:
+                raise RuntimeError("No session_service available - _session_service must be injected by ToolExecutionManager")
+            
+            # Get manager (registry is optional for info operation)
+            registry = params.get("_registry")
+            manager = self._get_manager(session_service, registry)
+            user_id = manager._extract_user_id(parent_session_id, params)
             session_manager = manager._session_service.session_manager
             
             # Load sub-session data
@@ -510,7 +544,15 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             # Lazy-load hook injector
             if self._hook_injector is None:
                 from plugins.sub_agent_manager.hooks import SubAgentContextInjector
-                manager = self._get_manager()
+                
+                # Get session_service from agent in context
+                if not context.agent or not hasattr(context.agent, '_session_service'):
+                    logger.warning("[SubAgentManager] No session_service available from agent, skipping hook")
+                    return HookResult(success=True, modified=False, context=context)
+                
+                session_service = context.agent._session_service
+                manager = self._get_manager(session_service, registry=None)  # No registry needed for hooks
+                
                 # Get hook-specific configuration from plugin_config
                 plugin_config = getattr(self.mcp_config, 'plugin_config', {})
                 hooks_config = plugin_config.get("hooks", {})

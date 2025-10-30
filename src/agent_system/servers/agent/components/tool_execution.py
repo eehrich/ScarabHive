@@ -483,7 +483,7 @@ class ToolExecutionManager:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
             
             # Inject session context from current execution context if available
-            if self._current_session_id or self._current_user_id or request_id or (self._agent and hasattr(self._agent, 'name')):
+            if self._current_session_id or self._current_user_id or request_id or (self._agent and hasattr(self._agent, 'name')) or (self._agent and hasattr(self._agent, 'registry')):
                 params = params.copy()  # Don't mutate original
                 
                 if self._current_session_id:
@@ -501,6 +501,16 @@ class ToolExecutionManager:
                 if self._agent and hasattr(self._agent, 'name'):
                     params["_agent_name"] = self._agent.name
                     logger.debug(f"✓ Injected agent_name '{self._agent.name}' into tool params")
+                
+                # CRITICAL: Inject registry for tools that need to look up other agents/servers
+                if self._agent and hasattr(self._agent, 'registry'):
+                    params["_registry"] = self._agent.registry
+                    logger.debug(f"✓ Injected registry with {len(self._agent.registry._servers)} servers into tool params")
+                
+                # CRITICAL: Inject session_service for tools that need to access sessions
+                if self._agent and hasattr(self._agent, '_session_service'):
+                    params["_session_service"] = self._agent._session_service
+                    logger.debug("✓ Injected session_service into tool params")
             
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)

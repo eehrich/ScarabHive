@@ -77,7 +77,7 @@ async def test_extract_user_id_from_session_file(temp_session_storage):
 
 @pytest.mark.asyncio
 async def test_extract_user_id_fallback_for_missing_session(temp_session_storage):
-    """Test that _extract_user_id falls back to 'admin' for non-existent sessions."""
+    """Test that _extract_user_id falls back to 'anonymous' for non-existent sessions."""
     session_manager = SessionManager(storage_path=str(temp_session_storage))
     session_service = MagicMock()
     session_service.session_manager = session_manager
@@ -85,9 +85,9 @@ async def test_extract_user_id_fallback_for_missing_session(temp_session_storage
     
     manager = SubAgentManager(session_service, registry)
     
-    # Non-existent session should fall back to 'admin'
+    # Non-existent session should fall back to 'anonymous' (NOT 'admin' for security)
     user_id = manager._extract_user_id("nonexistent_session_999")
-    assert user_id == "admin"
+    assert user_id == "anonymous"
 
 
 @pytest.mark.asyncio

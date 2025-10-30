@@ -1226,6 +1226,16 @@ def main() -> None:
         logger.warning("Failed to initialize MCP integration: %s", e)
         vprint(f"[cli] Warning: MCP integration failed: {e}")
     
+    # Initialize SessionManager and SessionService BEFORE Agent creation
+    from pathlib import Path as PathLib
+    from .services.session_manager import SessionManager
+    from .services.session_service import SessionService
+    
+    storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
+    session_manager = SessionManager(storage_path=str(storage_path))
+    session_service = SessionService(session_manager)
+    logger.debug("[cli] SessionService initialized at %s", storage_path)
+    
     # Determine CLI agent name from config (can be overridden with --agent)
     entry_name = getattr(args, "agent_override", None) or config.default_agent
 
@@ -1238,6 +1248,8 @@ def main() -> None:
         if isinstance(existing, _Agent):
             agent = existing
             agent.registry = registry  # type: ignore[attr-defined]
+            # Update session_service for existing agent
+            agent._session_service = session_service  # type: ignore[attr-defined]
     
     if agent is None:
         # Create new agent
@@ -1248,7 +1260,7 @@ def main() -> None:
             logger.warning("No MCPConfig found for agent '%s', using default_config", entry_name)
             mcp_config = plugins_cfg.default_config if plugins_cfg else MCPConfig()
         
-        agent = _Agent(entry_name, config, mcp_config, registry)
+        agent = _Agent(entry_name, config, mcp_config, registry, session_service=session_service)
         registry.register(entry_name, agent)
         vprint(f"[cli] created agent: {entry_name}")
 
@@ -1295,14 +1307,8 @@ def main() -> None:
     from .utils.id import short_id
     actual_session_id = session_id or short_id()
     
-    # Initialize SessionManager and SessionService
-    from pathlib import Path as PathLib
-    from .services.session_manager import SessionManager
-    from .services.session_service import SessionService
-    
-    storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
-    session_manager = SessionManager(storage_path=str(storage_path))
-    session_service = SessionService(session_manager)
+    # SessionManager and SessionService already initialized earlier (before Agent creation)
+    # to enable passing session_service to Agent constructor
     
     # Helper async function for session operations
     async def handle_session_operations():
