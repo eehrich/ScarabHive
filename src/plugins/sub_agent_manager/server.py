@@ -43,13 +43,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
         self.max_history = int(getattr(mcp_config, 'max_message_history', 100))
         self.max_nesting_depth = int(getattr(mcp_config, 'max_nesting_depth', 5))
         
+        # Agent filtering (multi-instance support - by instance name, not type)
+        self.allowed_agents = list(getattr(mcp_config, 'allowed_agents', ['*']))
+        self.blocked_agents = list(getattr(mcp_config, 'blocked_agents', []))
+        
         # Initialize manager (will be lazy-loaded when first tool is called)
         self._manager: SubAgentManager | None = None
         
         logger.info(
             f"SubAgentManagerServer '{name}' initialized - "
             f"max_sub_agents={self.max_sub_agents}, max_history={self.max_history}, "
-            f"max_nesting_depth={self.max_nesting_depth}"
+            f"max_nesting_depth={self.max_nesting_depth}, "
+            f"allowed_agents={self.allowed_agents}, blocked_agents={self.blocked_agents}"
         )
     
     def _get_manager(self) -> SubAgentManager:
@@ -101,11 +106,19 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
         """Handle 'create' operation - create and execute new sub-agent."""
         try:
             # Extract parameters
-            agent_type = params["agent_type"]
+            agent_name = params["agent_type"]  # This is actually the agent instance name
             task = params["task"]
             instance_label = params.get("instance_label")
             # Note: config_overrides would be used here when Agent.run_events supports them
             # For now, sub-agent uses its default configuration
+            
+            # Validate agent is allowed by this manager instance
+            if not self._is_agent_allowed(agent_name):
+                allowed_str = ', '.join(self.allowed_agents)
+                raise ValueError(
+                    f"Agent '{agent_name}' not allowed by this sub-agent manager. "
+                    f"Allowed agents: {allowed_str}"
+                )
             
             # Get parent session ID from injected context
             parent_session_id = params.get("_session_id")
@@ -115,7 +128,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
             # Get status context
             status = params.get("_status")
             if status:
-                await status.progress(f"Creating sub-agent: {agent_type}")
+                await status.progress(f"Creating sub-agent: {agent_name}")
             
             # Get manager
             manager = self._get_manager()
@@ -123,7 +136,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
             # Create sub-session
             sub_session_id = await manager.create_sub_session(
                 parent_session_id=parent_session_id,
-                agent_type=agent_type,
+                agent_type=agent_name,
                 initial_message=task,
                 instance_label=instance_label
             )
@@ -131,13 +144,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
             logger.info(f"Created sub-session {sub_session_id} for parent {parent_session_id}")
             
             # Get agent from registry
-            agent = self.registry.get(agent_type)
+            agent = self.registry.get(agent_name)
             if not agent:
-                raise ValueError(f"Agent type '{agent_type}' not found in registry")
+                raise ValueError(f"Agent '{agent_name}' not found in registry")
             
             # Execute sub-agent with initial task (blocking)
             if status:
-                await status.progress(f"Executing {agent_type} with initial task...")
+                await status.progress(f"Executing {agent_name} with initial task...")
             
             result_text = ""
             request_id = f"sub_{short_id()}"
@@ -168,7 +181,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
                 "status": "completed",
                 "result": result_text,
                 "message_count": 2,  # user + assistant
-                "agent_type": agent_type
+                "agent_type": agent_name
             }
             
         except Exception as e:
@@ -408,3 +421,35 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
                 "status": "error",
                 "error": str(e)
             }
+    
+    def _is_agent_allowed(self, agent_name: str) -> bool:
+        """Check if agent is allowed by this manager instance.
+        
+        Args:
+            agent_name: Agent instance name (e.g., 'coding_agent', 'meta_agent')
+            
+        Returns:
+            True if agent is allowed, False otherwise
+        """
+        # Check blacklist first
+        if agent_name in self.blocked_agents:
+            logger.debug(f"Agent '{agent_name}' blocked by blacklist")
+            return False
+        
+        # Check whitelist
+        if '*' in self.allowed_agents:
+            return True
+        
+        # Exact match
+        if agent_name in self.allowed_agents:
+            return True
+        
+        # Glob pattern matching
+        import fnmatch
+        for pattern in self.allowed_agents:
+            if fnmatch.fnmatch(agent_name, pattern):
+                logger.debug(f"Agent '{agent_name}' matched pattern '{pattern}'")
+                return True
+        
+        logger.debug(f"Agent '{agent_name}' not in allowed list: {self.allowed_agents}")
+        return False

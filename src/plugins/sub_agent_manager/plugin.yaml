@@ -17,6 +17,19 @@ server_config:
   
   # Maximum nesting depth for recursive sub-agents (1=root, 2=sub, 3=sub-sub, etc.)
   max_nesting_depth: 5
+  
+  # Agent filtering (multi-instance support)
+  # Filter by agent INSTANCE names (not types), enabling fine-grained control
+  # Use "*" for all agents, or specific list for restrictions
+  # Examples: 
+  #   ["coding_agent", "testing_agent", "code_reviewer_agent"]
+  #   ["web_research_agent", "meta_web_research_agent"]
+  #   ["basic_agent", "meta_*"]  # glob patterns supported
+  allowed_agents: ["*"]
+  
+  # Blocked agents (blacklist)
+  # Example: ["meta_agent"] to prevent spawning meta_agent as sub-agent
+  blocked_agents: []
 
 # Hook configuration for system prompt injection
 hook_config:
