@@ -250,10 +250,28 @@ def get_status_metrics() -> Dict[str, Any]:
     return status_bus.get_status_metrics()
 
 
+def _calculate_tree_metadata(request_id: Optional[str]) -> tuple[Optional[str], int]:
+    """Calculate parent_id and depth_level from request_id.
+    Returns (parent_id, depth_level)."""
+    parent_id = None
+    depth_level = 0
+    if request_id:
+        from ..utils.tree_hierarchy import parse_request_id_hierarchy
+        try:
+            hierarchy = parse_request_id_hierarchy(request_id)
+            parent_id = hierarchy.get("parent_id")
+            depth_level = hierarchy.get("depth", 0)
+        except Exception:
+            # If parsing fails, fall back to defaults
+            pass
+    return parent_id, depth_level
+
+
 async def publish_status(server: str, message: str, request_id: Optional[str] = None, 
                         phase: StatusPhase = StatusPhase.PROGRESS, level: str = "info",
                         meta: Optional[Dict[str, Any]] = None) -> None:
-    """Publish a status event with guaranteed delivery"""
+    """Publish a status event with guaranteed delivery.
+    Automatically calculates tree hierarchy metadata from request_id."""
     # Auto-escalate level based on phase
     if phase == StatusPhase.ERROR and level == "info":
         level = "error"
@@ -268,6 +286,9 @@ async def publish_status(server: str, message: str, request_id: Optional[str] = 
             # ignore context var errors
             pass
 
+    # Calculate tree hierarchy metadata from request_id
+    parent_id, depth_level = _calculate_tree_metadata(request_id)
+
     # Create StatusEvent and let bus.publish handle sequencing
     event = StatusEvent(
         server=server,
@@ -276,7 +297,9 @@ async def publish_status(server: str, message: str, request_id: Optional[str] = 
         phase=phase,
         sequence=0,  # Bus will assign sequence
         level=level,
-        meta=meta
+        meta=meta,
+        parent_id=parent_id,
+        depth_level=depth_level
     )
     await status_bus.publish(event)
 
@@ -304,11 +327,14 @@ class StatusScope:
     async def __aenter__(self):
         # Send START message with error handling
         try:
+            parent_id, depth_level = _calculate_tree_metadata(self.request_id)
             await self.bus.publish(StatusEvent(
                 server=self.server,
                 request_id=self.request_id,
                 message=self.start_msg,
-                phase=StatusPhase.START
+                phase=StatusPhase.START,
+                parent_id=parent_id,
+                depth_level=depth_level
             ))
         except Exception as e:
             # Gracefully handle status publishing failures
@@ -322,6 +348,7 @@ class StatusScope:
         if not self.ended:
             self.ended = True
             try:
+                parent_id, depth_level = _calculate_tree_metadata(self.request_id)
                 if exc_type is not None:
                     # Error occurred - ensure we have a meaningful error message
                     error_msg = str(exc_val) if exc_val else "Unknown error"
@@ -332,7 +359,9 @@ class StatusScope:
                         server=self.server,
                         request_id=self.request_id,
                         message=f"failed: {error_msg}",
-                        phase=StatusPhase.ERROR
+                        phase=StatusPhase.ERROR,
+                        parent_id=parent_id,
+                        depth_level=depth_level
                     ))
                 else:
                     # Success
@@ -340,7 +369,9 @@ class StatusScope:
                         server=self.server,
                         request_id=self.request_id,
                         message=self.end_msg,
-                        phase=StatusPhase.END
+                        phase=StatusPhase.END,
+                        parent_id=parent_id,
+                        depth_level=depth_level
                     ))
             except Exception as e:
                 # Gracefully handle status publishing failures
@@ -351,42 +382,52 @@ class StatusScope:
     async def progress(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Report a step or progress in the process"""
         try:
+            parent_id, depth_level = _calculate_tree_metadata(self.request_id)
             await self.bus.publish(StatusEvent(
                 server=self.server,
                 request_id=self.request_id,
                 message=message,
                 phase=StatusPhase.PROGRESS,
-                meta=meta
+                meta=meta,
+                parent_id=parent_id,
+                depth_level=depth_level
             ))
         except Exception:
             # Gracefully handle status publishing failures
             pass
     
     async def end(self, message: str = "completed", meta: Optional[Dict[str, Any]] = None) -> None:
-        """Explicitly end the process (useful for early completion)"""
-        self.ended = True
-        try:
-            await self.bus.publish(StatusEvent(
-                server=self.server,
-                request_id=self.request_id,
-                message=message,
-                phase=StatusPhase.END,
-                meta=meta
-            ))
-        except Exception:
-            # Gracefully handle status publishing failures
-            pass
+        """Manually end the scope with a custom message"""
+        if not self.ended:
+            self.ended = True
+            try:
+                parent_id, depth_level = _calculate_tree_metadata(self.request_id)
+                await self.bus.publish(StatusEvent(
+                    server=self.server,
+                    request_id=self.request_id,
+                    message=message,
+                    phase=StatusPhase.END,
+                    meta=meta,
+                    parent_id=parent_id,
+                    depth_level=depth_level
+                ))
+            except Exception:
+                # Gracefully handle status publishing failures
+                pass
         
     async def error(self, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
         """Report an error in the process"""
         self.ended = True
+        parent_id, depth_level = _calculate_tree_metadata(self.request_id)
         await self.bus.publish(StatusEvent(
             server=self.server,
             request_id=self.request_id,
             message=message,
             phase=StatusPhase.ERROR,
             level="error",
-            meta=meta
+            meta=meta,
+            parent_id=parent_id,
+            depth_level=depth_level
         ))
 
 
