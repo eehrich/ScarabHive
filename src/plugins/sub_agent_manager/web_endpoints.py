@@ -10,6 +10,22 @@ from fastapi.templating import Jinja2Templates
 logger = logging.getLogger(__name__)
 
 
+def get_session_service():
+    """Get global session_service from app.py."""
+    from agent_system.app import _session_service
+    if not _session_service:
+        raise RuntimeError("SessionService not initialized - app not started?")
+    return _session_service
+
+
+def get_registry():
+    """Get global MCP registry from app.py."""
+    from agent_system.app import _app_registry
+    if not _app_registry:
+        raise RuntimeError("MCPRegistry not initialized - app not started?")
+    return _app_registry
+
+
 class SubAgentManagerWebFactory:
     """Web UI factory for Sub-Agent Manager."""
     
@@ -47,9 +63,13 @@ class SubAgentManagerWebFactory:
                 include_completed: Include archived sub-agents (default: false)
             """
             try:
-                # Build params as server expects
+                # Get session_service from app
+                session_service = get_session_service()
+                
+                # Build params as server expects (with injected session_service)
                 params = {
                     "_session_id": session_id,
+                    "_session_service": session_service,
                     "include_completed": include_completed
                 }
                 
@@ -79,8 +99,12 @@ class SubAgentManagerWebFactory:
                 session_id: Parent session ID
             """
             try:
+                # Get session_service from app
+                session_service = get_session_service()
+                
                 params = {
                     "_session_id": session_id,
+                    "_session_service": session_service,
                     "instance_id": instance_id
                 }
                 
@@ -117,10 +141,16 @@ class SubAgentManagerWebFactory:
                 }
             """
             try:
+                # Get session_service and registry from app
+                session_service = get_session_service()
+                registry = get_registry()
+                
                 body = await request.json()
                 
                 params = {
                     "_session_id": session_id,
+                    "_session_service": session_service,
+                    "_registry": registry,
                     "agent_type": body.get("agent_type"),
                     "task": body.get("task"),
                     "instance_label": body.get("instance_label")
@@ -164,10 +194,16 @@ class SubAgentManagerWebFactory:
                 }
             """
             try:
+                # Get session_service and registry from app
+                session_service = get_session_service()
+                registry = get_registry()
+                
                 body = await request.json()
                 
                 params = {
                     "_session_id": session_id,
+                    "_session_service": session_service,
+                    "_registry": registry,
                     "instance_id": instance_id,
                     "message": body.get("message")
                 }
@@ -201,8 +237,12 @@ class SubAgentManagerWebFactory:
                 session_id: Parent session ID
             """
             try:
+                # Get session_service from app
+                session_service = get_session_service()
+                
                 params = {
                     "_session_id": session_id,
+                    "_session_service": session_service,
                     "instance_id": instance_id
                 }
                 
