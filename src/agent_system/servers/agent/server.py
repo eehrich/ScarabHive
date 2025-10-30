@@ -1277,7 +1277,9 @@ class Agent(MCPServer):
                 continue
             
             # No tool calls - this is the final answer
-            if content:
+            # IMPORTANT: Only stop if we have content AND no tool calls
+            # If LLM provided both content and tool_calls, the tool execution already happened above
+            if content and not tool_calls:
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
