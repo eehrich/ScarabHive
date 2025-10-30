@@ -1,0 +1,128 @@
+"""MCP tool definitions for Sub-Agent Manager."""
+
+tools:
+  - name: create_sub_agent
+    description: |
+      Create a new persistent sub-agent instance for specialized tasks.
+      The sub-agent executes immediately with the initial task and returns the result.
+      
+      IMPORTANT: This is a BLOCKING operation that waits for the sub-agent to complete.
+      The sub-agent will have its own session that persists across your requests.
+      
+      Use this when you need a specialized agent (e.g., web_research_agent for searches,
+      financial_analyst_agent for stock analysis) to work on a specific task while
+      maintaining its conversation history.
+    
+    inputSchema:
+      type: object
+      properties:
+        agent_type:
+          type: string
+          description: |
+            Agent type to create (e.g., 'web_research_agent', 'financial_analyst_agent').
+            The agent must exist in the registry.
+        
+        task:
+          type: string
+          description: |
+            Initial task/message for the sub-agent.
+            This will be the first message in the sub-agent's session.
+        
+        instance_label:
+          type: string
+          description: |
+            Optional human-readable label for this instance.
+            If not provided, an auto-generated ID will be used.
+            Format: alphanumeric, underscore, hyphen only.
+        
+        config_overrides:
+          type: object
+          description: |
+            Optional configuration overrides for the sub-agent.
+            Example: {"llm_profile": "gpt-4", "max_tokens": 4000}
+          properties:
+            llm_profile:
+              type: string
+              description: "LLM profile to use (overrides default)"
+            max_tokens:
+              type: integer
+              description: "Maximum tokens for responses"
+      
+      required: [agent_type, task]
+
+  - name: continue_sub_agent
+    description: |
+      Continue an existing sub-agent conversation with a new message.
+      The sub-agent will have access to all previous messages and context.
+      
+      IMPORTANT: The sub-agent executes immediately and you receive the result.
+      This is a blocking operation that waits for the sub-agent to complete.
+    
+    inputSchema:
+      type: object
+      properties:
+        instance_id:
+          type: string
+          description: |
+            ID of the sub-agent instance to continue.
+            This was returned when you created the sub-agent.
+        
+        message:
+          type: string
+          description: |
+            New message/task for the sub-agent.
+            The sub-agent will see this in the context of its previous conversation.
+      
+      required: [instance_id, message]
+
+  - name: list_sub_agents
+    description: |
+      List all active sub-agent instances for the current conversation.
+      Returns instance IDs, types, status, and summary information.
+      
+      Use this to see what sub-agents are available for continuation.
+    
+    inputSchema:
+      type: object
+      properties:
+        include_completed:
+          type: boolean
+          description: |
+            Include completed/archived sub-agents in the list.
+            Default: false (only show active sub-agents).
+          default: false
+
+  - name: delete_sub_agent
+    description: |
+      Delete a sub-agent instance and archive its session.
+      Use this to clean up completed or failed sub-agents.
+      
+      The session is moved to archived status, not permanently deleted.
+      This frees up the sub-agent slot and prevents it from appearing in prompts.
+    
+    inputSchema:
+      type: object
+      properties:
+        instance_id:
+          type: string
+          description: |
+            ID of the sub-agent instance to delete.
+      
+      required: [instance_id]
+
+  - name: get_sub_agent_info
+    description: |
+      Get detailed information about a specific sub-agent instance.
+      Returns status, message count, task summary, and recent activity.
+      
+      Use this to check on a sub-agent without continuing its conversation.
+    
+    inputSchema:
+      type: object
+      properties:
+        instance_id:
+          type: string
+          description: |
+            ID of the sub-agent to query.
+      
+      required: [instance_id]

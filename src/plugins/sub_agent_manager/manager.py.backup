@@ -1,0 +1,271 @@
+"""Sub-Agent Manager - Core lifecycle management."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from agent_system.mcp.base import MCPRegistry
+    from agent_system.services.session_service import SessionService
+
+logger = logging.getLogger(__name__)
+
+
+class SubAgentManager:
+    """Manages lifecycle of sub-agent instances.
+    
+    This manager handles:
+    - Creating sub-sessions via SessionManager
+    - Linking sub-sessions to parent sessions
+    - Listing and querying sub-sessions
+    - Generating unique instance IDs
+    
+    CRITICAL: Does NOT extend SessionTracker. Uses SessionManager directly
+    for all persistence operations.
+    """
+    
+    def __init__(self, session_service: SessionService, registry: MCPRegistry):
+        """Initialize SubAgentManager.
+        
+        Args:
+            session_service: Session service for persistence
+            registry: MCP registry for agent lookup
+        """
+        self._session_service = session_service
+        self._registry = registry
+        self._instance_counters: dict[str, dict[str, int]] = {}
+        self._lock = asyncio.Lock()
+        
+        logger.info("SubAgentManager initialized")
+    
+    async def create_sub_session(
+        self,
+        parent_session_id: str,
+        agent_type: str,
+        initial_message: str,
+        instance_label: Optional[str] = None
+    ) -> str:
+        """Create sub-session file via SessionManager.
+        
+        Args:
+            parent_session_id: Parent coordinator session ID
+            agent_type: Type of agent to create (e.g., "web_research_agent")
+            initial_message: Initial task/message for sub-agent
+            instance_label: Optional human-readable label
+            
+        Returns:
+            Sub-session ID (format: {parent}_sub_{agent_type}_{counter})
+            
+        Raises:
+            ValueError: If parent session not found or agent type invalid
+        """
+        # Generate unique instance ID
+        sub_session_id = await self._generate_instance_id(
+            parent_session_id, agent_type, instance_label
+        )
+        
+        # Extract user_id from parent session
+        user_id = self._extract_user_id(parent_session_id)
+        
+        # Create session via existing SessionManager
+        session_manager = self._session_service.session_manager
+        
+        # Create session with minimal metadata
+        await session_manager.create_session(
+            user_id=user_id,
+            session_id=sub_session_id,
+            title=f"{initial_message[:50]}..." if len(initial_message) > 50 else initial_message,
+            agent_name=agent_type,
+            llm_profile="default"  # Will be overridden by agent config
+        )
+        
+        logger.info(f"Created sub-session: {sub_session_id} (parent: {parent_session_id})")
+        
+        # Add parent link to sub-session metadata
+        session_data = await session_manager.load_session(user_id, sub_session_id)
+        if "parent_session" not in session_data:
+            session_data["parent_session"] = {}
+        
+        session_data["parent_session"]["session_id"] = parent_session_id
+        session_data["parent_session"]["created_at"] = datetime.now(UTC).isoformat()
+        
+        await session_manager.save_session(session_data)
+        
+        logger.debug(f"Linked sub-session {sub_session_id} to parent {parent_session_id}")
+        
+        # Update parent session with sub-agent metadata
+        await self._link_sub_to_parent(
+            user_id, parent_session_id, sub_session_id, agent_type, initial_message
+        )
+        
+        return sub_session_id
+    
+    async def _link_sub_to_parent(
+        self,
+        user_id: str,
+        parent_session_id: str,
+        sub_session_id: str,
+        agent_type: str,
+        task_summary: str
+    ) -> None:
+        """Add sub-agent metadata to parent session.
+        
+        Args:
+            user_id: User ID
+            parent_session_id: Parent session ID
+            sub_session_id: Sub-session ID
+            agent_type: Agent type
+            task_summary: Task summary (truncated to 100 chars)
+        """
+        session_manager = self._session_service.session_manager
+        parent_data = await session_manager.load_session(user_id, parent_session_id)
+        
+        if "metadata" not in parent_data:
+            parent_data["metadata"] = {}
+        if "sub_agents" not in parent_data["metadata"]:
+            parent_data["metadata"]["sub_agents"] = {}
+        
+        parent_data["metadata"]["sub_agents"][sub_session_id] = {
+            "instance_id": sub_session_id,
+            "agent_type": agent_type,
+            "created_at": datetime.now(UTC).isoformat(),
+            "last_used": datetime.now(UTC).isoformat(),
+            "status": "active",
+            "task_summary": task_summary[:100]
+        }
+        
+        await session_manager.save_session(parent_data)
+        
+        logger.debug(f"Updated parent {parent_session_id} with sub-agent {sub_session_id}")
+    
+    async def list_sub_sessions(
+        self,
+        parent_session_id: str,
+        include_completed: bool = False
+    ) -> list[dict[str, Any]]:
+        """List sub-sessions by loading parent metadata.
+        
+        Args:
+            parent_session_id: Parent session ID
+            include_completed: Include archived/completed sessions
+            
+        Returns:
+            List of sub-agent metadata dicts
+        """
+        user_id = self._extract_user_id(parent_session_id)
+        session_manager = self._session_service.session_manager
+        
+        try:
+            parent_data = await session_manager.load_session(user_id, parent_session_id)
+        except FileNotFoundError:
+            logger.warning(f"Parent session {parent_session_id} not found")
+            return []
+        
+        sub_agents = parent_data.get("metadata", {}).get("sub_agents", {})
+        
+        result = []
+        for instance_id, metadata in sub_agents.items():
+            if not include_completed and metadata.get("status") != "active":
+                continue
+            result.append(metadata)
+        
+        logger.debug(f"Listed {len(result)} sub-sessions for parent {parent_session_id}")
+        
+        return result
+    
+    async def update_sub_session_metadata(
+        self,
+        parent_session_id: str,
+        sub_session_id: str,
+        **updates: Any
+    ) -> None:
+        """Update sub-session metadata in parent session.
+        
+        Args:
+            parent_session_id: Parent session ID
+            sub_session_id: Sub-session ID
+            **updates: Metadata fields to update (e.g., last_used, status)
+        """
+        user_id = self._extract_user_id(parent_session_id)
+        session_manager = self._session_service.session_manager
+        
+        parent_data = await session_manager.load_session(user_id, parent_session_id)
+        
+        if "metadata" not in parent_data:
+            parent_data["metadata"] = {}
+        if "sub_agents" not in parent_data["metadata"]:
+            parent_data["metadata"]["sub_agents"] = {}
+        
+        if sub_session_id not in parent_data["metadata"]["sub_agents"]:
+            logger.warning(f"Sub-session {sub_session_id} not found in parent metadata")
+            return
+        
+        # Update metadata fields
+        for key, value in updates.items():
+            parent_data["metadata"]["sub_agents"][sub_session_id][key] = value
+        
+        await session_manager.save_session(parent_data)
+        
+        logger.debug(f"Updated metadata for sub-session {sub_session_id}: {updates}")
+    
+    async def _generate_instance_id(
+        self,
+        parent_session_id: str,
+        agent_type: str,
+        instance_label: Optional[str]
+    ) -> str:
+        """Generate unique instance ID: {parent}_sub_{type}_{counter}.
+        
+        Args:
+            parent_session_id: Parent session ID
+            agent_type: Agent type
+            instance_label: Optional custom label
+            
+        Returns:
+            Unique instance ID
+        """
+        async with self._lock:
+            # Initialize counters for parent if needed
+            if parent_session_id not in self._instance_counters:
+                self._instance_counters[parent_session_id] = {}
+            
+            # Get next counter for this agent type
+            type_counters = self._instance_counters[parent_session_id]
+            current = type_counters.get(agent_type, 0)
+            type_counters[agent_type] = current + 1
+            counter = current + 1
+            
+            # Use custom label or auto-generate
+            if instance_label:
+                # Sanitize label (alphanumeric, underscore, hyphen only)
+                import re
+                sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', instance_label)
+                instance_id = f"{parent_session_id}_sub_{sanitized}"
+            else:
+                # Auto-generate: {parent}_sub_{agent_type}_{counter}
+                instance_id = f"{parent_session_id}_sub_{agent_type}_{counter:03d}"
+            
+            logger.debug(f"Generated instance ID: {instance_id}")
+            
+            return instance_id
+    
+    def _extract_user_id(self, session_id: str) -> str:
+        """Extract user_id from session ID.
+        
+        For now, assumes sessions are stored per-user but session_id
+        doesn't embed user_id. Returns default user 'admin'.
+        
+        TODO: Improve this based on actual session ID format.
+        
+        Args:
+            session_id: Session ID
+            
+        Returns:
+            User ID (currently hardcoded to 'admin')
+        """
+        # FIXME: This should extract from session_id or context
+        # For MVP, all sessions belong to 'admin' user
+        return "admin"
