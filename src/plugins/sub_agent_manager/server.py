@@ -165,11 +165,19 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 await status.progress(f"Executing {agent_name} with initial task...")
             
             result_text = ""
-            request_id = f"sub_{short_id()}"
+            
+            # Generate hierarchical request ID: parent_request_id + "_sub_" + counter
+            parent_request_id = params.get("_request_id")
+            if parent_request_id:
+                # Use parent's request ID as base
+                sub_request_id = f"{parent_request_id}_sub_{short_id(6)}"
+            else:
+                # Fallback to simple ID if no parent request_id
+                sub_request_id = f"sub_{short_id()}"
             
             async for event in agent.run_events(
                 task=task,
-                request_id=request_id,
+                request_id=sub_request_id,
                 session_id=sub_session_id
                 # Note: config_overrides would go here if Agent.run_events supported them
                 # For now, sub-agent uses its default configuration
@@ -246,11 +254,17 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             
             # Execute sub-agent with new message (continues existing session)
             result_text = ""
-            request_id = f"sub_cont_{short_id()}"
+            
+            # Generate hierarchical request ID for continue operation
+            parent_request_id = params.get("_request_id")
+            if parent_request_id:
+                sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
+            else:
+                sub_request_id = f"sub_cont_{short_id()}"
             
             async for event in agent.run_events(
                 task=message,
-                request_id=request_id,
+                request_id=sub_request_id,
                 session_id=instance_id  # Continue existing session
             ):
                 if event.get("type") == "result":

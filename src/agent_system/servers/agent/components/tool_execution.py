@@ -483,7 +483,7 @@ class ToolExecutionManager:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
             
             # Inject session context from current execution context if available
-            if self._current_session_id or self._current_user_id or (self._agent and hasattr(self._agent, 'name')):
+            if self._current_session_id or self._current_user_id or request_id or (self._agent and hasattr(self._agent, 'name')):
                 params = params.copy()  # Don't mutate original
                 
                 if self._current_session_id:
@@ -493,6 +493,10 @@ class ToolExecutionManager:
                 if self._current_user_id:
                     params["_user_id"] = self._current_user_id
                     logger.debug(f"✓ Injected user_id '{self._current_user_id}' into tool params")
+                
+                if request_id:
+                    params["_request_id"] = request_id
+                    logger.debug(f"✓ Injected request_id '{request_id}' into tool params")
                 
                 if self._agent and hasattr(self._agent, 'name'):
                     params["_agent_name"] = self._agent.name
