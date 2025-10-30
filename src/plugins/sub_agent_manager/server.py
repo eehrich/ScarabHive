@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 
 
 class SubAgentManagerServer(SchemaBasedMCPServer):
-    """MCP server for sub-agent management tools.
+    """MCP server for sub-agent management.
     
-    Provides 5 tools for coordinator agents:
-    - create_sub_agent: Create and execute initial task
-    - continue_sub_agent: Continue with new message
-    - list_sub_agents: List active instances
-    - delete_sub_agent: Archive instance
-    - get_sub_agent_info: Query detailed status
+    Provides a unified tool `manage_sub_agent` with 5 operations:
+    - create: Create and execute new sub-agent
+    - continue: Continue existing sub-agent with new message
+    - list: List active sub-agents
+    - info: Get detailed status
+    - delete: Archive sub-agent
     """
     
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
@@ -70,11 +70,35 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
         
         return self._manager
     
-    async def create_sub_agent(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Create new sub-agent instance and execute initial task.
+    async def manage_sub_agent(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Unified handler for all sub-agent operations.
         
-        Handler for create_sub_agent tool.
+        Dispatches to operation-specific handlers based on params["operation"].
         """
+        operation = params.get("operation")
+        
+        if not operation:
+            return {"status": "error", "error": "Missing 'operation' parameter"}
+        
+        try:
+            if operation == "create":
+                return await self._handle_create(params)
+            elif operation == "continue":
+                return await self._handle_continue(params)
+            elif operation == "list":
+                return await self._handle_list(params)
+            elif operation == "info":
+                return await self._handle_info(params)
+            elif operation == "delete":
+                return await self._handle_delete(params)
+            else:
+                return {"status": "error", "error": f"Unknown operation: {operation}"}
+        except Exception as e:
+            logger.exception(f"Error in manage_sub_agent ({operation}): {e}")
+            return {"status": "error", "error": str(e)}
+    
+    async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'create' operation - create and execute new sub-agent."""
         try:
             # Extract parameters
             agent_type = params["agent_type"]
@@ -156,11 +180,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
                 "error": str(e)
             }
     
-    async def continue_sub_agent(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Continue existing sub-agent with new message.
-        
-        Handler for continue_sub_agent tool.
-        """
+    async def _handle_continue(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'continue' operation - continue existing sub-agent."""
         try:
             # Extract parameters
             instance_id = params["instance_id"]
@@ -240,11 +261,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
                 "error": str(e)
             }
     
-    async def list_sub_agents(self, params: dict[str, Any]) -> dict[str, Any]:
-        """List all sub-agents for current session.
-        
-        Handler for list_sub_agents tool.
-        """
+    async def _handle_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'list' operation - list all sub-agents."""
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
@@ -285,11 +303,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
                 "error": str(e)
             }
     
-    async def delete_sub_agent(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Archive sub-agent instance.
-        
-        Handler for delete_sub_agent tool.
-        """
+    async def _handle_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'delete' operation - archive sub-agent."""
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
@@ -335,11 +350,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer):
                 "error": str(e)
             }
     
-    async def get_sub_agent_info(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Get detailed info about a sub-agent.
-        
-        Handler for get_sub_agent_info tool.
-        """
+    async def _handle_info(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'info' operation - get detailed sub-agent info."""
         try:
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
