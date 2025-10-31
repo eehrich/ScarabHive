@@ -29,7 +29,7 @@ from .mcp.integration import initialize_mcp, shutdown_mcp
 
 # Import services
 from .services import ConfigService, MCPService, ToolService, AgentService
-from .services.session_manager import SessionManager
+from .services.session_manager import SessionManager, SessionPermissionError
 
 
 # Global registry for MCP endpoints access
@@ -908,9 +908,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Load existing session if session_id provided
         session_exists = False
         if session_id and _session_service:
-            session_exists, msg_count = await _session_service.load_and_restore_session(
-                selected_agent, user_id, session_id
-            )
+            try:
+                session_exists, msg_count = await _session_service.load_and_restore_session(
+                    selected_agent, user_id, session_id
+                )
+            except SessionPermissionError as e:
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Permission denied: {e}"
+                )
         
         # CRITICAL: Always set/update session metadata (even for existing sessions)
         # This ensures user_id is available for tool execution AND respects llm_profile overrides
@@ -1139,9 +1145,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Load existing session if session_id provided
         session_exists = False
         if session_id and _session_service:
-            session_exists, msg_count = await _session_service.load_and_restore_session(
-                selected_agent, user_id, session_id
-            )
+            try:
+                session_exists, msg_count = await _session_service.load_and_restore_session(
+                    selected_agent, user_id, session_id
+                )
+            except SessionPermissionError as e:
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Permission denied: {e}"
+                )
         
         # CRITICAL: Always set/update session metadata (even for existing sessions)
         # This ensures user_id is available for tool execution AND respects llm_profile overrides

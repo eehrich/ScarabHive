@@ -29,6 +29,7 @@ from .servers.agent.server import Agent
 
 # Import services
 from .services import MCPService, ToolService
+from .services.session_manager import SessionPermissionError
 from .cli_utils.common import (
     supports_color as _supports_color,
     colorize as _colorize,
@@ -1298,6 +1299,9 @@ def main() -> None:
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
     
+    # Extract LLM profile override early (needed in session operations)
+    llm_profile_override = getattr(args, "llm_profile_override", None)
+    
     # Initialize session management
     session_id = getattr(args, "session_id", None)
     session_user = getattr(args, "session_user", "cli_user")
@@ -1366,6 +1370,12 @@ def main() -> None:
                 # Initialize session in agent if it doesn't exist
                 if hasattr(agent, '_session_tracker'):
                     agent._session_tracker.set_session_messages(actual_session_id, [])
+            except SessionPermissionError as e:
+                # User trying to access session they don't own
+                logger.error(f"Permission denied for session {session_id}: {e}")
+                print(f"Error: {e}", file=sys.stderr)
+                print("This session belongs to a different user. Use a different session ID.", file=sys.stderr)
+                return False, was_new_session  # Signal to exit
             except Exception as e:
                 logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
                 print(f"Error loading session: {e}", file=sys.stderr)

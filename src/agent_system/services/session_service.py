@@ -8,6 +8,8 @@ It provides a clean interface for session restoration and persistence.
 import logging
 from typing import List, Dict, Any
 
+from agent_system.services.session_manager import SessionPermissionError, SessionNotFoundError
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,8 +80,16 @@ class SessionService:
             logger.info(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
             
+        except SessionPermissionError:
+            # Re-raise permission errors - user trying to access session they don't own
+            raise
+        except SessionNotFoundError:
+            # Session doesn't exist - return False so caller can create new one
+            logger.info(f"[SESSION] Session {session_id} not found")
+            return False, 0
         except Exception as e:
-            logger.info(f"[SESSION] Session {session_id} not found or failed to load: {e}")
+            # Other errors (e.g., corrupt session file) - log and return False
+            logger.error(f"[SESSION] Failed to load session {session_id}: {e}", exc_info=True)
             return False, 0
     
     async def save_session(

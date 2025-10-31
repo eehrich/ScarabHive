@@ -24,6 +24,7 @@ from .config.settings import load_settings
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .servers.agent.server import Agent
+from .services.session_manager import SessionPermissionError
 from .cli_utils.common import (
     set_color_mode,
     status_subscriber,
@@ -207,6 +208,12 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     print(f"Creating new session '{session_id}'")
                     agent._session_tracker.set_session_messages(actual_session_id, [])
                     was_new_session = True  # Will be saved at end
+            except SessionPermissionError as e:
+                # User trying to access session they don't own
+                logger.error(f"Permission denied for session {session_id}: {e}")
+                print(f"Error: {e}", file=sys.stderr)
+                print("This session belongs to a different user. Use a different session ID.", file=sys.stderr)
+                return
             except Exception as e:
                 logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
                 print(f"Error loading session: {e}", file=sys.stderr)
@@ -250,6 +257,15 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")
+        
+        # Set session metadata for tool execution context (AFTER LLM override logic)
+        # This ensures user_id is available when tools are called
+        effective_llm_profile = llm_profile or agent.agent_config.llm_profile
+        agent._session_tracker.set_session_metadata(actual_session_id, {
+            "user_id": session_user,
+            "agent_name": agent.name,
+            "llm_profile": effective_llm_profile
+        })
         
         # Subscribe to status events if enabled
         status_queue = None

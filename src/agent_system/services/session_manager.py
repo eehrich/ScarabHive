@@ -329,6 +329,17 @@ class SessionManager:
             path = self._get_session_path(user_id, session_id)
             
             if not path.exists():
+                # Before raising NotFoundError, check if session exists for another user
+                # This prevents session ID conflicts across users
+                for existing_user_dir in self.storage_path.iterdir():
+                    if existing_user_dir.is_dir():
+                        other_user_path = existing_user_dir / f"{session_id}.json"
+                        if other_user_path.exists():
+                            # Session exists but belongs to another user
+                            raise SessionPermissionError(
+                                f"Session {session_id} already exists and belongs to another user"
+                            )
+                # Session truly doesn't exist
                 raise SessionNotFoundError(f"Session {session_id} not found")
             
             session_data = self._read_session_file(path)
