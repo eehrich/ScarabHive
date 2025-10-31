@@ -911,6 +911,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             session_exists, msg_count = await _session_service.load_and_restore_session(
                 selected_agent, user_id, session_id
             )
+        
+        # CRITICAL: Always set/update session metadata (even for existing sessions)
+        # This ensures user_id is available for tool execution AND respects llm_profile overrides
+        if session_id:
+            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            selected_agent._session_tracker.set_session_metadata(session_id, {
+                "user_id": user_id,
+                "agent_name": selected_agent.name,
+                "llm_profile": effective_llm_profile
+            })
 
         from .servers.agent.result_utils import collect_final_result
 
@@ -921,7 +931,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             try:
                 # Pass LLM override to collect_final_result
-                result = await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
+                result = await collect_final_result(
+                    selected_agent, task, 
+                    request_id=request_id, 
+                    session_id=session_id,
+                    llm_override=llm_override, 
+                    llm_profile_info_override=llm_profile_info
+                )
 
                 # Format summary from Markdown to HTML for web display
                 if result.get("summary") and selected_agent._hook_manager:
@@ -936,6 +952,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     except Exception as e:
                         logger.warning(f"Failed to format summary to HTML: {e}")
                         # Keep original markdown on error
+
+                # Save session after execution (if session_id was provided or created)
+                if session_id and _session_service:
+                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                    was_new_session = not session_exists
+                    await _session_service.save_session(
+                        selected_agent,
+                        user_id,
+                        session_id,
+                        selected_agent.name,
+                        effective_llm_profile,
+                        was_new_session
+                    )
+                    logger.debug(f"[SESSION_SAVE] Saved session {session_id} after /run (text-only)")
 
                 return result
             finally:
@@ -999,7 +1029,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             old_session_id = actual_session_id
                             actual_session_id = event["session_id"]
                             logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
-
+                            
+                        # CRITICAL: Set session metadata for newly created sessions
+                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
+                        if was_new_session:
+                            # Use override llm_profile if provided, otherwise agent's default
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                            selected_agent._session_tracker.set_session_metadata(actual_session_id, {
+                                "user_id": user_id,
+                                "agent_name": selected_agent.name,
+                                "llm_profile": effective_llm_profile
+                            })
                         # Ensure proper JSON serialization
                         if hasattr(event, 'to_dict'):
                             payload = event.to_dict()
@@ -1020,14 +1060,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 finally:
                     # Save session after completion
                     if _session_service and actual_session_id:
-                        agent_name_used = agent_name or "default"
-                        llm_profile_used = llm_profile or "normal"
+                        # Use actual agent name and effective llm_profile (respecting overrides)
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
                         await _session_service.save_session(
                             selected_agent,
                             user_id,
                             actual_session_id,
-                            agent_name_used,
-                            llm_profile_used,
+                            selected_agent.name,
+                            effective_llm_profile,
                             was_new_session
                         )
 
@@ -1102,6 +1142,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             session_exists, msg_count = await _session_service.load_and_restore_session(
                 selected_agent, user_id, session_id
             )
+        
+        # CRITICAL: Always set/update session metadata (even for existing sessions)
+        # This ensures user_id is available for tool execution AND respects llm_profile overrides
+        # load_and_restore_session sets metadata from disk, but we need to override with current request's llm_profile
+        if session_id:
+            # Use override llm_profile if provided, otherwise agent's default
+            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            selected_agent._session_tracker.set_session_metadata(session_id, {
+                "user_id": user_id,
+                "agent_name": selected_agent.name,
+                "llm_profile": effective_llm_profile
+            })
 
         async def event_stream():
             yield ":ok\n\n"
@@ -1117,6 +1169,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         old_session_id = actual_session_id
                         actual_session_id = ev["session_id"]
                         logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
+                        
+                        # CRITICAL: Set session metadata for newly created sessions
+                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
+                        if was_new_session:
+                            selected_agent._session_tracker.set_session_metadata(actual_session_id, {
+                                "user_id": user_id,
+                                "agent_name": agent_name or "default",
+                                "llm_profile": llm_profile or "normal"
+                            })
+                            logger.debug(f"[SESSION] Set metadata for new session {actual_session_id}: user_id={user_id}")
 
                     if hasattr(ev, 'to_dict'):
                         payload = ev.to_dict()
@@ -1181,14 +1243,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
                 if actual_session_id and _session_service:
-                    agent_name_used = agent_name or "default"
-                    llm_profile_used = llm_profile or "normal"
+                    # Use actual agent name and effective llm_profile (respecting overrides)
+                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
                     await _session_service.save_session(
                         selected_agent,
                         user_id,
                         actual_session_id,
-                        agent_name_used,
-                        llm_profile_used,
+                        selected_agent.name,
+                        effective_llm_profile,
                         was_new_session
                     )
 

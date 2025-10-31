@@ -80,14 +80,30 @@ class SubAgentManager:
             logger.info(
                 f"Parent session {parent_session_id} not found in storage, creating it now"
             )
-            # Create parent session with minimal metadata
+            # Extract agent_name and llm_profile from params (injected by ToolExecutionManager)
+            parent_agent = params.get("_agent") if params else None
+            if not parent_agent:
+                raise ValueError(
+                    f"Cannot create parent session {parent_session_id}: _agent not found in params. "
+                    "Session metadata not set correctly."
+                )
+            
+            parent_agent_name = parent_agent.name if hasattr(parent_agent, 'name') else str(parent_agent)
+            parent_llm_profile = parent_agent.agent_config.llm_profile if hasattr(parent_agent, 'agent_config') else None
+            
+            if not parent_llm_profile:
+                raise ValueError(
+                    f"Cannot create parent session {parent_session_id}: agent.agent_config.llm_profile not found"
+                )
+            
+            # Create parent session with actual metadata from agent
             # This handles CLI/ephemeral sessions that haven't been saved yet
             await session_manager.create_session(
                 user_id=user_id,
                 session_id=parent_session_id,
                 title="Coordinator Session",
-                agent_name="unknown",  # Will be updated when parent saves
-                llm_profile="default"
+                agent_name=parent_agent_name,
+                llm_profile=parent_llm_profile
             )
             parent_data = await session_manager.load_session(user_id, parent_session_id)
         
@@ -104,14 +120,22 @@ class SubAgentManager:
         # Generate unique instance ID (short format)
         sub_session_id = await self._generate_instance_id(agent_type, instance_label)
         
-        # Create session via existing SessionManager
-        # Note: Title will be updated after execution based on conversation
+        # Get actual agent to extract llm_profile
+        agent = self._registry.get(agent_type)
+        if not agent:
+            raise ValueError(f"Agent type '{agent_type}' not found in registry")
+        
+        agent_llm_profile = agent.agent_config.llm_profile if hasattr(agent, 'agent_config') else None
+        if not agent_llm_profile:
+            raise ValueError(f"Agent '{agent_type}' has no agent_config.llm_profile")
+        
+        # Create session via existing SessionManager with actual agent metadata
         await session_manager.create_session(
             user_id=user_id,
             session_id=sub_session_id,
             title=initial_message[:100] if len(initial_message) <= 100 else f"{initial_message[:97]}...",
             agent_name=agent_type,
-            llm_profile="default"  # Will be overridden by agent config
+            llm_profile=agent_llm_profile
         )
         
         logger.info(

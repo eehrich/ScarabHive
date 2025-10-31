@@ -292,6 +292,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # ALWAYS inject, even if already set, to ensure correct reference
                 agent._session_service = session_service
                 
+                # CRITICAL: Set session metadata for sub-agent session
+                # This ensures user_id is available during tool execution
+                user_id = manager._extract_user_id(parent_session_id, params)
+                agent._session_tracker.set_session_metadata(sub_session_id, {
+                    "user_id": user_id,
+                    "agent_name": agent_name,
+                    "llm_profile": getattr(agent.agent_config, 'llm_profile', 'normal')
+                })
+                logger.debug(f"Set session metadata for sub-agent {sub_session_id}: user_id={user_id}")
+                
                 # Execute sub-agent with initial task (blocking)
                 if status:
                     await status.progress(f"Executing {agent_name} with initial task...")
@@ -320,12 +330,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 
                 # Save session with messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
+                # Get actual LLM profile from agent configuration
+                llm_profile = agent.agent_config.llm_profile
                 await session_service.save_session(
                     agent=agent,
                     user_id=user_id,
                     session_id=sub_session_id,
                     agent_name=agent_name,
-                    llm_profile="default",  # Sub-agents use their configured profile
+                    llm_profile=llm_profile,
                     was_new_session=True
                 )
                 logger.debug(f"Saved sub-agent session {sub_session_id} with messages")
@@ -415,6 +427,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # ALWAYS inject, even if already set, to ensure correct reference
                 agent._session_service = session_service
                 
+                # CRITICAL: Set session metadata for sub-agent session (for continued execution)
+                # This ensures user_id is available during tool execution
+                user_id = manager._extract_user_id(parent_session_id, params)
+                agent._session_tracker.set_session_metadata(instance_id, {
+                    "user_id": user_id,
+                    "agent_name": agent_type,
+                    "llm_profile": getattr(agent.agent_config, 'llm_profile', 'normal')
+                })
+                logger.debug(f"Set session metadata for continued sub-agent {instance_id}: user_id={user_id}")
+                
                 if status:
                     await status.progress(f"Continuing {agent_type} with new message...")
                 
@@ -439,12 +461,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 
                 # Save session with updated messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
+                # Get actual LLM profile from agent configuration
+                llm_profile = agent.agent_config.llm_profile
                 await session_service.save_session(
                     agent=agent,
                     user_id=user_id,
                     session_id=instance_id,
                     agent_name=agent_type,
-                    llm_profile="default",
+                    llm_profile=llm_profile,
                     was_new_session=False  # Updating existing session
                 )
                 logger.debug(f"Saved continued sub-agent session {instance_id} with messages")

@@ -1237,6 +1237,11 @@ class Agent(MCPServer):
                     session_meta = self._session_tracker.get_session_metadata(session_id)
                     if session_meta:
                         user_id = session_meta.get("user_id")
+                        logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
+                    else:
+                        logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
+                else:
+                    logger.warning("[TOOL_EXEC] No _session_tracker available")
                 
                 async for item in self._tool_execution_manager.execute_tools_streaming(
                     tool_calls=tool_calls,
