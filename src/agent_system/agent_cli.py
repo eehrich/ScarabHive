@@ -1672,6 +1672,17 @@ def main() -> None:
                 print(f"ERROR: Failed to apply LLM profile '{llm_profile_override}': {str(e)}", file=sys.stderr)
                 return
 
+    # Set session metadata for tool execution context (enables _user_id, _agent injection)
+    if hasattr(agent, '_session_tracker'):
+        # Determine effective LLM profile (override or agent default)
+        effective_llm_profile = llm_profile_override or agent.agent_config.llm_profile
+        
+        agent._session_tracker.set_session_metadata(actual_session_id, {
+            "user_id": session_user,
+            "agent_name": entry_name,
+            "llm_profile": effective_llm_profile
+        })
+
     try:
         if getattr(args, "raw", False):
             # Raw mode: use run_events with result collection
