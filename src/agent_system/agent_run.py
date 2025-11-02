@@ -6,10 +6,10 @@ A lightweight CLI tool to execute agent requests quickly.
 
 Usage:
     agent-run "Your request here"
-    
+
 This tool:
 1. Loads the configuration from config files
-2. Discovers and loads plugins 
+2. Discovers and loads plugins
 3. Starts the default agent defined in config
 4. Executes the request and returns the result
 """
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 def setup_basic_logging(verbose: bool = False) -> None:
     """Setup basic logging for the agent runner.
-    
+
     Args:
         verbose: If True, set level to DEBUG. Otherwise WARNING.
     """
@@ -55,10 +55,10 @@ async def initialize_system(config):
     """Initialize the MCP registry and load plugins using the same bootstrap process as CLI."""
     # Create MCP registry
     registry = MCPRegistry()
-    
+
     # Use the same bootstrap process as CLI
     from .servers.bootstrap import bootstrap_servers
-    
+
     try:
         # Bootstrap all servers and plugins
         bootstrap_servers(config, registry)
@@ -66,16 +66,16 @@ async def initialize_system(config):
     except Exception as e:
         logger.warning(f"Bootstrap failed: {e}", exc_info=True)
         # Continue with empty registry - agent can still work without plugins
-    
+
     return registry
 
 
 async def create_agent(config, registry, agent_name: str, session_service=None):
     """Create and initialize the specified agent.
-    
+
     This function is a wrapper around the shared cli_utils.agent_runner.create_and_register_agent
     to maintain backward compatibility with existing code.
-    
+
     Args:
         config: System configuration
         registry: MCP registry
@@ -88,7 +88,7 @@ async def create_agent(config, registry, agent_name: str, session_service=None):
 
 async def run_agent_request(agent: Agent, request: str, session_id: str, llm_override=None, llm_profile_info: str | None = None) -> dict:
     """Execute a request with the agent and return the result.
-    
+
     Args:
         agent: The agent instance to execute the request with
         request: The user's request/question
@@ -98,29 +98,29 @@ async def run_agent_request(agent: Agent, request: str, session_id: str, llm_ove
     """
     try:
         logger.info(f"Executing request: {request[:100]}{'...' if len(request) > 100 else ''}")
-        
+
         # Use the same pattern as CLI - collect final result from run_events
         from .servers.agent.result_utils import collect_final_result
         result = await collect_final_result(
-            agent, 
+            agent,
             request,
             session_id=session_id,  # Pass session_id for conversation history
             llm_override=llm_override,
             llm_profile_info_override=llm_profile_info
         )
-        
+
         return result
-    
+
     except Exception as e:
         logger.error(f"Failed to execute agent request: {e}", exc_info=True)
         raise
 
 
-async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True, 
-                     session_id: str | None = None, session_user: str = "cli_user", 
+async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
+                     session_id: str | None = None, session_user: str = "cli_user",
                      list_sessions: bool = False, session_title: str | None = None) -> None:
     """Async main function to run agent request with session support.
-    
+
     Args:
         request: The request to send to the agent
         agent_name: Override default agent (optional)
@@ -136,19 +136,19 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         from pathlib import Path as PathLib
         from .services.session_manager import SessionManager
         from .services.session_service import SessionService
-        
+
         storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
         session_manager = SessionManager(storage_path=str(storage_path))
         session_service = SessionService(session_manager)
-        
+
         # Handle --list-sessions flag
         if list_sessions:
             sessions = await session_manager.list_sessions(session_user)
-            
+
             if not sessions:
                 print(f"No sessions found for user '{session_user}'")
                 return
-            
+
             print(f"\nSessions for user '{session_user}':")
             print("-" * 80)
             for sess in sessions:
@@ -158,40 +158,52 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 llm = sess.get("llm_profile", "unknown")
                 created = sess.get("created_at", "unknown")
                 msg_count = sess.get("message_count", len(sess.get("messages", [])))  # Use message_count from metadata
-                
+
                 print(f"ID: {sess_id}")
                 print(f"  Title: {title}")
                 print(f"  Agent: {agent}, LLM: {llm}")
                 print(f"  Messages: {msg_count}, Created: {created}")
                 print()
             return
-        
+
         # Load configuration
         logger.info("Loading configuration...")
         config = load_settings()
         logger.info(f"Loaded config for {config.name} v{config.version}")
-        
+
         # Initialize system (plugins, registry)
         logger.info("Initializing system...")
         registry = await initialize_system(config)
-        
+
+        # Inject session_service into all agents created during bootstrap
+        # (SubAgentManager, etc. need session_service for context loading)
+        from .servers.agent.server import Agent as _Agent
+        for server_name in registry.list():
+            try:
+                server = registry.get(server_name)
+                if isinstance(server, _Agent):
+                    server._session_service = session_service
+                    logger.debug(f"Injected session_service into agent: {server_name}")
+            except Exception as e:
+                logger.debug(f"Failed to inject session_service into {server_name}: {e}")
+
         # Get agent name from argument or use default
         if agent_name is None:
             agent_name = config.default_agent
         logger.info(f"Using agent: {agent_name}")
-        
+
         # Create and initialize agent
         logger.info("Creating agent...")
         agent = await create_agent(config, registry, agent_name, session_service=session_service)
-        
+
         # Generate or use provided session ID
         from .utils.id import short_id
         actual_session_id = session_id or short_id()
-        
+
         # Load existing session if --session provided, otherwise initialize empty
         session_exists = False
         was_new_session = False
-        
+
         if session_id:
             logger.info(f"Loading session: {session_id}")
             try:
@@ -223,7 +235,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             logger.debug(f"Creating new session: {actual_session_id}")
             agent._session_tracker.set_session_messages(actual_session_id, [])
             was_new_session = True
-        
+
         # Create LLM override if profile specified
         llm_override = None
         llm_profile_info = None
@@ -234,30 +246,30 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 if available_profiles:
                     error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
                 raise ValueError(error_msg)
-            
+
             try:
                 # Resolve profile to model config using the factory
                 from .llm.factory import resolve_llm_config_for_agent
                 from .config.models import AgentConfig
-                
+
                 # Create temporary agent config with override profile
                 temp_agent_config = AgentConfig(llm_profile=llm_profile)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-                
+
                 # Create new LLM with resolved config
                 from .llm.clients import make_llm
                 llm_override = make_llm(**llm_kwargs)
-                
+
                 # Build profile info string for status display
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
                 llm_profile_info = f"{llm_profile}:{provider}/{model}"
-                
+
                 logger.info(f"Using LLM override: {llm_profile_info}")
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")
-        
+
         # Set session metadata for tool execution context (AFTER LLM override logic)
         # This ensures user_id is available when tools are called
         effective_llm_profile = llm_profile or agent.agent_config.llm_profile
@@ -266,14 +278,14 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             "agent_name": agent.name,
             "llm_profile": effective_llm_profile
         })
-        
+
         # Subscribe to status events if enabled
         status_queue = None
         status_task = None
         if show_status:
             status_queue = await status_bus.subscribe()
             status_task = asyncio.create_task(status_subscriber(status_queue))
-        
+
         # Execute the request
         logger.info("Executing request...")
         try:
@@ -303,7 +315,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     pass
             if status_queue:
                 status_bus.unsubscribe(status_queue)  # Not async!
-        
+
         # Save session after successful request execution (skip if cancelled)
         if not result.get("cancelled", False):
             try:
@@ -311,7 +323,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 # instead of agent.agent_name which may not exist or be "default"
                 agent_name_used = agent_name  # Already determined from args or config.default_agent at line 172-174
                 llm_profile_used = llm_profile or "normal"
-                
+
                 # Save the session
                 success = await session_service.save_session(
                     agent=agent,
@@ -321,7 +333,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     llm_profile=llm_profile_used,
                     was_new_session=was_new_session
                 )
-                
+
                 if success:
                     if session_id:
                         logger.info(f"Updated session {session_id}")
@@ -333,12 +345,12 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             except Exception as e:
                 logger.error(f"Failed to save session: {e}", exc_info=True)
                 print(f"Warning: Failed to save session: {e}", file=sys.stderr)
-        
+
         # Print the result with formatting based on --color setting (skip if cancelled)
         if not result.get("cancelled", False):
             # Extract summary from result
             summary = result.get("summary", "") if isinstance(result, dict) else str(result)
-            
+
             if summary:
                 formatted_summary, content_format = await format_output_with_hooks(
                     output=summary,
@@ -346,12 +358,12 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     session_id=actual_session_id,
                     request_id="agent_run"
                 )
-                
+
                 print_agent_response(formatted_summary, content_format)
             else:
                 import json
                 print(json.dumps(result, indent=2, ensure_ascii=False))
-        
+
     except ValueError as e:
         # User-friendly error for common issues (agent not found, etc.)
         print(format_error(str(e)), file=sys.stderr)
@@ -380,87 +392,87 @@ Examples:
     agent-run --no-color "Tell me a joke"
         """
     )
-    
+
     parser.add_argument(
         "request",
         nargs="?",  # Make request optional
         help="The request/question to send to the agent"
     )
-    
+
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging (DEBUG level)"
     )
-    
+
     parser.add_argument(
         "--agent",
         help="Override the default agent (use agent name from config)"
     )
-    
+
     parser.add_argument(
         "--llm",
         dest="llm_profile",
         help="Override the LLM profile (use profile name from llm.yaml)"
     )
-    
+
     parser.add_argument(
         "--color",
         choices=["auto", "always", "never", "ansi", "html", "text"],
         default="always",
         help="Output format: auto=ANSI if TTY, always/ansi=ANSI colors, html=HTML, never/text=plain text"
     )
-    
+
     parser.add_argument(
         "--no-color",
         action="store_true",
         help="Disable color output (same as --color=never)"
     )
-    
+
     parser.add_argument(
         "--no-status",
         action="store_true",
         help="Disable status messages during execution"
     )
-    
+
     parser.add_argument(
         "--session",
         dest="session_id",
         help="Continue an existing session by ID"
     )
-    
+
     parser.add_argument(
         "--session-user",
         dest="session_user",
         default="cli_user",
         help="User ID for session storage (default: cli_user)"
     )
-    
+
     parser.add_argument(
         "--list-sessions",
         dest="list_sessions",
         action="store_true",
         help="List all sessions for the current user"
     )
-    
+
     parser.add_argument(
         "--session-title",
         dest="session_title",
         help="Title for the new session (auto-generated from request if not provided)"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Validate that either --list-sessions or request is provided
     if not args.list_sessions and not args.request:
         parser.error("Either 'request' or --list-sessions must be provided")
-    
+
     # Set color mode globally
     if args.no_color:
         set_color_mode("never")
     else:
         set_color_mode(args.color)
-    
+
     # Initialize colorama on Windows for ANSI color support
     try:
         if args.color != "never" and sys.stdout.isatty():
@@ -468,19 +480,19 @@ Examples:
             colorama.init()
     except Exception as e:
         logger.debug(f"Failed to initialize colorama: {e}")
-    
+
     # Setup logging
     setup_basic_logging(verbose=args.verbose)
-    
+
     # Determine whether to show status
     show_status = not args.no_status
-    
+
     # Run the async main function
     try:
         asyncio.run(main_async(
-            request=args.request, 
-            agent_name=args.agent, 
-            llm_profile=args.llm_profile, 
+            request=args.request,
+            agent_name=args.agent,
+            llm_profile=args.llm_profile,
             show_status=show_status,
             session_id=getattr(args, "session_id", None),
             session_user=getattr(args, "session_user", "cli_user"),

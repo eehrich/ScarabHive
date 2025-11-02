@@ -1237,6 +1237,19 @@ def main() -> None:
     session_service = SessionService(session_manager)
     logger.debug("[cli] SessionService initialized at %s", storage_path)
 
+    # CRITICAL: Inject session_service into ALL agents in registry
+    # This ensures sub-agents and tools can access session management
+    # Must be done AFTER bootstrap_servers() creates all agents
+    from .servers.agent.server import Agent as _Agent
+    for server_name in registry.list():
+        try:
+            server = registry.get(server_name)
+            if isinstance(server, _Agent):
+                server._session_service = session_service
+                logger.debug(f"[cli] Injected session_service into agent: {server_name}")
+        except Exception as e:
+            logger.debug(f"[cli] Failed to inject session_service into {server_name}: {e}")
+
     # Determine CLI agent name from config (can be overridden with --agent)
     entry_name = getattr(args, "agent_override", None) or config.default_agent
 
@@ -1251,15 +1264,31 @@ def main() -> None:
             agent.registry = registry  # type: ignore[attr-defined]
             # Update session_service for existing agent
             agent._session_service = session_service  # type: ignore[attr-defined]
+        else:
+            # Entry exists but is not an Agent (probably a plugin/tool)
+            logger.error(f"'{entry_name}' is registered as {type(existing).__name__}, not an Agent")
+            print(f"Error: '{entry_name}' is not an agent. It's a {type(existing).__name__}.", file=sys.stderr)
+            print("\nAvailable agents:", file=sys.stderr)
+            for name in registry.list():
+                server = registry.get(name)
+                if isinstance(server, _Agent):
+                    print(f"  - {name}", file=sys.stderr)
+            sys.exit(1)
 
     if agent is None:
-        # Create new agent
+        # Create new agent - need agent_config for this
         logger.info("Creating new Agent instance '%s'", entry_name)
         plugins_cfg = _get_plugins_config(config)
         mcp_config = plugins_cfg.servers.get(entry_name) if plugins_cfg else None
-        if not mcp_config:
-            logger.warning("No MCPConfig found for agent '%s', using default_config", entry_name)
-            mcp_config = plugins_cfg.default_config if plugins_cfg else MCPConfig()
+        if not mcp_config or not getattr(mcp_config, 'agent_config', None):
+            logger.error(f"Cannot create agent '{entry_name}': no agent_config found in MCP config")
+            print(f"Error: Agent '{entry_name}' not found and cannot be created (no agent_config in plugins.yaml).", file=sys.stderr)
+            print("\nAvailable agents:", file=sys.stderr)
+            for name in registry.list():
+                server = registry.get(name)
+                if isinstance(server, _Agent):
+                    print(f"  - {name}", file=sys.stderr)
+            sys.exit(1)
 
         agent = _Agent(entry_name, config, mcp_config, registry, session_service=session_service)
         registry.register(entry_name, agent)
