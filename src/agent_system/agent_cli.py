@@ -1582,10 +1582,29 @@ def main() -> None:
                         step = ev.get("step")
                         print(f"[LLM] thinking (step {step})")
                 elif t == "final":
-                    # buffer final summary; don't print immediately to avoid mid-stream placement
+                    # Store final summary in result AND print it immediately for streaming
                     summary = ev.get("summary")
                     if summary:
                         final_result["summary"] = summary
+                        # Print summary immediately during streaming (don't wait for end)
+                        print("", flush=True)  # Newline before summary
+                        try:
+                            # Use the formatting function for consistent ANSI output
+                            formatted_summary, content_format = await format_output_with_hooks(
+                                output=summary,
+                                agent_instance=agent,
+                                session_id=actual_session_id,
+                                request_id="cli_display"
+                            )
+                            if content_format == 'ansi':
+                                render_with_rich(formatted_summary)
+                            else:
+                                line = f"{formatted_summary}"
+                                print(line, flush=True)
+                        except Exception as e:
+                            # Fallback to plain text
+                            logger.debug(f"Failed to format summary: {e}")
+                            print(f"{summary}", flush=True)
                 elif t == "error":
                     err = f"ERROR: {ev.get('message')}"
                     if _supports_color():
@@ -1785,7 +1804,7 @@ def main() -> None:
             logger.warning("Failed to shutdown MCP integration: %s", e)
 
     # Human-readable final output
-    def _pretty_print_result(res: dict, show_mcp: bool = False, agent_instance=None, session_id_val: str = "unknown") -> None:
+    def _pretty_print_result(res: dict, show_mcp: bool = False, agent_instance=None, session_id_val: str = "unknown", skip_summary: bool = False) -> None:
         # Calls (print first so summary appears at the end, only when show_mcp is True)
         calls = res.get("calls", []) or []
         if calls and show_mcp:
@@ -1815,7 +1834,11 @@ def main() -> None:
                         print(f"    {str(result_obj)}")
 
         # Summary (print after calls so it is the final user-visible result)
-        summary = res.get("summary")
+        # Skip if skip_summary=True (already printed during streaming)
+        summary = None
+        if not skip_summary:
+            summary = res.get("summary")
+
         if summary:
             # Format summary using FORMAT_OUTPUT hooks if available (ANSI for terminal)
             formatted_summary = summary
@@ -1875,7 +1898,8 @@ def main() -> None:
     if getattr(args, "raw", False):
         print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
     else:
-        _pretty_print_result(result, show_mcp=show_mcp, agent_instance=agent, session_id_val=actual_session_id)
+        # Skip summary in pretty print since it was already printed during streaming
+        _pretty_print_result(result, show_mcp=show_mcp, agent_instance=agent, session_id_val=actual_session_id, skip_summary=True)
         try:
             sys.stdout.flush()
         except Exception:

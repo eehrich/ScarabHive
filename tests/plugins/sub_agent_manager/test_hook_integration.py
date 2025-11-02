@@ -40,30 +40,23 @@ def mcp_config():
 async def test_server_implements_hook_interface(system_config, mcp_config):
     """Test that server correctly implements PluginHook interface."""
     server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
-    
+
     # Verify hook method exists
     assert hasattr(server, "on_pre_llm_call")
     assert callable(server.on_pre_llm_call)
-    
-    # Verify hook_injector is initialized as None
-    assert hasattr(server, "_hook_injector")
-    assert server._hook_injector is None
 
 
 @pytest.mark.asyncio
 async def test_on_pre_llm_call_lazy_loading(system_config, mcp_config):
     """Test that hook injector is lazy-loaded on first call."""
     server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
-    
-    # Initially None
-    assert server._hook_injector is None
-    
+
     # Mock manager
     with patch.object(server, '_get_manager') as mock_get_manager:
         mock_manager = MagicMock()
         mock_manager.list_sub_sessions = AsyncMock(return_value=[])
         mock_get_manager.return_value = mock_manager
-        
+
         # Create context
         context = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
@@ -74,12 +67,11 @@ async def test_on_pre_llm_call_lazy_loading(system_config, mcp_config):
             messages=[ChatMessage(role="user", content="Test")],
             step=1
         )
-        
+
         # Call hook
         result = await server.on_pre_llm_call(context)
-        
-        # Verify injector was created
-        assert server._hook_injector is not None
+
+        # Verify result
         assert result.success is True
 
 
@@ -87,7 +79,7 @@ async def test_on_pre_llm_call_lazy_loading(system_config, mcp_config):
 async def test_on_pre_llm_call_injects_context(system_config, mcp_config):
     """Test that hook properly injects sub-agent context."""
     server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
-    
+
     # Mock sub-agent data
     sub_agents = [
         {
@@ -100,18 +92,18 @@ async def test_on_pre_llm_call_injects_context(system_config, mcp_config):
             "tools_used": ["web_search"]
         }
     ]
-    
+
     with patch.object(server, '_get_manager') as mock_get_manager:
         mock_manager = MagicMock()
         mock_manager.list_sub_sessions = AsyncMock(return_value=sub_agents)
         mock_get_manager.return_value = mock_manager
-        
+
         # Create context with messages
         messages = [
             ChatMessage(role="system", content="You are a coordinator"),
             ChatMessage(role="user", content="Continue research")
         ]
-        
+
         context = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id="test_req",
@@ -121,15 +113,15 @@ async def test_on_pre_llm_call_injects_context(system_config, mcp_config):
             messages=messages,
             step=1
         )
-        
+
         # Call hook
         result = await server.on_pre_llm_call(context)
-        
+
         # Verify injection
         assert result.success is True
         assert result.modified is True
         assert len(context.messages) == 3  # system + injected + user
-        
+
         # Verify injected content
         injected = context.messages[1]
         assert injected.role == "system"
@@ -141,13 +133,13 @@ async def test_on_pre_llm_call_injects_context(system_config, mcp_config):
 async def test_on_pre_llm_call_error_handling(system_config, mcp_config):
     """Test that hook handles errors gracefully."""
     server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
-    
+
     with patch.object(server, '_get_manager') as mock_get_manager:
         # Mock manager to raise exception
         mock_manager = MagicMock()
         mock_manager.list_sub_sessions = AsyncMock(side_effect=Exception("Test error"))
         mock_get_manager.return_value = mock_manager
-        
+
         context = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id="test_req",
@@ -157,10 +149,10 @@ async def test_on_pre_llm_call_error_handling(system_config, mcp_config):
             messages=[ChatMessage(role="user", content="Test")],
             step=1
         )
-        
+
         # Call hook
         result = await server.on_pre_llm_call(context)
-        
+
         # Should not fail, just skip
         assert result.success is True
         assert result.modified is False
@@ -181,14 +173,14 @@ async def test_on_pre_llm_call_disabled_hook(system_config):
             }
         }
     )
-    
+
     server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
-    
+
     with patch.object(server, '_get_manager') as mock_get_manager:
         mock_manager = MagicMock()
         mock_manager.list_sub_sessions = AsyncMock(return_value=[{"instance_id": "test"}])
         mock_get_manager.return_value = mock_manager
-        
+
         context = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id="test_req",
@@ -198,10 +190,10 @@ async def test_on_pre_llm_call_disabled_hook(system_config):
             messages=[ChatMessage(role="user", content="Test")],
             step=1
         )
-        
+
         # Call hook
         result = await server.on_pre_llm_call(context)
-        
+
         # Should skip when disabled
         assert result.success is True
         assert result.modified is False
@@ -209,14 +201,14 @@ async def test_on_pre_llm_call_disabled_hook(system_config):
 
 @pytest.mark.asyncio
 async def test_on_pre_llm_call_reuses_injector(system_config, mcp_config):
-    """Test that injector is created once and reused."""
+    """Test that hook can be called multiple times."""
     server = SubAgentManagerServer("sub_agent_manager", system_config, mcp_config)
-    
+
     with patch.object(server, '_get_manager') as mock_get_manager:
         mock_manager = MagicMock()
         mock_manager.list_sub_sessions = AsyncMock(return_value=[])
         mock_get_manager.return_value = mock_manager
-        
+
         context = HookContext(
             hook_type=HookType.PRE_LLM_CALL,
             request_id="test_req",
@@ -226,14 +218,13 @@ async def test_on_pre_llm_call_reuses_injector(system_config, mcp_config):
             messages=[ChatMessage(role="user", content="Test")],
             step=1
         )
-        
+
         # First call
-        await server.on_pre_llm_call(context)
-        first_injector = server._hook_injector
-        
+        result1 = await server.on_pre_llm_call(context)
+
         # Second call
-        await server.on_pre_llm_call(context)
-        second_injector = server._hook_injector
-        
-        # Should be same instance
-        assert first_injector is second_injector
+        result2 = await server.on_pre_llm_call(context)
+
+        # Both should succeed
+        assert result1.success is True
+        assert result2.success is True

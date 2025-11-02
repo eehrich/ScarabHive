@@ -313,16 +313,18 @@ class LogViewerWebEndpoints(PluginWebInterface):
         async def panel_html(request: Request):
             """Serve the log viewer panel HTML"""
             return self.templates.TemplateResponse(
-                "panel.html",
-                {"request": request, "plugin_name": self.name, "timestamp": int(time.time())}
+                request=request,
+                name="panel.html",
+                context={"plugin_name": self.name, "timestamp": int(time.time())}
             )
 
         @router.get("/panel", response_class=HTMLResponse)
         async def panel(request: Request):
             """Serve the log viewer panel HTML (alternate endpoint)"""
             return self.templates.TemplateResponse(
-                "panel.html",
-                {"request": request, "plugin_name": self.name, "timestamp": int(time.time())}
+                request=request,
+                name="panel.html",
+                context={"plugin_name": self.name, "timestamp": int(time.time())}
             )
 
         @router.get("/static/{file_path:path}")

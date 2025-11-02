@@ -151,7 +151,7 @@ class StorageError(TodoError):
 class TodoServer(SchemaBasedMCPServer, PluginHook):
     """
     TODO Management MCP Server with Hook Integration
-    
+
     Provides task lifecycle tracking with dependency management and persistence.
     Implements PluginHook to inject tasks into system prompts (hooks defined in schema.yaml).
     Hook configuration is loaded from schema.yaml config section.
@@ -160,7 +160,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
         """
         Initialize TODO Management server.
-        
+
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
@@ -172,12 +172,12 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         """
         # Initialize MCP server (loads schema.yaml for tools)
         SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
-        
+
         # Initialize PluginHook with hook config from schema.yaml
         # Extract hook config defaults from loaded schema
         hook_config = self._extract_hook_config_from_schema()
         PluginHook.__init__(self, name, config=hook_config)
-        
+
         # Configuration (using getattr like sequential_thinking)
         self._storage_path = Path(
             getattr(mcp_config, "storage_path", "data/todos")
@@ -203,17 +203,17 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def _extract_hook_config_from_schema(self) -> Dict[str, Any]:
         """
         Extract hook configuration defaults from schema.yaml.
-        
+
         SchemaBasedMCPServer already loaded schema.yaml via SchemaBaseMixin.
         This method extracts the config section and converts it to runtime values.
-        
+
         Returns:
             Dict with hook config values (defaults from schema.yaml)
         """
         schema_data = self.get_schema_data()
         schema_config = schema_data.get("config", {})
         hook_config = {}
-        
+
         for key, value in schema_config.items():
             if isinstance(value, dict) and 'default' in value:
                 # Schema format: {key: {type: ..., default: value}}
@@ -221,7 +221,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             else:
                 # Already a simple value
                 hook_config[key] = value
-        
+
         return hook_config
 
     # =========================================================================
@@ -231,10 +231,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def _get_session_id(self, context: Optional[Dict[str, Any]] = None) -> str:
         """
         Extract or generate session ID from context.
-        
+
         Args:
             context: MCP tool call context with session metadata
-            
+
         Returns:
             Session ID string
         """
@@ -242,7 +242,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             # Priority 1: Agent-provided session ID (internal, from agent's session tracker)
             if "_session_id" in context:
                 return context["_session_id"]
-            
+
             # Priority 2: Explicit session_id (from CLI or direct calls)
             if "session_id" in context:
                 return context["session_id"]
@@ -253,13 +253,13 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def _load_session(self, session_id: str) -> TaskCollection:
         """
         Load task collection from storage (lazy loading).
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             TaskCollection (from cache or disk)
-            
+
         Raises:
             StorageError: If file parsing fails
         """
@@ -299,10 +299,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def _save_session(self, session_id: str) -> None:
         """
         Persist task collection to JSON file.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Raises:
             StorageError: If file write fails
         """
@@ -330,7 +330,18 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     default=str,  # Handle datetime serialization
                 )
 
-            temp_path.replace(file_path)
+            # On Windows, replace can fail if file is still open - retry a few times
+            import time
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    temp_path.replace(file_path)
+                    break
+                except PermissionError:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.01)  # 10ms delay
+                    else:
+                        raise
 
             logger.debug(
                 f"Saved session {session_id}: {len(collection.tasks)} tasks"
@@ -348,10 +359,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def _generate_task_id(self, session_id: str) -> str:
         """
         Generate unique task ID for session.
-        
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             Task ID (e.g., "task_042")
         """
@@ -369,7 +380,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                         except (IndexError, ValueError):
                             pass
                 self._task_counters[session_id] = max_num
-        
+
         counter = self._task_counters.get(session_id, 0)
         counter += 1
         self._task_counters[session_id] = counter
@@ -385,11 +396,11 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> None:
         """
         Validate task dependencies exist and no circular refs.
-        
+
         Args:
             task: Task to validate
             collection: Task collection context
-            
+
         Raises:
             DependencyError: If validation fails
         """
@@ -411,11 +422,11 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> None:
         """
         Detect circular dependency chains.
-        
+
         Args:
             task: Task to check
             collection: Task collection context
-            
+
         Raises:
             DependencyError: If circular dependency detected
         """
@@ -449,11 +460,11 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def _is_blocked(self, task: Task, collection: TaskCollection) -> bool:
         """
         Check if task is blocked by incomplete dependencies.
-        
+
         Args:
             task: Task to check
             collection: Task collection context
-            
+
         Returns:
             True if blocked (has incomplete dependencies)
         """
@@ -479,35 +490,35 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> List[Tuple[str, float, Task]]:
         """
         Find tasks with similar titles using fuzzy string matching.
-        
+
         Args:
             title: Title to search for
             collection: Task collection to search in
             threshold: Minimum similarity ratio (0.0-1.0, default: 0.80)
             exclude_completed: Skip completed tasks (default: True)
-            
+
         Returns:
             List of (task_id, similarity_ratio, task) tuples, sorted by similarity (highest first)
         """
         title_normalized = title.lower().strip()
         similar: List[Tuple[str, float, Task]] = []
-        
+
         for task_id, task in collection.tasks.items():
             # Skip completed tasks if requested
             if exclude_completed and task.status == TaskStatus.COMPLETED:
                 continue
-            
+
             # Calculate similarity ratio
             task_title_normalized = task.title.lower().strip()
             ratio = SequenceMatcher(None, title_normalized, task_title_normalized).ratio()
-            
+
             # Add to results if above threshold
             if ratio >= threshold:
                 similar.append((task_id, ratio, task))
-        
+
         # Sort by similarity (highest first)
         similar.sort(key=lambda x: x[1], reverse=True)
-        
+
         return similar
 
     def _update_blocked_status(
@@ -515,11 +526,11 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> None:
         """
         Update blocked status for task and its dependents.
-        
+
         When a task is completed, unblock dependent tasks.
         When a task becomes incomplete, mark dependent tasks as blocked.
         Also checks if the task itself should be blocked.
-        
+
         Args:
             task_id: Task that changed
             collection: Task collection context
@@ -578,7 +589,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     def _update_timestamps(self, task: Task, new_status: TaskStatus) -> None:
         """
         Update task timestamps based on status change.
-        
+
         Args:
             task: Task to update
             new_status: New status
@@ -606,7 +617,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     async def todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Multi-mode task management tool with explicit operation parameter.
-        
+
         Operations:
         - create: Create new task (requires: title)
         - update: Update existing task (requires: task_id + fields)
@@ -614,7 +625,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         - list: Query tasks with filters (optional: filter_status, filter_priority, filter_tags, only_unblocked, limit)
         - get: Get single task details (requires: task_id)
         - summary: Get progress statistics (no parameters required)
-        
+
         Args:
             params: Tool parameters dict containing:
                 - operation: Required operation type (create/update/delete/list/get/summary)
@@ -625,7 +636,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 - filter_status, filter_priority, filter_tags, only_unblocked, limit: LIST query filters
                 - cascade: Delete dependent tasks (for DELETE operation)
                 - context: System parameters (includes _status for progress reporting)
-            
+
         Returns:
             Dict with operation type and result (task/tasks/summary)
         """
@@ -636,7 +647,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 "Missing required parameter 'operation'. "
                 "Must be one of: create, update, delete, list, get, summary"
             )
-        
+
         # Extract common parameters
         task_id = params.get("task_id")
         title = params.get("title")
@@ -658,7 +669,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         allow_duplicates = params.get("allow_duplicates", False)
         idempotency_key = params.get("idempotency_key")
         context = params.get("context") or {}
-        
+
         # Extract session_id from params and inject into context
         # Priority 1: _session_id (internal, from agent)
         if "_session_id" in params:
@@ -666,19 +677,19 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         # Priority 2: session_id (from tool parameter or CLI)
         elif "session_id" in params:
             context["session_id"] = params["session_id"]
-        
+
         # Inject agent_name from params into context
         if "_agent_name" in params:
             context["agent_name"] = params["_agent_name"]
-        
+
         # Inject _status from params into context for helper methods
         if "_status" in params:
             context["_status"] = params["_status"]
-        
+
         # ============================================================
         # Operation dispatch
         # ============================================================
-        
+
         if operation == "create":
             if not title:
                 msg = "CREATE operation requires 'title' parameter"
@@ -697,7 +708,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 idempotency_key=idempotency_key,
                 context=context,
             )
-        
+
         elif operation == "update":
             if not task_id:
                 msg = "UPDATE operation requires 'task_id' parameter"
@@ -706,17 +717,17 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     "status": "validation_failed",
                     "message": msg,
                 }
-            
+
             # Handle depends_on parameter: if passed directly, treat as "set" operation
             # (replace all dependencies), otherwise use add/remove for incremental changes
             set_depends_on = None
             final_add_depends_on = add_depends_on
             final_remove_depends_on = remove_depends_on
-            
+
             if depends_on is not None:
                 # User passed depends_on directly → replace all dependencies
                 set_depends_on = depends_on if isinstance(depends_on, list) else [depends_on]
-            
+
             return await self.update_todo(
                 task_id=task_id,
                 new_status=status,
@@ -729,7 +740,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 remove_depends_on=final_remove_depends_on,
                 context=context,
             )
-        
+
         elif operation == "delete":
             if not task_id:
                 msg = "DELETE operation requires 'task_id' parameter"
@@ -743,7 +754,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 cascade=cascade,
                 context=context,
             )
-        
+
         elif operation == "list":
             return await self.list_todos(
                 filter_status=filter_status,
@@ -753,7 +764,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 limit=limit,
                 context=context,
             )
-        
+
         elif operation == "get":
             if not task_id:
                 msg = "GET operation requires 'task_id' parameter"
@@ -766,12 +777,12 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 task_id=task_id,
                 context=context,
             )
-        
+
         elif operation == "summary":
             return await self.get_progress_summary(
                 context=context,
             )
-        
+
         else:
             msg = (
                 f"Invalid operation '{operation}'. "
@@ -796,7 +807,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> Dict[str, Any]:
         """
         Create a new task with optional duplicate detection.
-        
+
         Args:
             title: Task title (required, max 200 chars)
             description: Detailed description (optional, max 2000 chars)
@@ -806,17 +817,17 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             allow_duplicates: Allow creating duplicate tasks (default: False)
             idempotency_key: Optional key to prevent duplicate creation on retries
             context: MCP tool call context
-            
+
         Returns:
             Created task details with task_id OR existing task if duplicate found
-            
+
         Raises:
             ValidationError: If validation fails or duplicate found (when allow_duplicates=False)
             DependencyError: If dependencies invalid
             StorageError: If save fails
         """
         session_id = self._get_session_id(context)
-        
+
         # Get status for progress reporting
         status = context.get("_status") if context else None
 
@@ -847,11 +858,11 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     threshold=0.80,  # 80% similarity
                     exclude_completed=True,
                 )
-                
+
                 if similar:
                     # Found similar task(s)
                     best_match_id, similarity, best_match = similar[0]
-                    
+
                     # Exact match (100%) or very high similarity (>= 95%)
                     if similarity >= 0.95:
                         if status:
@@ -867,7 +878,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                             "is_blocked": self._is_blocked(best_match, collection),
                             "task": best_match.model_dump(mode='json'),
                         }
-                    
+
                     # High similarity (80-95%) - inform but allow creation
                     elif similarity >= 0.80:
                         logger.warning(
@@ -913,7 +924,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             # Prepare tags and metadata
             task_tags = tags or []
             task_metadata: Dict[str, str] = {}
-            
+
             # Store idempotency key in metadata (not as tag)
             if idempotency_key:
                 task_metadata["idempotency_key"] = idempotency_key
@@ -995,7 +1006,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> Dict[str, Any]:
         """
         Update task fields.
-        
+
         Args:
             task_id: Task identifier
             new_status: New status (validates transitions)
@@ -1008,16 +1019,16 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             add_depends_on: Dependencies to add (incremental)
             remove_depends_on: Dependencies to remove (incremental)
             context: MCP tool call context
-            
+
         Returns:
             Updated task with change summary
-            
+
         Raises:
             ValidationError: If task not found or validation fails
             StorageError: If save fails
         """
         session_id = self._get_session_id(context)
-        
+
         # Get status for progress reporting
         status = context.get("_status") if context else None
 
@@ -1162,21 +1173,21 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                             "status": "validation_failed",
                             "message": msg,
                         }
-                
+
                 # Remove old dependencies (update reverse links)
                 old_deps = task.depends_on.copy()
                 for dep_id in old_deps:
                     if dep_id in collection.tasks and task_id in collection.tasks[dep_id].blocks:
                         collection.tasks[dep_id].blocks.remove(task_id)
-                
+
                 # Set new dependencies
                 task.depends_on = list(set_depends_on)  # Remove duplicates
-                
+
                 # Add reverse dependencies (blocks)
                 for dep_id in task.depends_on:
                     if task_id not in collection.tasks[dep_id].blocks:
                         collection.tasks[dep_id].blocks.append(task_id)
-                
+
                 # Check for circular dependencies
                 try:
                     self._detect_circular_deps(task, collection)
@@ -1198,7 +1209,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                         "status": "validation_failed",
                         "message": msg,
                     }
-                
+
                 task.updated_at = datetime.now(UTC)
                 changes["depends_on"] = {
                     "from": old_deps,
@@ -1206,10 +1217,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     "added": [d for d in task.depends_on if d not in old_deps],
                     "removed": [d for d in old_deps if d not in task.depends_on]
                 }
-                
+
                 # Update blocked status
                 self._update_blocked_status(task_id, collection)
-            
+
             # Manage dependencies - ADD (incremental) - only if set_depends_on was not used
             elif add_depends_on:
                 added = []
@@ -1229,7 +1240,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                         # Update reverse dependency
                         collection.tasks[dep_id].blocks.append(task_id)
                         added.append(dep_id)
-                
+
                 if added:
                     # Check for circular dependencies
                     try:
@@ -1248,10 +1259,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                             "status": "validation_failed",
                             "message": msg,
                         }
-                    
+
                     task.updated_at = datetime.now(UTC)
                     changes["dependencies_added"] = ", ".join(added)  # type: ignore[assignment]
-                    
+
                     # Update blocked status
                     self._update_blocked_status(task_id, collection)
 
@@ -1265,11 +1276,11 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                         if dep_id in collection.tasks and task_id in collection.tasks[dep_id].blocks:
                             collection.tasks[dep_id].blocks.remove(task_id)
                         removed.append(dep_id)
-                
+
                 if removed:
                     task.updated_at = datetime.now(UTC)
                     changes["dependencies_removed"] = ", ".join(removed)  # type: ignore[assignment]
-                    
+
                     # Update blocked status
                     self._update_blocked_status(task_id, collection)
 
@@ -1338,7 +1349,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> Dict[str, Any]:
         """
         Query tasks with filters and pagination.
-        
+
         Args:
             filter_status: Filter by status (can be list)
             filter_priority: Filter by priority (can be list)
@@ -1348,12 +1359,12 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             limit: Max results to return
             offset: Number of results to skip (for pagination)
             context: MCP tool call context
-            
+
         Returns:
             Filtered task list with metadata
         """
         session_id = self._get_session_id(context)
-        
+
         # Get status for progress reporting
         status = context.get("_status") if context else None
 
@@ -1399,7 +1410,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             tasks_page = tasks[offset:]
             if limit and limit > 0:
                 tasks_page = tasks_page[:limit]
-            
+
             # Calculate pagination metadata
             has_more = (offset + len(tasks_page)) < filtered_count
             next_offset = offset + len(tasks_page) if has_more else None
@@ -1463,19 +1474,19 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> Dict[str, Any]:
         """
         Get complete task details.
-        
+
         Args:
             task_id: Task identifier
             context: MCP tool call context
-            
+
         Returns:
             Full task object with dependency info
-            
+
         Raises:
             ValidationError: If task not found
         """
         session_id = self._get_session_id(context)
-        
+
         # Get status for progress reporting
         status = context.get("_status") if context else None
 
@@ -1551,12 +1562,12 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> Dict[str, Any]:
         """
         Delete a task (public API for web endpoints).
-        
+
         Args:
             task_id: Task identifier
             cascade: If true, also delete dependent tasks
             context: MCP tool call context
-            
+
         Returns:
             Deletion summary with cascade list
         """
@@ -1575,22 +1586,22 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         """
         Internal implementation for delete_todo (called by todo() wrapper).
 
-        
+
         Args:
             task_id: Task identifier
             cascade: If true, also delete dependent tasks
             context: MCP tool call context
-            
+
         Returns:
             Deletion summary with cascade list
-            
+
         Raises:
             ValidationError: If task not found
             DependencyError: If task has dependents and cascade=False
             StorageError: If save fails
         """
         session_id = self._get_session_id(context)
-        
+
         # Get status for progress reporting
         status = context.get("_status") if context else None
 
@@ -1681,16 +1692,16 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     ) -> Dict[str, Any]:
         """
         Get progress statistics and metrics.
-        
+
         Args:
             group_by: Grouping field (status/priority)
             context: MCP tool call context
-            
+
         Returns:
             Progress summary with completion metrics
         """
         session_id = self._get_session_id(context)
-        
+
         # Get status for progress reporting
         status = context.get("_status") if context else None
 
@@ -1787,27 +1798,27 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         """
         Inject TODO tasks into system prompt before LLM call.
-        
-        This hook (defined in schema.yaml as inject_todo_tasks) automatically 
-        adds active tasks from the current session to the agent's context, 
+
+        This hook (defined in schema.yaml as inject_todo_tasks) automatically
+        adds active tasks from the current session to the agent's context,
         providing task awareness without explicit tool calls.
-        
+
         Configuration is loaded from schema.yaml config section.
-        
+
         Args:
             context: Hook context with messages, session_id, agent
-            
+
         Returns:
             HookResult with modified=True if tasks were injected
         """
         if not context.messages:
             logger.debug("TodoHook: No messages in context, skipping")
             return HookResult(success=True, modified=False, context=context)
-        
+
         if not context.session_id:
             logger.debug("TodoHook: No session_id in context, skipping")
             return HookResult(success=True, modified=False, context=context)
-        
+
         try:
             # Get hook config from PluginHook (loaded from schema.yaml via _extract_hook_config_from_schema)
             max_tasks = self.config.get("max_tasks", 20)
@@ -1816,19 +1827,19 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             ])
             include_completed = self.config.get("include_completed", False)
             format_type = self.config.get("format", "markdown")
-            
+
             # Query tasks from current session
             result = await self.list_todos(
                 filter_status=filter_status if not include_completed else None,
                 limit=max_tasks,
                 context={"session_id": context.session_id}
             )
-            
+
             # Always inject TODO tool reminder, with or without tasks
             from agent_system.llm.models import ChatMessage
-            
+
             tasks_list = result.get("tasks", []) if result else []
-            
+
             # Check if already injected and REMOVE old injection to replace it
             # This allows updating from "no tasks" to "with tasks" seamlessly
             for i, msg in enumerate(context.messages):
@@ -1837,28 +1848,28 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     # Remove old TODO injection
                     context.messages.pop(i)
                     break
-            
+
             if tasks_list and len(tasks_list) > 0:
                 # Format existing tasks with reminder
                 task_prompt = self._format_tasks_for_prompt(tasks_list, format_type)
             else:
                 # No tasks yet - inject reminder about todo tool
                 task_prompt = self._format_todo_reminder()
-            
+
             # Insert after first system message
             insert_pos = self._find_system_message_position(context.messages)
             context.messages.insert(insert_pos, ChatMessage(
                 role="system",
                 content=task_prompt
             ))
-            
+
             return HookResult(success=True, modified=True, context=context)
-            
+
         except Exception as e:
             logger.error(f"TodoHook failed: {e}", exc_info=True)
             # Don't fail the entire LLM call if hook fails
             return HookResult(success=True, modified=False, context=context)
-    
+
     def _format_todo_reminder(self) -> str:
         """Format TODO tool reminder when no tasks exist yet."""
         return """## TODO Tool Available
@@ -1867,42 +1878,42 @@ Use `todo()` to break down and track your work. Create tasks to organize complex
 
 Example: `todo(operation="create", title="Analyze data and create report", priority="high")`
 """
-    
+
     def _format_tasks_for_prompt(self, tasks: list, format_type: str = "markdown") -> str:
         """Format task list for injection into prompt."""
         if format_type == "markdown":
             # Start with reminder
             lines = [self._format_todo_reminder().rstrip()]
             lines.append("\n**Current active tasks:**\n")
-            
+
             for task in tasks:
                 status_icon = self._get_status_icon(task["status"])
                 priority_label = self._get_priority_label(task["priority"])
-                
+
                 lines.append(
                     f"- {status_icon} **{task['task_id']}**: {task['title']} "
                     f"[{priority_label}, {task['progress']}%]"
                 )
-                
+
                 if task.get("depends_on"):
                     lines.append(f"  - Depends on: {', '.join(task['depends_on'])}")
-                
+
                 if task.get("blocks"):
                     lines.append(f"  - Blocks: {', '.join(task['blocks'])}")
 
             return "\n".join(lines)
-        
+
         else:  # text format
             lines = ["=== TODO Tool Available ===\n"]
-            
+
             for task in tasks:
                 lines.append(
                     f"{task['task_id']}: {task['title']} "
                     f"[{task['status']}, {task['priority']}, {task['progress']}%]"
                 )
-            
+
             return "\n".join(lines)
-    
+
     def _get_status_icon(self, status: str) -> str:
         """Map status to emoji/icon."""
         icons = {
@@ -1913,7 +1924,7 @@ Example: `todo(operation="create", title="Analyze data and create report", prior
             "cancelled": "❌"
         }
         return icons.get(status, "•")
-    
+
     def _get_priority_label(self, priority: str) -> str:
         """Map priority to short label."""
         labels = {
@@ -1923,12 +1934,12 @@ Example: `todo(operation="create", title="Analyze data and create report", prior
             "low": "🟢 LOW"
         }
         return labels.get(priority, priority.upper())
-    
+
     def _find_system_message_position(self, messages: list) -> int:
         """Find position to insert task list (after first system message)."""
         for i, msg in enumerate(messages):
             if msg.role == "system":
                 return i + 1
-        
+
         # No system message found, insert at beginning
         return 0

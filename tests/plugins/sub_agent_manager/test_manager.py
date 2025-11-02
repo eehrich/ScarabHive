@@ -16,6 +16,8 @@ def mock_session_service():
     service.session_manager.create_session = AsyncMock()
     service.session_manager.load_session = AsyncMock()
     service.session_manager.save_session = AsyncMock()
+    # Mock _session_id_exists_globally to always return False (ID is available)
+    service.session_manager._session_id_exists_globally = MagicMock(return_value=False)
     return service
 
 
@@ -40,23 +42,23 @@ async def test_create_sub_session_generates_unique_id(manager, mock_session_serv
         "depth": 1,  # Root session
         "metadata": {}
     }
-    
+
     # Create first sub-session
     sub_id1 = await manager.create_sub_session(
         parent_session_id="parent123",
         agent_type="web_research",
         initial_message="Search for AI news"
     )
-    
+
     assert sub_id1 == "sub_web_research_001"  # New short format
-    
+
     # Create second sub-session with same type
     sub_id2 = await manager.create_sub_session(
         parent_session_id="parent123",
         agent_type="web_research",
         initial_message="Search for ML papers"
     )
-    
+
     assert sub_id2 == "sub_web_research_002"  # Global counter increments
     assert sub_id1 != sub_id2
 
@@ -69,17 +71,17 @@ async def test_create_sub_session_creates_session_file(manager, mock_session_ser
         "depth": 1,
         "metadata": {}
     }
-    
+
     await manager.create_sub_session(
         parent_session_id="parent123",
         agent_type="financial_analyst",
         initial_message="Analyze TSLA stock"
     )
-    
+
     # Verify create_session was called
     mock_session_service.session_manager.create_session.assert_called_once()
     call_kwargs = mock_session_service.session_manager.create_session.call_args.kwargs
-    
+
     assert call_kwargs["user_id"] == "anonymous"  # No user_id injected, falls back to anonymous
     # Each test gets fresh manager, so counter starts at 1
     assert call_kwargs["session_id"].startswith("sub_financial_analyst_")
@@ -99,35 +101,35 @@ async def test_create_sub_session_links_to_parent(manager, mock_session_service)
         "depth": 1,
         "metadata": {}
     }
-    
+
     # Mock load_session to return different data for sub vs parent
     async def load_session_side_effect(user_id, session_id):
         if session_id.startswith("sub_"):
             return sub_session_data.copy()
         else:
             return parent_session_data.copy()
-    
+
     mock_session_service.session_manager.load_session.side_effect = load_session_side_effect
-    
+
     await manager.create_sub_session(
         parent_session_id="parent123",
         agent_type="web_research",
         initial_message="Search AI"
     )
-    
+
     # Verify save_session was called for both sub and parent
     assert mock_session_service.session_manager.save_session.call_count >= 2
-    
+
     # Get the parent save call (last call)
     last_save_call = mock_session_service.session_manager.save_session.call_args_list[-1]
     parent_data_saved = last_save_call.args[0]
-    
+
     # Verify parent metadata contains sub-agent
     assert "metadata" in parent_data_saved
     assert "sub_agents" in parent_data_saved["metadata"]
     # Counter resets per test, so instance_id is 001
     assert "sub_web_research_001" in parent_data_saved["metadata"]["sub_agents"]
-    
+
     sub_metadata = parent_data_saved["metadata"]["sub_agents"]["sub_web_research_001"]
     assert sub_metadata["agent_type"] == "web_research"
     assert sub_metadata["status"] == "active"
@@ -161,14 +163,14 @@ async def test_list_sub_sessions_filters_completed(manager, mock_session_service
             }
         }
     }
-    
+
     mock_session_service.session_manager.load_session.return_value = parent_data
-    
+
     # List only active
     active_only = await manager.list_sub_sessions("parent123", include_completed=False)
     assert len(active_only) == 1
     assert active_only[0]["instance_id"] == "parent123_sub_web_001"
-    
+
     # List all
     all_sessions = await manager.list_sub_sessions("parent123", include_completed=True)
     assert len(all_sessions) == 2
@@ -193,11 +195,11 @@ async def test_list_sub_sessions_returns_metadata(manager, mock_session_service)
             }
         }
     }
-    
+
     mock_session_service.session_manager.load_session.return_value = parent_data
-    
+
     result = await manager.list_sub_sessions("parent123")
-    
+
     assert len(result) == 1
     metadata = result[0]
     assert metadata["instance_id"] == "parent123_sub_web_001"
@@ -211,10 +213,10 @@ async def test_generate_instance_id_increments_counter(manager):
     """Test global counter increments."""
     id1 = await manager._generate_instance_id("web_research", None)
     assert id1 == "sub_web_research_001"
-    
+
     id2 = await manager._generate_instance_id("web_research", None)
     assert id2 == "sub_web_research_002"
-    
+
     # Different agent type uses same global counter
     id3 = await manager._generate_instance_id("financial_analyst", None)
     assert id3 == "sub_financial_analyst_003"
@@ -226,7 +228,7 @@ async def test_generate_instance_id_with_label(manager):
     id1 = await manager._generate_instance_id("web_research", "my_research")
     # Fresh manager, counter starts at 1
     assert id1 == "sub_my_research_001"
-    
+
     # Sanitize label
     id2 = await manager._generate_instance_id("web", "task#2@test")
     assert id2 == "sub_task_2_test_002"  # Counter increments
@@ -237,7 +239,7 @@ def test_extract_user_id_handles_formats(manager):
     # Falls back to 'anonymous' when no user_id found
     assert manager._extract_user_id("any_session_id") == "anonymous"
     assert manager._extract_user_id("another_session") == "anonymous"
-    
+
     # With injected params, uses the provided user_id
     params_with_user = {"_user_id": "test_user"}
     assert manager._extract_user_id("session_123", params_with_user) == "test_user"
