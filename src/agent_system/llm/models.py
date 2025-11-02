@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, Any, List, Dict, Union, Literal
 from pydantic import BaseModel, ConfigDict
+from datetime import datetime
 from enum import Enum
 
 
@@ -24,7 +25,7 @@ class ImageDetail(str, Enum):
 class ImageSource(BaseModel):
     """Image source for multimodal content."""
     model_config = ConfigDict(extra="allow")
-    
+
     type: Literal["base64", "url"] = "base64"
     media_type: Optional[str] = None  # e.g., "image/jpeg", "image/png"
     data: Optional[str] = None  # base64-encoded data
@@ -34,7 +35,7 @@ class ImageSource(BaseModel):
 class ImageContent(BaseModel):
     """Image content for multimodal messages."""
     model_config = ConfigDict(extra="allow")
-    
+
     type: Literal["image", "image_url"] = "image"
     source: Optional[ImageSource] = None  # Anthropic format
     image_url: Optional[Union[str, Dict[str, str]]] = None  # OpenAI format
@@ -44,7 +45,7 @@ class ImageContent(BaseModel):
 class TextContent(BaseModel):
     """Text content for multimodal messages."""
     model_config = ConfigDict(extra="allow")
-    
+
     type: Literal["text"] = "text"
     text: str
 
@@ -52,7 +53,7 @@ class TextContent(BaseModel):
 class AudioContent(BaseModel):
     """Audio content for multimodal messages."""
     model_config = ConfigDict(extra="allow")
-    
+
     type: Literal["audio"] = "audio"
     source: Optional[ImageSource] = None  # Reuse ImageSource for consistent structure
     audio_url: Optional[str] = None
@@ -62,7 +63,7 @@ class AudioContent(BaseModel):
 class VideoContent(BaseModel):
     """Video content for multimodal messages."""
     model_config = ConfigDict(extra="allow")
-    
+
     type: Literal["video"] = "video"
     source: Optional[ImageSource] = None
     video_url: Optional[str] = None
@@ -75,11 +76,11 @@ ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, str, 
 
 class ChatMessage(BaseModel):
     """Chat message supporting both text-only and multimodal content.
-    
+
     Examples:
         # Text-only (backward compatible)
         ChatMessage(role="user", content="Hello")
-        
+
         # Multimodal with structured content
         ChatMessage(
             role="user",
@@ -95,7 +96,7 @@ class ChatMessage(BaseModel):
                 }
             ]
         )
-        
+
         # OpenAI format
         ChatMessage(
             role="user",
@@ -114,7 +115,8 @@ class ChatMessage(BaseModel):
     tool_call_id: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     content_format: Optional[str] = None  # 'text', 'html', 'markdown', 'ansi', etc.
-    
+    timestamp: Optional[datetime] = None  # Timestamp when message was created
+
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""
         if isinstance(self.content, list):
@@ -129,7 +131,7 @@ class ChatMessage(BaseModel):
                 elif not isinstance(item, (str, TextContent)):
                     return True
         return False
-    
+
     def get_text_content(self) -> str:
         """Extract text content from message."""
         if isinstance(self.content, str):
@@ -146,7 +148,7 @@ class ChatMessage(BaseModel):
                     texts.append(getattr(item, "text", ""))
             return " ".join(texts)
         return ""
-    
+
     def has_images(self) -> bool:
         """Check if message contains images."""
         if isinstance(self.content, list):
@@ -159,7 +161,7 @@ class ChatMessage(BaseModel):
                     if content_type in ("image", "image_url"):
                         return True
         return False
-    
+
     def count_images(self) -> int:
         """Count number of images in message."""
         if not isinstance(self.content, list):
@@ -178,26 +180,26 @@ class ChatMessage(BaseModel):
 
 class LLMClient:
     """Base class for LLM clients with streaming support."""
-    
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
         raise NotImplementedError
 
     async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None) -> dict:
         raise NotImplementedError
-    
+
     async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
         """Stream LLM responses with tool calls.
-        
+
         Yields chunks in the format:
         - {"type": "content_delta", "delta": str, "accumulated": str}
         - {"type": "tool_call_delta", "index": int, "delta": {...}, "accumulated": {...}}
         - {"type": "final", "assistant": {...}}
-        
+
         Default implementation falls back to non-streaming.
         """
         result = await self.chat_tools(messages, tools, cancellation_token)
         yield {"type": "final", "assistant": result["assistant"]}
-    
+
     def supports_streaming(self) -> bool:
         """Return True if this client implements true streaming."""
         return False

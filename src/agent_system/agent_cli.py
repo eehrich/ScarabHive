@@ -91,7 +91,7 @@ async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> None:
             rows = []
             for server in servers:
                 status = server.get("status", "unknown")
-                
+
                 if _supports_color():
                     if status == "connected":
                         status = _colorize("Connected", "32")  # green
@@ -101,9 +101,9 @@ async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> None:
                         status = _colorize("Disabled", "90")  # gray
 
                 rows.append((
-                    server["name"], 
-                    server.get("address", ""), 
-                    status, 
+                    server["name"],
+                    server.get("address", ""),
+                    status,
                     server.get("description", "")
                 ))
 
@@ -124,7 +124,7 @@ async def _mcp_list_servers(mcp_service: MCPService, args: Any) -> None:
                 print("-" * len(hdr))
                 for n, a, s, d in rows:
                     print(f"{str(n).ljust(name_w)}  {str(a).ljust(addr_w)}  {str(s).ljust(status_w)}  {str(d).ljust(desc_w)}")
-                    
+
     except Exception as e:
         logger.exception("Failed to list MCP servers: %s", e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
@@ -204,7 +204,7 @@ async def _list_server_tools_via_service(tool_service: ToolService, server_name:
     """List all available tools for a server using ToolService."""
     try:
         result = await tool_service.list_tools(server_name, include_filtering=True)
-        
+
         # Handle output format
         if getattr(args, 'out_format', 'json') == "table":
             # Table format output
@@ -218,7 +218,7 @@ async def _list_server_tools_via_service(tool_service: ToolService, server_name:
                 filtering = result.get("filtering", {})
                 blocked = set(filtering.get("blocked_tools") or [])
                 allowed = set(filtering.get("allowed_tools") or [])
-                
+
                 print(f"\nAvailable Tools ({len(available_tools)}):")
                 print("-" * 30)
                 for tool in available_tools:
@@ -274,7 +274,7 @@ async def _block_server_tool(tool_service: ToolService, server_name: str, tool_n
 async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
     """Manage MCP server mode."""
     mcp_integration = None
-    
+
     try:
         # Initialize MCPIntegration for actions that need it
         if action in ("tools",):
@@ -284,14 +284,14 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 await mcp_integration.initialize(config)
             except Exception as e:
                 logger.warning(f"MCP integration initialization failed: {e}", exc_info=True)
-        
+
         if action == "status":
             # Show MCP server configuration and status
             server_config = _get_server_mode_config(config)
             if not server_config:
                 print(json.dumps({"error": "MCP server mode not configured"}, ensure_ascii=False))
                 return
-            
+
             status_data = {
                 "enabled": server_config.enabled,
                 "endpoint": server_config.endpoint,
@@ -308,7 +308,7 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 },
                 "session_ttl": server_config.session_ttl
             }
-            
+
             if args.out_format == "json":
                 print(json.dumps(status_data, indent=2, ensure_ascii=False))
             else:
@@ -326,23 +326,23 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 print(f"  Requests/Hour: {status_data['rate_limit']['requests_per_hour']}")
                 print(f"  Burst Size: {status_data['rate_limit']['burst_size']}")
                 print(f"\nSession TTL: {status_data['session_ttl']} seconds")
-                
+
         elif action == "tools":
             # List tools exposed by MCP server mode
             server_config = _get_server_mode_config(config)
             if not server_config or not server_config.enabled:
                 print(json.dumps({"error": "MCP server mode is not enabled"}, ensure_ascii=False))
                 return
-            
+
             # Get list of tools that would be exposed
             tools = []
-            
+
             # Use the plugin_registry from MCPIntegration
             plugin_registry = mcp_integration.plugin_registry if mcp_integration else None
             if not plugin_registry:
                 print(json.dumps({"error": "Plugin registry not available"}, ensure_ascii=False))
                 return
-            
+
             for plugin_name in server_config.expose_plugins:
                 if plugin_name == "*":
                     # Expose all plugins - iterate over plugin_servers dict
@@ -378,14 +378,14 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                     except Exception as e:
                         logger.warning(f"Error listing tools for plugin {plugin_name}: {e}", exc_info=True)
                         continue
-            
+
             # Clean up integration
             if mcp_integration:
                 try:
                     await mcp_integration.shutdown()
                 except Exception as e:
                     logger.debug(f"Error shutting down MCPIntegration: {e}")
-            
+
             if args.out_format == "json":
                 print(json.dumps({"tools": tools}, indent=2, ensure_ascii=False))
             else:
@@ -398,9 +398,9 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                     if len(desc) > 120:
                         desc = desc[:117] + "..."
                     rows.append((full_name, desc))
-                
+
                 headers = ["TOOL NAME", "DESCRIPTION"]
-                
+
                 if tabulate:
                     print(f"\nExposed Tools ({len(tools)}):")
                     print(tabulate(rows, headers=headers, tablefmt="github"))
@@ -410,7 +410,7 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                         name_w = max(len(r[0]) for r in rows)
                     else:
                         name_w = 20
-                    
+
                     print(f"\nExposed Tools ({len(tools)}):")
                     hdr = f"{'TOOL NAME'.ljust(name_w)}  DESCRIPTION"
                     print(hdr)
@@ -427,14 +427,14 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                                 remaining = remaining[80:]
                         else:
                             print(f"{name.ljust(name_w)}  {desc}")
-                    
+
         elif action == "sessions":
             # List active MCP sessions
             server_config = _get_server_mode_config(config)
             if not server_config or not server_config.enabled:
                 print(json.dumps({"error": "MCP server mode is not enabled"}, ensure_ascii=False))
                 return
-            
+
             # Query the running server for session information
             try:
                 import httpx
@@ -443,14 +443,14 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 # Default to localhost:8000 for server info endpoint
                 base_url = "http://127.0.0.1:8000"
                 url = f"{base_url}{endpoint_path}/server-info"
-                
+
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     try:
                         response = await client.get(url)
                         if response.status_code == 200:
                             data = response.json()
                             sessions = data.get("sessions", {})
-                            
+
                             if args.out_format == "json":
                                 print(json.dumps(sessions, indent=2, ensure_ascii=False))
                             else:
@@ -460,7 +460,7 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                                 print("\nMCP Server Sessions:")
                                 print(f"  Active: {active}")
                                 print(f"  Total:  {total}")
-                                
+
                                 # If there are details about individual sessions
                                 if "details" in sessions and sessions["details"]:
                                     print("\n  Session Details:")
@@ -482,14 +482,14 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                     "error": "httpx library not installed",
                     "message": "Install with: pip install httpx"
                 }, indent=2, ensure_ascii=False))
-            
+
         elif action == "config":
             # Show full MCP server configuration
             server_config = _get_server_mode_config(config)
             if not server_config:
                 print(json.dumps({"error": "MCP server mode not configured"}, ensure_ascii=False))
                 return
-            
+
             config_dict = {
                 "enabled": server_config.enabled,
                 "endpoint": server_config.endpoint,
@@ -507,10 +507,10 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 "session_ttl": server_config.session_ttl
             }
             print(json.dumps(config_dict, indent=2, ensure_ascii=False))
-            
+
         else:
             print(json.dumps({"error": f"Unknown server action: {action}"}, ensure_ascii=False))
-            
+
     except Exception as e:
         logger.exception("Failed to manage MCP server mode: action=%s, error=%s", action, e)
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
@@ -591,7 +591,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Agent System CLI")
     parser.add_argument("--config", dest="config", default=str(Path("config/config.yaml")), help="Path to config")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress messages")
-    parser.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="always", 
+    parser.add_argument("--color", dest="color", choices=["auto", "always", "never", "ansi", "html", "text"], default="always",
                         help="Output format: auto=ANSI if TTY, always/ansi=ANSI colors, html=HTML, never/text=plain text")
     parser.add_argument("--no-color", dest="no_color", action="store_true", help="Disable color output (alias for --color never)")
     parser.add_argument("--show-mcp", dest="show_mcp", action="store_true", help="Show MCP call/result details (for debugging)")
@@ -713,7 +713,7 @@ def main() -> None:
 
     # users subcommand for user management
     users_parser = subparsers.add_parser(
-        "users", 
+        "users",
         help="Manage users (admin)",
         description="User management commands. Examples:\n"
                     "  agent-cli users list\n"
@@ -766,7 +766,7 @@ def main() -> None:
             out = []
             # Build a mapping of plugin_type -> list of instances
             type_to_instances = {}
-            
+
             if plugins_cfg:
                 for instance_name, mcp_config in plugins_cfg.servers.items():
                     plugin_type = mcp_config.type
@@ -777,15 +777,15 @@ def main() -> None:
                         "enabled": mcp_config.enabled,
                         "description": mcp_config.description or "",
                     })
-            
+
             # Now build the output list with plugin types and their instances
             for plugin_type, factory in plugins.items():
                 meta = getattr(factory, "_plugin_metadata", None) or {}
                 instances = type_to_instances.get(plugin_type, [])
-                
+
                 # Check if any instance of this type is enabled
                 any_enabled = any(inst["enabled"] for inst in instances)
-                
+
                 plugin_entry = {
                     "name": plugin_type,
                     "description": meta.get("description"),
@@ -794,7 +794,7 @@ def main() -> None:
                     "instances": instances if len(instances) > 1 else [],  # Only show instances if multiple exist
                 }
                 out.append(plugin_entry)
-            
+
             return out
 
         # info action: print metadata for a specific plugin
@@ -913,13 +913,13 @@ def main() -> None:
                         display_enabled = _colorize(enabled_text, "32")
                     else:
                         display_enabled = _colorize(enabled_text, "31")
-                
+
                 # Add the main plugin type row with truncated description
                 desc = p.get("description") or ""
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
                 rows.append((p.get("name") or "", display_enabled, desc, p.get("version") or ""))
-                
+
                 # Add instance rows if multiple instances exist
                 instances = p.get("instances", [])
                 if instances:
@@ -932,14 +932,14 @@ def main() -> None:
                                 inst_display_enabled = _colorize(inst_enabled_text, "32")
                             else:
                                 inst_display_enabled = _colorize(inst_enabled_text, "31")
-                        
+
                         # Indent instance name with tree characters
                         inst_name = f"  ├─ {inst.get('instance_name', '')}"
                         inst_desc = inst.get("description", "")
                         if len(inst_desc) > 80:
                             inst_desc = inst_desc[:77] + "..."
                         rows.append((inst_name, inst_display_enabled, inst_desc, ""))
-            
+
             headers = ["NAME", "ENABLED", "DESCRIPTION", "VERSION"]
             if tabulate:
                 print(tabulate(rows, headers=headers, tablefmt="github"))
@@ -1040,7 +1040,7 @@ def main() -> None:
                         if mcp_servers_cfg and hasattr(mcp_servers_cfg, 'remote_servers'):
                             server_cfg = mcp_servers_cfg.remote_servers.get(server_name, {})
                             conf_features = server_cfg.get('features', {}) if isinstance(server_cfg, dict) else {}
-                        
+
                         out = {
                             'server': server_name,
                             'configured_features': conf_features,
@@ -1120,7 +1120,7 @@ def main() -> None:
         # Import typer-based user CLI using importlib to avoid package/module name conflict
         # (cli.py and cli/ directory both exist)
         import importlib.util
-        
+
         # Dynamically import users module from cli_utils/ directory
         users_module_path = Path(__file__).parent / "cli_utils" / "users.py"
         spec = importlib.util.spec_from_file_location("agent_system.agent_cli.users", users_module_path)
@@ -1132,16 +1132,16 @@ def main() -> None:
         else:
             print("ERROR: Could not load users module", file=sys.stderr)
             return
-        
+
         # Build arguments for typer command
         typer_args = [args.action] if args.action else []
-        
+
         # Add positional arguments (username, email for create command)
         if args.username:
             typer_args.append(args.username)
         if hasattr(args, 'email') and args.email and args.action == 'create':
             typer_args.append(args.email)
-        
+
         # Add optional arguments
         if hasattr(args, 'password') and args.password:
             typer_args.extend(['--password', args.password])
@@ -1165,7 +1165,7 @@ def main() -> None:
                 typer_args.extend(['--limit', str(args.limit)])
             if hasattr(args, 'skip') and args.skip:
                 typer_args.extend(['--skip', str(args.skip)])
-        
+
         # Execute typer command
         try:
             users_app(typer_args, standalone_mode=False)
@@ -1226,23 +1226,23 @@ def main() -> None:
     except Exception as e:
         logger.warning("Failed to initialize MCP integration: %s", e)
         vprint(f"[cli] Warning: MCP integration failed: {e}")
-    
+
     # Initialize SessionManager and SessionService BEFORE Agent creation
     from pathlib import Path as PathLib
     from .services.session_manager import SessionManager
     from .services.session_service import SessionService
-    
+
     storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
     session_manager = SessionManager(storage_path=str(storage_path))
     session_service = SessionService(session_manager)
     logger.debug("[cli] SessionService initialized at %s", storage_path)
-    
+
     # Determine CLI agent name from config (can be overridden with --agent)
     entry_name = getattr(args, "agent_override", None) or config.default_agent
 
     # Get or create the agent
     from .servers.agent.server import Agent as _Agent
-    
+
     agent = None
     if entry_name in registry.list():
         existing = registry.get(entry_name)
@@ -1251,7 +1251,7 @@ def main() -> None:
             agent.registry = registry  # type: ignore[attr-defined]
             # Update session_service for existing agent
             agent._session_service = session_service  # type: ignore[attr-defined]
-    
+
     if agent is None:
         # Create new agent
         logger.info("Creating new Agent instance '%s'", entry_name)
@@ -1260,7 +1260,7 @@ def main() -> None:
         if not mcp_config:
             logger.warning("No MCPConfig found for agent '%s', using default_config", entry_name)
             mcp_config = plugins_cfg.default_config if plugins_cfg else MCPConfig()
-        
+
         agent = _Agent(entry_name, config, mcp_config, registry, session_service=session_service)
         registry.register(entry_name, agent)
         vprint(f"[cli] created agent: {entry_name}")
@@ -1271,19 +1271,19 @@ def main() -> None:
         vprint(f"[cli] processing {len(args.images)} image attachment(s)")
         try:
             from .utils.image_processor import create_multimodal_message, ImageProcessingError
-            
+
             # Convert string paths to Path objects
             image_paths = [Path(img_path) for img_path in args.images]
-            
+
             # Create multimodal message with proper error handling
             task_input = create_multimodal_message(
                 text=args.task,
                 image_paths=image_paths,
                 max_size_mb=None  # No hard limit, just warnings
             )
-            
+
             vprint(f"[cli] created multimodal message with {len(image_paths)} image(s)")
-            
+
         except ImageProcessingError as e:
             print(f"Error: {e}", file=sys.stderr)
             return
@@ -1298,37 +1298,37 @@ def main() -> None:
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
-    
+
     # Extract LLM profile override early (needed in session operations)
     llm_profile_override = getattr(args, "llm_profile_override", None)
-    
+
     # Initialize session management
     session_id = getattr(args, "session_id", None)
     session_user = getattr(args, "session_user", "cli_user")
     list_sessions = getattr(args, "list_sessions", False)
-    
+
     # Generate or use provided session ID
     from .utils.id import short_id
     actual_session_id = session_id or short_id()
-    
+
     # SessionManager and SessionService already initialized earlier (before Agent creation)
     # to enable passing session_service to Agent constructor
-    
+
     # Helper async function for session operations
     async def handle_session_operations():
         nonlocal actual_session_id
         was_new_session = False  # Track if we're creating a new session
-        
+
         # Handle --list-sessions flag
         if list_sessions:
             vprint(f"[cli] listing sessions for user: {session_user}")
             try:
                 sessions = await session_manager.list_sessions(session_user)
-                
+
                 if not sessions:
                     print(f"No sessions found for user '{session_user}'")
                     return False, was_new_session  # Signal to exit
-                
+
                 print(f"\nSessions for user '{session_user}':")
                 print("-" * 80)
                 for sess in sessions:
@@ -1338,7 +1338,7 @@ def main() -> None:
                     llm_profile = sess.get("llm_profile", "unknown")
                     created = sess.get("created_at", "unknown")
                     msg_count = sess.get("message_count", len(sess.get("messages", [])))  # Use message_count from metadata
-                    
+
                     print(f"ID: {sess_id}")
                     print(f"  Title: {title}")
                     print(f"  Agent: {agent_name}, LLM: {llm_profile}")
@@ -1349,7 +1349,7 @@ def main() -> None:
                 logger.error(f"Failed to list sessions: {e}", exc_info=True)
                 print(f"Error listing sessions: {e}", file=sys.stderr)
                 return False, was_new_session  # Signal to exit
-        
+
         # Load existing session if --session provided
         session_exists = False
         if session_id:
@@ -1386,25 +1386,25 @@ def main() -> None:
             was_new_session = True
             if hasattr(agent, '_session_tracker'):
                 agent._session_tracker.set_session_messages(actual_session_id, [])
-        
+
         return True, was_new_session  # Continue with task execution
-    
+
     # Run session operations
     should_continue, was_new_session = asyncio.run(handle_session_operations())
     if not should_continue:
         return
-    
+
     async def _stream_and_run_with_status(
-        agent: Agent, 
+        agent: Agent,
         task: Union[str, ChatMessage],
         session_id: str,  # Add session_id parameter
-        show_mcp: bool = False, 
+        show_mcp: bool = False,
         show_status: bool = True,
         llm_override=None,
         llm_profile_info: Optional[str] = None
     ) -> dict:
         """Stream and run agent with status display.
-        
+
         Args:
             agent: The agent to run
             task: Either a string task or ChatMessage with multimodal content
@@ -1425,7 +1425,7 @@ def main() -> None:
                 task_text = "[multimodal input]"
         else:
             task_text = task
-        
+
         final_result: Dict[str, Any] = {"task": task_text, "calls": []}
 
         # Subscribe to status events if enabled
@@ -1641,12 +1641,12 @@ def main() -> None:
     # Execute with new status-aware streaming
     show_mcp = getattr(args, "show_mcp", False)
     show_status = not getattr(args, "no_status", False)
-    
+
     # Create LLM override if --llm was specified
     llm_override = None
     llm_profile_info = None
     llm_profile_override = getattr(args, "llm_profile_override", None)
-    
+
     if llm_profile_override:
         if config.llm_system and config.llm_system.profiles:
             if llm_profile_override not in config.llm_system.profiles:
@@ -1656,25 +1656,25 @@ def main() -> None:
                     error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
                 print(error_msg, file=sys.stderr)
                 return
-            
+
             try:
                 # Resolve profile to model config using the factory
                 from .llm.factory import resolve_llm_config_for_agent
                 from .config.models import AgentConfig
                 from .llm.clients import make_llm
-                
+
                 # Create temporary agent config with override profile
                 temp_agent_config = AgentConfig(llm_profile=llm_profile_override)
                 llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-                
+
                 # Create new LLM with resolved config
                 llm_override = make_llm(**llm_kwargs)
-                
+
                 # Build profile info string for logging
                 model = llm_kwargs.get('model', 'unknown')
                 provider = llm_kwargs.get('provider', 'unknown')
                 llm_profile_info = f"{llm_profile_override}:{provider}/{model}"
-                
+
                 logger.info(f"Using LLM override: {llm_profile_info}")
                 vprint(f"[cli] Using LLM profile: {llm_profile_info}")
             except Exception as e:
@@ -1686,7 +1686,7 @@ def main() -> None:
     if hasattr(agent, '_session_tracker'):
         # Determine effective LLM profile (override or agent default)
         effective_llm_profile = llm_profile_override or agent.agent_config.llm_profile
-        
+
         agent._session_tracker.set_session_metadata(actual_session_id, {
             "user_id": session_user,
             "agent_name": entry_name,
@@ -1697,11 +1697,11 @@ def main() -> None:
         if getattr(args, "raw", False):
             # Raw mode: use run_events with result collection
             from .servers.agent.result_utils import collect_final_result
-            
+
             result = asyncio.run(collect_final_result(agent, task_input, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info))
         else:
             result = asyncio.run(_stream_and_run_with_status(agent, task_input, actual_session_id, show_mcp=show_mcp, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
-        
+
         # Check if request was cancelled
         if result.get("cancelled", False):
             vprint("[cli] cancelled by user")
@@ -1709,7 +1709,7 @@ def main() -> None:
         else:
             vprint("[cli] done")
             logger.info("Task completed")
-        
+
         # Save session after successful task execution (skip if cancelled)
         async def save_session_after_task():
             try:
@@ -1717,7 +1717,7 @@ def main() -> None:
                 # instead of agent.agent_name which may not exist or be "default"
                 agent_name_used = entry_name  # The agent name determined from args.agent_override or config.default_agent
                 llm_profile_used = getattr(args, "llm_profile_override", None) or "normal"
-                
+
                 # Save the session
                 success = await session_service.save_session(
                     agent=agent,
@@ -1727,7 +1727,7 @@ def main() -> None:
                     llm_profile=llm_profile_used,
                     was_new_session=was_new_session
                 )
-                
+
                 if success:
                     if session_id:
                         vprint(f"[cli] updated session: {session_id}")
@@ -1741,11 +1741,11 @@ def main() -> None:
             except Exception as e:
                 logger.error(f"Failed to save session: {e}", exc_info=True)
                 print(f"Warning: Failed to save session: {e}", file=sys.stderr)
-        
+
         # Only save session if not cancelled
         if not result.get("cancelled", False):
             asyncio.run(save_session_after_task())
-        
+
     finally:
         # Ensure MCP integration is properly shut down to close aiohttp sessions
         try:
@@ -1791,18 +1791,18 @@ def main() -> None:
             # Format summary using FORMAT_OUTPUT hooks if available (ANSI for terminal)
             formatted_summary = summary
             content_format = 'text'
-            
+
             try:
                 # Use central ANSI formatting function (respects --color flag)
                 import asyncio
-                
+
                 # Get or create event loop
                 try:
                     loop = asyncio.get_event_loop()
                 except RuntimeError:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                
+
                 formatted_summary, content_format = loop.run_until_complete(
                     format_output_with_hooks(
                         output=summary,
@@ -1813,11 +1813,11 @@ def main() -> None:
                 )
                 logger.info(f"Formatted summary: format={content_format}, length={len(formatted_summary)}")
                 vprint(f"[cli] Formatted summary: format={content_format}, length={len(formatted_summary)}")
-                
+
             except Exception as e:
                 logger.warning(f"Failed to format summary with ANSI: {e}", exc_info=True)
                 vprint(f"[cli] ERROR formatting summary: {e}")
-            
+
             print("")
             if content_format == 'ansi':
                 render_with_rich(formatted_summary)

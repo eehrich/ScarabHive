@@ -24,7 +24,7 @@ class OllamaNativeAsyncClient(LLMClient):
         self._options = options or {}
         self._timeout = timeout or 60.0
         self.capabilities = capabilities  # Pydantic model or None
-        
+
         # Validate API type - Ollama only supports chat_completions (native API)
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
             api_type = self.capabilities.default_api_type
@@ -33,7 +33,7 @@ class OllamaNativeAsyncClient(LLMClient):
                 api_type = api_type.value
             else:
                 api_type = str(api_type) if api_type else 'chat_completions'
-            
+
             if api_type not in ('chat_completions', None):
                 raise NotImplementedError(
                     f"Ollama client only supports 'chat_completions' API (native Ollama API). "
@@ -114,8 +114,8 @@ class OllamaNativeAsyncClient(LLMClient):
         import json
         out: list[dict[str, Any]] = []
         for m in messages:
-            # Use model_dump() to properly serialize nested Pydantic models
-            d = m.model_dump(exclude_none=True)
+            # Use model_dump() with mode='json' to properly serialize nested Pydantic models and datetime objects
+            d = m.model_dump(exclude_none=True, mode='json')
 
             # Ollama expects tool_calls.function.arguments to be an object, not a string
             # Convert string arguments to dict if needed
@@ -198,10 +198,10 @@ class OllamaNativeAsyncClient(LLMClient):
                     },
                 })
             out["tool_calls"] = out_calls
-        
+
         # Build result with usage information
         result = {"assistant": out}
-        
+
         # Extract usage metadata if available (Ollama format)
         # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
         if "eval_count" in data or "prompt_eval_count" in data:
@@ -213,12 +213,12 @@ class OllamaNativeAsyncClient(LLMClient):
             if "prompt_eval_count" in data and "eval_count" in data:
                 usage["total_tokens"] = data["prompt_eval_count"] + data["eval_count"]
             result["usage"] = usage
-        
+
         return result
 
     async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
         """Stream LLM responses from Ollama using native streaming API.
-        
+
         Ollama's /api/chat endpoint supports streaming with `stream: true`.
         Each line is a JSON object with message deltas.
         """
@@ -239,19 +239,19 @@ class OllamaNativeAsyncClient(LLMClient):
         accumulated_content = []
         accumulated_tool_calls = {}
         accumulated_usage = None  # usage information from final chunk (done=true)
-        
+
         try:
             async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
                 async with client.stream("POST", url, json=body) as response:
                     response.raise_for_status()
-                    
+
                     async for line in response.aiter_lines():
                         if cancellation_token and cancellation_token.is_cancelled:
                             raise Exception("Request cancelled by user")
-                        
+
                         if not line.strip():
                             continue
-                        
+
                         try:
                             chunk_data = response.json() if hasattr(line, 'json') else self._httpx.json.loads(line)
                         except Exception:
@@ -260,7 +260,7 @@ class OllamaNativeAsyncClient(LLMClient):
                                 chunk_data = json.loads(line)
                             except Exception:
                                 continue
-                        
+
                         # Check if stream is done - final chunk may contain usage info
                         if chunk_data.get("done"):
                             # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
@@ -274,9 +274,9 @@ class OllamaNativeAsyncClient(LLMClient):
                                 if "prompt_eval_count" in chunk_data and "eval_count" in chunk_data:
                                     accumulated_usage["total_tokens"] = chunk_data["prompt_eval_count"] + chunk_data["eval_count"]
                             break
-                        
+
                         message = chunk_data.get("message", {})
-                        
+
                         # Handle content delta
                         content = message.get("content")
                         if content:
@@ -286,7 +286,7 @@ class OllamaNativeAsyncClient(LLMClient):
                                 "delta": content,
                                 "accumulated": "".join(accumulated_content)
                             }
-                        
+
                         # Handle tool call deltas
                         tool_calls = message.get("tool_calls")
                         if tool_calls:
@@ -297,38 +297,38 @@ class OllamaNativeAsyncClient(LLMClient):
                                 tc_id = tc.get("id") or f"call_{short_id()}"
                                 name = func.get("name", "")
                                 index = len(accumulated_tool_calls)  # Assign next index
-                                
+
                                 if index not in accumulated_tool_calls:
                                     accumulated_tool_calls[index] = {
                                         "id": tc_id,
                                         "type": "function",
                                         "function": {"name": name, "arguments": func.get("arguments", {})}
                                     }
-                                
+
                                 yield {
                                     "type": "tool_call_delta",
                                     "index": index,
                                     "delta": tc,
                                     "accumulated": accumulated_tool_calls[index]
                                 }
-            
+
             # Build final assistant message
             assistant = {
                 "role": "assistant",
                 "content": "".join(accumulated_content) if accumulated_content else None
             }
-            
+
             if accumulated_tool_calls:
                 tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
                 assistant["tool_calls"] = tool_calls_list
-            
+
             # Build final result with usage
             final_result = {"assistant": assistant}
             if accumulated_usage:
                 final_result["usage"] = accumulated_usage
-            
+
             yield {"type": "final", **final_result}
-            
+
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)

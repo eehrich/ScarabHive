@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from ...config.models import AgentSystemConfig, MCPConfig
@@ -48,27 +49,27 @@ class ConversationContext:
 
 class Agent(MCPServer):
     """Enhanced Agent with dual interface: execution engine + callable tool.
-    
+
     TOOL INTERFACE CLARITY:
     ----------------------
     Agent has TWO distinct tool interfaces that are easily confused:
-    
+
     1. EXTERNAL (what this agent OFFERS to others):
        - list_tools() → List[MCPTool] - Returns this agent as a callable tool
        - MCPServer interface: What OTHER agents see when they query our tools
        - Used by: ToolSchemaBuilder when other agents discover available tools
-    
+
     2. INTERNAL (what this agent CAN USE):
        - list_usable_tools() → List[str] - Tool names this agent can call
        - Filtered by agent_config.tools.allowed patterns
        - Used by: _run_events() to build LLM prompt with available tools
        - Example: ["datetime", "web_search", "other_agent"]
-    
+
     3. UTILITY (detailed info for user-facing endpoints):
        - _list_usable_tools_with_details() → List[Dict] - Name + description
        - Used by: BasicAgent's list_available_tools tool
        - For debugging/introspection, not for execution
-    
+
     REMEMBER:
     - list_tools() = what I OFFER (MCPServer standard)
     - list_usable_tools() = what I CAN USE (internal execution)
@@ -80,7 +81,7 @@ class Agent(MCPServer):
                  session_service: object | None = None) -> None:
         """
         Initialize Agent as both an executor and an MCP Server.
-        
+
         Modern signature matching plugin pattern:
         - system_config: Complete system configuration
         - mcp_config: MCP configuration object (contains agent_config, type, enabled)
@@ -103,23 +104,23 @@ class Agent(MCPServer):
         if not mcp_config.agent_config:
             raise ValueError(f"Agent '{name}' requires agent_config in MCPConfig")
         self.agent_config = mcp_config.agent_config
-        
+
         # Agent-specific initialization (registry required for agents)
         if registry is None:
             raise ValueError(f"Agent '{name}' requires MCPRegistry instance")
         self.registry = registry
-        
+
         # Store session_service for tools that need session access (e.g., sub-agent manager)
         # This is optional - if None, tools that need it will fail gracefully
         self._session_service = session_service
-        
+
         # Visibility flags control where the agent appears
         # _mcp_public: Show in UI agent dropdown (GET /agents endpoint)
         # _mcp_tool_visible: Available as tool for other agents
         # Default both to False for config agents, can be overridden based on metadata
         self._mcp_public = False
         self._mcp_tool_visible = False
-        
+
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
         self.llm = llm
@@ -128,7 +129,7 @@ class Agent(MCPServer):
         # Initialize LLM if not provided
         # Store LLM profile information for status display
         self.llm_profile_info = None
-        
+
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
             try:
@@ -141,7 +142,7 @@ class Agent(MCPServer):
                 self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
             except Exception as e:
                 logger.debug(f"Could not extract profile info for external LLM: {e}")
-        
+
         if self.llm is None:
             # If a factory is provided, use it to create the client.
             if self._llm_factory is not None:
@@ -155,17 +156,17 @@ class Agent(MCPServer):
                 try:
                     # Lazy import to avoid circular imports when testing
                     from ...llm.factory import resolve_llm_config_for_agent
-                    
+
                     # Use new profile-based resolution with agent config
                     llm_kwargs = resolve_llm_config_for_agent(system_config, self.agent_config)
-                    
+
                     # Store profile information for status display
                     self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
-                    
+
                     from ...llm.clients import make_llm
                     self.llm = make_llm(
                         llm_kwargs["provider"],
-                        llm_kwargs["model"], 
+                        llm_kwargs["model"],
                         llm_kwargs["openai_api_key"],
                         llm_kwargs["ollama_url"],
                         llm_kwargs["context_window"],
@@ -216,17 +217,17 @@ class Agent(MCPServer):
         self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
         self._status_event_forwarder = StatusEventForwarder()
         self._tool_execution_manager = ToolExecutionManager(
-            self.registry, 
-            self, 
+            self.registry,
+            self,
             status_forwarder=self._status_event_forwarder
         )
-        
+
         # Context management now handled by hook plugins via HookIntegrationManager
-        
+
         # Initialize hook integration manager
         from .components.hook_integration import HookIntegrationManager
         self._hook_manager = HookIntegrationManager(self)
-        
+
         # Set agent reference in MCP integration for cancellation support
         self._set_agent_reference_in_mcp()
 
@@ -234,17 +235,17 @@ class Agent(MCPServer):
         """Extract profile information for status display."""
         model = llm_kwargs.get("model", "unknown")
         provider = llm_kwargs.get("provider", "unknown")
-        
+
         # Get profile name - priority order:
         # 1. From llm_kwargs (directly resolved profile used for this LLM)
         # 2. From agent_config.llm_profile (agent's configured profile)
         # 3. From agent_llm_profiles mapping (agent-specific override)
         # 4. From default_profile (system default)
         profile_name = llm_kwargs.get("profile_name")
-        
+
         if not profile_name and hasattr(self, 'agent_config') and self.agent_config:
             profile_name = getattr(self.agent_config, 'llm_profile', None)
-        
+
         if not profile_name and config.llm_system and config.llm_system.profiles:
             # Check agent-specific assignment
             if agent_name and hasattr(config, 'agent_llm_profiles') and config.agent_llm_profiles:
@@ -252,7 +253,7 @@ class Agent(MCPServer):
             # Fall back to default profile
             if not profile_name:
                 profile_name = getattr(config.llm_system, 'default_profile', None)
-        
+
         # Return with profile name if available, otherwise just provider/model
         if profile_name:
             return f"{profile_name}:{provider}/{model}"
@@ -273,17 +274,17 @@ class Agent(MCPServer):
     # ------------------------------------------------------------------
     def _get_server_from_any_registry(self, server_name: str) -> Optional[MCPServer]:
         """Get a server from either plugin_registry or self.registry.
-        
+
         This is the CENTRAL method for resolving servers. All code that needs to
         find a server should use this method instead of accessing registries directly.
-        
+
         Search order:
         1. self.registry (contains ALL servers: plugins + config agents)
         2. plugin_registry (fallback for plugin adapters)
-        
+
         Args:
             server_name: Name of the server to find (e.g., 'basic_operations', 'meta_web_research_agent')
-            
+
         Returns:
             The server instance or None if not found
         """
@@ -295,7 +296,7 @@ class Agent(MCPServer):
                     return server
             except Exception as e:
                 logger.debug(f"Failed to get server '{server_name}' from local registry: {e}")
-        
+
         # Fallback: try plugin registry (for plugin adapters)
         if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
             try:
@@ -304,7 +305,7 @@ class Agent(MCPServer):
                     return plugin_adapter.plugin_server
             except Exception as e:
                 logger.debug(f"Failed to get server '{server_name}' from plugin registry: {e}")
-        
+
         return None
 
     # ------------------------------------------------------------------
@@ -376,13 +377,13 @@ class Agent(MCPServer):
         try:
             # Set agent reference in MCP integration manager
             self._mcp_integration_manager._agent_ref = self
-            
+
             # Try to set agent reference in MCP integration when it's available
             if hasattr(self._mcp_integration_manager, 'mcp_integration') and self._mcp_integration_manager.mcp_integration:
                 self._mcp_integration_manager.mcp_integration.main_agent_ref = self
         except Exception as e:
             logger.debug("Failed to set agent reference in MCP integration: %s", e)
-    
+
     @property
     def description(self) -> str:
         """Get the agent description."""
@@ -396,8 +397,8 @@ class Agent(MCPServer):
     async def cancel_request(self, request_id: str) -> bool:
         """
         Cancel an active request.
-        
-        Uses dual cancellation: global CancellationManager for tools + 
+
+        Uses dual cancellation: global CancellationManager for tools +
         per-agent events for request loop. See docs/cancellation_architecture.md
         for design details.
 
@@ -505,12 +506,12 @@ class Agent(MCPServer):
 
     async def list_usable_tools(self) -> list[str]:
         """Return list of tool names this agent CAN USE (filtered by agent config).
-        
+
         This is the INTERNAL interface - tools available for this agent's execution.
         Filtered by agent_config.tools.allowed patterns.
-        
+
         Contrast with list_tools() which returns what this agent OFFERS to others.
-        
+
         Returns:
             List of tool server names this agent is allowed to use
         """
@@ -524,18 +525,18 @@ class Agent(MCPServer):
             mcp_integration_manager=self._mcp_integration_manager,
             registry=self.registry if hasattr(self, 'registry') else None
         )
-        
+
         return await discovery_service.discover_allowed_tools()
 
     async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """Return detailed info about tools this agent CAN USE (name + description).
-        
+
         Internal utility for agent subclasses (e.g., BasicAgent's list_available_tools).
         Like list_usable_tools() but includes descriptions for user-facing output.
-        
+
         Args:
             params: Parameters including optional '_status' for progress reporting
-            
+
         Returns:
             List of dicts with 'name' and 'description' keys
         """
@@ -545,7 +546,7 @@ class Agent(MCPServer):
 
             # Use agent's tools.allowed configuration for filtering
             allowed_patterns = self.agent_config.tools.allowed if self.agent_config.tools else None
-            
+
             # Guard against non-iterable / MagicMock truthy values in tests
             if allowed_patterns and not isinstance(allowed_patterns, (list, tuple, set)):
                 allowed_patterns = None
@@ -581,15 +582,15 @@ class Agent(MCPServer):
             return []
 
     async def run_events(
-        self, 
-        task: Union[str, ChatMessage], 
-        request_id: Optional[str] = None, 
+        self,
+        task: Union[str, ChatMessage],
+        request_id: Optional[str] = None,
         session_id: Optional[str] = None,
         llm_override: Optional[object] = None,
         llm_profile_info_override: Optional[str] = None
     ):
         """Run the agent and yield structured events for UI streaming.
-        
+
         Args:
             task: Either a string task description or a ChatMessage with multimodal content
             request_id: Optional request ID for tracking
@@ -609,7 +610,7 @@ class Agent(MCPServer):
         # Handle Union[str, ChatMessage] input
         initial_message: Optional[ChatMessage] = None
         task_text: str = ""
-        
+
         if isinstance(task, ChatMessage):
             # Extract task text from ChatMessage content for logging/tracking
             initial_message = task
@@ -635,10 +636,10 @@ class Agent(MCPServer):
             async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
                        status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
                 async for event in self._run_events(
-                    task_text, 
-                    request_id=request_id, 
-                    session_id=session_id, 
-                    status_coordinator=status_coordinator, 
+                    task_text,
+                    request_id=request_id,
+                    session_id=session_id,
+                    status_coordinator=status_coordinator,
                     status_worker=status_worker,
                     initial_message=initial_message,
                     llm_override=llm_override,
@@ -658,9 +659,9 @@ class Agent(MCPServer):
         llm_override: Optional[object] = None
     ) -> ConversationContext:
         """Initialize request tracking and build initial conversation context.
-        
+
         Phase 1 of agent execution: Setup all state needed for the LLM loop.
-        
+
         Steps:
         1. Create cancellation token
         2. Register request for cancellation/appends
@@ -674,23 +675,23 @@ class Agent(MCPServer):
         10. Load session history
         11. Execute session start hooks
         12. Build tool schemas
-        
+
         Args:
             task: User task description
             request_id: Unique request identifier
             session_id: Session identifier for history
             initial_message: Optional multimodal message
             llm_override: Optional LLM client override
-            
+
         Returns:
             ConversationContext with all initialized state
-            
+
         Raises:
             RuntimeError: If no LLM is available
         """
         # Determine which LLM to use
         active_llm = llm_override if llm_override is not None else self.llm
-        
+
         # Create cancellation token for the main request
         cancellation_manager = get_cancellation_manager()
         main_token = cancellation_manager.create_token(request_id)
@@ -703,7 +704,7 @@ class Agent(MCPServer):
         except Exception as e:
             logger.debug(f"Failed to set current_request_id context var: {e}")
             context_reset_token = None
-            
+
         # Start status event forwarding
         await self._status_event_forwarder.start_forwarding(request_id)
 
@@ -730,7 +731,7 @@ class Agent(MCPServer):
         messages = [ChatMessage(role="system", content=system_msg)]
         if tools_msg:
             messages.append(ChatMessage(role="system", content=tools_msg))
-        
+
         # Execute session start hooks for new sessions AFTER creating system messages
         # This allows hooks like markdown_formatter to inject additional system prompts
         # Check if session is empty (new session), not just if it exists (setdefault creates it above)
@@ -742,7 +743,7 @@ class Agent(MCPServer):
             if modified_messages is not None:
                 messages = modified_messages
                 logger.debug(f"Session start hooks modified messages: {len(messages)} total messages")
-        
+
         # include persisted session messages
         if session_msgs:
             # Convert dicts to ChatMessage objects if needed
@@ -751,13 +752,13 @@ class Agent(MCPServer):
                     messages.append(ChatMessage(**msg))
                 else:
                     messages.append(msg)
-        
+
         # add the new user input as last message
         # Use initial_message if provided (for multimodal input), otherwise create from task
         if initial_message:
             messages.append(initial_message)
         else:
-            messages.append(ChatMessage(role="user", content=sanitize_for_llm(task)))
+            messages.append(ChatMessage(role="user", content=sanitize_for_llm(task), timestamp=datetime.now(timezone.utc)))
 
         # Also include any appended messages already queued for this request
         messages = await self._session_tracker.drain_appended_messages(request_id, messages)
@@ -771,7 +772,7 @@ class Agent(MCPServer):
             mcp_integration_manager=self._mcp_integration_manager,
             server_getter_func=self._get_server_from_any_registry
         )
-        
+
         tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
             usable_tools
         )
@@ -799,9 +800,9 @@ class Agent(MCPServer):
         step: int
     ) -> None:
         """Finalize request and clean up resources.
-        
+
         Phase 3 of agent execution: Cleanup and persistence.
-        
+
         Steps:
         1. Execute session end hooks
         2. Unregister cancellation token
@@ -812,7 +813,7 @@ class Agent(MCPServer):
         7. Publish final status events
         8. Stop status forwarding
         9. Yield final pending status events
-        
+
         Args:
             request_id: Request identifier
             session_id: Session identifier
@@ -830,15 +831,15 @@ class Agent(MCPServer):
             )
         except Exception as e:
             logger.warning(f"Session end hooks failed: {e}", exc_info=True)
-        
+
         # Clean up cancellation token
         cancellation_manager = get_cancellation_manager()
         cancellation_manager.unregister_request(request_id)
-        
+
         # Clean up request tracking but preserve session data
         self._request_manager.unregister_active_request(request_id)
         logger.debug("Cleaned up request tracking for %s", request_id)
-        
+
         # Persist session messages and keep the request->session mapping for a while
         sid = self._session_tracker.get_session_for_request(request_id)
         if sid and messages:
@@ -855,17 +856,17 @@ class Agent(MCPServer):
 
         # Clean up MCP integration if we initialized it locally
         await self._mcp_integration_manager.shutdown()
-        
+
         # Reset the current_request_id ContextVar so it doesn't leak to other tasks
         if context and context.context_reset_token is not None:
             try:
                 current_request_id.reset(context.context_reset_token)
             except Exception:
                 pass
-        
+
         # Signal completion using status contexts
         final_msg = "completed" if not results.get('errors') else "completed with errors"
-        
+
         if results.get('errors'):
             await status_worker.error(final_msg, meta={"summary": results.get('summary')})
             await status_coordinator.error(f"{final_msg} ({step+1} steps)", meta={"summary": results.get('summary')})
@@ -889,11 +890,11 @@ class Agent(MCPServer):
         yield_pending_status_fn
     ):
         """Call LLM with streaming support and interleaved status events.
-        
+
         This method uses chat_tools_streaming() when available, yielding token deltas
         and checking status events between chunks. For non-streaming LLMs, falls back
         to regular chat_tools() with periodic status polling.
-        
+
         Args:
             llm: LLM client instance
             messages: Conversation messages
@@ -901,7 +902,7 @@ class Agent(MCPServer):
             cancellation_token: Cancellation token for interruption
             step: Current step number
             yield_pending_status_fn: Function that yields pending status events
-            
+
         Yields:
             - {"type": "thinking_delta", "step": int, "delta": str, "accumulated": str}
             - {"type": "status", ...}
@@ -911,50 +912,50 @@ class Agent(MCPServer):
             # Streaming LLM: zero-overhead real-time tokens
             accumulated_content = []
             final_assistant = None
-            
+
             async for chunk in llm.chat_tools_streaming(messages, tools_schema, cancellation_token=cancellation_token):
                 chunk_type = chunk.get("type")
-                
+
                 if chunk_type == "content_delta":
                     # Yield token delta for real-time display
                     yield {"type": "thinking_delta", "step": step + 1, "delta": chunk["delta"], "accumulated": chunk["accumulated"]}
                     accumulated_content.append(chunk["delta"])
-                    
+
                     # Check status events after each token (zero overhead)
                     for status_event in yield_pending_status_fn():
                         yield status_event
-                
+
                 elif chunk_type == "tool_call_delta":
                     # Tool calls are accumulated server-side, we can skip yielding deltas for now
                     # Future: could yield tool_call_delta events for UI to show "Calling get_weather..."
                     pass
-                
+
                 elif chunk_type == "final":
                     final_assistant = chunk["assistant"]
-            
+
             # Yield final response
             if final_assistant:
                 yield {"type": "thinking_complete", "assistant": final_assistant}
             else:
                 yield {"type": "thinking_complete", "assistant": {"role": "assistant", "content": "".join(accumulated_content)}}
-        
+
         else:
             # Non-streaming LLM: Use polling with 100ms intervals
             # Create task for LLM call
             llm_task = asyncio.create_task(llm.chat_tools(messages, tools_schema, cancellation_token=cancellation_token))
-            
+
             # Poll for status events while waiting
             while not llm_task.done():
                 # Check for status events
                 for status_event in yield_pending_status_fn():
                     yield status_event
-                
+
                 # Wait 100ms before next poll
                 try:
                     await asyncio.wait_for(asyncio.shield(llm_task), timeout=0.1)
                 except asyncio.TimeoutError:
                     pass  # Continue polling
-            
+
             # Get result
             llm_out = await llm_task
             yield {"type": "thinking_complete", "assistant": llm_out.get("assistant", {})}
@@ -970,9 +971,9 @@ class Agent(MCPServer):
         llm_profile_info_override: Optional[str] = None
     ):
         """Execute the main LLM conversation loop with tool execution.
-        
+
         Phase 2 of agent execution: Iterative LLM calls with tool execution.
-        
+
         Loops up to max_steps:
         1. Check cancellation
         2. Drain appended messages
@@ -981,7 +982,7 @@ class Agent(MCPServer):
         5. Execute tool calls (if any)
         6. Check loop guards (empty responses, no tool calls)
         7. Update messages with results
-        
+
         Args:
             context: Conversation context with messages and tools
             request_id: Request identifier
@@ -990,32 +991,32 @@ class Agent(MCPServer):
             status_worker: Worker status scope
             llm_override: Optional LLM client override
             llm_profile_info_override: Optional profile info for status
-            
+
         Yields:
             Dict events: heartbeat, thinking, status, tool_*, final, error, cancelled
-            
+
         Returns:
             Tuple of (messages, results, step) after loop completion
         """
         # Determine which LLM to use
         active_llm = llm_override if llm_override is not None else self.llm
-        
+
         # Extract from context
         messages = context.messages
         tools_schema = context.tools_schema
         tool_name_mapping = context.tool_name_mapping
         max_steps = context.max_steps
         main_token = context.main_token
-        
+
         # Initialize results
         results: Dict[str, Any] = {"task": "", "calls": []}
-        
+
         # Add safeguards against infinite loops
         consecutive_no_tool_calls = 0
         consecutive_empty_responses = 0
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
-        
+
         # Helper function to yield any pending status events
         def yield_pending_status_events():
             for event in self._status_event_forwarder.get_pending_events():
@@ -1024,12 +1025,12 @@ class Agent(MCPServer):
         for step in range(max_steps):
             # Drain any appended user messages before each step
             messages = await self._drain_appended_messages(request_id, messages)
-            
+
             # Check for cancellation at the start of each step
             if self._is_cancelled(request_id):
                 logger.info("Request %s cancelled at step %d", request_id, step + 1)
                 # Signal cancellation using status contexts FIRST (so events are queued)
-                await status_worker.error(f"cancelled at step {step + 1}", 
+                await status_worker.error(f"cancelled at step {step + 1}",
                                       meta={"step": step + 1, "reason": "cancelled"})
                 await status_coordinator.error(f"cancelled at step {step + 1}",
                                             meta={"step": step + 1, "reason": "cancelled"})
@@ -1095,7 +1096,7 @@ class Agent(MCPServer):
                     yield_pending_status_fn=yield_pending_status_events
                 ):
                     event_type = event.get("type")
-                    
+
                     if event_type == "thinking_delta":
                         # Yield real-time token deltas to WebUI
                         yield event
@@ -1110,11 +1111,11 @@ class Agent(MCPServer):
                         llm_out = {"assistant": copy.deepcopy(event["assistant"])}
                         # Yield thinking_complete to WebUI for final formatting
                         yield event
-                        
+
             except asyncio.CancelledError:
                 # Streaming was cancelled - send proper status events and cancelled event
                 logger.info(f"Request {request_id} cancelled during LLM call at step {step + 1}")
-                await status_worker.error(f"cancelled at step {step + 1}", 
+                await status_worker.error(f"cancelled at step {step + 1}",
                                       meta={"step": step + 1, "reason": "cancelled"})
                 await status_coordinator.error(f"cancelled at step {step + 1}",
                                             meta={"step": step + 1, "reason": "cancelled"})
@@ -1128,7 +1129,7 @@ class Agent(MCPServer):
             await status_worker.progress("LLM (chat) response received", meta={"step": step + 1})
 
             assistant = llm_out.get("assistant", {}) if llm_out else {}
-            
+
             # Check if LLM returned an error response
             if "error" in assistant:
                 error_info = assistant["error"]
@@ -1137,7 +1138,7 @@ class Agent(MCPServer):
                 logger.warning(f"LLM returned error: {error_type} - {error_msg}")
                 yield {"type": "error", "message": error_msg, "error_type": error_type}
                 return
-            
+
             content = assistant.get("content")
             tool_calls = assistant.get("tool_calls", [])
 
@@ -1146,7 +1147,8 @@ class Agent(MCPServer):
             assistant_msg = ChatMessage(
                 role="assistant",
                 content=content or "",
-                tool_calls=tool_calls if tool_calls else None
+                tool_calls=tool_calls if tool_calls else None,
+                timestamp=datetime.now(timezone.utc)
             )
             messages.append(assistant_msg)
             context.messages.append(assistant_msg)
@@ -1166,7 +1168,7 @@ class Agent(MCPServer):
                     modified_assistant = modified_response.get("assistant", {})
                     new_content = modified_assistant.get("content")
                     new_tool_calls = modified_assistant.get("tool_calls")
-                    
+
                     # Update content and tool_calls if hooks modified them
                     if new_content is not None:
                         content = new_content
@@ -1174,7 +1176,7 @@ class Agent(MCPServer):
                     if new_tool_calls is not None:
                         tool_calls = new_tool_calls
                         assistant_msg.tool_calls = tool_calls if tool_calls else None
-                    
+
                     # Set content_format from hook metadata (e.g., 'html', 'markdown', 'text')
                     if "content_format" in hook_metadata:
                         assistant_msg.content_format = hook_metadata["content_format"]
@@ -1221,16 +1223,16 @@ class Agent(MCPServer):
             if tool_calls:
                 # Signal tool execution start
                 await status_worker.progress(f"Executing Tools ({len(tool_calls)} total)", meta={"step": step + 1})
-                
+
                 # Assistant message with tool calls was already added above before post_llm hooks
-                
+
                 # Update tracked messages
                 self._current_messages = messages.copy()
-                
+
                 # Execute all tools using streaming to get real-time status events from sub-agents
                 tool_messages = []
                 tool_results = []
-                
+
                 # Extract user_id from session metadata for multi-user tool isolation
                 user_id: Optional[str] = None
                 if self._session_tracker:
@@ -1242,7 +1244,7 @@ class Agent(MCPServer):
                         logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
                 else:
                     logger.warning("[TOOL_EXEC] No _session_tracker available")
-                
+
                 async for item in self._tool_execution_manager.execute_tools_streaming(
                     tool_calls=tool_calls,
                     tool_name_mapping=tool_name_mapping,
@@ -1263,24 +1265,24 @@ class Agent(MCPServer):
                         # Store final results
                         tool_messages = item["messages"]
                         tool_results = item["results"]
-                
+
                 # Add tool results to the results dictionary
                 results["calls"].extend(tool_results)
-                
+
                 # Add tool messages to conversation
                 messages.extend(tool_messages)
                 context.messages.extend(tool_messages)  # FIX: Also extend context.messages
-                
+
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
-                
+
                 # Yield pending status events after tool execution
                 for status_event in yield_pending_status_events():
                     yield status_event
-                
+
                 # Continue to next iteration to let LLM respond to tool results
                 continue
-            
+
             # No tool calls - this is the final answer
             # IMPORTANT: Only stop if we have content AND no tool calls
             # If LLM provided both content and tool_calls, the tool execution already happened above
@@ -1289,15 +1291,15 @@ class Agent(MCPServer):
                 results["summary"] = content
                 # Update tracked messages with final response
                 self._current_messages = messages.copy()
-                
+
                 # Return raw markdown - formatting happens in API/CLI layer
                 yield {"type": "final", "summary": content, "content_format": "markdown"}
                 return
-            
+
             # Update tracked messages at end of each step
             self._current_messages = messages.copy()
-            
-            # Drain any final appended messages before next step  
+
+            # Drain any final appended messages before next step
             messages = await self._drain_appended_messages(request_id, messages)
 
         # Max steps reached - warning and try to get final answer
@@ -1305,7 +1307,7 @@ class Agent(MCPServer):
             f"Max steps ({max_steps}) reached. Agent may not have completed the task. "
             f"Making one final LLM call to attempt completion."
         )
-        
+
         # Add explicit user message requesting final answer WITHOUT tools
         final_user_message = ChatMessage(
             role="user",
@@ -1313,17 +1315,18 @@ class Agent(MCPServer):
                 f"You have reached the maximum number of steps ({max_steps}). "
                 "Please provide your final answer NOW based on the information you have gathered. "
                 "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
-            )
+            ),
+            timestamp=datetime.now(timezone.utc)
         )
         messages.append(final_user_message)
-        
+
         # Try final call with tools still available (but instructed not to use them)
         try:
             final_llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
             final_assistant = final_llm_out.get("assistant", {})
             final_content = final_assistant.get("content")
             final_tool_calls = final_assistant.get("tool_calls", [])
-            
+
             if final_tool_calls:
                 # Agent still wants to use tools after max_steps!
                 logger.error(
@@ -1337,16 +1340,16 @@ class Agent(MCPServer):
                 )
                 yield {"type": "error", "message": f"Agent incomplete: max steps ({max_steps}) reached but still has work to do."}
                 return
-            
+
             if final_content:
                 # Append final assistant message to conversation history
-                assistant_msg = ChatMessage(role="assistant", content=final_content or "")
+                assistant_msg = ChatMessage(role="assistant", content=final_content or "", timestamp=datetime.now(timezone.utc))
                 messages.append(assistant_msg)
                 context.messages.append(assistant_msg)  # Also append to context.messages
                 results["summary"] = final_content
                 # Update tracked messages and emit final event
                 self._current_messages = messages.copy()
-                
+
                 # Return raw markdown - formatting happens in API/CLI layer
                 yield {"type": "final", "summary": final_content, "content_format": "markdown"}
             else:
@@ -1358,25 +1361,25 @@ class Agent(MCPServer):
             if "cancelled" in final_error_str or "timeout" in final_error_str:
                 logger.info(f"Request {request_id} cancelled during final LLM call: {e}")
                 # Signal cancellation using status contexts
-                await status_worker.error(f"cancelled during final LLM call: {e}", 
+                await status_worker.error(f"cancelled during final LLM call: {e}",
                                         meta={"step": step + 1, "reason": "cancelled"})
-                await status_coordinator.error("cancelled during final LLM call", 
+                await status_coordinator.error("cancelled during final LLM call",
                                              meta={"step": step + 1, "reason": "cancelled"})
                 yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
                 return
-            
+
             logger.exception("Failed to get final answer: %s", e)
             results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
             yield {"type": "error", "message": f"Failed to get final answer: {e}"}
-        
+
         return
 
     async def _run_events(
-        self, 
-        task: str, 
-        request_id: str, 
-        session_id: str, 
-        status_coordinator: StatusScope, 
+        self,
+        task: str,
+        request_id: str,
+        session_id: str,
+        status_coordinator: StatusScope,
         status_worker: StatusScope,
         initial_message: Optional[ChatMessage] = None,
         llm_override: Optional[object] = None,
@@ -1384,14 +1387,14 @@ class Agent(MCPServer):
     ):
         """
         Core agent execution loop - orchestrates LLM conversation with tool usage.
-        
+
         Now refactored into three focused phases (see REFACTORING_PLAN.md):
         1. Initialize: _initialize_request_and_conversation() - Setup and context building
         2. Execute: _execute_llm_loop() - Main LLM interaction loop with tool execution
         3. Finalize: _finalize_request() - Cleanup and persistence
-        
+
         This orchestration method is now <150 LOC, delegating complex logic to focused helpers.
-        
+
         Args:
             task: Text task description (may be empty if initial_message is provided)
             request_id: Request ID for tracking and cancellation
@@ -1401,7 +1404,7 @@ class Agent(MCPServer):
             initial_message: Optional ChatMessage with multimodal content
             llm_override: Optional LLM client override
             llm_profile_info_override: Optional profile info for status display
-            
+
         Yields:
             Dict events: start, heartbeat, thinking, status, tool_*, final, error, cancelled, end
         """
@@ -1410,7 +1413,7 @@ class Agent(MCPServer):
         context = None
         messages = None
         results: Dict[str, Any] = {"task": task, "calls": []}
-        
+
         # Register this request BEFORE emitting start event so appends work immediately
         request_entry = {
             "cancel": asyncio.Event(),
@@ -1419,10 +1422,10 @@ class Agent(MCPServer):
         }
         self._request_manager.register_active_request(request_id, request_entry)
         self._session_tracker.register_request(request_id, session_id, request_entry)
-        
+
         # Emit start event (even if initialization fails later)
         yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
-        
+
         try:
             # Phase 1: Initialize request and build conversation context
             try:
@@ -1438,15 +1441,15 @@ class Agent(MCPServer):
                 yield {"type": "error", "message": str(e), "request_id": request_id}
                 yield {"type": "end"}
                 return
-            
+
             # Helper function to yield any pending status events
             def yield_pending_status_events():
                 for event in self._status_event_forwarder.get_pending_events():
                     yield event
-            
+
             # Track messages from context for updates during loop
             messages = context.messages
-            
+
             # Phase 2: Execute main LLM loop with tool execution
             loop_generator = self._execute_llm_loop(
                 context=context,
@@ -1457,19 +1460,19 @@ class Agent(MCPServer):
                 llm_override=llm_override,
                 llm_profile_info_override=llm_profile_info_override
             )
-            
+
             async for event in loop_generator:
                 yield event
-                
+
                 # Yield any pending status events after each main event
                 # This ensures status messages are delivered in real-time, not batched at the end
                 for status_event in yield_pending_status_events():
                     yield status_event
-                
+
                 # Track messages updates from context during loop execution
                 if context:
                     messages = context.messages
-                
+
                 # Capture summary and errors from events
                 if event.get("type") == "final" and "summary" in event:
                     results["summary"] = event["summary"]
@@ -1478,7 +1481,7 @@ class Agent(MCPServer):
                 elif event.get("type") == "cancelled":
                     # Loop was cancelled, update step from event
                     step = event.get("step", 0) - 1  # Convert to 0-indexed
-            
+
         except Exception as e:
             logger.exception("Agent execution failed with exception:")
             yield {"type": "error", "message": f"Agent execution failed: {e}"}
@@ -1495,20 +1498,20 @@ class Agent(MCPServer):
                 results=results,
                 step=step
             )
-        
+
         # Yield final status events and end marker
         # These won't execute if generator was closed early (GeneratorExit), which is fine
         if 'yield_pending_status_events' in locals():
             for status_event in yield_pending_status_events():
                 yield status_event
-        
+
         yield {"type": "end"}
 
 
     async def shutdown(self) -> None:
         """Shutdown the agent and clean up resources"""
         logger.info("Agent shutdown initiated")
-        
+
         # Shutdown MCP integration to close external server connections
         if hasattr(self, '_mcp_integration_manager') and self._mcp_integration_manager:
             try:
@@ -1517,17 +1520,17 @@ class Agent(MCPServer):
                     logger.debug("MCP integration shutdown completed")
             except Exception as e:
                 logger.warning(f"Error during MCP integration shutdown: {e}")
-        
+
         # Clear sessions and request mappings
         self._session_tracker.clear()
-        
+
         logger.info("Agent shutdown completed")
 
     # MCPServer interface implementation
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """
         MCPServer interface: Handle tool calls from other agents.
-        
+
         An agent is a tool that executes tasks. No special "actions" needed.
 
         Args:
@@ -1582,7 +1585,7 @@ class Agent(MCPServer):
             description = getattr(self.mcp_config, 'description', None)
         if not description:
             description = getattr(self, '_agent_description', f"Agent: {self.name}")
-        
+
         return {
             "type": "function",
             "function": {
@@ -1603,26 +1606,26 @@ class Agent(MCPServer):
 
     async def list_tools(self) -> List:
         """Return tools this agent OFFERS to other agents (MCPServer interface).
-        
+
         EXTERNAL INTERFACE - What this agent exposes as callable tools.
         When other agents query available tools, they get this agent's schema.
-        
+
         Contrast with list_usable_tools() which returns tools this agent CAN USE.
-        
+
         Returns:
             List[MCPTool] - Single MCPTool representing this agent
         """
         from agent_system.mcp.core import MCPTool
-        
+
         # Get the agent's schema (what it offers as a callable tool)
         schema = self.get_schema()
         func = schema.get("function", {})
-        
+
         # Convert to MCPTool format
         tool = MCPTool(
             name=func.get("name", self.name),
             description=func.get("description", f"Agent: {self.name}"),
             input_schema=func.get("parameters", {})
         )
-        
+
         return [tool]
