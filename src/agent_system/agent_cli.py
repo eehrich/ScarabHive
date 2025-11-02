@@ -1121,8 +1121,8 @@ def main() -> None:
         # (cli.py and cli/ directory both exist)
         import importlib.util
         
-        # Dynamically import users module from cli/ directory
-        users_module_path = Path(__file__).parent / "cli" / "users.py"
+        # Dynamically import users module from cli_utils/ directory
+        users_module_path = Path(__file__).parent / "cli_utils" / "users.py"
         spec = importlib.util.spec_from_file_location("agent_system.agent_cli.users", users_module_path)
         if spec and spec.loader:
             users_module = importlib.util.module_from_spec(spec)
