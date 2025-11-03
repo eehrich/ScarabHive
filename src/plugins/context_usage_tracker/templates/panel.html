@@ -11,51 +11,51 @@
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
             background: #1e1e1e;
             color: #d4d4d4;
             padding: 20px;
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
         }
-        
+
         h1 {
             font-size: 24px;
             margin-bottom: 20px;
             color: #569cd6;
         }
-        
+
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 15px;
             margin-bottom: 30px;
         }
-        
+
         .stat-card {
             background: #252526;
             border: 1px solid #3e3e42;
             border-radius: 6px;
             padding: 15px;
         }
-        
+
         .stat-label {
             font-size: 12px;
             color: #858585;
             margin-bottom: 5px;
         }
-        
+
         .stat-value {
             font-size: 24px;
             font-weight: 600;
             color: #4ec9b0;
         }
-        
+
         .agent-section {
             background: #252526;
             border: 1px solid #3e3e42;
@@ -63,19 +63,19 @@
             padding: 20px;
             margin-bottom: 20px;
         }
-        
+
         .agent-section h2 {
             font-size: 18px;
             margin-bottom: 15px;
             color: #ce9178;
         }
-        
+
         .agent-list {
             display: flex;
             flex-direction: column;
             gap: 10px;
         }
-        
+
         .agent-item {
             background: #1e1e1e;
             border: 1px solid #3e3e42;
@@ -85,39 +85,39 @@
             grid-template-columns: 2fr 1fr 1fr 1fr;
             gap: 15px;
         }
-        
+
         .agent-name {
             font-weight: 500;
             color: #569cd6;
         }
-        
+
         .agent-stat {
             font-size: 14px;
         }
-        
+
         .agent-stat-label {
             font-size: 11px;
             color: #858585;
         }
-        
+
         .history-section {
             background: #252526;
             border: 1px solid #3e3e42;
             border-radius: 6px;
             padding: 20px;
         }
-        
+
         .history-section h2 {
             font-size: 18px;
             margin-bottom: 15px;
             color: #dcdcaa;
         }
-        
+
         .history-list {
             max-height: 400px;
             overflow-y: auto;
         }
-        
+
         .history-item {
             background: #1e1e1e;
             border: 1px solid #3e3e42;
@@ -126,19 +126,19 @@
             margin-bottom: 8px;
             font-size: 13px;
         }
-        
+
         .history-time {
             color: #858585;
             font-size: 11px;
         }
-        
+
         .controls {
             margin-bottom: 20px;
             display: flex;
             gap: 10px;
             align-items: center;
         }
-        
+
         button {
             background: #0e639c;
             color: white;
@@ -151,26 +151,26 @@
             align-items: center;
             gap: 6px;
         }
-        
+
         button:hover {
             background: #1177bb;
         }
-        
+
         button.icon-only {
             padding: 8px;
             width: 36px;
             height: 36px;
             justify-content: center;
         }
-        
+
         button.icon-only.active {
             background: #16825d;
         }
-        
+
         button.icon-only.active:hover {
             background: #1a9970;
         }
-        
+
         .chart-container {
             background: #252526;
             border: 1px solid #3e3e42;
@@ -180,13 +180,13 @@
             height: 300px;
             position: relative;
         }
-        
+
         .chart-container h2 {
             font-size: 18px;
             margin-bottom: 15px;
             color: #dcdcaa;
         }
-        
+
         .error {
             color: #f48771;
             padding: 10px;
@@ -194,7 +194,7 @@
             border-radius: 4px;
             margin-bottom: 20px;
         }
-        
+
         .no-data {
             color: #858585;
             text-align: center;
@@ -205,7 +205,7 @@
 <body>
     <div class="container">
         <h1>📊 Context Usage Tracker</h1>
-        
+
         <div class="controls">
             <button class="icon-only" onclick="refreshData()" title="Refresh">
                 🔄
@@ -220,9 +220,9 @@
                 🎯
             </button>
         </div>
-        
+
         <div id="error-container"></div>
-        
+
         <div class="stats-grid" id="stats-grid">
             <div class="stat-card">
                 <div class="stat-label">Current Tokens</div>
@@ -245,19 +245,19 @@
                 <div class="stat-value" id="total-calls">-</div>
             </div>
         </div>
-        
+
         <div class="chart-container">
             <h2>📈 Token Usage Over Time</h2>
             <canvas id="token-chart"></canvas>
         </div>
-        
+
         <div class="agent-section">
             <h2>🤖 Agents</h2>
             <div class="agent-list" id="agent-list">
                 <div class="no-data">No agent data available</div>
             </div>
         </div>
-        
+
         <div class="history-section">
             <h2>📝 Recent History</h2>
             <div class="history-list" id="history-list">
@@ -265,12 +265,12 @@
             </div>
         </div>
     </div>
-    
+
     <script>
         let autoRefreshInterval = null;
         let tokenChart = null;
         let currentSessionOnly = true; // Filter by current session by default
-        
+
         function getCurrentSessionId() {
             // Method 1: Try to get from parent window's sessionManager
             try {
@@ -281,7 +281,7 @@
             } catch (e) {
                 console.log('[Context Tracker] Cannot access parent sessionManager:', e.message);
             }
-            
+
             // Method 2: Try to get from parent window's chat module
             try {
                 if (window.parent && window.parent !== window && window.parent.chatModule) {
@@ -291,7 +291,7 @@
             } catch (e) {
                 console.log('[Context Tracker] Cannot access parent chatModule:', e.message);
             }
-            
+
             // Method 3: Parse from parent's DOM
             try {
                 if (window.parent && window.parent !== window) {
@@ -303,19 +303,19 @@
             } catch (e) {
                 console.log('[Context Tracker] Cannot access parent DOM:', e.message);
             }
-            
+
             // Method 4: URL parameter
             const urlParams = new URLSearchParams(window.location.search);
             const urlSessionId = urlParams.get('session_id');
             if (urlSessionId) return urlSessionId;
-            
+
             // Method 5: LocalStorage fallback
             const storedSessionId = localStorage.getItem('currentSessionId');
             if (storedSessionId) return storedSessionId;
-            
+
             return null;
         }
-        
+
         function initChart() {
             const ctx = document.getElementById('token-chart').getContext('2d');
             tokenChart = new Chart(ctx, {
@@ -369,99 +369,66 @@
                 }
             });
         }
-        
+
         function updateChart(historyData) {
             if (!tokenChart || !historyData || historyData.length === 0) return;
-            
+
             const maxPoints = 50;
             const data = historyData.slice(-maxPoints);
-            
+
             const labels = data.map(item => {
                 const date = new Date(item.timestamp * 1000);
                 return date.toLocaleTimeString();
             });
-            
+
             tokenChart.data.labels = labels;
             tokenChart.data.datasets[0].data = data.map(item => item.total_tokens);
             tokenChart.data.datasets[1].data = data.map(item => item.prompt_tokens);
             tokenChart.data.datasets[2].data = data.map(item => item.completion_tokens);
             tokenChart.update('none');
         }
-        
+
         async function refreshData() {
             try {
                 const currentSessionId = getCurrentSessionId();
+                const sessionId = currentSessionOnly ? currentSessionId : null;
                 console.log('[Context Tracker] Session ID:', currentSessionId, '| Filter:', currentSessionOnly ? 'Current Session' : 'All Sessions');
-                
-                const usageResp = await fetch('/plugins/context_usage_tracker/usage');
+
+                // Build URLs with session_id parameter if filtering
+                const usageUrl = `/plugins/context_usage_tracker/usage${sessionId ? '?session_id=' + sessionId : ''}`;
+                const historyUrl = `/plugins/context_usage_tracker/history?last_n=1000${sessionId ? '&session_id=' + sessionId : ''}`;
+
+                const usageResp = await fetch(usageUrl);
                 const usageData = await usageResp.json();
-                
+
                 const latest = usageData.latest || {};
-                document.getElementById('current-tokens').textContent = 
+                document.getElementById('current-tokens').textContent =
                     latest.total_tokens?.toLocaleString() || '0';
-                document.getElementById('usage-percent').textContent = 
+                document.getElementById('usage-percent').textContent =
                     latest.usage_percentage ? latest.usage_percentage.toFixed(1) + '%' : '0%';
-                document.getElementById('message-count').textContent = 
+                document.getElementById('message-count').textContent =
                     latest.message_count || '0';
-                
+
                 const agents = usageData.agents || {};
-                
-                // Get history data first for filtering
-                const historyResp = await fetch('/plugins/context_usage_tracker/history?last_n=1000');
+
+                // Get history data (already filtered by backend if sessionId provided)
+                const historyResp = await fetch(historyUrl);
                 const historyData = await historyResp.json();
-                let history = historyData.history || [];
-                
-                // Filter history by session if needed
-                if (currentSessionOnly && currentSessionId) {
-                    const beforeFilter = history.length;
-                    history = history.filter(item => item.session_id === currentSessionId);
-                    console.log('[Context Tracker] Filtered:', beforeFilter, '→', history.length, 'items');
-                }
-                
-                // Calculate stats based on filtered history
-                let totalCalls = 0;
-                let accumulatedTokens = 0;
-                let filteredAgents = {};
-                
-                if (currentSessionOnly && currentSessionId && history.length > 0) {
-                    // Calculate from filtered history
-                    history.forEach(item => {
-                        totalCalls++;
-                        accumulatedTokens += item.total_tokens || 0;
-                        
-                        if (!filteredAgents[item.agent_id]) {
-                            filteredAgents[item.agent_id] = {
-                                agent_id: item.agent_id,
-                                agent_name: item.agent_name,
-                                total_calls: 0,
-                                total_tokens: 0,
-                                peak_tokens: 0
-                            };
-                        }
-                        
-                        filteredAgents[item.agent_id].total_calls++;
-                        filteredAgents[item.agent_id].total_tokens += item.total_tokens || 0;
-                        filteredAgents[item.agent_id].peak_tokens = Math.max(
-                            filteredAgents[item.agent_id].peak_tokens,
-                            item.total_tokens || 0
-                        );
-                    });
-                } else {
-                    // Use global stats
-                    totalCalls = Object.values(agents).reduce((sum, agent) => 
-                        sum + (agent.total_calls || 0), 0);
-                    accumulatedTokens = Object.values(agents).reduce((sum, agent) => 
-                        sum + (agent.total_tokens || 0), 0);
-                    filteredAgents = agents;
-                }
-                
+                const history = historyData.history || [];
+
+                // Calculate stats from backend data (no frontend filtering needed)
+                const totalCalls = Object.values(agents).reduce((sum, agent) =>
+                    sum + (agent.total_calls || 0), 0);
+                const accumulatedTokens = Object.values(agents).reduce((sum, agent) =>
+                    sum + (agent.total_tokens || 0), 0);
+
                 document.getElementById('total-calls').textContent = totalCalls;
-                document.getElementById('accumulated-tokens').textContent = 
+                document.getElementById('accumulated-tokens').textContent =
                     accumulatedTokens.toLocaleString();
-                
+
                 const agentList = document.getElementById('agent-list');
-                if (Object.keys(filteredAgents).length > 0) {
-                    agentList.innerHTML = Object.values(filteredAgents).map(agent => `
+                if (Object.keys(agents).length > 0) {
+                    agentList.innerHTML = Object.values(agents).map(agent => `
                         <div class="agent-item">
                             <div>
                                 <div class="agent-name">${agent.agent_name}</div>
@@ -484,11 +451,11 @@
                 } else {
                     agentList.innerHTML = '<div class="no-data">No agent data available</div>';
                 }
-                
+
                 // Update chart and history list with filtered data
                 if (history && history.length > 0) {
                     updateChart(history);
-                    
+
                     const historyList = document.getElementById('history-list');
                     historyList.innerHTML = history.slice().reverse().slice(0, 50).map(item => {
                         const date = new Date(item.timestamp * 1000);
@@ -496,31 +463,31 @@
                             <div class="history-item">
                                 <div class="history-time">${date.toLocaleString()}</div>
                                 <div>
-                                    <strong>${item.agent_name}</strong> - 
-                                    ${item.total_tokens} tokens 
-                                    (${item.usage_percentage.toFixed(1)}%) - 
+                                    <strong>${item.agent_name}</strong> -
+                                    ${item.total_tokens} tokens
+                                    (${item.usage_percentage.toFixed(1)}%) -
                                     ${item.message_count} messages
                                 </div>
                             </div>
                         `;
                     }).join('');
                 } else {
-                    document.getElementById('history-list').innerHTML = 
+                    document.getElementById('history-list').innerHTML =
                         '<div class="no-data">No history available</div>';
                 }
-                
+
                 document.getElementById('error-container').innerHTML = '';
-                
+
             } catch (error) {
                 console.error('Error fetching data:', error);
-                document.getElementById('error-container').innerHTML = 
+                document.getElementById('error-container').innerHTML =
                     `<div class="error">Error loading data: ${error.message}</div>`;
             }
         }
-        
+
         async function clearHistory() {
             if (!confirm('Clear all usage history?')) return;
-            
+
             try {
                 await fetch('/plugins/context_usage_tracker/clear', { method: 'POST' });
                 await refreshData();
@@ -529,11 +496,11 @@
                 alert('Error clearing history: ' + error.message);
             }
         }
-        
+
         function toggleAutoRefresh() {
             const btn = document.getElementById('auto-refresh-btn');
             const isActive = btn.classList.contains('active');
-            
+
             if (isActive) {
                 btn.classList.remove('active');
                 btn.title = 'Auto-Refresh (5s) - Inactive';
@@ -547,11 +514,11 @@
                 autoRefreshInterval = setInterval(refreshData, 5000);
             }
         }
-        
+
         function toggleSessionFilter() {
             const btn = document.getElementById('session-filter-btn');
             currentSessionOnly = !currentSessionOnly;
-            
+
             if (currentSessionOnly) {
                 btn.classList.add('active');
                 btn.title = 'Showing: Current Session';
@@ -559,10 +526,10 @@
                 btn.classList.remove('active');
                 btn.title = 'Showing: All Sessions';
             }
-            
+
             refreshData();
         }
-        
+
         initChart();
         refreshData();
         autoRefreshInterval = setInterval(refreshData, 5000);
