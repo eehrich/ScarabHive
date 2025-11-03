@@ -210,7 +210,8 @@
     let current = treeNodes.get(requestId);
     while (current && current.parentId) {
       const parent = treeNodes.get(current.parentId);
-      if (!parent) return false;
+      // If parent doesn't exist yet, assume it's expanded (will be created later)
+      if (!parent) return true;
       if (parent.element.getAttribute('data-expanded') !== 'true') return false;
       current = parent;
     }
@@ -411,6 +412,7 @@
 
   function addStatusEvent(container, ev) {
     if (!container || !ev) return;
+    
     const statusSection = container.closest('.container-section');
     if (statusSection && statusSection.style.display === 'none') {
       statusSection.style.display = 'block';
@@ -420,59 +422,29 @@
     const requestId = ev.request_id && ev.request_id !== 'default' ? ev.request_id : null;
     const operationKey = requestId || ev.server;
     
-    // Get tree hierarchy metadata
+    // Get tree hierarchy metadata from backend (already calculated correctly)
     const treeInfo = ev.tree || { parent_id: null, depth_level: 0, child_count: 0, is_leaf: true };
-    let depthLevel = treeInfo.depth_level || 0;
-    let parentId = treeInfo.parent_id;
-
-    // Treat special/placeholder parent ids (e.g. backend using a label instead of null) as null roots
-    if (parentId && !treeNodes.has(parentId) && parentId.indexOf('_') === -1 && depthLevel === 1) {
-      // If backend gives parent like "main" for first real root, normalize to null so it shows
-      parentId = null;
-      depthLevel = 0;
-    }
+    const depthLevel = treeInfo.depth_level || 0;
+    const parentId = treeInfo.parent_id || null;
     
-    // Generic request_id parsing if backend does not supply tree metadata
-    if (!parentId && requestId && requestId.includes('_')) {
-      const parts = requestId.split('_');
-      if (parts.length >= 2) {
-        // For multi-level IDs like q2f381f3v6_006_015_016:
-        // - parts = ['q2f381f3v6', '006', '015', '016']
-        // - parentId should be 'q2f381f3v6_006_015' (all parts except last)
-        // For two-level IDs like q2f381f3v6_006:
-        // - parts = ['q2f381f3v6', '006']
-        // - parentId should be 'q2f381f3v6' (first part only, which is the root)
-        parentId = parts.slice(0, -1).join('_');
-        // Depth: q2f381f3v6 = 0, q2f381f3v6_006 = 1, q2f381f3v6_006_015 = 2, etc.
-        depthLevel = parts.length - 1;
-        
-        // Auto-create virtual parent node if it doesn't exist yet
-        if (!treeNodes.has(parentId)) {
-          const virtualParent = document.createElement('div');
-          virtualParent.className = 'operation-progress virtual-parent';
-          virtualParent.setAttribute('data-operation', parentId);
-          virtualParent.setAttribute('data-request-id', parentId);
-          virtualParent.setAttribute('data-depth', depthLevel - 1);
-          virtualParent.setAttribute('data-expanded', 'true');
-          virtualParent.style.display = 'none'; // Hidden by default, will be made visible if needed
-          
-          // Recursively determine this parent's parent for proper hierarchy
-          let grandParentId = null;
-          if (parentId.includes('_')) {
-            const parentParts = parentId.split('_');
-            if (parentParts.length >= 2) {
-              grandParentId = parentParts.slice(0, -1).join('_');
-            }
-          }
-          
-          container.appendChild(virtualParent);
-          registerNode(parentId, grandParentId, virtualParent, depthLevel - 1);
-        }
-      }
+    // Auto-create virtual parent if needed (parent_id given but not yet in tree)
+    if (parentId && !treeNodes.has(parentId)) {
+      const virtualParent = document.createElement('div');
+      virtualParent.className = 'operation-progress virtual-parent';
+      virtualParent.setAttribute('data-operation', parentId);
+      virtualParent.setAttribute('data-request-id', parentId);
+      virtualParent.setAttribute('data-depth', depthLevel - 1);
+      virtualParent.setAttribute('data-expanded', 'true');
+      virtualParent.style.display = 'block'; // Visible so children can be displayed
+      
+      container.appendChild(virtualParent);
+      // Register without a grandparent - will be filled in when parent's parent arrives
+      registerNode(parentId, null, virtualParent, depthLevel - 1);
     }
     
     // Prefer server-provided sequence number for ordering when available
     const seq = ev.meta && ev.meta._seq ? ev.meta._seq : null;
+    
     if (ev.phase === 'start') {
       if (activeOperations.has(operationKey)) {
         const existing = activeOperations.get(operationKey);
@@ -889,8 +861,19 @@
             break;
           case 'status':
             // Status events are now delivered through /events stream
+            // Show status events for this request AND all hierarchical children (sub-agents)
+            // e.g., if currentRequestId is "abc123", also show "abc123_sub_001", "abc123_001_sub_002", etc.
             if (blk && blk.status) {
-              addStatusEvent(blk.status, data);
+              const eventRequestId = data.request_id || '';
+              // Check if this event belongs to current request hierarchy
+              // Either exact match OR starts with current request_id followed by underscore (child operation)
+              const matches = eventRequestId === currentRequestId || 
+                  (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+              
+              if (matches) {
+                addStatusEvent(blk.status, data);
+              }
+              // Otherwise silently ignore status from other requests/sessions
             }
             break;
           case 'final':
@@ -1222,6 +1205,10 @@
   
   // attach to global
   global.chatModule = chatModule;
+  
+  // Also attach to AgentSystem namespace for consistency with other modules
+  global.AgentSystem = global.AgentSystem || {};
+  global.AgentSystem.ChatModule = chatModule;
   
   // Cleanup on page unload
   window.addEventListener('beforeunload', cleanup);

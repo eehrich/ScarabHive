@@ -29,7 +29,7 @@ from .mcp.integration import initialize_mcp, shutdown_mcp
 
 # Import services
 from .services import ConfigService, MCPService, ToolService, AgentService
-from .services.session_manager import SessionManager
+from .services.session_manager import SessionManager, SessionPermissionError
 
 
 # Global registry for MCP endpoints access
@@ -246,7 +246,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             bearer_scheme = HTTPBearer(auto_error=False)
             credentials = await bearer_scheme(request)
             x_api_key = request.headers.get("X-API-Key")
-            
+
             # NEW: Check for token in query parameters (EventSource workaround)
             query_token = request.query_params.get("token")
             if query_token and not credentials:
@@ -338,6 +338,19 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     registry = MCPRegistry()
     bootstrap_servers(config, registry)
 
+    # CRITICAL: Inject _session_service into ALL agents in registry
+    # This ensures sub-agents and tools can access session management
+    # Must be done AFTER bootstrap_servers() creates all agents
+    from .servers.agent.server import Agent as _Agent
+    for server_name in registry.list():
+        try:
+            server = registry.get(server_name)
+            if isinstance(server, _Agent):
+                server._session_service = _session_service
+                logging.getLogger(__name__).debug(f"Injected session_service into agent: {server_name}")
+        except Exception as e:
+            logging.getLogger(__name__).debug(f"Failed to inject session_service into {server_name}: {e}")
+
     # Get entry agent from config
     entry_name = config.default_agent or 'agent'
     logging.getLogger(__name__).debug(f"Using entry agent: '{entry_name}'")
@@ -350,6 +363,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from .servers.agent.server import Agent as _Agent
             if isinstance(candidate, _Agent):
                 selected_agent = candidate
+                # CRITICAL: Inject _session_service into existing agent (same as CLI does)
+                # Agents from bootstrap_servers were created without session_service
+                # ALWAYS inject, even if attribute exists, to refresh the reference
+                selected_agent._session_service = _session_service
                 # Apply server-level configuration overrides
                 try:
                     # Check if this is a config-based agent first, then fallback to MCP server config
@@ -444,12 +461,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             agent_cfg = AgentConfig(llm_profile="normal", tools=tool_cfg)
             mcp_cfg = MCPConfig(type="agent", enabled=True, agent_config=agent_cfg)
 
-        selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry)
+        selected_agent = CoreAgent(entry_name, config, mcp_cfg, registry, session_service=_session_service)
         registry.register(entry_name, selected_agent)
     else:
-        # Bind reused agent to current registry
+        # Bind reused agent to current registry and update session_service
         try:
             selected_agent.registry = registry
+            # Update session_service for existing agent
+            if _session_service and hasattr(selected_agent, '_session_service'):
+                selected_agent._session_service = _session_service
         except Exception as e:
             logger.warning(f"Failed to bind registry to agent: {e}", exc_info=True)
 
@@ -639,6 +659,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 from .servers.agent.server import Agent as _Agent
                 if not isinstance(selected_agent, _Agent):
                     raise HTTPException(status_code=400, detail=f"'{agent_name}' is not an agent")
+                # CRITICAL: Inject _session_service (same as CLI line 1252 and build_app line 354-357)
+                # ALWAYS inject, even if attribute exists, to refresh the reference
+                selected_agent._session_service = _session_service
+                logger.debug(f"Injected SessionService into agent '{agent_name}' via /run endpoint")
             except KeyError:
                 raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
             except Exception as e:
@@ -897,9 +921,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Load existing session if session_id provided
         session_exists = False
         if session_id and _session_service:
-            session_exists, msg_count = await _session_service.load_and_restore_session(
-                selected_agent, user_id, session_id
-            )
+            try:
+                session_exists, msg_count = await _session_service.load_and_restore_session(
+                    selected_agent, user_id, session_id
+                )
+            except SessionPermissionError as e:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Permission denied: {e}"
+                )
+
+        # CRITICAL: Always set/update session metadata (even for existing sessions)
+        # This ensures user_id is available for tool execution AND respects llm_profile overrides
+        if session_id:
+            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            selected_agent._session_tracker.set_session_metadata(session_id, {
+                "user_id": user_id,
+                "agent_name": selected_agent.name,
+                "llm_profile": effective_llm_profile
+            })
 
         from .servers.agent.result_utils import collect_final_result
 
@@ -910,7 +950,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             try:
                 # Pass LLM override to collect_final_result
-                result = await collect_final_result(selected_agent, task, request_id=request_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info)
+                result = await collect_final_result(
+                    selected_agent, task,
+                    request_id=request_id,
+                    session_id=session_id,
+                    llm_override=llm_override,
+                    llm_profile_info_override=llm_profile_info
+                )
 
                 # Format summary from Markdown to HTML for web display
                 if result.get("summary") and selected_agent._hook_manager:
@@ -925,6 +971,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     except Exception as e:
                         logger.warning(f"Failed to format summary to HTML: {e}")
                         # Keep original markdown on error
+
+                # Save session after execution (if session_id was provided or created)
+                if session_id and _session_service:
+                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                    was_new_session = not session_exists
+                    await _session_service.save_session(
+                        selected_agent,
+                        user_id,
+                        session_id,
+                        selected_agent.name,
+                        effective_llm_profile,
+                        was_new_session
+                    )
+                    logger.debug(f"[SESSION_SAVE] Saved session {session_id} after /run (text-only)")
 
                 return result
             finally:
@@ -989,6 +1049,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             actual_session_id = event["session_id"]
                             logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
 
+                        # CRITICAL: Set session metadata for newly created sessions
+                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
+                        if was_new_session:
+                            # Use override llm_profile if provided, otherwise agent's default
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                            selected_agent._session_tracker.set_session_metadata(actual_session_id, {
+                                "user_id": user_id,
+                                "agent_name": selected_agent.name,
+                                "llm_profile": effective_llm_profile
+                            })
                         # Ensure proper JSON serialization
                         if hasattr(event, 'to_dict'):
                             payload = event.to_dict()
@@ -1009,14 +1079,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 finally:
                     # Save session after completion
                     if _session_service and actual_session_id:
-                        agent_name_used = agent_name or "default"
-                        llm_profile_used = llm_profile or "normal"
+                        # Use actual agent name and effective llm_profile (respecting overrides)
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
                         await _session_service.save_session(
                             selected_agent,
                             user_id,
                             actual_session_id,
-                            agent_name_used,
-                            llm_profile_used,
+                            selected_agent.name,
+                            effective_llm_profile,
                             was_new_session
                         )
 
@@ -1088,9 +1158,27 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Load existing session if session_id provided
         session_exists = False
         if session_id and _session_service:
-            session_exists, msg_count = await _session_service.load_and_restore_session(
-                selected_agent, user_id, session_id
-            )
+            try:
+                session_exists, msg_count = await _session_service.load_and_restore_session(
+                    selected_agent, user_id, session_id
+                )
+            except SessionPermissionError as e:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Permission denied: {e}"
+                )
+
+        # CRITICAL: Always set/update session metadata (even for existing sessions)
+        # This ensures user_id is available for tool execution AND respects llm_profile overrides
+        # load_and_restore_session sets metadata from disk, but we need to override with current request's llm_profile
+        if session_id:
+            # Use override llm_profile if provided, otherwise agent's default
+            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            selected_agent._session_tracker.set_session_metadata(session_id, {
+                "user_id": user_id,
+                "agent_name": selected_agent.name,
+                "llm_profile": effective_llm_profile
+            })
 
         async def event_stream():
             yield ":ok\n\n"
@@ -1106,6 +1194,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         old_session_id = actual_session_id
                         actual_session_id = ev["session_id"]
                         logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
+
+                        # CRITICAL: Set session metadata for newly created sessions
+                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
+                        if was_new_session:
+                            selected_agent._session_tracker.set_session_metadata(actual_session_id, {
+                                "user_id": user_id,
+                                "agent_name": agent_name or "default",
+                                "llm_profile": llm_profile or "normal"
+                            })
+                            logger.debug(f"[SESSION] Set metadata for new session {actual_session_id}: user_id={user_id}")
 
                     if hasattr(ev, 'to_dict'):
                         payload = ev.to_dict()
@@ -1127,7 +1225,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 payload["content_format"] = content_format
                             except Exception as e:
                                 logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
-                        
+
                         # Also format thinking_complete content to HTML (for streaming)
                         elif ev.get("type") == "thinking_complete" and ev.get("assistant", {}).get("content"):
                             try:
@@ -1170,14 +1268,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
                 if actual_session_id and _session_service:
-                    agent_name_used = agent_name or "default"
-                    llm_profile_used = llm_profile or "normal"
+                    # Use actual agent name and effective llm_profile (respecting overrides)
+                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
                     await _session_service.save_session(
                         selected_agent,
                         user_id,
                         actual_session_id,
-                        agent_name_used,
-                        llm_profile_used,
+                        selected_agent.name,
+                        effective_llm_profile,
                         was_new_session
                     )
 

@@ -48,6 +48,12 @@
       "minLength": 1,
       "maxLength": 100
     },
+    "depth": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "Nesting depth (1=root session, 2=sub-agent, 3=sub-sub-agent, etc.)"
+    },
     "messages": {
       "type": "array",
       "description": "Conversation message history",
@@ -116,8 +122,69 @@
             "type": "string"
           },
           "description": "User-defined tags"
+        },
+        "sub_agents": {
+          "type": "object",
+          "description": "Sub-agent instances created by this session",
+          "patternProperties": {
+            "^[a-zA-Z0-9_-]+$": {
+              "type": "object",
+              "required": ["instance_id", "agent_type", "created_at", "status"],
+              "properties": {
+                "instance_id": {
+                  "type": "string",
+                  "description": "Unique sub-agent instance ID"
+                },
+                "agent_type": {
+                  "type": "string",
+                  "description": "Agent type (e.g., 'web_research_agent')"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Creation timestamp"
+                },
+                "last_used": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Last accessed timestamp"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["active", "archived"],
+                  "description": "Current status"
+                },
+                "task_summary": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "description": "Task summary (max 200 chars)"
+                },
+                "depth": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "description": "Nesting depth of child sub-agent"
+                }
+              }
+            }
+          }
         }
       }
+    },
+    "parent_session": {
+      "type": "object",
+      "description": "Link to parent session (for sub-agents)",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Parent session ID"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Link creation timestamp"
+        }
+      },
+      "required": ["session_id", "created_at"]
     }
   }
 }

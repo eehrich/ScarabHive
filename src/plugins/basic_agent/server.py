@@ -22,9 +22,10 @@ class BasicAgent(SchemaBasedAgent):
     Note: The MCP standard method list_tools() is inherited from Agent base class.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig, registry: MCPRegistry):
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig, registry: MCPRegistry,
+                 session_service: object | None = None):
         """Initialize BasicAgent with modern config system."""
-        super().__init__(name, system_config, mcp_config, registry)
+        super().__init__(name, system_config, mcp_config, registry, session_service=session_service)
 
     async def execute_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a task using the basic agent.

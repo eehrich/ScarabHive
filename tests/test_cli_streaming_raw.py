@@ -34,10 +34,18 @@ DEFAULT_EVENTS = []
 
 class AgentStub:
     # accept the modern Agent signature but only keep events
-    def __init__(self, name, system_config, mcp_config, registry, llm=None, llm_factory=None, events=None):
+    def __init__(self, name, system_config, mcp_config, registry, llm=None, llm_factory=None, events=None, session_service=None):
         self._events = events or DEFAULT_EVENTS
         # minimal attributes used by CLI
         self.registry = registry
+        self._session_service = session_service
+        # Mock _session_tracker for session saving
+        from unittest.mock import MagicMock
+        self._session_tracker = MagicMock()
+        self._session_tracker.get_session_messages.return_value = []
+        # Mock agent_config with llm_profile
+        self.agent_config = MagicMock()
+        self.agent_config.llm_profile = "normal"
 
     async def run_events(self, task, **kwargs):
         for e in self._events:
@@ -72,6 +80,15 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
     DEFAULT_EVENTS = events
     monkeypatch.setattr('agent_system.servers.agent.server.Agent', AgentStub)
 
+    # Mock the registry to return AgentStub for default_agent
+    from unittest.mock import MagicMock
+    mock_registry = MagicMock()
+    mock_registry.list.return_value = []  # No servers in registry
+    mock_registry.get.return_value = None
+
+    # Patch MCPRegistry to return our mock
+    monkeypatch.setattr('agent_system.agent_cli.MCPRegistry', lambda: mock_registry)
+
     # Run with --raw via argv (which uses non-streaming mode)
     monkeypatch.setattr("sys.argv", ["agent-cli", "--raw", "run", "do it"])
     # Call main
@@ -97,10 +114,20 @@ def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
     global DEFAULT_EVENTS
     DEFAULT_EVENTS = events
     monkeypatch.setattr('agent_system.servers.agent.server.Agent', AgentStub)
+
+    # Mock the registry to return AgentStub for default_agent
+    from unittest.mock import MagicMock
+    mock_registry = MagicMock()
+    mock_registry.list.return_value = []  # No servers in registry
+    mock_registry.get.return_value = None
+
+    # Patch MCPRegistry to return our mock
+    monkeypatch.setattr('agent_system.agent_cli.MCPRegistry', lambda: mock_registry)
+
     monkeypatch.setattr("sys.argv", ["agent-cli", "--show-mcp", "run", "do it"])
     cli.main()
     out = capsys.readouterr().out
-    # Should contain human readable header and summary
+    # Should contain human readable header and summary (now printed during streaming without "Summary:" prefix)
     assert "MCP CALL" in out
     assert "MCP RESULT" in out
-    assert "Summary:" in out
+    assert "done" in out  # The summary content

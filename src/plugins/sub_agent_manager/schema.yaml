@@ -1,0 +1,103 @@
+# MCP tool definition for Sub-Agent Manager (unified tool approach).
+
+tools:
+  - type: function
+    function:
+      name: manage_sub_agent
+      description: |
+        Manage persistent sub-agent instances for delegation of specialized tasks.
+        Sub-agents maintain conversation history and can be continued across multiple requests.
+
+        Operations:
+        - create: Spawn new sub-agent and execute initial task (BLOCKING - returns result)
+        - continue: Send new message to existing sub-agent (BLOCKING - returns result)
+        - list: Get all active sub-agents for current session
+        - info: Get detailed status and recent activity of specific sub-agent
+        - delete: Archive sub-agent instance
+
+        IMPORTANT: 
+        - Operations are BLOCKING - you receive full result before tool returns.
+        - Same instance_id cannot run concurrently. Use different instances for parallel work.
+
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: [create, continue, list, info, delete]
+            description: |
+              Operation to perform:
+              - create: Create and execute new sub-agent
+              - continue: Continue existing sub-agent with new message
+              - list: List all active sub-agents
+              - info: Get detailed info about specific sub-agent
+              - delete: Archive sub-agent instance
+          
+          # Parameters for 'create' operation
+          agent_type:
+            type: string
+            description: |
+              Agent type to spawn (required for 'create').
+              Available agents: {{ allowed_agents }}
+          
+          task:
+            type: string
+            description: |
+              Initial task description (required for 'create').
+              This will be the first message in the sub-agent's session.
+          
+          instance_label:
+            type: string
+            description: |
+              Optional custom label for readability (create only).
+              Auto-generated if omitted. Format: alphanumeric, underscore, hyphen.
+          
+          # Parameters for 'continue', 'info', 'delete' operations
+          instance_id:
+            type: string
+            description: |
+              Sub-agent instance ID (required for continue/info/delete).
+              This was returned when the sub-agent was created.
+          
+          message:
+            type: string
+            description: |
+              New message for sub-agent (required for 'continue').
+              The sub-agent sees this in context of previous conversation.
+          
+          # Parameters for 'list' operation
+          include_completed:
+            type: boolean
+            description: |
+              Include archived sub-agents in list (list only, default: false).
+            default: false
+        
+        required: [operation]
+
+# Web UI configuration
+web_ui:
+  button:
+    enabled: true
+    text: "Sub-Agents"
+    icon: "🤖"
+  
+  panel:
+    enabled: true
+    title: "Sub-Agent Manager"
+    endpoint: "/plugins/{{ name }}/panel"
+    type: "iframe"
+    width: "1000px"
+    height: "800px"
+
+# Hook configuration
+hooks:
+  - name: inject_sub_agent_context
+    type: pre_llm_call
+    enabled: true
+    description: |
+      Injects active sub-agent information into system prompt before LLM calls.
+      Provides coordinator agent with awareness of available sub-agents.
+    timeout: 5.0
+    order:
+      after: ["begin"]  # Run after initialization hooks
+      before: ["end"]   # Run before finalization hooks

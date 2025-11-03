@@ -152,6 +152,21 @@ plugins:
       host: 127.0.0.1
       port: 4002
     
+    sub_agent_manager:
+      type: sub_agent_manager
+      enabled: true
+      max_nesting_depth: 5      
+#      allowed_agents:
+#        - basic_agent
+#        - web_research_agent
+#        - financial_analyst_agent      
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 5
+          format: "markdown"
+    
     ssh_control:
       type: ssh_control
       enabled: true
@@ -237,6 +252,7 @@ plugins:
             - "sequential_thinking/*"
             - "todo/*"
             - "memory/*"
+            - "sub_agent_manager/*"
         
         hooks:
           enabled: true
@@ -459,6 +475,36 @@ plugins:
         tags: ["web", "research", "meta"]
         category: "search"
         visibility: "both"
+    
+    # Dedicated test agent for sub-agent management
+    sub_agent_test_coordinator:
+      type: basic_agent
+      enabled: true
+      description: "Test coordinator for sub-agent management system - spawns and manages sub-agents"
+      
+      agent_config:
+        llm_profile: normal
+        max_steps: 20
+        system_template: "config/prompts/system_prompt.yaml"
+        
+        tools:
+          allowed:
+            - "sub_agent_manager/*"
+        
+        hooks:
+          enabled: true
+          overrides:
+            sub_agent_manager.inject_sub_agent_context:
+              enabled: true
+            markdown_formatter.format_markdown_output:
+              enabled: true
+      
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["test", "sub-agent", "coordinator", "development"]
+        category: "test"
+        visibility: "ui"
 
 # ================================
 # Hook Configuration

@@ -164,6 +164,30 @@ window.AgentSystem.PluginManager = {
             // Collect head styles so we can inject them explicitly (the later code moves link/style from tempDiv)
             const headLinks = Array.from(doc.head.querySelectorAll('link[rel="stylesheet"]'));
             const headStyles = Array.from(doc.head.querySelectorAll('style'));
+
+            // Extract external scripts that need to be loaded globally BEFORE shadow DOM
+            const externalScripts = Array.from(doc.body.querySelectorAll('script[src]'));
+
+            // Load external scripts globally first (they register modules in window.AgentSystem)
+            if (externalScripts.length > 0) {
+              console.log(`Preloading ${externalScripts.length} external script(s) for ${plugin.id}`);
+              await Promise.all(externalScripts.map(scriptEl => {
+                return new Promise((resolve, reject) => {
+                  const script = document.createElement('script');
+                  script.src = scriptEl.src;
+                  script.onload = () => {
+                    console.log(`Loaded external script: ${scriptEl.src}`);
+                    resolve();
+                  };
+                  script.onerror = () => {
+                    console.error(`Failed to load script: ${scriptEl.src}`);
+                    reject(new Error(`Failed to load ${scriptEl.src}`));
+                  };
+                  document.head.appendChild(script);
+                });
+              }));
+            }
+
             // Build body HTML first
             tempDiv.innerHTML = doc.body ? doc.body.innerHTML : content;
             // Prepend collected head resources to preserve order relative to body content

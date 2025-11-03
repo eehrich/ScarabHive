@@ -118,6 +118,26 @@ class SessionManager:
                     return True
         return False
 
+    def _find_session_owner(self, session_id: str) -> Optional[str]:
+        """Find the user_id that owns a session.
+        
+        Args:
+            session_id: Session ID to find
+        
+        Returns:
+            user_id if session found, None otherwise
+        """
+        for user_dir in self.storage_path.iterdir():
+            if user_dir.is_dir():
+                session_file = user_dir / f"{session_id}.json"
+                if session_file.exists():
+                    try:
+                        session_data = self._read_session_file(session_file)
+                        return session_data.get("user_id")
+                    except Exception:
+                        pass
+        return None
+
     def _validate_session_data(self, data: Dict[str, Any]) -> None:
         """Validate session data structure.
         
@@ -309,6 +329,17 @@ class SessionManager:
             path = self._get_session_path(user_id, session_id)
             
             if not path.exists():
+                # Before raising NotFoundError, check if session exists for another user
+                # This prevents session ID conflicts across users
+                for existing_user_dir in self.storage_path.iterdir():
+                    if existing_user_dir.is_dir():
+                        other_user_path = existing_user_dir / f"{session_id}.json"
+                        if other_user_path.exists():
+                            # Session exists but belongs to another user
+                            raise SessionPermissionError(
+                                f"Session {session_id} already exists and belongs to another user"
+                            )
+                # Session truly doesn't exist
                 raise SessionNotFoundError(f"Session {session_id} not found")
             
             session_data = self._read_session_file(path)

@@ -116,7 +116,8 @@ def get_agent_with_llm_override(
 async def create_and_register_agent(
     config: AgentSystemConfig,
     registry: MCPRegistry,
-    agent_name: str
+    agent_name: str,
+    session_service=None
 ) -> Agent:
     """Create and register an agent if it doesn't already exist in registry.
     
@@ -127,6 +128,7 @@ async def create_and_register_agent(
         config: System configuration
         registry: MCP registry to register agent in
         agent_name: Name of the agent to create
+        session_service: Optional SessionService to inject into agent
         
     Returns:
         Agent instance (either newly created or existing from registry)
@@ -139,6 +141,9 @@ async def create_and_register_agent(
         existing_agent = registry.get(agent_name)
         if isinstance(existing_agent, Agent):
             logger.info(f"Using existing agent '{agent_name}' from registry")
+            # Update session_service for existing agent
+            if session_service and hasattr(existing_agent, '_session_service'):
+                existing_agent._session_service = session_service
             return existing_agent
     except KeyError:
         pass  # Agent doesn't exist, need to create it
@@ -171,8 +176,8 @@ async def create_and_register_agent(
     if not mcp_config.agent_config:
         raise ValueError(f"Agent '{agent_name}' has no agent_config section")
     
-    # Create the agent using the signature: Agent(name, system_config, mcp_config, registry)
-    agent = Agent(agent_name, config, mcp_config, registry)
+    # Create the agent using the signature: Agent(name, system_config, mcp_config, registry, session_service)
+    agent = Agent(agent_name, config, mcp_config, registry, session_service=session_service)
     
     # Make agent public so it shows up in tool lists if needed
     agent._mcp_public = True

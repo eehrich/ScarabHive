@@ -4,13 +4,14 @@ Session and request tracking for agent execution.
 This module handles:
 - Request-to-session mapping
 - Message appending to active requests
-- Message appending to persisted sessions  
+- Message appending to persisted sessions
 - Draining appended messages during execution
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 from ....llm.models import ChatMessage
@@ -22,22 +23,22 @@ logger = logging.getLogger(__name__)
 
 class SessionTracker:
     """Manages request/session lifecycle and message appending.
-    
+
     Responsibilities:
     - Track active requests and their associated sessions
     - Allow appending messages to active requests (for multi-turn conversations)
     - Allow appending messages directly to sessions
     - Drain pending appended messages during execution loops
-    
+
     Thread-safety: All public methods use asyncio.Lock for concurrent access.
-    
+
     Note: The _active_requests dict is shared with AgentRequestManager to ensure
     both components work with the same request entries.
     """
 
     def __init__(self, active_requests: Optional[Dict[str, Dict[str, Any]]] = None):
         """Initialize the session tracker.
-        
+
         Args:
             active_requests: Shared active requests dict (from AgentRequestManager).
                            If None, creates its own dict (for testing).
@@ -47,24 +48,27 @@ class SessionTracker:
         # The 'cancel' event is managed by AgentRequestManager
         # This dict is SHARED with AgentRequestManager for coordination
         self._active_requests: Dict[str, Dict[str, Any]] = active_requests if active_requests is not None else {}
-        
+
         # Persisted sessions: session_id -> List[ChatMessage]
         self._sessions: Dict[str, List[ChatMessage]] = {}
-        
+
+        # Session metadata: session_id -> Dict[str, Any] (user_id, etc.)
+        self._session_metadata: Dict[str, Dict[str, Any]] = {}
+
         # Request-to-session mapping: request_id -> session_id
         self._request_to_session: Dict[str, str] = {}
-        
+
         # Lock for thread-safe access
         self._lock = asyncio.Lock()
 
     async def append_user_message(self, request_id: str, content: str) -> bool:
         """
         Append a user message to an active request's conversation.
-        
+
         Args:
             request_id: The request ID to append to
             content: The message content
-            
+
         Returns:
             True if appended successfully, False if request not found
         """
@@ -74,7 +78,11 @@ class SessionTracker:
                 entry = self._active_requests[request_id]
                 if isinstance(entry, dict):
                     try:
-                        msg = ChatMessage(role="user", content=sanitize_for_llm(content))
+                        msg = ChatMessage(
+                            role="user",
+                            content=sanitize_for_llm(content),
+                            timestamp=datetime.now(timezone.utc)
+                        )
                         entry.setdefault('appended', []).append(msg)
                         # Notify run_events if it's waiting
                         try:
@@ -92,11 +100,11 @@ class SessionTracker:
     async def append_to_session(self, session_id: str, content: str) -> bool:
         """
         Append a user message directly to a persisted session.
-        
+
         Args:
             session_id: The session ID to append to
             content: The message content
-            
+
         Returns:
             True if appended successfully, False if session not found
         """
@@ -104,7 +112,11 @@ class SessionTracker:
         async with self._lock:
             if session_id in self._sessions:
                 try:
-                    msg = ChatMessage(role="user", content=sanitize_for_llm(content))
+                    msg = ChatMessage(
+                        role="user",
+                        content=sanitize_for_llm(content),
+                        timestamp=datetime.now(timezone.utc)
+                    )
                     self._sessions[session_id].append(msg)
                     logger.debug("Message appended to session %s", session_id)
                     return True
@@ -117,11 +129,11 @@ class SessionTracker:
     async def drain_appended_messages(self, request_id: str, messages: List[ChatMessage]) -> List[ChatMessage]:
         """
         Drain any appended messages for a request and add them to the conversation.
-        
+
         Args:
             request_id: The request ID to drain messages from
             messages: The current message list to extend
-            
+
         Returns:
             The updated messages list with appended messages added
         """
@@ -143,12 +155,12 @@ class SessionTracker:
     def register_request(self, request_id: str, session_id: str, request_entry: Dict[str, Any]) -> None:
         """
         Register a new active request's session mapping.
-        
+
         Args:
             request_id: The request ID
             session_id: The associated session ID
             request_entry: The request entry dict (should already be in shared _active_requests)
-        
+
         Note: The request_entry should already be registered in the shared _active_requests
         dict by AgentRequestManager. This method only sets up the session mapping.
         """
@@ -157,7 +169,7 @@ class SessionTracker:
             # If not already there, add it (shouldn't happen in normal flow)
             self._active_requests[request_id] = request_entry
             logger.debug("Request entry added to shared dict for %s (unexpected)", request_id)
-        
+
         # Ensure session exists
         self._sessions.setdefault(session_id, [])
         # Map request to session
@@ -166,7 +178,7 @@ class SessionTracker:
     def unregister_request(self, request_id: str) -> None:
         """
         Unregister an active request.
-        
+
         Args:
             request_id: The request ID to remove
         """
@@ -177,10 +189,10 @@ class SessionTracker:
     def get_session_for_request(self, request_id: str) -> Optional[str]:
         """
         Get the session ID associated with a request.
-        
+
         Args:
             request_id: The request ID
-            
+
         Returns:
             The session ID, or None if not found
         """
@@ -189,10 +201,10 @@ class SessionTracker:
     def get_session_messages(self, session_id: str) -> List[ChatMessage]:
         """
         Get the persisted messages for a session.
-        
+
         Args:
             session_id: The session ID
-            
+
         Returns:
             The session's message history (empty list if session not found)
         """
@@ -201,20 +213,42 @@ class SessionTracker:
     def set_session_messages(self, session_id: str, messages: List[ChatMessage]) -> None:
         """
         Set the persisted messages for a session.
-        
+
         Args:
             session_id: The session ID
             messages: The messages to persist
         """
         self._sessions[session_id] = messages
 
+    def set_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
+        """
+        Set metadata for a session (e.g., user_id).
+
+        Args:
+            session_id: The session ID
+            metadata: Metadata dict (user_id, agent_name, etc.)
+        """
+        self._session_metadata[session_id] = metadata
+
+    def get_session_metadata(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get metadata for a session.
+
+        Args:
+            session_id: The session ID
+
+        Returns:
+            Metadata dict or None if not found
+        """
+        return self._session_metadata.get(session_id)
+
     def has_session(self, session_id: str) -> bool:
         """
         Check if a session exists.
-        
+
         Args:
             session_id: The session ID
-            
+
         Returns:
             True if session exists, False otherwise
         """
@@ -223,7 +257,7 @@ class SessionTracker:
     def get_all_session_ids(self) -> List[str]:
         """
         Get all session IDs.
-        
+
         Returns:
             List of session IDs
         """
@@ -232,10 +266,10 @@ class SessionTracker:
     def delete_session(self, session_id: str) -> bool:
         """
         Delete a session completely.
-        
+
         Args:
             session_id: The session ID to delete
-            
+
         Returns:
             True if session was deleted, False if it didn't exist
         """

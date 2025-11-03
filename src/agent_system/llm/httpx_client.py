@@ -66,7 +66,7 @@ class HTTPXOpenAIClient(LLMClient):
         self.verify = verify
         self.extra_params = extra_params
         self.capabilities = capabilities or {}
-        
+
         # Validate API type - HTTPX client only supports chat_completions
         if self.capabilities and hasattr(self.capabilities, 'default_api_type'):
             api_type = self.capabilities.default_api_type
@@ -75,7 +75,7 @@ class HTTPXOpenAIClient(LLMClient):
                 api_type = api_type.value
             else:
                 api_type = str(api_type) if api_type else 'chat_completions'
-            
+
             if api_type != 'chat_completions':
                 raise NotImplementedError(
                     f"HTTPX client only supports 'chat_completions' API. "
@@ -142,7 +142,7 @@ class HTTPXOpenAIClient(LLMClient):
         cancellation_token: Optional[CancellationToken] = None
     ):
         """Stream chat completion request with tools.
-        
+
         Yields:
             dict: Streaming chunks with different types:
                 {"type": "content_delta", "delta": str, "accumulated": str}
@@ -171,7 +171,7 @@ class HTTPXOpenAIClient(LLMClient):
         if self.capabilities and hasattr(self.capabilities, 'streaming') and not self.capabilities.streaming:
             # Use non-streaming request
             return await self._make_request_non_streaming(messages, tools, cancellation_token)
-        
+
         # Use streaming request (default behavior)
         final_result = None
         async for chunk in self._make_request_streaming(messages, tools, cancellation_token):
@@ -179,7 +179,7 @@ class HTTPXOpenAIClient(LLMClient):
                 # Extract all fields from final chunk (assistant, usage, etc.)
                 final_result = {k: v for k, v in chunk.items() if k != "type"}
                 break
-        
+
         return final_result if final_result else {"assistant": {"role": "assistant", "content": ""}}
 
     async def _make_request_non_streaming(
@@ -189,16 +189,16 @@ class HTTPXOpenAIClient(LLMClient):
         cancellation_token: Optional[CancellationToken] = None
     ) -> dict:
         """Make non-streaming HTTP POST request for models that don't support streaming.
-        
+
         Returns:
             dict: Response with 'assistant' key containing the assistant message
         """
-        
+
         # Build request payload - convert ChatMessage objects to dicts
         message_dicts = []
         for msg in messages:
             if hasattr(msg, 'model_dump'):
-                message_dicts.append(msg.model_dump(exclude_none=True))
+                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
             elif isinstance(msg, dict):
                 message_dicts.append(msg)
             else:
@@ -229,13 +229,13 @@ class HTTPXOpenAIClient(LLMClient):
                 client_kwargs = {"timeout": self._timeout}
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
-                
+
                 async with httpx.AsyncClient(**client_kwargs) as client:
                     logger.debug(f"HTTPX non-streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
 
                     # Make regular POST request (not streaming)
                     response = await client.post(url=url, headers=self._headers, json=payload)
-                    
+
                     # Handle rate limiting
                     if response.status_code == 429 and attempt < self.max_retries:
                         retry_after = self._parse_retry_after(response.headers.get("retry-after"))
@@ -243,17 +243,17 @@ class HTTPXOpenAIClient(LLMClient):
                         logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                         await asyncio.sleep(backoff_time)
                         continue
-                    
+
                     # Check for HTTP errors
                     if response.status_code >= 400:
                         error_text = response.text[:200] if response.text else ""
                         error_msg = f"HTTP {response.status_code}: {error_text}"
                         logger.error(f"HTTPX non-streaming request failed: {error_msg}")
                         raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
-                    
+
                     # Parse successful response
                     response_data = response.json()
-                    
+
                     # Extract assistant message from choices
                     if "choices" in response_data and len(response_data["choices"]) > 0:
                         assistant_msg = response_data["choices"][0]["message"]
@@ -262,7 +262,7 @@ class HTTPXOpenAIClient(LLMClient):
                         # Unexpected response format
                         logger.error(f"Unexpected response format: {response_data}")
                         return {"assistant": {"role": "assistant", "content": ""}}
-                    
+
             except httpx.HTTPStatusError:
                 raise  # Re-raise HTTP errors immediately
             except asyncio.CancelledError:
@@ -287,7 +287,7 @@ class HTTPXOpenAIClient(LLMClient):
         cancellation_token: Optional[CancellationToken] = None
     ):
         """Make streaming HTTP request that yields chunks.
-        
+
         Yields:
             dict: Chunks with types: content_delta, tool_call_delta, final
         """
@@ -297,7 +297,7 @@ class HTTPXOpenAIClient(LLMClient):
         for msg in messages:
             if hasattr(msg, 'model_dump'):
                 # ChatMessage object - convert to dict, exclude None values for API compatibility
-                message_dicts.append(msg.model_dump(exclude_none=True))
+                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
             elif isinstance(msg, dict):
                 # Already a dict
                 message_dicts.append(msg)
@@ -336,7 +336,7 @@ class HTTPXOpenAIClient(LLMClient):
                 # Only include verify if explicitly configured (None means use httpx default)
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
-                
+
                 async with httpx.AsyncClient(**client_kwargs) as client:
                     logger.debug(f"HTTPX streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
 
@@ -351,7 +351,7 @@ class HTTPXOpenAIClient(LLMClient):
                             logger.warning(f"Rate limited (429), retrying in {backoff_time}s")
                             await asyncio.sleep(backoff_time)
                             continue
-                        
+
                         # Check for errors without reading body (streaming response)
                         if response.status_code >= 400:
                             # Read the error body for streaming responses
@@ -365,50 +365,50 @@ class HTTPXOpenAIClient(LLMClient):
                         async for line in response.aiter_lines():
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
-                            
+
                             if not line or not line.startswith("data: "):
                                 continue
-                            
+
                             data = line[6:]  # Remove "data: " prefix
-                            
+
                             if data == "[DONE]":
                                 # Stream finished - yield final result
                                 assistant = {
                                     "role": "assistant",
                                     "content": "".join(accumulated_content) if accumulated_content else ""
                                 }
-                                
+
                                 # Add tool calls if any
                                 if accumulated_tool_calls:
                                     tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                                     assistant["tool_calls"] = tool_calls_list
-                                
+
                                 final_result = {"assistant": assistant}
-                                
+
                                 # Add usage if available
                                 if accumulated_usage:
                                     final_result["usage"] = accumulated_usage
-                                
+
                                 yield {"type": "final", **final_result}
                                 return  # Success - exit retry loop
-                            
+
                             try:
                                 chunk_data = json.loads(data)
                             except Exception:
                                 logger.debug(f"Failed to parse chunk data: {data[:100]}")
                                 continue
-                            
+
                             # Track usage if available in chunk
                             if "usage" in chunk_data:
                                 accumulated_usage = chunk_data["usage"]
-                            
+
                             # Process chunk
                             choices = chunk_data.get("choices", [])
                             if not choices:
                                 continue
-                            
+
                             delta = choices[0].get("delta", {})
-                            
+
                             # Handle content delta
                             if "content" in delta and delta["content"]:
                                 accumulated_content.append(delta["content"])
@@ -417,12 +417,12 @@ class HTTPXOpenAIClient(LLMClient):
                                     "delta": delta["content"],
                                     "accumulated": "".join(accumulated_content)
                                 }
-                            
+
                             # Handle tool call deltas
                             if "tool_calls" in delta:
                                 for tc_delta in delta["tool_calls"]:
                                     index = tc_delta.get("index", 0)
-                                    
+
                                     # Initialize tool call buffer if needed
                                     if index not in accumulated_tool_calls:
                                         accumulated_tool_calls[index] = {
@@ -430,18 +430,18 @@ class HTTPXOpenAIClient(LLMClient):
                                             "type": "function",
                                             "function": {"name": "", "arguments": ""}
                                         }
-                                    
+
                                     # Accumulate deltas
                                     if "id" in tc_delta:
                                         accumulated_tool_calls[index]["id"] = tc_delta["id"]
-                                    
+
                                     if "function" in tc_delta:
                                         func_delta = tc_delta["function"]
                                         if "name" in func_delta:
                                             accumulated_tool_calls[index]["function"]["name"] += func_delta["name"]
                                         if "arguments" in func_delta:
                                             accumulated_tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
-                                    
+
                                     # Yield delta with accumulated state
                                     yield {
                                         "type": "tool_call_delta",
@@ -508,7 +508,7 @@ class HTTPXOpenAIClient(LLMClient):
         for msg in messages:
             if hasattr(msg, 'model_dump'):
                 # ChatMessage object - convert to dict, exclude None values for API compatibility
-                message_dicts.append(msg.model_dump(exclude_none=True))
+                message_dicts.append(msg.model_dump(exclude_none=True, mode='json'))
             elif isinstance(msg, dict):
                 # Already a dict
                 message_dicts.append(msg)

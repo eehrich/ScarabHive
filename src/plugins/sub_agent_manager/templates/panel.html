@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sub-Agent Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #569cd6;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #1177bb;
+        }
+        
+        button.danger {
+            background: #c72e2e;
+        }
+        
+        button.danger:hover {
+            background: #e81123;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 28px;
+            font-weight: 600;
+            color: #4ec9b0;
+        }
+        
+        .agents-list {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        
+        .agent-item {
+            border-bottom: 1px solid #3e3e42;
+            padding: 15px 20px;
+            transition: background 0.2s;
+        }
+        
+        .agent-item:last-child {
+            border-bottom: none;
+        }
+        
+        .agent-item:hover {
+            background: #2d2d30;
+        }
+        
+        .agent-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .agent-id {
+            font-family: 'Monaco', 'Courier New', monospace;
+            color: #dcdcaa;
+            font-size: 14px;
+        }
+        
+        .agent-type {
+            display: inline-block;
+            background: #264f78;
+            color: #9cdcfe;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .agent-status {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-active {
+            background: #16825d;
+            color: #fff;
+        }
+        
+        .status-archived {
+            background: #6e6e6e;
+            color: #d4d4d4;
+        }
+        
+        .agent-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 8px;
+        }
+        
+        .agent-task {
+            font-size: 13px;
+            color: #d4d4d4;
+            margin-bottom: 10px;
+            font-style: italic;
+        }
+        
+        .agent-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .agent-actions button {
+            font-size: 12px;
+            padding: 5px 10px;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #858585;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        
+        input[type="text"], select {
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            width: 250px;
+        }
+        
+        input[type="text"]:focus, select:focus {
+            outline: none;
+            border-color: #0e639c;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 8px;
+            padding: 25px;
+            max-width: 600px;
+            width: 90%;
+        }
+        
+        .modal-header {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: #569cd6;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #858585;
+            font-size: 12px;
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Sub-Agent Manager</h1>
+        
+        <div class="controls">
+            <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
+            <button onclick="loadAgents()">🔄 Refresh</button>
+            <label style="color: #858585; margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <input type="checkbox" id="includeArchived" onchange="loadAgents()">
+                Show Archived
+            </label>
+        </div>
+        
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <div class="stat-label">Total Sub-Agents</div>
+                <div class="stat-value" id="statTotal">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Active</div>
+                <div class="stat-value" id="statActive">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Archived</div>
+                <div class="stat-value" id="statArchived">0</div>
+            </div>
+        </div>
+        
+        <div class="agents-list" id="agentsList">
+            <div class="empty-state">
+                <div class="empty-state-icon">📦</div>
+                <div>No sub-agents yet. Enter a session ID and create one.</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Details Modal -->
+    <div class="modal" id="detailsModal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">Sub-Agent Details</div>
+            <div id="detailsContent" style="padding: 20px;">
+                <div class="loading">Loading...</div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" onclick="closeDetailsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast Notification -->
+    <div id="toast" style="display: none; position: fixed; bottom: 20px; right: 20px; background: #333; color: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 10001; min-width: 250px;">
+        <span id="toastMessage"></span>
+    </div>
+    
+    <script>
+        const API_BASE = `/plugins/{{ plugin_name }}`;
+        let currentSessionId = '';
+        
+        // Get session ID from parent window if available (iframe context)
+        function getSessionId() {
+            try {
+                if (window.parent && window.parent.AgentSystem && window.parent.AgentSystem.ChatModule) {
+                    const sessionId = window.parent.AgentSystem.ChatModule.getCurrentSessionId();
+                    if (sessionId) {
+                        return sessionId;
+                    }
+                }
+            } catch (e) {
+                console.warn('Cannot access parent window session ID:', e);
+            }
+            
+            // Fallback to manual input
+            return document.getElementById('sessionIdInput').value.trim();
+        }
+        
+        async function loadAgents() {
+            currentSessionId = getSessionId();
+            if (!currentSessionId) {
+                showError('Please enter a session ID');
+                return;
+            }
+            
+            const includeArchived = document.getElementById('includeArchived').checked;
+            const agentsList = document.getElementById('agentsList');
+            agentsList.innerHTML = '<div class="loading">Loading...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents?session_id=${currentSessionId}&include_completed=${includeArchived}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                renderAgents(data.instances || []);
+                await loadStats();
+            } catch (error) {
+                console.error('Error loading agents:', error);
+                agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>Error: ${error.message}</div></div>`;
+            }
+        }
+        
+        async function loadStats() {
+            if (!currentSessionId) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/stats?session_id=${currentSessionId}`);
+                const stats = await response.json();
+                
+                document.getElementById('statTotal').textContent = stats.total || 0;
+                document.getElementById('statActive').textContent = stats.active || 0;
+                document.getElementById('statArchived').textContent = stats.archived || 0;
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        function renderAgents(agents) {
+            const agentsList = document.getElementById('agentsList');
+            
+            if (!agents.length) {
+                agentsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div>No sub-agents found</div></div>';
+                return;
+            }
+            
+            agentsList.innerHTML = agents.map(agent => `
+                <div class="agent-item">
+                    <div class="agent-header">
+                        <span class="agent-id">${agent.instance_id}</span>
+                        <span class="agent-status status-${agent.status}">${agent.status}</span>
+                    </div>
+                    <div class="agent-meta">
+                        <span class="agent-type">${agent.agent_type}</span>
+                        <span>Created: ${new Date(agent.created_at).toLocaleString()}</span>
+                        <span>Last used: ${new Date(agent.last_used).toLocaleString()}</span>
+                    </div>
+                    <div class="agent-task">"${agent.task_summary || 'No task summary'}"</div>
+                    <div class="agent-actions">
+                        ${agent.status === 'active' ? `
+                            <button onclick="viewDetails('${agent.instance_id}')">ℹ️ Details</button>
+                            <button class="danger" onclick="archiveAgent('${agent.instance_id}')">🗑️ Archive</button>
+                        ` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        async function archiveAgent(instanceId) {
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents/${instanceId}?session_id=${currentSessionId}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || 'Failed to archive sub-agent');
+                }
+                
+                await loadAgents();
+                showSuccess(`Archived sub-agent: ${instanceId}`);
+            } catch (error) {
+                console.error('Error archiving agent:', error);
+                showError(error.message);
+            }
+        }
+        
+        async function viewDetails(instanceId) {
+            const modal = document.getElementById('detailsModal');
+            const content = document.getElementById('detailsContent');
+            
+            modal.style.display = 'flex';
+            content.innerHTML = '<div class="loading">Loading...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/sub-agents/${instanceId}?session_id=${currentSessionId}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                const recentActivity = data.recent_activity || [];
+                const activityHtml = recentActivity.length > 0
+                    ? recentActivity.map(msg => `
+                        <div style="margin-bottom: 15px; padding: 10px; background: #2a2a2a; border-radius: 6px;">
+                            <div style="color: #58a6ff; font-weight: 500; margin-bottom: 5px;">${escapeHtml(msg.role)}</div>
+                            <div style="color: #e6edf3; white-space: pre-wrap;">${escapeHtml(msg.content)}</div>
+                        </div>
+                    `).join('')
+                    : '<div style="color: #858585;">No recent activity</div>';
+                
+                content.innerHTML = `
+                    <div style="display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; margin-bottom: 20px; color: #e6edf3;">
+                        <div style="color: #858585;">Instance ID:</div>
+                        <div style="font-family: monospace;">${escapeHtml(data.instance_id)}</div>
+                        <div style="color: #858585;">Agent Type:</div>
+                        <div>${escapeHtml(data.agent_type)}</div>
+                        <div style="color: #858585;">Status:</div>
+                        <div style="color: ${data.status === 'active' ? '#56d364' : '#858585'};">${escapeHtml(data.status)}</div>
+                        <div style="color: #858585;">Messages:</div>
+                        <div>${data.message_count}</div>
+                    </div>
+                    <div style="border-top: 1px solid #30363d; padding-top: 15px;">
+                        <div style="color: #858585; margin-bottom: 10px; font-weight: 500;">Recent Activity:</div>
+                        <div style="max-height: 300px; overflow-y: auto;">${activityHtml}</div>
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Error viewing details:', error);
+                content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+        
+        function closeDetailsModal() {
+            document.getElementById('detailsModal').style.display = 'none';
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function showError(message) {
+            showToast(message, 'error');
+        }
+        
+        function showSuccess(message) {
+            showToast(message, 'success');
+        }
+        
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toastMessage');
+            
+            toastMessage.textContent = message;
+            toast.style.display = 'block';
+            toast.style.background = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : '#333';
+            
+            setTimeout(() => {
+                toast.style.display = 'none';
+            }, 3000);
+        }
+        
+        // Auto-load on page load if session ID is available from parent
+        window.addEventListener('DOMContentLoaded', () => {
+            const sessionId = getSessionId();
+            if (sessionId) {
+                // Hide session ID input if we got it from parent
+                const inputContainer = document.querySelector('.controls');
+                const sessionInput = document.getElementById('sessionIdInput');
+                if (sessionInput && sessionInput.value === '') {
+                    sessionInput.style.display = 'none';
+                    const label = inputContainer.querySelector('label');
+                    if (label) label.style.display = 'none';
+                }
+                
+                // Auto-load agents
+                loadAgents();
+            }
+        });
+    </script>
+</body>
+</html>

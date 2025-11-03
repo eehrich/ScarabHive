@@ -27,12 +27,29 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
     def fake_entry_agent(name, cfg, registry=None, **kwargs):  # matches factory signature
         captured['name'] = name
         captured['cfg'] = cfg
-        return DummyAgent()
+        agent = DummyAgent()
+        agent.registry = registry
+        return agent
 
     # Monkeypatch load_settings to provide a minimal AgentSystemConfig-like object
-    from agent_system.config.models import AgentSystemConfig, LLMSystemConfig, LLMModelConfig
+    from agent_system.config.models import AgentSystemConfig, LLMSystemConfig, LLMModelConfig, MCPConfig, AgentConfig
     mock_config = AgentSystemConfig(llm_system=LLMSystemConfig(models={"test-model": LLMModelConfig(provider="openai", model="test-model")}, profiles={}))
     monkeypatch.setattr(cli, "load_settings", lambda path=None: mock_config)
+
+    # Mock bootstrap_servers to not load any plugins
+    monkeypatch.setattr('agent_system.agent_cli.bootstrap_servers', lambda config, registry: None)
+
+    # Mock _get_plugins_config to return a config with agent_config
+    from agent_system.config.models import PluginsConfig
+    mock_plugins_cfg = PluginsConfig(servers={
+        "basic_agent": MCPConfig(
+            type="agent",
+            enabled=True,
+            agent_config=AgentConfig(system_prompt="test")
+        )
+    })
+    monkeypatch.setattr('agent_system.agent_cli._get_plugins_config', lambda cfg: mock_plugins_cfg)
+
     # Patch the Agent class used by CLI to return our fake entry agent so main() will use it.
     # The CLI constructs the Agent as Agent(name, system_config, mcp_config, registry).
     # Call fake_entry_agent(name, system_config, registry) to capture the runtime config.

@@ -22,6 +22,7 @@ This README is a concise developer and user guide matching this repository layou
   - [Script Interpreter](src/plugins/script_interpreter/README.md) — Sandboxed Python code execution
   - [Sequential Thinking](src/plugins/sequential_thinking/README.md) — Step-by-step reasoning with branching and revision
   - [SSH Control](src/plugins/ssh_control/README.md) — Multi-machine SSH management with web UI
+  - [Sub-Agent Manager](src/plugins/sub_agent_manager/README.md) — Persistent sub-agent instances with conversation continuity
   - [Twitter Search](src/plugins/twitter_search/README.md) — Twitter/X public content search
   - [User Management](src/plugins/user_management/) — Web-based user administration and role management
   - [Weather](src/plugins/weather/README.md) — Weather information with multiple data sources
@@ -74,6 +75,50 @@ This README is a concise developer and user guide matching this repository layou
 * Structured configuration with include support and environment overrides
 * Test-first design with extensive pytest suite
 * Simplified CLI entrypoint (legacy `cli_agent` alias removed; use the configured `entry_agent` name)
+
+## Sub-Agent Management
+
+The Sub-Agent Manager plugin enables meta-agents to spawn and coordinate persistent sub-agent instances that maintain full conversation context across multiple requests.
+
+**Key Capabilities:**
+- **Persistent State**: Sub-agents preserve conversation history for continuity
+- **Nested Hierarchies**: Support up to 5 levels of sub-agent nesting
+- **Automatic Context Injection**: Active sub-agents automatically appear in parent agent prompts
+- **Parallel Execution**: Create multiple specialized sub-agents concurrently
+- **Session Tracking**: Full audit trail with metadata and timestamps
+
+**Quick Example:**
+
+```python
+# Create a research sub-agent
+{
+  "tool": "manage_sub_agent",
+  "arguments": {
+    "operation": "create",
+    "agent_type": "web_research_agent",
+    "task": "Research quantum computing developments"
+  }
+}
+# Returns: {"instance_id": "sub_web_research_001", "result": "..."}
+
+# Continue the conversation with context preserved
+{
+  "tool": "manage_sub_agent",
+  "arguments": {
+    "operation": "continue",
+    "instance_id": "sub_web_research_001",
+    "message": "Focus on IBM's quantum roadmap"
+  }
+}
+```
+
+**Use Cases:**
+- Multi-stage workflows (research → analysis → report)
+- Iterative refinement with domain experts
+- Long-running tasks that need to resume
+- Parallel processing of independent sub-tasks
+
+See [Sub-Agent Usage Guide](docs/sub_agent_usage.md) for complete documentation and examples.
 
 ## Requirements
 - Python 3.11+
@@ -276,14 +321,14 @@ plugins:
   # Plugin discovery
   plugin_dirs:
     - src/plugins
-  
+
   # Individual plugin servers
   servers:
     datetime:
       type: datetime
       enabled: true
       description: "Date and time operations"
-    
+
     web_scraper:
       type: web_scraper
       enabled: true
@@ -666,25 +711,25 @@ Edit `config/mcp_server_mode.yaml`:
 server_mode:
   enabled: true
   endpoint: "/mcp"
-  
+
   # Plugin exposure
   expose_plugins:
     - "*"  # Expose all enabled plugins, or list specific ones: ["datetime", "web_scraper"]
-  
+
   # Authentication
   authentication:
     required: true
     methods:
       - jwt
       - api_key
-  
+
   # Rate limiting
   rate_limit:
     enabled: true
     requests_per_minute: 60
     requests_per_hour: 1000
     burst_size: 10
-  
+
   # Session management
   session_ttl: 3600  # Session timeout in seconds (1 hour)
 ```
@@ -715,15 +760,15 @@ transport = HTTPStreamingTransport(
 async with Client(server_name="AgentSystem") as client:
     # Connect
     await client.connect(transport)
-    
+
     # Initialize session
     await client.initialize(client_info={"name": "MyClient", "version": "1.0"})
-    
+
     # List available tools
     tools = await client.list_tools()
     for tool in tools.tools:
         print(f"Tool: {tool.name} - {tool.description}")
-    
+
     # Call a tool
     result = await client.call_tool("tool_name", {"param": "value"})
     print(result)
