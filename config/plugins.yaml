@@ -229,49 +229,7 @@ plugins:
     # These agents are created from plugin types with custom configurations
     # Previously defined in config/agents.yaml (now consolidated here)
     
-    meta_agent:
-      type: basic_agent
-      enabled: true
-      description: "Meta Agent for orchestrating other agents and managing complex tasks"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 50
-        
-        system_template: "config/prompts/meta_agent_prompt.yaml"
-        
-        tools:
-          allowed:
-            - "sysadmin_agent/*"
-            - "meta_web_research_agent/*"
-            #- "financial_analyst_agent/*"
-            #- "code_reviewer_agent/*"
-            - "basic_agent/*"
-            - "basic_operations/*"
-            - "datetime/*"
-            - "sequential_thinking/*"
-            - "todo/*"
-            - "memory/*"
-            - "sub_agent_manager/*"
-        
-        hooks:
-          enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
-            todo.inject_todo_tasks:
-              enabled: true
-            memory.inject_memory_context:
-              enabled: true
-            sequential_thinking.inject_active_sessions:
-              enabled: true
-      
-      metadata:
-        author: "AgentSystem"
-        version: "1.0.0"
-        tags: ["meta", "orchestration", "management"]
-        category: "meta"
-        visibility: "ui"
+  
     
     financial_analyst_agent:
       type: basic_agent

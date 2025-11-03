@@ -12,6 +12,7 @@ includes:
   - plugins.yaml
   - mcp_servers.yaml
   - mcp_server_mode.yaml
+  - agents/meta_agent.yaml
 
 # Context information automatically added to prompts
 context:

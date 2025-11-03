@@ -15,6 +15,31 @@ import yaml
 from .models import AgentSystemConfig, MCPConfig
 
 
+def deep_merge(base: dict, overlay: dict) -> dict:
+    """Deep merge two dictionaries. Overlay values override base values.
+    
+    For nested dicts, merges recursively. For lists and other types, overlay replaces base.
+    
+    Args:
+        base: Base dictionary
+        overlay: Dictionary to merge on top of base
+        
+    Returns:
+        Merged dictionary
+    """
+    result = dict(base)
+    
+    for key, value in overlay.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            # Recursively merge nested dicts
+            result[key] = deep_merge(result[key], value)
+        else:
+            # Replace value (including lists, primitives, etc.)
+            result[key] = value
+    
+    return result
+
+
 def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     """Load and return an `AgentSystemConfig` using environment variables and
     optional YAML config file. Environment variables take precedence for
@@ -60,8 +85,12 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                         data["llm_system"] = part
                     
                     # New split structure (Epic 0044)
+                    # Deep merge plugins to allow multiple files to contribute agents/servers
                     if "plugins" in part:
-                        data["plugins"] = part["plugins"]
+                        if "plugins" in data:
+                            data["plugins"] = deep_merge(data["plugins"], part["plugins"])
+                        else:
+                            data["plugins"] = part["plugins"]
                     
                     if "external_servers" in part:
                         # mcp_servers.yaml uses "external_servers" key
