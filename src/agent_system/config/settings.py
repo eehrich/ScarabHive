@@ -11,6 +11,7 @@ from typing import Optional
 from pathlib import Path
 import os
 import yaml
+import glob as glob_module
 
 from .models import AgentSystemConfig, MCPConfig
 
@@ -67,6 +68,33 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
         # Start with the master config as base
         data = dict(master)
+
+        # Expand wildcards in includes list
+        expanded_includes = []
+        for inc in includes:
+            # Check if pattern contains wildcards
+            if '*' in inc or '?' in inc or '[' in inc:
+                # Resolve relative to config file directory
+                if not Path(inc).is_absolute():
+                    pattern = str(cfg_path.parent / inc)
+                else:
+                    pattern = inc
+                
+                # Expand glob pattern
+                matched_files = sorted(glob_module.glob(pattern))
+                if matched_files:
+                    # Make paths relative to config dir for consistency
+                    for matched in matched_files:
+                        rel_path = Path(matched).relative_to(cfg_path.parent)
+                        expanded_includes.append(str(rel_path))
+                else:
+                    # No matches - keep original pattern for error reporting
+                    expanded_includes.append(inc)
+            else:
+                # No wildcards - keep as is
+                expanded_includes.append(inc)
+        
+        includes = expanded_includes
 
         # Load each included file and merge into specific sections
         for inc in includes:

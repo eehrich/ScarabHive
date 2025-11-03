@@ -4,6 +4,8 @@
 
 The AgentSystem configuration supports splitting configuration across multiple YAML files using the `includes` mechanism. When multiple files define the same top-level key (e.g., `plugins`), they are **deep merged** instead of being overwritten.
 
+**NEW**: Wildcard patterns are supported in includes! Use `agents/*.yaml` to include all agent files.
+
 ## Deep Merge Behavior
 
 - **Nested dictionaries**: Recursively merged (overlay values override base values)
@@ -15,10 +17,19 @@ The AgentSystem configuration supports splitting configuration across multiple Y
 ### Main config.yaml
 ```yaml
 includes:
+  - llm.yaml
   - plugins.yaml
-  - agents/meta_agent.yaml
-  - agents/sysadmin_agent.yaml
+  - mcp_servers.yaml
+  - mcp_server_mode.yaml
+  - agents/*.yaml         # Wildcard: includes ALL .yaml files in agents/ directory
 ```
+
+**Wildcard Patterns Supported:**
+- `*.yaml` - All YAML files in current directory
+- `agents/*.yaml` - All YAML files in agents/ subdirectory
+- `config/**/*.yaml` - All YAML files recursively (use with caution!)
+
+**Note**: Wildcard matches are sorted alphabetically to ensure consistent load order.
 
 ### plugins.yaml
 ```yaml
@@ -89,11 +100,40 @@ plugins:
 2. **No Overwrites**: Multiple files can contribute to the same configuration section
 3. **Clean Separation**: Keep `plugins.yaml` for system plugins and separate files for agents
 4. **Maintainability**: Easier to manage when each agent has 50+ lines of config
+5. **Wildcard Support**: Automatically include all agent files without listing each one
+6. **Consistent Load Order**: Wildcard matches sorted alphabetically for predictability
+
+## Wildcard Include Examples
+
+```yaml
+# Include all agent files from agents/ directory
+includes:
+  - agents/*.yaml
+
+# Include specific subdirectories
+includes:
+  - agents/production/*.yaml
+  - agents/experimental/*.yaml
+
+# Mix explicit and wildcard includes
+includes:
+  - llm.yaml
+  - plugins.yaml
+  - agents/*.yaml
+  - custom/special_agent.yaml
+```
+
+**Wildcard Processing:**
+1. Patterns are resolved relative to the config file directory
+2. Matches are sorted alphabetically for consistent load order
+3. If a pattern matches no files, it's silently ignored
+4. Standard glob patterns supported: `*`, `?`, `[abc]`, `**` (recursive)
 
 ## Implementation
 
 See `src/agent_system/config/settings.py`:
 - `deep_merge()` function handles recursive dictionary merging
+- Wildcard expansion using Python's `glob` module
 - Applied specifically to `plugins` key to allow multiple files to contribute agents
 
 ## Testing
