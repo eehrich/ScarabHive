@@ -912,6 +912,7 @@ class Agent(MCPServer):
             # Streaming LLM: zero-overhead real-time tokens
             accumulated_content = []
             final_assistant = None
+            final_usage = None  # Store usage data from final chunk
 
             async for chunk in llm.chat_tools_streaming(messages, tools_schema, cancellation_token=cancellation_token):
                 chunk_type = chunk.get("type")
@@ -932,10 +933,16 @@ class Agent(MCPServer):
 
                 elif chunk_type == "final":
                     final_assistant = chunk["assistant"]
+                    # Preserve usage data from final chunk
+                    if "usage" in chunk:
+                        final_usage = chunk["usage"]
 
-            # Yield final response
+            # Yield final response with usage data
             if final_assistant:
-                yield {"type": "thinking_complete", "assistant": final_assistant}
+                result = {"type": "thinking_complete", "assistant": final_assistant}
+                if final_usage:
+                    result["usage"] = final_usage
+                yield result
             else:
                 yield {"type": "thinking_complete", "assistant": {"role": "assistant", "content": "".join(accumulated_content)}}
 
@@ -1109,6 +1116,9 @@ class Agent(MCPServer):
                         # app.py formats events for display, but we need raw Markdown in messages
                         import copy
                         llm_out = {"assistant": copy.deepcopy(event["assistant"])}
+                        # Preserve usage data if present in event
+                        if "usage" in event:
+                            llm_out["usage"] = event["usage"]
                         # Yield thinking_complete to WebUI for final formatting
                         yield event
 
