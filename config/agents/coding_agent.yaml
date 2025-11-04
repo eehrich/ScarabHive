@@ -20,6 +20,7 @@ plugins:
             - "script_interpreter/*"
             - "log_viewer/*"
             - "web_scraper/*"
+            - "file_operations_*"
 
         hooks:
           enabled: true

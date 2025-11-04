@@ -123,6 +123,29 @@ plugins:
       type: script_interpreter
       enabled: true
     
+    file_operations:
+      type: file_operations
+      enabled: true
+      allowed_directories:
+        - src
+        - docs
+        - tests
+        - tmp
+        - config
+        - data
+      max_file_size_mb: 10
+      search:
+        enable_indexing: true
+        auto_reindex_interval: 300  # 5 minutes
+        exclude_patterns:
+          - "**/.git/**"
+          - "**/__pycache__/**"
+          - "**/node_modules/**"
+          - "**/.venv/**"
+          - "**/*.min.js"
+          - "**/*.min.css"
+          - "**/*.map"
+    
 
     
 

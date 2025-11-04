@@ -35,6 +35,7 @@ dependencies = [
     "brotli>=1.1.0",
     "Pillow>=10.0.0",
     "asyncssh>=2.13.0",
+    "aiofiles>=24.1.0",
     "python-jose[cryptography]>=3.3.0",
     "bcrypt>=5.0.0",
     "python-multipart>=0.0.9",
@@ -68,6 +69,7 @@ mcp-http-server = "plugins.http_server.__main__:cli_main"
 mcp-script-interpreter = "plugins.script_interpreter.__main__:cli_main"
 mcp-basic-operations = "plugins.basic_operations.__main__:cli_main"
 mcp-todo-management = "plugins.todo_management.__main__:cli_main"
+mcp-file-operations = "plugins.file_operations.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

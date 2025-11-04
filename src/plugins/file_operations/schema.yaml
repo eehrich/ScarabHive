@@ -1,0 +1,208 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_read_file"
+      description: "Read contents of a text file. Supports offset/limit for large files."
+      parameters:
+        type: object
+        properties:
+          file_path:
+            type: string
+            description: "Absolute or relative path to file"
+          offset:
+            type: integer
+            minimum: 0
+            description: "Start reading from this line number (0-indexed)"
+          limit:
+            type: integer
+            minimum: 1
+            description: "Maximum number of lines to read"
+          encoding:
+            type: string
+            default: "utf-8"
+            description: "Text encoding (utf-8, latin-1, etc.)"
+        required: ["file_path"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_create_file"
+      description: "Create a new text file. Fails if file already exists unless overwrite=true."
+      parameters:
+        type: object
+        properties:
+          file_path:
+            type: string
+            description: "Path where file will be created"
+          content:
+            type: string
+            description: "File content to write"
+          overwrite:
+            type: boolean
+            default: false
+            description: "Allow overwriting existing file"
+          create_dirs:
+            type: boolean
+            default: true
+            description: "Auto-create parent directories"
+          encoding:
+            type: string
+            default: "utf-8"
+            description: "Text encoding"
+        required: ["file_path", "content"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_edit_file"
+      description: "Edit an existing file. Supports append, replace, and insert modes."
+      parameters:
+        type: object
+        properties:
+          file_path:
+            type: string
+            description: "Path to file to edit"
+          mode:
+            type: string
+            enum: ["append", "replace", "insert"]
+            description: "Edit mode: append to end, replace string, or insert at line"
+          content:
+            type: string
+            description: "Content to add/insert (for append/insert modes)"
+          old_string:
+            type: string
+            description: "String to replace (for replace mode)"
+          new_string:
+            type: string
+            description: "Replacement string (for replace mode)"
+          line_number:
+            type: integer
+            minimum: 0
+            description: "Line number to insert at (for insert mode, 0-indexed)"
+        required: ["file_path", "mode"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_delete_file"
+      description: "Delete a file. Requires confirmation for safety."
+      parameters:
+        type: object
+        properties:
+          file_path:
+            type: string
+            description: "Path to file to delete"
+          confirm:
+            type: boolean
+            description: "Must be true to confirm deletion"
+        required: ["file_path", "confirm"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_directory"
+      description: "List directory contents with optional filtering and recursion."
+      parameters:
+        type: object
+        properties:
+          dir_path:
+            type: string
+            description: "Path to directory"
+          recursive:
+            type: boolean
+            default: false
+            description: "Recursively list subdirectories"
+          pattern:
+            type: string
+            description: "Glob pattern to filter files (e.g., '*.py')"
+          include_hidden:
+            type: boolean
+            default: false
+            description: "Include hidden files (starting with .)"
+        required: ["dir_path"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_file_exists"
+      description: "Check if a file or directory exists."
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "Path to check"
+        required: ["path"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_file_info"
+      description: "Get file metadata (size, modified time, permissions)."
+      parameters:
+        type: object
+        properties:
+          file_path:
+            type: string
+            description: "Path to file"
+        required: ["file_path"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_search_files"
+      description: |
+        Search for files by name pattern using glob syntax. Fast indexed search.
+        Examples: "*.py", "**/*.test.ts", "src/**/models/*.py"
+      parameters:
+        type: object
+        properties:
+          pattern:
+            type: string
+            description: "Glob pattern for file search (e.g., '*.py', '**/*.test.js')"
+          max_results:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+            description: "Maximum number of files to return"
+        required: ["pattern"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_grep_search"
+      description: |
+        Search for text patterns across files. Supports literal strings and regex.
+        Similar to GitHub Copilot's grep_search tool - fast indexed search with context.
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Search query (literal text or regex pattern)"
+          is_regex:
+            type: boolean
+            default: false
+            description: "Treat query as regex pattern"
+          include_pattern:
+            type: string
+            description: "Only search in files matching this glob (e.g., '**/*.py')"
+          case_sensitive:
+            type: boolean
+            default: false
+            description: "Case-sensitive search"
+          max_results:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+            description: "Maximum number of matches to return"
+          context_lines:
+            type: integer
+            minimum: 0
+            maximum: 10
+            default: 2
+            description: "Number of context lines before/after match"
+        required: ["query"]
+        additionalProperties: false

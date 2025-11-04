@@ -25,6 +25,7 @@ plugins:
             - "todo/*"
             - "memory/*"
             - "sub_agent_manager/*"
+            - "file_operations_*"
         
         hooks:
           enabled: true
