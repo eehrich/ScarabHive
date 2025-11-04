@@ -50,6 +50,10 @@ This README is a concise developer and user guide matching this repository layou
   - CLI commands for listing, validation, and inspection
   - API endpoints for programmatic access
   - See [Configuration-Based Agents Guide](docs/config_based_agents.md) for details
+* **Centralized Initialization Service**: Single bootstrap path powers API, CLI, and lightweight runners
+  - Lazily provisions `SessionManager` and `SessionService`
+  - Ensures all agents receive shared dependency injection (critical for sub-agent manager)
+  - Prevents duplicate plugin bootstrap when mixing entry points within the same process
 * **MCP Server Mode (Epic 0037)**: Expose AgentSystem as a remote MCP server
   - Activated plugins become MCP tools accessible to remote MCP clients
   - JSON-RPC 2.0 protocol with HTTP Streamable Transport

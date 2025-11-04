@@ -227,7 +227,21 @@ class Agent(MCPServer):
     ) -> AsyncGenerator[dict, None]
 ```
 
-#### 4.2.4 Plugin Registry (`plugins/registry.py`)
+#### 4.2.4 Initialization Service (`services/initialization_service.py`)
+
+**Responsibilities:**
+- Centralized bootstrap for all entry points (API, CLI, lightweight runner)
+- Lazily provision `SessionManager` and `SessionService`
+- Invoke `bootstrap_servers()` once per process and inject dependencies into every agent instance
+- Coordinate with MCP integration to avoid duplicate initialization via `servers_bootstrapped` flag
+
+**Key Capabilities:**
+- Works with both `MCPRegistry` (CLI) and `PluginMCPRegistry` (API singleton)
+- Injects shared services (currently `session_service`, future dependencies via `agent_injection` helpers)
+- Provides specialized helpers (`initialize_for_api`, `initialize_for_cli`, `bootstrap_and_inject`)
+- Ensures consistent dependency graph for sub-agent management and hooks
+
+#### 4.2.5 Plugin Registry (`plugins/registry.py`)
 
 **Responsibilities:**
 - Plugin discovery (filesystem + config)
@@ -239,7 +253,7 @@ class Agent(MCPServer):
 - Config-based agent registration
 - Lazy initialization support
 
-#### 4.2.5 MCP Integration (`mcp/integration.py`)
+#### 4.2.6 MCP Integration (`mcp/integration.py`)
 
 **Responsibilities:**
 - External MCP server connections
@@ -252,7 +266,7 @@ class Agent(MCPServer):
 - `MCPHTTPServer` - Server mode
 - `ToolCache` - Tool list caching
 
-#### 4.2.6 Hook System (`hooks/`)
+#### 4.2.7 Hook System (`hooks/`)
 
 **Responsibilities:**
 - Lifecycle event interception
@@ -268,7 +282,7 @@ class Agent(MCPServer):
 - `format_output` - Output formatting
 - `session_start/end` - Session lifecycle
 
-#### 4.2.7 Configuration System (`config/`)
+#### 4.2.8 Configuration System (`config/`)
 
 **Responsibilities:**
 - Multi-file YAML loading
@@ -402,7 +416,10 @@ User Request (HTTP/CLI)
          ▼
    Agent Service
          │
-         ├─► Status Bus (emit "starting")
+     ├─► Ensure InitializationService bootstrapped registry & injections
+     │      │
+     │      └─► Shared SessionService available for agents/hooks
+     ├─► Status Bus (emit "starting")
          │
          ▼
    Agent.run_events()
@@ -450,10 +467,11 @@ Load config/config.yaml
    ▼
 Initialize Components
    │
-   ├─► LLM Clients (from llm.yaml)
-   ├─► MCP Integration (from mcp_servers.yaml)
-   ├─► Plugin Registry (discover + config agents)
-   ├─► Hook System (load hooks from plugins)
+  ├─► InitializationService (SessionManager + SessionService singletons)
+  ├─► LLM Clients (from llm.yaml)
+  ├─► MCP Integration (from mcp_servers.yaml)
+  ├─► Plugin Registry (discover + config agents)
+  ├─► Hook System (load hooks from plugins)
    │
    ▼
 Ready for Requests

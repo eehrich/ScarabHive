@@ -153,6 +153,7 @@ agent-run "Task" --no-color
 - Session persistence (auto session-id)
 - Status streaming to stderr
 - Hook-based output formatting
+- Bootstraps registry and shared session service via `InitializationService.initialize_for_cli()`
 
 **Code Structure:**
 ```python
@@ -168,11 +169,16 @@ async def main_async(
     # 1. Load configuration
     config = load_settings()
     
-    # 2. Initialize system
-    registry = await initialize_system(config)
+    # 2. Initialize system (delegates to InitializationService)
+    registry, session_service = await initialize_system(config)
     
     # 3. Create agent
-    agent = await create_agent(config, registry, agent_name)
+    agent = await create_agent(
+        config,
+        registry,
+        agent_name,
+        session_service=session_service,
+    )
     
     # 4. Execute request (with status subscriber)
     result = await run_agent_request(
@@ -205,6 +211,7 @@ def main() -> None:
 - Session operations
 - Configuration inspection
 - Admin tasks
+- Reuses `InitializationService` to keep CLI bootstrap identical to API entry points
 
 **Command Categories:**
 
@@ -348,10 +355,13 @@ async def status_subscriber(
 ##### agent_runner.py
 
 ```python
+from agent_system.services.session_service import SessionService
+
 async def create_and_register_agent(
     config: AgentSystemConfig,
     registry: MCPRegistry,
-    agent_name: str
+    agent_name: str,
+    session_service: SessionService | None = None,
 ) -> Agent:
     """Shared logic to create and register an agent"""
     
@@ -365,6 +375,9 @@ async def create_and_register_agent(
         system_template=agent_config.system_template,
         ...
     )
+
+    if session_service is not None:
+        agent._session_service = session_service
     
     # Register in MCP registry
     registry.register(agent_name, agent)
@@ -795,7 +808,7 @@ Parse Arguments (argparse)
 main_async()
     │
     ├─► Load configuration (ConfigService)
-    ├─► Initialize system (bootstrap plugins)
+    ├─► Initialize system (InitializationService bootstrap + injection)
     ├─► Create agent (Agent factory)
     │
     ▼

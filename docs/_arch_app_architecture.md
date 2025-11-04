@@ -176,7 +176,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 - `_session_manager` - Session lifecycle
 - `_app_registry` - MCP server registry
 
-#### 3.2.2 API Endpoints (`api/endpoints.py`)
+#### 3.2.2 Initialization Service (`services/initialization_service.py`)
+
+**Responsibilities:**
+- Provide centralized bootstrap for FastAPI entry point
+- Lazily create and cache `SessionManager`/`SessionService`
+- Invoke `bootstrap_servers()` once and inject shared dependencies into every agent via `agent_injection`
+- Coordinate with `MCPIntegration` through the `servers_bootstrapped` flag so CLI and API do not double-bootstrap
+
+**How the API Uses It:**
+- `build_app()` instantiates `InitializationService` immediately after loading config
+- Startup hook (`_init_mcp_for_app`) delegates to `initialize_for_api(skip_bootstrap=True)` because `initialize_mcp()` already handled registry bootstrap
+- `app.state.session_manager` is populated from the service for dependency injection into routes
+- Ensures sub-agent manager, hooks, and web endpoints all observe the same `SessionService`
+
+#### 3.2.3 API Endpoints (`api/endpoints.py`)
 
 **File:** `src/agent_system/api/endpoints.py`
 
@@ -224,7 +238,7 @@ async def chat_endpoint(
     )
 ```
 
-#### 3.2.3 Streaming API (`api/streaming.py`)
+#### 3.2.4 Streaming API (`api/streaming.py`)
 
 **File:** `src/agent_system/api/streaming.py`
 
@@ -274,7 +288,7 @@ async def chat_stream_endpoint(
 }
 ```
 
-#### 3.2.4 Authentication (`api/auth.py`)
+#### 3.2.5 Authentication (`api/auth.py`)
 
 **File:** `src/agent_system/api/auth.py`
 
@@ -522,7 +536,38 @@ Response 200:
 
 Services encapsulate business logic and coordinate domain components.
 
-#### 5.1.1 ConfigService
+#### 5.1.1 InitializationService
+
+**File:** `src/agent_system/services/initialization_service.py`
+
+**Responsibilities:**
+- Single source of truth for bootstrap across API, CLI, and `agent_run`
+- Lazily instantiate `SessionManager` and `SessionService`
+- Bridge between `initialize_mcp()` and dependency injection utility functions
+- Track initialization state (`servers_bootstrapped`, `initialized`) to avoid redundant work during hot reloads
+
+**Key Methods:**
+```python
+class InitializationService:
+    def bootstrap_and_inject(
+        self,
+        registry: Optional[MCPRegistry] = None,
+        inject_sessions: bool = True
+    ) -> MCPRegistry:
+        """Create registry, bootstrap plugins, inject session service."""
+
+    def initialize_for_api(
+        self,
+        plugin_registry=None,
+        skip_bootstrap: bool = False
+    ) -> SessionService:
+        """Inject dependencies into the global plugin registry used by FastAPI."""
+
+    def initialize_for_cli(self) -> tuple[MCPRegistry, SessionService]:
+        """Convenience helper for CLI tools (used by `agent_cli` and `agent_run`)."""
+```
+
+#### 5.1.2 ConfigService
 
 **File:** `src/agent_system/services/config_service.py`
 
@@ -545,7 +590,7 @@ class ConfigService:
         """Get config-based agent definition"""
 ```
 
-#### 5.1.2 AgentService
+#### 5.1.3 AgentService
 
 **File:** `src/agent_system/services/agent_service.py`
 
@@ -569,7 +614,7 @@ class AgentService:
         """Stream agent execution events"""
 ```
 
-#### 5.1.3 SessionManager
+#### 5.1.4 SessionManager
 
 **File:** `src/agent_system/services/session_manager.py`
 
@@ -595,7 +640,7 @@ class SessionManager:
         """List all sessions for user"""
 ```
 
-#### 5.1.4 MCPService
+#### 5.1.5 MCPService
 
 **File:** `src/agent_system/services/mcp_service.py`
 
@@ -618,7 +663,7 @@ class MCPService:
         """Get aggregated tool list"""
 ```
 
-#### 5.1.5 ToolService
+#### 5.1.6 ToolService
 
 **File:** `src/agent_system/services/tool_service.py`
 
@@ -865,6 +910,11 @@ FastAPI Router (endpoints.py)
     │
     ├─► Validate JWT token (get_current_user)
     ├─► Validate request body (Pydantic)
+    │
+    ▼
+InitializationService (bootstrapped during startup)
+    │
+    ├─► Offers shared SessionService & injected registry state
     │
     ▼
 AgentService.run_agent()
