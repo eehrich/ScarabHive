@@ -542,16 +542,23 @@ class FileSearchEngine:
                     if not fnmatch.fnmatch(file_path, filter_pattern):
                         continue
                 
-                # Calculate similarity score (1 - distance for easier understanding)
-                similarity = max(0.0, 1.0 - distance)
+                # Calculate similarity score from distance
+                # ChromaDB uses squared L2 distance (0 = identical, larger = less similar)
+                # Convert to similarity score: 1 / (1 + distance)
+                # This gives range [0, 1] where 1 is perfect match, approaching 0 for very different
+                similarity = 1.0 / (1.0 + distance)
                 
                 matches.append({
                     "file_path": file_path,
                     "filename": metadata.get("filename", Path(file_path).name),
                     "similarity_score": round(similarity, 4),
+                    "distance": round(distance, 4),  # Include raw distance for debugging
                     "size_bytes": int(metadata.get("size_bytes", 0)),
                     "extension": metadata.get("extension", "")
                 })
+            
+            # Sort by similarity score (highest first)
+            matches.sort(key=lambda x: x["similarity_score"], reverse=True)
             
             return {
                 "status": "success",

@@ -299,6 +299,83 @@ Get file metadata and statistics.
 
 ### 8. `file_ops_semantic_search`
 
+AI-powered semantic code search using ChromaDB embeddings. Finds files by meaning, not just keywords.
+
+**What makes it semantic?**
+- Understands context: "authentication logic" finds login/verify functions
+- Language-independent: Finds concepts across different naming conventions
+- Fuzzy matching: Finds related code even with different terminology
+
+**Parameters:**
+- `query` (string, required): Natural language search query
+- `max_results` (integer, optional): Maximum results to return (default: 10)
+- `filter_pattern` (string, optional): Glob pattern to filter results (e.g., "*.py")
+
+**Example:**
+```json
+{
+  "query": "authentication and login logic",
+  "max_results": 5,
+  "filter_pattern": "**/*.py"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "query": "authentication and login logic",
+  "results": [
+    {
+      "file_path": "/project/src/auth.py",
+      "filename": "auth.py",
+      "similarity_score": 0.5263,
+      "distance": 0.8999,
+      "size_bytes": 2048,
+      "extension": ".py"
+    },
+    {
+      "file_path": "/project/src/session.py",
+      "filename": "session.py",
+      "similarity_score": 0.4102,
+      "distance": 1.4378,
+      "size_bytes": 1536,
+      "extension": ".py"
+    }
+  ],
+  "count": 2,
+  "max_results": 5
+}
+```
+
+**Understanding Scores:**
+- `similarity_score`: 0.0-1.0 (higher = more relevant)
+  - > 0.5: Highly relevant
+  - 0.3-0.5: Moderately relevant
+  - < 0.3: Weakly relevant
+- `distance`: Raw ChromaDB distance (lower = more similar)
+  - Formula: similarity = 1 / (1 + distance)
+
+**Requirements:**
+- Requires ChromaDB: `pip install chromadb`
+- Automatic indexing must be enabled (`enable_semantic_search: true`)
+- First search triggers index build (may take time for large codebases)
+
+**Performance:**
+- Initial indexing: ~50-100 files/second (depends on file size)
+- Search: ~100-500ms (cached in ChromaDB)
+- Index stored in: `data/cache/file_ops_chromadb/`
+
+**Tips:**
+- Use specific queries: "database connection pooling" > "database"
+- Combine with filter_pattern for faster results
+- Similarity > 0.4 usually indicates good match
+- Results sorted by similarity (best first)
+
+---
+
+### 9. `file_ops_search_files`
+
 Search for files by name using glob patterns. Uses background-indexed file name index for fast results.
 
 **Parameters:**
@@ -336,7 +413,7 @@ Search for files by name using glob patterns. Uses background-indexed file name 
 
 ---
 
-### 9. `file_ops_grep_search`
+### 10. `file_ops_grep_search`
 
 Search file contents for text/regex patterns with context lines.
 
@@ -720,6 +797,73 @@ All tools return structured error responses:
 - ✅ Check `file_exists` before operations
 - ✅ Handle error responses gracefully
 - ❌ Don't assume write operations succeeded without checking response
+
+## Known Limitations
+
+### Result Limits
+- **grep_search**: Maximum 100 results (configurable via `max_results`)
+- **search_files**: Maximum 100 results (configurable via `max_results`)
+- **semantic_search**: Maximum 50 results (configurable via `max_results`)
+- **Reason**: Prevents memory overflow with large codebases
+
+### File Size Limits
+- **Default**: Files > 1MB excluded from indexing
+- **Maximum read**: Files > 100MB may cause memory issues
+- **Workaround**: Use pagination (`offset`/`limit`) for large files
+
+### Search Accuracy
+- **grep_search**: Exact pattern matching only
+  - Regex support available but requires careful escaping
+  - No fuzzy matching or typo tolerance
+  
+- **semantic_search**: Requires sufficient context
+  - Works best with 10+ tokens of text
+  - Short files (< 50 words) may have low similarity scores
+  - Not suitable for config files or data-only files
+  
+- **search_files**: Filename-only matching
+  - No content searching (use grep_search instead)
+  - Pattern must match full path (use `**/` prefix for subdirs)
+
+### Indexing Limitations
+- **Auto-rebuild interval**: Minimum 60 seconds recommended
+  - Too frequent rebuilds impact performance
+  - File changes not immediately searchable
+  
+- **Excluded by default**: 
+  - `.git`, `__pycache__`, `node_modules`, `.venv`
+  - Binary files (not auto-detected, only by extension)
+  - Files > 1MB
+  
+- **No incremental updates**: Full rebuild on every cycle
+  - Large codebases (10k+ files) may take 10-30 seconds
+
+### Semantic Search Specifics
+- **ChromaDB dependency**: Requires `pip install chromadb`
+- **First search delay**: Initial index build can take 30-60 seconds
+- **Storage**: Index stored in `data/cache/file_ops_chromadb/`
+  - Can grow to 100MB+ for large projects
+  - No automatic cleanup of old entries
+  
+- **Similarity interpretation**:
+  - > 0.5: Highly relevant (strong keyword/concept match)
+  - 0.3-0.5: Moderately relevant (related concepts)
+  - < 0.3: Weakly relevant (may be false positive)
+  - Scores depend on file content richness
+
+### Performance Considerations
+- **Concurrent searches**: Not optimized for parallel requests
+  - Multiple simultaneous searches may queue
+  - Background indexing blocks search temporarily
+  
+- **Memory usage**: Proportional to indexed file count
+  - ~1KB per file in memory index
+  - ChromaDB adds ~10-50KB per file on disk
+
+### Platform-Specific
+- **Windows**: Path separators auto-converted (`/` → `\\`)
+- **Line endings**: Preserved as-is (no auto-conversion)
+- **Encoding**: UTF-8 assumed, errors ignored with `errors='ignore'`
 
 ## Development
 
