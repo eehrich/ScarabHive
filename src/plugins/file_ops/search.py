@@ -577,10 +577,29 @@ class FileSearchEngine:
             }
     
     async def stop(self):
-        """Stop background indexing task."""
+        """Stop background indexing task and cleanup resources."""
+        # Cancel background indexing
         if self._indexing_task:
             self._indexing_task.cancel()
             try:
                 await self._indexing_task
             except asyncio.CancelledError:
                 pass
+            self._indexing_task = None
+            self._indexing_started = False
+        
+        # Cleanup ChromaDB resources
+        if self.chroma_client:
+            try:
+                # ChromaDB PersistentClient doesn't have explicit close,
+                # but we should clear references
+                self.chroma_collection = None
+                self.chroma_client = None
+                self._chroma_initialized = False
+            except Exception as e:
+                logger.debug(f"ChromaDB cleanup warning: {e}")
+        
+        # Clear in-memory indexes
+        self.text_index.clear()
+        self.file_name_index.clear()
+        self.file_mtimes.clear()

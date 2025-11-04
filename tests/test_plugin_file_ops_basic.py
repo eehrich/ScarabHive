@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import pytest
 from unittest.mock import Mock
 
@@ -18,7 +19,7 @@ def tmp_allowed_dir(tmp_path):
 
 
 @pytest.fixture
-def file_ops_server(tmp_allowed_dir):
+async def file_ops_server(tmp_allowed_dir):
     """Create file operations server with temp directory."""
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
@@ -30,7 +31,12 @@ def file_ops_server(tmp_allowed_dir):
     }
     
     server = FileOpsServer("file_ops", system_config, mcp_config)
-    return server
+    yield server
+    
+    # Cleanup: stop background indexing and close resources
+    await server.search_engine.stop()
+    # Force garbage collection to close any file handles
+    gc.collect()
 
 
 @pytest.mark.asyncio
@@ -271,6 +277,7 @@ async def test_create_file_with_overwrite(file_ops_server, tmp_allowed_dir):
 
 
 @pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
 async def test_search_files_basic(file_ops_server, tmp_allowed_dir):
     """Test basic file search."""
     # Create test files
