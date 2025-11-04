@@ -36,8 +36,20 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
     mock_config = AgentSystemConfig(llm_system=LLMSystemConfig(models={"test-model": LLMModelConfig(provider="openai", model="test-model")}, profiles={}))
     monkeypatch.setattr(cli, "load_settings", lambda path=None: mock_config)
 
-    # Mock bootstrap_servers to not load any plugins
-    monkeypatch.setattr('agent_system.agent_cli.bootstrap_servers', lambda config, registry: None)
+    # Mock InitializationService to not load any plugins
+    from agent_system.services.initialization_service import InitializationService
+    from agent_system.mcp.base import MCPRegistry
+    
+    def fake_initialize_for_cli(self):
+        # Return empty registry and a minimal session_service
+        registry = MCPRegistry()
+        from agent_system.services.session_manager import SessionManager
+        from agent_system.services.session_service import SessionService
+        session_manager = SessionManager(storage_path="data/sessions")
+        session_service = SessionService(session_manager)
+        return registry, session_service
+    
+    monkeypatch.setattr(InitializationService, 'initialize_for_cli', fake_initialize_for_cli)
 
     # Mock _get_plugins_config to return a config with agent_config
     from agent_system.config.models import PluginsConfig

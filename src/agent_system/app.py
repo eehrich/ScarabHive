@@ -22,7 +22,6 @@ from fastapi.templating import Jinja2Templates
 from .config.models import AgentConfig
 from .api.endpoints import router as api_router
 from .mcp.base import MCPRegistry
-from .servers.bootstrap import bootstrap_servers
 from .utils.logging import setup_logging
 from .mcp.status import get_status_metrics
 from .mcp.integration import initialize_mcp, shutdown_mcp
@@ -43,6 +42,7 @@ _config_service: Optional[ConfigService] = None
 _mcp_service: Optional[MCPService] = None
 _tool_service: Optional[ToolService] = None
 _agent_service: Optional[AgentService] = None
+_initialization_service: Optional[Any] = None  # InitializationService
 _session_manager: Optional[SessionManager] = None
 _session_service: Optional[Any] = None  # SessionService, imported at runtime to avoid circular import
 
@@ -130,6 +130,7 @@ _app_start_time = None
 
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
+    from pathlib import Path
 
     # Initialize ConfigService and load configuration
     if not config_path:
@@ -161,29 +162,38 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     else:
         logger.warning("No plugins or mcp_servers configuration loaded")
 
+    # Initialize centralized initialization service
+    # This handles SessionManager, SessionService, and dependency injection
+    from .services.initialization_service import InitializationService
+    global _initialization_service, _session_manager, _session_service
+    _initialization_service = InitializationService(config)
+    _session_manager = _initialization_service.session_manager
+    _session_service = _initialization_service.session_service
+    logger.info("InitializationService created (SessionManager and SessionService ready)")
+
     # Initialize MCP integration
     async def _init_mcp_for_app(app: FastAPI):
-        global _mcp_integration, _mcp_service, _tool_service, _agent_service, _session_manager, _session_service
+        global _mcp_integration, _mcp_service, _tool_service, _agent_service
         logger = logging.getLogger(__name__)
         logger.info("Starting MCP integration initialization...")
         try:
             mcp_integration = await initialize_mcp(config, app)
             _mcp_integration = mcp_integration
 
+            # Mark that bootstrap_servers() was already called by initialize_mcp
+            mcp_integration.servers_bootstrapped = True
+
             # Initialize services
             _mcp_service = MCPService(mcp_integration, config)
             _tool_service = ToolService(mcp_integration, config)
 
-            # Initialize SessionManager (persistent session storage)
-            from pathlib import Path
-            storage_path = Path(__file__).parents[2] / "data" / "sessions"
-            _session_manager = SessionManager(storage_path=str(storage_path))
-            logger.info(f"SessionManager initialized with storage_path={storage_path}")
-
-            # Initialize SessionService (session loading/saving logic)
-            from .services.session_service import SessionService
-            _session_service = SessionService(_session_manager)
-            logger.info("SessionService initialized")
+            # CRITICAL: Inject session_service into ALL agents in plugin_registry
+            # This ensures hooks and tools can access session management
+            # Must be done AFTER bootstrap_servers() in initialize_mcp() created agents
+            _initialization_service.initialize_for_api(
+                plugin_registry=mcp_integration.plugin_registry,
+                skip_bootstrap=True  # Already done by initialize_mcp
+            )
 
             # Store session manager in app state for dependency injection (after initialization)
             app.state.session_manager = _session_manager
@@ -334,22 +344,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
         logging.getLogger(__name__).info("SSL verification disabled - set environment variables for global SSL bypass")
 
-    # Bootstrap MCP servers and plugin registry
+    # Bootstrap MCP servers and plugin registry using InitializationService
+    # This handles bootstrap_servers() and session_service injection
     registry = MCPRegistry()
-    bootstrap_servers(config, registry)
-
-    # CRITICAL: Inject _session_service into ALL agents in registry
-    # This ensures sub-agents and tools can access session management
-    # Must be done AFTER bootstrap_servers() creates all agents
-    from .servers.agent.server import Agent as _Agent
-    for server_name in registry.list():
-        try:
-            server = registry.get(server_name)
-            if isinstance(server, _Agent):
-                server._session_service = _session_service
-                logging.getLogger(__name__).debug(f"Injected session_service into agent: {server_name}")
-        except Exception as e:
-            logging.getLogger(__name__).debug(f"Failed to inject session_service into {server_name}: {e}")
+    if not _mcp_integration or not _mcp_integration.servers_bootstrapped:
+        # Use InitializationService for consistent bootstrap + injection
+        registry = _initialization_service.bootstrap_and_inject(
+            registry=registry,
+            inject_sessions=True
+        )
+        # Mark as bootstrapped to prevent duplicate calls
+        if _mcp_integration:
+            _mcp_integration.servers_bootstrapped = True
+        logging.getLogger(__name__).info("Bootstrapped servers using InitializationService")
+    else:
+        # Servers already bootstrapped by initialize_mcp, just populate local registry
+        # by copying from plugin_registry and inject sessions
+        from .servers.agent.server import Agent as _Agent
+        for server_name in _mcp_integration.plugin_registry.list_servers():
+            server_adapter = _mcp_integration.plugin_registry.get_server(server_name)
+            if server_adapter and hasattr(server_adapter, 'plugin_server'):
+                registry.register(server_name, server_adapter.plugin_server)
+        logging.getLogger(__name__).debug(f"Populated local registry with {len(registry.list())} servers from plugin_registry")
+        
+        # Inject session_service into local registry agents
+        from .services.agent_injection import inject_session_service_into_agents
+        inject_session_service_into_agents(registry, _session_service)
 
     # Get entry agent from config
     entry_name = config.default_agent or 'agent'

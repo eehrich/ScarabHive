@@ -17,14 +17,13 @@ except Exception:
     tabulate = None
 
 from .config.settings import load_settings
-from .config.models import MCPConfig, AgentSystemConfig
+from .config.models import AgentSystemConfig
 from .llm.models import ChatMessage
 from .plugins import discover_all_plugins
 from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .mcp.integration import MCPIntegration, initialize_mcp, shutdown_mcp
 from .utils.logging import setup_logging
-from .servers.bootstrap import bootstrap_servers
 from .servers.agent.server import Agent
 
 # Import services
@@ -1212,7 +1211,15 @@ def main() -> None:
     registry = MCPRegistry()
     vprint("[cli] bootstrapping servers...")
     logger.info("Bootstrapping servers")
-    bootstrap_servers(config, registry)
+    
+    # Use InitializationService for consistent bootstrap + injection
+    from .services.initialization_service import InitializationService
+    init_service = InitializationService(config)
+    registry, session_service = init_service.initialize_for_cli()
+    
+    # Keep references to session_manager for CLI use
+    session_manager = init_service.session_manager
+    
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
 
@@ -1227,28 +1234,8 @@ def main() -> None:
         logger.warning("Failed to initialize MCP integration: %s", e)
         vprint(f"[cli] Warning: MCP integration failed: {e}")
 
-    # Initialize SessionManager and SessionService BEFORE Agent creation
-    from pathlib import Path as PathLib
-    from .services.session_manager import SessionManager
-    from .services.session_service import SessionService
-
-    storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
-    session_manager = SessionManager(storage_path=str(storage_path))
-    session_service = SessionService(session_manager)
-    logger.debug("[cli] SessionService initialized at %s", storage_path)
-
-    # CRITICAL: Inject session_service into ALL agents in registry
-    # This ensures sub-agents and tools can access session management
-    # Must be done AFTER bootstrap_servers() creates all agents
-    from .servers.agent.server import Agent as _Agent
-    for server_name in registry.list():
-        try:
-            server = registry.get(server_name)
-            if isinstance(server, _Agent):
-                server._session_service = session_service
-                logger.debug(f"[cli] Injected session_service into agent: {server_name}")
-        except Exception as e:
-            logger.debug(f"[cli] Failed to inject session_service into {server_name}: {e}")
+    # Note: SessionManager, SessionService, and dependency injection
+    # are now handled by InitializationService.initialize_for_cli() above
 
     # Determine CLI agent name from config (can be overridden with --agent)
     entry_name = getattr(args, "agent_override", None) or config.default_agent

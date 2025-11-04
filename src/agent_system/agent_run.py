@@ -21,7 +21,6 @@ import logging
 import sys
 
 from .config.settings import load_settings
-from .mcp.base import MCPRegistry
 from .mcp.status import status_bus
 from .servers.agent.server import Agent
 from .services.session_manager import SessionPermissionError
@@ -52,22 +51,20 @@ def setup_basic_logging(verbose: bool = False) -> None:
 
 
 async def initialize_system(config):
-    """Initialize the MCP registry and load plugins using the same bootstrap process as CLI."""
-    # Create MCP registry
-    registry = MCPRegistry()
-
-    # Use the same bootstrap process as CLI
-    from .servers.bootstrap import bootstrap_servers
-
+    """Initialize the MCP registry and load plugins using InitializationService."""
+    # Use centralized initialization service
+    from .services.initialization_service import InitializationService
+    
     try:
-        # Bootstrap all servers and plugins
-        bootstrap_servers(config, registry)
-        logger.info(f"Bootstrap completed. Registry has {len(registry.list())} servers: {registry.list()}")
+        init_service = InitializationService(config)
+        registry, session_service = init_service.initialize_for_cli()
+        logger.info(f"Initialization completed. Registry has {len(registry.list())} servers: {registry.list()}")
+        return registry, session_service
     except Exception as e:
-        logger.warning(f"Bootstrap failed: {e}", exc_info=True)
-        # Continue with empty registry - agent can still work without plugins
-
-    return registry
+        logger.warning(f"Initialization failed: {e}", exc_info=True)
+        # Continue with minimal registry - agent can still work
+        from .mcp.base import MCPRegistry
+        return MCPRegistry(), None
 
 
 async def create_agent(config, registry, agent_name: str, session_service=None):
@@ -132,17 +129,14 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         session_title: Title for new session (optional)
     """
     try:
-        # Initialize session management
-        from pathlib import Path as PathLib
-        from .services.session_manager import SessionManager
-        from .services.session_service import SessionService
-
-        storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
-        session_manager = SessionManager(storage_path=str(storage_path))
-        session_service = SessionService(session_manager)
-
-        # Handle --list-sessions flag
+        # Handle --list-sessions flag (needs session_manager only)
         if list_sessions:
+            from pathlib import Path as PathLib
+            from .services.session_manager import SessionManager
+
+            storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
+            session_manager = SessionManager(storage_path=str(storage_path))
+            
             sessions = await session_manager.list_sessions(session_user)
 
             if not sessions:
@@ -171,21 +165,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         config = load_settings()
         logger.info(f"Loaded config for {config.name} v{config.version}")
 
-        # Initialize system (plugins, registry)
+        # Initialize system (plugins, registry) - now returns session_service too
         logger.info("Initializing system...")
-        registry = await initialize_system(config)
-
-        # Inject session_service into all agents created during bootstrap
-        # (SubAgentManager, etc. need session_service for context loading)
-        from .servers.agent.server import Agent as _Agent
-        for server_name in registry.list():
-            try:
-                server = registry.get(server_name)
-                if isinstance(server, _Agent):
-                    server._session_service = session_service
-                    logger.debug(f"Injected session_service into agent: {server_name}")
-            except Exception as e:
-                logger.debug(f"Failed to inject session_service into {server_name}: {e}")
+        registry, session_service = await initialize_system(config)
 
         # Get agent name from argument or use default
         if agent_name is None:
