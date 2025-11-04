@@ -12,8 +12,10 @@ tmp/
 logs/
 *.log
 .tmp
+.cache/
 tmp_backlog.md
 data/users.db
+data/cache/
 data/sessions/
 data/todos/
 data/memories/
@@ -22,4 +24,4 @@ src/plugins/context_summarizer/web_endpoints.py
 nul
 data/context_usage_tracker.json
 .coverage
-data/cache
+
