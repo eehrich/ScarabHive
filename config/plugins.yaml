@@ -54,9 +54,7 @@ plugins:
       metadata:
         visibility: "both"  # Make available as tool for meta_agent
     
-    duckduckgo_search:
-      type: duckduckgo_search
-      enabled: true
+
     
     basic_operations:
       type: basic_operations
@@ -105,11 +103,6 @@ plugins:
       type: twitter_search
       enabled: false
     
-    web_scraper:
-      type: web_scraper
-      enabled: true
-      proxies: []
-    
     weather:
       type: weather
       enabled: true
@@ -130,61 +123,28 @@ plugins:
       type: script_interpreter
       enabled: true
     
-    web_research_agent:
-      type: web_research_agent
-      enabled: true
-      max_steps: 20
 
-      agent_config:
-        llm_profile: chat
-        system_template: ""  # Use plugin's own system prompt template (empty string to override default)
-        tools:
-          allowed:
-            - "duckduckgo_search/*"
-            - "web_scraper/*"
-      
-      metadata:
-        visibility: "both"  # Make available as tool for meta_web_research_agent
     
-    ibkr:
-      type: ibkr
-      enabled: false
-      host: 127.0.0.1
-      port: 4002
+
     
     sub_agent_manager:
       type: sub_agent_manager
       enabled: true
       max_nesting_depth: 5      
-#      allowed_agents:
-#        - basic_agent
-#        - web_research_agent
-#        - financial_analyst_agent      
+      allowed_agents:
+        - basic_agent
+        - web_research_agent
+        - financial_analyst_agent
+        - code_reviewer_agent
+        - meta_web_research_agent
+        - parallel_thinking_agent
+        - thinking_agent
       hook_config:
         enabled: true
         inject_sub_agent_context:
           enabled: true
           max_sub_agents_shown: 5
           format: "markdown"
-    
-    ssh_control:
-      type: ssh_control
-      enabled: true
-      machines:
-        - name: controlhost
-          host: 192.0.2.114
-          port: 22
-          username: root
-          auth_method: key
-          key_path: ~/.ssh/id_rsa
-          max_connections: 3
-        - name: MCP
-          host: 192.0.2.113
-          port: 22
-          username: root
-          auth_method: key
-          key_path: ~/.ssh/id_rsa
-          max_connections: 3
     
     user_management:
       type: user_management
@@ -223,247 +183,6 @@ plugins:
       type: message_debugger
       enabled: true
     
-    # ================================
-    # Configuration-Based Agent Instances
-    # ================================
-    # These agents are created from plugin types with custom configurations
-    # Previously defined in config/agents.yaml (now consolidated here)
-    
-  
-    
-    financial_analyst_agent:
-      type: basic_agent
-      enabled: true
-      description: "Professional financial analyst for stock market analysis, fundamentals research, and investment insights"
-      
-      self_tool_descriptions:
-        financial_analyst_agent_execute_task: "Analyze stocks, market data, and financial fundamentals using Yahoo Finance, web scraping, and search capabilities"
-        financial_analyst_agent_list_available_tools: "List available financial analysis tools (Yahoo Finance, web scraper, search)"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 20
-        system_template: "config/prompts/financial_analyst_prompt.yaml"
-        
-        tools:
-          allowed:
-            - "yahoo_finance/*"
-            - "web_scraper/*"
-            - "duckduckgo_search/*"
-            - "basic_operations/*"
-
-        hooks:
-          enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true             
-      
-      metadata:
-        author: "AgentSystem"
-        version: "1.0.0"
-        tags: ["finance", "stocks", "analysis", "research"]
-        category: "financial"
-        visibility: "both"
-    
-    code_reviewer_agent:
-      type: basic_agent
-      enabled: true
-      description: "Expert code reviewer for quality analysis, security audits, and best practices validation"
-      
-      self_tool_descriptions:
-        code_reviewer_agent_execute_task: "Review code quality, security, and best practices using script execution, log analysis, and web research"
-        code_reviewer_agent_list_available_tools: "List available code review tools (script interpreter, log viewer, web scraper)"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 15
-        system_template: "config/prompts/code_reviewer_prompt.yaml"
-        
-        tools:
-          allowed:
-            - "script_interpreter/*"
-            - "log_viewer/*"
-            - "web_scraper/*"
-
-        hooks:
-          enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true            
-      
-      metadata:
-        author: "AgentSystem"
-        version: "1.1.0"
-        tags: ["code", "review", "quality", "security"]
-        category: "development"
-        visibility: "both"
-    
-    simple_qa_agent:
-      type: basic_agent
-      enabled: true
-      description: "Simple Q&A agent that answers questions using LLM knowledge only (no external tools)"
-      
-      # self_tool_descriptions now at MCPConfig level (not in agent_config)
-      self_tool_descriptions:
-        simple_qa_agent_execute_task: "Answer general knowledge questions using LLM knowledge only (no external tools or real-time data)"
-        simple_qa_agent_list_available_tools: "List available tools (none - pure LLM-based Q&A)"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 10
-        
-        system_prompt: |
-          You are a helpful AI assistant that answers questions using your training knowledge.
-          
-          Guidelines:
-          - Provide accurate, concise answers
-          - If you don't know something, say so honestly
-          - Avoid speculation without clear indication
-          - Use examples when helpful
-          - Be friendly and professional
-          
-          Operational Context:
-          - No external tools available (knowledge cutoff applies)
-          - Planning budget: {{ max_steps }} steps
-          - Current date: {{ current_date | default('n/a') }}
-          
-          If the question requires real-time data, current events, or external resources,
-          clearly state that you cannot access that information.
-        
-        tools:
-          allowed: []
-          blocked: []       
-      
-      metadata:
-        author: "AgentSystem"
-        version: "1.0.0"
-        tags: ["qa", "simple", "knowledge", "general"]
-        category: "general"
-        visibility: "ui"
-    
-    sysadmin_agent:
-      type: basic_agent
-      enabled: true
-      description: "System Administrator who has ssh access to different servers"
-      
-      # self_tool_descriptions now at MCPConfig level (not in agent_config)
-      self_tool_descriptions:
-        sysadmin_agent_execute_task: "Execute system administration tasks with SSH access to production and development servers. Use this for server management, deployment, monitoring, and troubleshooting."
-        sysadmin_agent_list_available_tools: "List all SSH and system administration tools available to the sysadmin agent"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 100
-        system_template: "config/prompts/system_admin_prompt.yaml"
-        
-        tools:
-          allowed:
-            - "ssh_control/*"
-            - "basic_operations/*"
-            - "meta_web_research_agent/*"
-            - "datetime/*"
-            - "sequential_thinking/*"
-            - "todo/*"
-            - "memory/*"
-
-        hooks:
-          enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
-            todo.inject_todo_tasks:
-              enabled: true
-            memory.inject_memory_context:
-              enabled: true
-            sequential_thinking.inject_active_sessions:
-              enabled: true
-                   
-      
-      metadata:
-        author: "AgentSystem"
-        version: "1.1.0"
-        tags: ["ssh", "server", "Administrator", "security"]
-        category: "it"
-        visibility: "both"
-    
-    meta_web_research_agent:
-      type: web_research_agent
-      enabled: true
-      description: "Meta Web Research Agent for advanced web scraping and research tasks"
-      
-      # self_tool_descriptions for own tools (meta_web_research_agent_*)
-      self_tool_descriptions:
-        meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
-        meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
-        meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
-        meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 10
-        system_template: "config/prompts/meta_web_research_agent.yaml"
-        
-        hooks:
-          enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
-            todo.inject_todo_tasks:
-              enabled: true
-            memory.inject_memory_context:
-              enabled: true
-            sequential_thinking.inject_active_sessions:
-              enabled: true
-        
-        tools:
-          allowed:
-            - "web_research_agent/*"
-            - "weather/*"
-            - "web_scraper/*"
-            - "duckduckgo_search/*"
-            - "datetime/*"
-            - "basic_operations/*"
-            - "sequential_thinking/*"
-            - "todo/*"
-            - "memory/*"
-
-      metadata:
-        author: "AgentSystem"
-        version: "1.1.0"
-        tags: ["web", "research", "meta"]
-        category: "search"
-        visibility: "both"
-    
-    # Dedicated test agent for sub-agent management
-    sub_agent_test_coordinator:
-      type: basic_agent
-      enabled: true
-      description: "Test coordinator for sub-agent management system - spawns and manages sub-agents"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 20
-        system_template: "config/prompts/system_prompt.yaml"
-        
-        tools:
-          allowed:
-            - "sub_agent_manager/*"
-        
-        hooks:
-          enabled: true
-          overrides:
-            sub_agent_manager.inject_sub_agent_context:
-              enabled: true
-            markdown_formatter.format_markdown_output:
-              enabled: true
-      
-      metadata:
-        author: "AgentSystem"
-        version: "1.0.0"
-        tags: ["test", "sub-agent", "coordinator", "development"]
-        category: "test"
-        visibility: "ui"
-
 # ================================
 # Hook Configuration
 # ================================
