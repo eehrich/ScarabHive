@@ -436,39 +436,42 @@ class ToolExecutionManager:
     async def _execute_plugin_tool(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                  params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a plugin tool (or config agent tool)."""
-        # CRITICAL FIX: Check if this is the agent's OWN tool (recursive call)
-        # Own tools are prefixed with agent name: e.g. "meta_web_research_agent_web_research"
-        if self._agent and tool_name.startswith(f"{self._agent.name}_"):
-            # This is an own tool - use the agent itself as the server
+        # CRITICAL FIX: Check if tool_name exists as a registered server FIRST
+        # This prevents prefix-based false positives where "sysadmin_agent_manager" 
+        # incorrectly matches "sysadmin_agent_" prefix check
+        server = None
+        
+        # Try to get server from registries first
+        if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
+            server = self._agent._get_server_from_any_registry(tool_name)
+        
+        # If not found in registry, check if it's an own tool using prefix check
+        if not server and self._agent and tool_name.startswith(f"{self._agent.name}_"):
+            # This is likely an own tool - use the agent itself as the server
             server = self._agent
-            logger.debug(f"Tool '{tool_name}' is agent's own tool, using self as server")
-        else:
-            # Use agent's central method to get server from any registry
-            server = None
-            if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
-                server = self._agent._get_server_from_any_registry(tool_name)
-            
-            # Fallback to legacy lookup if central method not available
-            if not server:
-                # Get plugin server from MCP integration plugin registry
-                if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
-                    mcp_integration = self._agent._mcp_integration_manager.mcp_integration
-                    if mcp_integration is not None:  # type: ignore[unreachable]
-                        if mcp_integration.initialized:  # type: ignore[unreachable]
-                            plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
-                            if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                                server = plugin_adapter.plugin_server
+            logger.debug(f"Tool '{tool_name}' is agent's own tool (prefix match), using self as server")
+        
+        # Legacy fallback paths (for systems not using _get_server_from_any_registry)
+        if not server:
+            # Get plugin server from MCP integration plugin registry
+            if self._agent and hasattr(self._agent, '_mcp_integration_manager'):
+                mcp_integration = self._agent._mcp_integration_manager.mcp_integration
+                if mcp_integration is not None:  # type: ignore[unreachable]
+                    if mcp_integration.initialized:  # type: ignore[unreachable]
+                        plugin_adapter = mcp_integration.plugin_registry.get_server(tool_name)
+                        if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
+                            server = plugin_adapter.plugin_server
 
+            if not server:
+                # Fallback to agent's registry (for config agents and other servers)
+                if self._agent and hasattr(self._agent, 'registry'):
+                    agent_registry = self._agent.registry
+                    if agent_registry and tool_name in agent_registry.list():
+                        server = agent_registry.get(tool_name)
+                
+                # Final fallback to legacy registry (though it may be empty)
                 if not server:
-                    # Fallback to agent's registry (for config agents and other servers)
-                    if self._agent and hasattr(self._agent, 'registry'):
-                        agent_registry = self._agent.registry
-                        if agent_registry and tool_name in agent_registry.list():
-                            server = agent_registry.get(tool_name)
-                    
-                    # Final fallback to legacy registry (though it may be empty)
-                    if not server:
-                        server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
+                    server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
 
         if not server:
             raise RuntimeError(f"Server not found for tool: {tool_name}")

@@ -6,15 +6,16 @@ Tests the complete workflow:
 3. Continue sub-agent conversation
 4. Verify session files, metadata, and relationships
 """
+import json
 import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
-import json
+from unittest.mock import Mock
 
 from agent_system.services.session_manager import SessionManager
 from agent_system.services.session_service import SessionService
 from agent_system.mcp.base import MCPRegistry
+from agent_system.config.models import AgentConfig
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 
@@ -40,8 +41,32 @@ async def session_service(session_manager):
 
 @pytest.fixture
 def sub_agent_manager(session_service):
-    """Create SubAgentManager."""
+    """Create SubAgentManager with mock agents in registry."""
     registry = MCPRegistry()
+    
+    # Register all mock agents that E2E tests expect with proper agent_config
+    mock_agents = [
+        "web_research_agent",
+        "project_manager_agent",
+        "researcher_agent",
+        "financial_analyst_agent",
+        "code_review_agent",
+        "agent_l2",
+        "agent_l3",
+        "agent_l4",
+        "worker_agent",
+        "agent1",
+        "agent2",
+        "agent3"
+    ]
+    
+    for agent_name in mock_agents:
+        # Create a proper mock with agent_config.llm_profile
+        mock_agent = Mock()
+        mock_agent.name = agent_name
+        mock_agent.agent_config = AgentConfig(llm_profile="normal")
+        registry.register(agent_name, mock_agent)
+    
     return SubAgentManager(session_service, registry)
 
 
@@ -264,8 +289,16 @@ async def test_e2e_max_nesting_depth_enforcement(
 ):
     """Test that max nesting depth is enforced."""
     
-    # Create manager with max_depth=3
+    # Create manager with max_depth=3 and mock agents
     registry = MCPRegistry()
+    
+    # Register required mock agents
+    for agent_name in ["agent_l2", "agent_l3", "agent_l4"]:
+        mock_agent = Mock()
+        mock_agent.name = agent_name
+        mock_agent.agent_config = AgentConfig(llm_profile="normal")
+        registry.register(agent_name, mock_agent)
+    
     manager = SubAgentManager(session_service, registry, max_nesting_depth=3)
     
     # Level 1: Root

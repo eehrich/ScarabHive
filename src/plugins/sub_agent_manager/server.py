@@ -90,9 +90,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 
                 # Same logic as GET /agents endpoint
                 if isinstance(srv, Agent):
-                    # Check _mcp_public flag (visibility control)
-                    if hasattr(srv, '_mcp_public') and not srv._mcp_public:
-                        continue  # Skip visibility='tool' or 'private'
+                    # Check visibility flags: need either _mcp_public (UI) OR _mcp_tool_visible (tool)
+                    # Skip only if BOTH are explicitly False (private agents)
+                    is_ui_visible = getattr(srv, '_mcp_public', False)
+                    is_tool_visible = getattr(srv, '_mcp_tool_visible', False)
+                    
+                    if not is_ui_visible and not is_tool_visible:
+                        continue  # Skip truly private agents
+                    
                     agent_names.append(name)
             except Exception as e:
                 # Unexpected error - log and skip
@@ -749,7 +754,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             # Get session_service from agent in context
             # IMPORTANT: Don't cache the injector! Each agent has its own session_service
             if not context.agent or not hasattr(context.agent, '_session_service') or not context.agent._session_service:
-                logger.warning("[SubAgentManager] No session_service available from agent, skipping hook")
+                agent_info = f"name={context.agent.name}" if context.agent and hasattr(context.agent, 'name') else "unknown"
+                has_attr = hasattr(context.agent, '_session_service') if context.agent else False
+                is_none = context.agent._session_service is None if (context.agent and has_attr) else True
+                logger.warning(
+                    f"[SubAgentManager] No session_service available from agent ({agent_info}, "
+                    f"has_attr={has_attr}, is_none={is_none}), skipping hook"
+                )
                 return HookResult(success=True, modified=False, context=context)
             
             session_service = context.agent._session_service

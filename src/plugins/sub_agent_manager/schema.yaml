@@ -3,7 +3,7 @@
 tools:
   - type: function
     function:
-      name: manage_sub_agent
+      name: "{{ name }}_manage_sub_agent"
       description: |
         Manage persistent sub-agent instances for delegation of specialized tasks.
         Sub-agents maintain conversation history and can be continued across multiple requests.
