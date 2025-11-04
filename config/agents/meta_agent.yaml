@@ -15,9 +15,10 @@ plugins:
           allowed:
             - "sysadmin_agent/*"
             - "meta_web_research_agent/*"
+            - "thinking_agent/*"
             #- "financial_analyst_agent/*"
             #- "code_reviewer_agent/*"
-            - "basic_agent/*"
+            #- "basic_agent/*"
             - "basic_operations/*"
             - "datetime/*"
             - "sequential_thinking/*"

@@ -1,0 +1,84 @@
+plugins:
+  servers:
+  
+    # the sub_agent_manager to manage sub-agents for sysadmin
+    sysadmin_agent_manager:
+      type: sub_agent_manager
+      enabled: true
+      max_nesting_depth: 5
+      allowed_agents:
+        - meta_web_research_agent
+        - parallel_thinking_agent
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 3
+          format: "markdown"
+
+    # ssh utils
+    ssh_control:
+      type: ssh_control
+      enabled: true
+      machines:
+        - name: controlhost
+          host: 192.0.2.114
+          port: 22
+          username: root
+          auth_method: key
+          key_path: ~/.ssh/id_rsa
+          max_connections: 3
+        - name: MCP
+          host: 192.0.2.113
+          port: 22
+          username: root
+          auth_method: key
+          key_path: ~/.ssh/id_rsa
+          max_connections: 3
+
+
+    # the agent
+    sysadmin_agent:
+      type: basic_agent
+      enabled: true
+      description: "System administration agent with SSH access to manage, monitor, and troubleshoot Linux servers across production and development environments"
+      
+      # self_tool_descriptions now at MCPConfig level (not in agent_config)
+      self_tool_descriptions:
+        sysadmin_agent_execute_task: "Execute system administration tasks including server management, deployment automation, performance monitoring, security audits, and infrastructure troubleshooting via SSH"
+        sysadmin_agent_list_available_tools: "List system utilities, and administrative tools available for server management"
+      
+      agent_config:
+        llm_profile: normal
+        max_steps: 100
+        system_template: "config/prompts/system_admin_prompt.yaml"
+        
+        tools:
+          allowed:
+            - "ssh_control/*"
+            - "basic_operations/*"
+            - "datetime/*"
+            - "todo/*"
+            - "memory/*"
+            - "sysadmin_agent_manager/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+            todo.inject_todo_tasks:
+              enabled: true
+            memory.inject_memory_context:
+              enabled: true
+            sysadmin_agent_manager.inject_sub_agent_context:
+              enabled: true          
+
+      
+      metadata:
+        author: "AgentSystem"
+        version: "1.1.0"
+        tags: ["ssh", "server", "Administrator", "security"]
+        category: "it"
+        visibility: "both"
+    
