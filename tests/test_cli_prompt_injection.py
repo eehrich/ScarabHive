@@ -69,6 +69,10 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
         'agent_system.servers.agent.server.Agent',
         lambda name, system_config, mcp_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
     )
+    monkeypatch.setattr(
+        'agent_system.agent_cli.Agent',
+        lambda name, system_config, mcp_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
+    )
     # Run CLI in raw mode to take the non-streaming path (simpler output)
     monkeypatch.setattr('sys.argv', ['agent-cli', '--raw', 'run', 'do it'])
 

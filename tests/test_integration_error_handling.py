@@ -43,6 +43,7 @@ def create_mock_llm(responses: list[dict]) -> AsyncMock:
             return {"assistant": {"content": "Done"}}
     
     mock_llm.chat_tools = mock_chat_tools
+    mock_llm.supports_streaming = lambda: False
     return mock_llm
 
 

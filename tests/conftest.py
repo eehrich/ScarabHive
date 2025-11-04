@@ -7,8 +7,43 @@ import time
 import signal
 import atexit
 from typing import List
-import traceback
-import weakref
+from pathlib import Path
+import tempfile
+
+# Set test session storage path BEFORE any imports of agent_system
+# This ensures all tests use a temporary directory for sessions
+_TEST_SESSION_DIR = Path(tempfile.mkdtemp(prefix="agent_test_sessions_"))
+os.environ["AGENT_SESSION_STORAGE_PATH"] = str(_TEST_SESSION_DIR)
+
+# Patch SessionManager to force test storage path
+# This must happen before agent_system is imported
+def _patch_session_manager():
+    """Monkey-patch SessionManager.__init__ to use test storage path.
+    
+    If a test explicitly provides storage_path, we use it (for unit tests).
+    Otherwise, create a unique tmp directory (for integration tests).
+    """
+    try:
+        from agent_system.services.session_manager import SessionManager
+        _original_init = SessionManager.__init__
+        
+        def _test_init(self, storage_path=None, *args, **kwargs):
+            # If test explicitly provides a path, use it
+            if storage_path is not None:
+                return _original_init(self, storage_path=storage_path, *args, **kwargs)
+            
+            # Otherwise, create unique tmp directory for this instance
+            import tempfile
+            test_path = Path(tempfile.mkdtemp(prefix="agent_test_session_"))
+            return _original_init(self, storage_path=str(test_path), *args, **kwargs)
+        
+        SessionManager.__init__ = _test_init
+        print("[conftest] Patched SessionManager to use unique tmp directories per instance")
+    except Exception as e:
+        print(f"[conftest] Failed to patch SessionManager: {e}")
+
+# Apply the patch
+_patch_session_manager()
 
 # Ensure any subprocess.Popen calls that open text streams default to UTF-8
 # to avoid UnicodeDecodeError in the subprocess reader threads on Windows
@@ -46,6 +81,10 @@ try:
             # can observe that history was taken into account.
             self._history = []
 
+        def supports_streaming(self) -> bool:
+            """Return False to follow non-streaming code paths in tests."""
+            return False
+
         async def chat(self, messages, cancellation_token=None):
             # Record messages for future calls
             try:
@@ -69,6 +108,13 @@ try:
             # Provide the minimal shape expected by callers: a dict with assistant content
             txt = await self.chat(messages, cancellation_token=cancellation_token)
             return {"assistant": {"content": txt}}
+
+        async def chat_tools_streaming(self, messages, tools, cancellation_token=None):
+            # Streaming version: yield chunks that mimic real LLM streaming responses
+            txt = await self.chat(messages, cancellation_token=cancellation_token)
+            # Yield a single chunk with the full response
+            yield {"delta": {"content": txt}, "done": False}
+            yield {"delta": {}, "done": True}
 
     def _fake_make_llm(provider, model, openai_api_key, ollama_url=None, context_window=None, ollama_mode=None, request_timeout=None, ssl_verify=None, client_type=None, httpx_timeouts=None, capabilities=None):
         return _FakeLLMClient(provider=provider, model=model, context_window=context_window)

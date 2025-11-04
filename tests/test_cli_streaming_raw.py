@@ -79,15 +79,26 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
     global DEFAULT_EVENTS
     DEFAULT_EVENTS = events
     monkeypatch.setattr('agent_system.servers.agent.server.Agent', AgentStub)
+    monkeypatch.setattr('agent_system.agent_cli.Agent', AgentStub)
 
-    # Mock the registry to return AgentStub for default_agent
+    # Provide a fake initialization service that returns empty registry/session service
     from unittest.mock import MagicMock
+
     mock_registry = MagicMock()
-    mock_registry.list.return_value = []  # No servers in registry
+    mock_registry.list.return_value = []
     mock_registry.get.return_value = None
 
-    # Patch MCPRegistry to return our mock
-    monkeypatch.setattr('agent_system.agent_cli.MCPRegistry', lambda: mock_registry)
+    mock_session_service = MagicMock()
+    fake_session_manager = MagicMock()
+
+    class FakeInitService:
+        def __init__(self, *_args, **_kwargs):
+            self.session_manager = fake_session_manager
+
+        def initialize_for_cli(self):
+            return mock_registry, mock_session_service
+
+    monkeypatch.setattr('agent_system.services.initialization_service.InitializationService', FakeInitService)
 
     # Run with --raw via argv (which uses non-streaming mode)
     monkeypatch.setattr("sys.argv", ["agent-cli", "--raw", "run", "do it"])
@@ -114,15 +125,25 @@ def test_cli_streaming_prints_human_readable(monkeypatch, capsys):
     global DEFAULT_EVENTS
     DEFAULT_EVENTS = events
     monkeypatch.setattr('agent_system.servers.agent.server.Agent', AgentStub)
+    monkeypatch.setattr('agent_system.agent_cli.Agent', AgentStub)
 
-    # Mock the registry to return AgentStub for default_agent
     from unittest.mock import MagicMock
+
     mock_registry = MagicMock()
-    mock_registry.list.return_value = []  # No servers in registry
+    mock_registry.list.return_value = []
     mock_registry.get.return_value = None
 
-    # Patch MCPRegistry to return our mock
-    monkeypatch.setattr('agent_system.agent_cli.MCPRegistry', lambda: mock_registry)
+    mock_session_service = MagicMock()
+    fake_session_manager = MagicMock()
+
+    class FakeInitService:
+        def __init__(self, *_args, **_kwargs):
+            self.session_manager = fake_session_manager
+
+        def initialize_for_cli(self):
+            return mock_registry, mock_session_service
+
+    monkeypatch.setattr('agent_system.services.initialization_service.InitializationService', FakeInitService)
 
     monkeypatch.setattr("sys.argv", ["agent-cli", "--show-mcp", "run", "do it"])
     cli.main()

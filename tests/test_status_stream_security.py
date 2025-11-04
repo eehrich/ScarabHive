@@ -1,42 +1,10 @@
 """
-Unit tests for status events security in /events endpoint - ensuring users cannot access other users' status events.
+Unit tests for request tracking and authorization in the /events endpoint.
 
-Note: Since status events are now integrated into the /events endpoint,
-security is handled by the existing /events endpoint user ownership checks.
-These tests verify that the security model still works for status events.
+Tests the request_id -> user_id mapping used for authorization and cleanup.
 """
 
 import pytest
-
-
-@pytest.mark.skip(reason="Status events now delivered through /events endpoint which has its own security tests")
-async def test_status_stream_blocks_other_users_requests():
-    """Status events security is now handled by /events endpoint"""
-    pass
-
-
-@pytest.mark.skip(reason="Status events now delivered through /events endpoint which has its own security tests")
-async def test_status_stream_allows_owner_access():
-    """Status events security is now handled by /events endpoint"""
-    pass
-
-
-@pytest.mark.skip(reason="Status events now delivered through /events endpoint which has its own security tests")
-async def test_status_stream_allows_anonymous_access_anonymous_request():
-    """Status events security is now handled by /events endpoint"""
-    pass
-
-
-@pytest.mark.skip(reason="Status events now delivered through /events endpoint which has its own security tests")
-async def test_status_stream_blocks_authenticated_user_from_anonymous_request():
-    """Status events security is now handled by /events endpoint"""
-    pass
-
-
-@pytest.mark.skip(reason="Status events now delivered through /events endpoint which has its own security tests")
-async def test_status_stream_allows_unregistered_request_id():
-    """Status events security is now handled by /events endpoint"""
-    pass
 
 
 @pytest.mark.asyncio

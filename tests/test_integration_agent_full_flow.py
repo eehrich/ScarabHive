@@ -55,6 +55,9 @@ class MockLLMClient:
         self.call_count = 0
         self.messages_received = []
         
+    def supports_streaming(self) -> bool:
+        return False
+        
     async def chat(self, messages, cancellation_token=None):
         """Simulate LLM response"""
         self.call_count += 1

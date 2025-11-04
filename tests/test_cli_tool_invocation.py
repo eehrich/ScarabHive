@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-import subprocess
+import shutil
 
 
 def run_cli(prompt: str):
@@ -46,6 +46,11 @@ def test_cli_invokes_weather_tool(monkeypatch, tmp_path):
         src = repo_root / "config" / name
         dst = tmp_config / name
         dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # Include agent-specific configuration (meta_agent, etc.)
+    src_agents = repo_root / "config" / "agents"
+    if src_agents.exists():
+        shutil.copytree(src_agents, tmp_config / "agents")
 
     # Ensure CWD is temp workspace
     monkeypatch.chdir(tmp_path)

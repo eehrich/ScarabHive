@@ -27,10 +27,3 @@ async def test_events_stream_immediate_close():
             # Expected - stream times out because it's infinite
             pass
 
-
-@pytest.mark.skip(reason="Test requires integration with agent execution to receive status events through /events endpoint")
-async def test_status_stream_single_event():
-    """Test that published events are delivered through the stream."""
-    # Note: Status events are now delivered through /events endpoint during agent execution
-    # This test is skipped as it requires full agent integration
-    pass

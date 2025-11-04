@@ -32,14 +32,3 @@ async def test_status_meta_endpoint_provides_metrics():
         assert 'publish_attempted' in data
         assert 'delivered' in data
 
-
-@pytest.mark.skip(reason="Debug toggle endpoint no longer exists")
-async def test_debug_toggle_functionality():
-    """POST /debug/toggle toggles debug flag and returns JSON with debug boolean."""
-    app = build_app()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.post('/debug/toggle')
-        assert r.status_code == 200
-        data = r.json()
-        assert 'debug' in data
-        assert isinstance(data['debug'], bool)

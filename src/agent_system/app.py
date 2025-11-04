@@ -82,7 +82,12 @@ async def lifespan(app: FastAPI):
 
             # Initialize SessionManager
             from pathlib import Path
-            storage_path = Path(__file__).parents[2] / "data" / "sessions"
+            # Allow tests to override session storage path via environment variable
+            env_storage_path = os.getenv("AGENT_SESSION_STORAGE_PATH")
+            if env_storage_path:
+                storage_path = Path(env_storage_path)
+            else:
+                storage_path = Path(__file__).parents[2] / "data" / "sessions"
             _session_manager = SessionManager(storage_path=str(storage_path))
             logger.info(f"SessionManager initialized with storage_path={storage_path}")
 
