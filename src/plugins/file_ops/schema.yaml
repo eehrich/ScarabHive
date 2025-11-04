@@ -124,32 +124,6 @@ tools:
 
   - type: function
     function:
-      name: "{{ name }}_file_exists"
-      description: "Check if a file or directory exists."
-      parameters:
-        type: object
-        properties:
-          path:
-            type: string
-            description: "Path to check"
-        required: ["path"]
-        additionalProperties: false
-
-  - type: function
-    function:
-      name: "{{ name }}_get_file_info"
-      description: "Get file metadata (size, modified time, permissions)."
-      parameters:
-        type: object
-        properties:
-          file_path:
-            type: string
-            description: "Path to file"
-        required: ["file_path"]
-        additionalProperties: false
-
-  - type: function
-    function:
       name: "{{ name }}_search_files"
       description: |
         Search for files by name pattern using glob syntax. Fast indexed search.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -406,48 +405,4 @@ class FileOperations:
                 "error": str(e),
                 "error_type": type(e).__name__,
                 "dir_path": str(dir_path)
-            }
-    
-    async def file_exists_safe(self, path: Path) -> Dict[str, Any]:
-        """Check if a file or directory exists."""
-        return {
-            "status": "success",
-            "path": str(path),
-            "exists": path.exists(),
-            "is_file": path.is_file() if path.exists() else None,
-            "is_directory": path.is_dir() if path.exists() else None
-        }
-    
-    async def get_file_info_safe(self, path: Path) -> Dict[str, Any]:
-        """Get file metadata."""
-        try:
-            if not path.exists():
-                return {
-                    "status": "error",
-                    "error": f"Path not found: {path}",
-                    "error_type": "FileNotFoundError",
-                    "path": str(path)
-                }
-            
-            stat = path.stat()
-            
-            return {
-                "status": "success",
-                "path": str(path),
-                "is_file": path.is_file(),
-                "is_directory": path.is_dir(),
-                "is_symlink": path.is_symlink(),
-                "size_bytes": stat.st_size,
-                "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                "created_time": datetime.fromtimestamp(stat.st_ctime).isoformat(),
-                "permissions": oct(stat.st_mode)[-3:]
-            }
-        
-        except Exception as e:
-            logger.error(f"Error getting file info for {path}: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "path": str(path)
             }

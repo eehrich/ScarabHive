@@ -216,50 +216,6 @@ async def test_list_directory_with_pattern(file_ops_server, tmp_allowed_dir):
 
 
 @pytest.mark.asyncio
-async def test_file_exists(file_ops_server, tmp_allowed_dir):
-    """Test checking file existence."""
-    # Create test file
-    test_file = tmp_allowed_dir / "exists.txt"
-    test_file.write_text("I exist")
-    
-    # Check existing file
-    result = await file_ops_server.file_exists({
-        "path": str(test_file)
-    })
-    
-    assert result["status"] == "success"
-    assert result["exists"] is True
-    assert result["is_file"] is True
-    
-    # Check non-existing file
-    result = await file_ops_server.file_exists({
-        "path": str(tmp_allowed_dir / "nonexistent.txt")
-    })
-    
-    assert result["status"] == "success"
-    assert result["exists"] is False
-
-
-@pytest.mark.asyncio
-async def test_get_file_info(file_ops_server, tmp_allowed_dir):
-    """Test getting file metadata."""
-    # Create test file
-    test_file = tmp_allowed_dir / "info.txt"
-    test_file.write_text("File info test")
-    
-    # Get file info
-    result = await file_ops_server.get_file_info({
-        "file_path": str(test_file)
-    })
-    
-    assert result["status"] == "success"
-    assert result["is_file"] is True
-    assert result["size_bytes"] > 0
-    assert "modified_time" in result
-    assert "permissions" in result
-
-
-@pytest.mark.asyncio
 async def test_path_traversal_blocked(file_ops_server, tmp_allowed_dir):
     """Test that path traversal attempts are blocked."""
     # Try to access parent directory

@@ -249,60 +249,6 @@ class FileOpsServer(SchemaBasedMCPServer):
                 "error_type": type(e).__name__
             }
     
-    async def file_exists(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Check if file or directory exists."""
-        try:
-            path_str = params["path"]
-            
-            # Validate path (don't require existence)
-            safe_path = self.validator.validate_path(path_str)
-            
-            return await self.operations.file_exists_safe(safe_path)
-        
-        except SecurityError as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "error_type": "SecurityError"
-            }
-        except Exception as e:
-            self.logger.error(f"Unexpected error in file_exists: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
-    
-    async def get_file_info(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Get file metadata."""
-        try:
-            file_path = params["file_path"]
-            
-            # Validate path
-            safe_path = self.validator.validate_path(file_path, must_exist=True)
-            
-            return await self.operations.get_file_info_safe(safe_path)
-        
-        except FileNotFoundError:
-            return {
-                "status": "error",
-                "error": f"Path not found: {params.get('file_path')}",
-                "error_type": "FileNotFoundError"
-            }
-        except SecurityError as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "error_type": "SecurityError"
-            }
-        except Exception as e:
-            self.logger.error(f"Unexpected error in get_file_info: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
-    
     async def search_files(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Search files by glob pattern."""
         try:

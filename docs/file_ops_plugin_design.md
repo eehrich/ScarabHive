@@ -57,10 +57,9 @@ class FileOperationsServer(SchemaBasedMCPServer):
     async def edit_file(self, params: dict) -> dict: ...
     async def delete_file(self, params: dict) -> dict: ...
     async def list_directory(self, params: dict) -> dict: ...
-    async def file_exists(self, params: dict) -> dict: ...
-    async def get_file_info(self, params: dict) -> dict: ...
     async def search_files(self, params: dict) -> dict: ...
     async def grep_search(self, params: dict) -> dict: ...
+    async def semantic_search(self, params: dict) -> dict: ...
 
 # security.py
 class PathValidator:
@@ -298,47 +297,7 @@ class FileSearchEngine:
       additionalProperties: false
 ```
 
-### 6. file_exists
-
-**Purpose**: Check if file or directory exists.
-
-**Schema**:
-```yaml
-- type: function
-  function:
-    name: "{{ name }}_file_exists"
-    description: "Check if a file or directory exists."
-    parameters:
-      type: object
-      properties:
-        path:
-          type: string
-          description: "Path to check"
-      required: ["path"]
-      additionalProperties: false
-```
-
-### 7. get_file_info
-
-**Purpose**: Get file metadata.
-
-**Schema**:
-```yaml
-- type: function
-  function:
-    name: "{{ name }}_get_file_info"
-    description: "Get file metadata (size, modified time, permissions)."
-    parameters:
-      type: object
-      properties:
-        file_path:
-          type: string
-          description: "Path to file"
-      required: ["file_path"]
-      additionalProperties: false
-```
-
-### 8. search_files
+### 6. search_files
 
 **Purpose**: Fast file search by filename pattern (like GitHub Copilot's `file_search`).
 
@@ -379,7 +338,7 @@ class FileSearchEngine:
 }
 ```
 
-### 9. grep_search
+### 7. grep_search
 
 **Purpose**: Fast text search across files (like GitHub Copilot's `grep_search`).
 
@@ -446,6 +405,63 @@ class FileSearchEngine:
   "total_matches": 1,
   "total_files": 1,
   "truncated": false
+}
+```
+
+### 8. semantic_search
+
+**Purpose**: Semantic/AI-powered code search using embeddings (ChromaDB).
+
+**Schema**:
+```yaml
+- type: function
+  function:
+    name: "{{ name }}_semantic_search"
+    description: |
+      Semantic/AI-powered code search using embeddings. Finds files by meaning, not just keywords.
+      Uses ChromaDB for intelligent similarity search.
+      
+      Examples:
+        - "find authentication logic" → matches verify_credentials(), login(), auth functions
+        - "database connection code" → finds DB setup, connection pools, ORM configs
+        - "error handling patterns" → locates try/except blocks, error classes
+      
+      Better than grep for conceptual searches where exact keywords vary.
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "Natural language search query describing what code you're looking for"
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+          description: "Maximum number of files to return"
+        filter_pattern:
+          type: string
+          description: "Optional glob pattern to filter results by file type (e.g., '*.py')"
+      required: ["query"]
+      additionalProperties: false
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "query": "authentication logic",
+  "results": [
+    {
+      "file_path": "/absolute/path/to/auth.py",
+      "filename": "auth.py",
+      "similarity_score": 0.8934,
+      "size_bytes": 4523,
+      "extension": ".py"
+    }
+  ],
+  "count": 1,
+  "max_results": 10
 }
 ```
 
