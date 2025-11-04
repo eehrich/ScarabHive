@@ -1,4 +1,4 @@
-"""Command-line interface for the file_operations plugin.
+"""Command-line interface for the file_ops plugin.
 
 Provides commands to exercise file operation tools locally for development and debugging.
 """
@@ -15,22 +15,22 @@ from typing import Any
 from unittest.mock import Mock
 
 from agent_system.config import AgentSystemConfig, MCPConfig
-from .server import FileOperationsServer
+from .server import FileOpsServer
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def create_test_server(allowed_dirs: list[str]) -> FileOperationsServer:
+def create_test_server(allowed_dirs: list[str]) -> FileOpsServer:
     """Create a test file operations server with mock configs."""
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(Path.cwd())
     
-    mcp_config = MCPConfig(type="file_operations", enabled=True)
+    mcp_config = MCPConfig(type="file_ops", enabled=True)
     mcp_config.allowed_directories = allowed_dirs
     mcp_config.search = {"enable_indexing": False}  # Disable for CLI testing
     
-    return FileOperationsServer("cli_file_ops", system_config, mcp_config)
+    return FileOpsServer("cli_file_ops", system_config, mcp_config)
 
 
 async def cmd_read(args: Namespace) -> dict[str, Any]:

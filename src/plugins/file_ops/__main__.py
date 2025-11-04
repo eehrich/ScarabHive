@@ -1,4 +1,4 @@
-"""Run file_operations plugin CLI."""
+"""Run file_ops plugin CLI."""
 
 from .cli import main as async_main
 import asyncio

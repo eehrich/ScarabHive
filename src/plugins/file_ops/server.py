@@ -1,4 +1,4 @@
-"""File Operations MCP Server implementation."""
+"""File Ops MCP Server implementation."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .search import FileSearchEngine
 logger = logging.getLogger(__name__)
 
 
-class FileOperationsServer(SchemaBasedMCPServer):
+class FileOpsServer(SchemaBasedMCPServer):
     """MCP server providing secure file operations with search capabilities."""
     
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
@@ -352,4 +352,4 @@ class FileOperationsServer(SchemaBasedMCPServer):
         await super().shutdown()
 
 
-PLUGIN_FACTORY = FileOperationsServer
+PLUGIN_FACTORY = FileOpsServer

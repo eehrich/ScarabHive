@@ -123,16 +123,11 @@ plugins:
       type: script_interpreter
       enabled: true
     
-    file_operations:
-      type: file_operations
+    file_ops:
+      type: file_ops
       enabled: true
       allowed_directories:
-        - src
-        - docs
-        - tests
-        - tmp
-        - config
-        - data
+        - data/workspace
       max_file_size_mb: 10
       search:
         enable_indexing: true
@@ -146,11 +141,11 @@ plugins:
           - "**/*.min.css"
           - "**/*.map"
     
-    # File Operations Test Agent - RESTRICTED to tmp/ directory for safe testing
+    # File Operations Test Agent - RESTRICTED to data/workspace/ for safe testing
     file_ops_test_agent:
       type: basic_agent
       enabled: true
-      description: "Test agent for file_operations plugin - RESTRICTED to tmp/ directory only"
+      description: "Test agent for file_ops plugin - RESTRICTED to data/workspace/ directory only"
       
       agent_config:
         llm_profile: normal
@@ -159,7 +154,7 @@ plugins:
         
         tools:
           allowed:
-            - "file_operations/*"
+            - "file_ops/*"
             - "basic_operations/*"
             - "datetime/*"
         

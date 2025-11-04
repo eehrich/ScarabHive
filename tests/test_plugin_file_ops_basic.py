@@ -1,4 +1,4 @@
-"""Basic tests for file_operations plugin."""
+"""Basic tests for file_ops plugin."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import Mock
 
 from agent_system.config import AgentSystemConfig, MCPConfig
-from plugins.file_operations.server import FileOperationsServer
+from plugins.file_ops.server import FileOpsServer
 
 
 @pytest.fixture
@@ -23,13 +23,13 @@ def file_ops_server(tmp_allowed_dir):
     system_config = Mock(spec=AgentSystemConfig)
     system_config.project_root = str(tmp_allowed_dir.parent)
     
-    mcp_config = MCPConfig(type="file_operations", enabled=True)
+    mcp_config = MCPConfig(type="file_ops", enabled=True)
     mcp_config.allowed_directories = [str(tmp_allowed_dir)]
     mcp_config.search = {
         "enable_indexing": False  # Disable for faster tests
     }
     
-    server = FileOperationsServer("file_operations", system_config, mcp_config)
+    server = FileOpsServer("file_ops", system_config, mcp_config)
     return server
 
 

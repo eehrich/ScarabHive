@@ -69,7 +69,7 @@ mcp-http-server = "plugins.http_server.__main__:cli_main"
 mcp-script-interpreter = "plugins.script_interpreter.__main__:cli_main"
 mcp-basic-operations = "plugins.basic_operations.__main__:cli_main"
 mcp-todo-management = "plugins.todo_management.__main__:cli_main"
-mcp-file-operations = "plugins.file_operations.__main__:main"
+mcp-file-ops = "plugins.file_ops.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
