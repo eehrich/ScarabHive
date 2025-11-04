@@ -135,7 +135,7 @@ servers:
 ## Performance Features
 
 ### Intelligent Caching
-- **Automatic Caching**: Search results cached in `.cache/duckduckgo_search/` directory  
+- **Automatic Caching**: Search results cached in `data/cache/duckduckgo_search/` directory  
 - **TTL-Based Expiration**: Default 15-minute cache lifetime (configurable)
 - **Cache Keys**: Based on search query and max_results parameter
 - **Performance Boost**: Avoid repeated API calls for identical searches

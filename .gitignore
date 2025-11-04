@@ -12,7 +12,6 @@ tmp/
 logs/
 *.log
 .tmp
-.cache/
 tmp_backlog.md
 data/users.db
 data/sessions/

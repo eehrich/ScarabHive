@@ -2,7 +2,7 @@
 Plugin caching system for AgentSystem.
 
 Provides a file-based cache with TTL (Time To Live) support for plugins.
-Cache files are stored in .cache/{plugin_name}/ subdirectories.
+Cache files are stored in data/cache/{plugin_name}/ subdirectories.
 """
 import json
 import hashlib
@@ -23,7 +23,7 @@ class PluginCache:
         
         Args:
             plugin_name: Name of the plugin (used for cache subdirectory)
-            cache_dir: Base cache directory (defaults to .cache in project root)
+            cache_dir: Base cache directory (defaults to data/cache in project root)
             default_ttl: Default TTL in seconds (default: 1 hour)
         """
         self.plugin_name = plugin_name
@@ -42,7 +42,7 @@ class PluginCache:
                 # Fallback to current working directory
                 project_root = Path.cwd()
             
-            cache_dir = project_root / ".cache"
+            cache_dir = project_root / "data" / "cache"
         
         self.cache_dir = cache_dir / plugin_name
         self.cache_dir.mkdir(parents=True, exist_ok=True)

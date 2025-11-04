@@ -250,7 +250,7 @@ When `extract_forms: true`:
 - **Compression Support**: Accepts gzipped responses
 
 ### Intelligent Caching
-- **Automatic Caching**: Results cached in `.cache/web_scraper/` directory
+- **Automatic Caching**: Results cached in `data/cache/web_scraper/` directory
 - **TTL-Based Expiration**: Default 30-minute cache lifetime (configurable)
 - **Cache Keys**: Based on URL, operation type, and extraction options
 - **Performance Boost**: Avoid repeated requests for same content
