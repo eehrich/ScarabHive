@@ -38,10 +38,20 @@ class FileSearchEngine:
         # Indexing control
         self._indexing_task: Optional[asyncio.Task] = None
         self._index_lock = asyncio.Lock()
-        
-        # Start background indexing if enabled
-        if config.get("enable_indexing", True) and config.get("index_on_startup", True):
-            self._indexing_task = asyncio.create_task(self._background_indexer())
+        self._indexing_started = False
+    
+    def _ensure_indexing_started(self):
+        """Start background indexing if not already started and if enabled."""
+        if (not self._indexing_started and 
+            self.config.get("enable_indexing", True) and 
+            self.config.get("index_on_startup", True)):
+            try:
+                # Try to create task if event loop is running
+                self._indexing_task = asyncio.create_task(self._background_indexer())
+                self._indexing_started = True
+            except RuntimeError:
+                # No event loop running yet, will be started on first use
+                pass
     
     async def _background_indexer(self):
         """Periodically rebuild index in background."""
@@ -185,6 +195,8 @@ class FileSearchEngine:
             Dict with status, files, total_found, truncated
         """
         try:
+            self._ensure_indexing_started()  # Start indexing if not already started
+            
             results: Set[Path] = set()
             pattern_lower = pattern.lower()
             
@@ -249,6 +261,8 @@ class FileSearchEngine:
             Dict with status, matches, total_matches, total_files, truncated
         """
         try:
+            self._ensure_indexing_started()  # Start indexing if not already started
+            
             matches = []
             files_searched = 0
             
