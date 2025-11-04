@@ -1212,7 +1212,11 @@ class Agent(MCPServer):
                     # Treat final content as answer (assistant_msg already added above)
                     results["summary"] = content
                     self._current_messages = messages.copy()
-                    yield {"type": "final", "summary": content, "content_format": "markdown"}
+                    final_event = {"type": "final", "summary": content, "content_format": "markdown"}
+                    # Include usage data if available from last LLM call
+                    if llm_out and "usage" in llm_out:
+                        final_event["usage"] = llm_out["usage"]
+                    yield final_event
                     return
             else:
                 consecutive_no_tool_calls = 0  # Reset counter when we get tool calls
@@ -1303,7 +1307,11 @@ class Agent(MCPServer):
                 self._current_messages = messages.copy()
 
                 # Return raw markdown - formatting happens in API/CLI layer
-                yield {"type": "final", "summary": content, "content_format": "markdown"}
+                final_event = {"type": "final", "summary": content, "content_format": "markdown"}
+                # Include usage data if available from last LLM call
+                if llm_out and "usage" in llm_out:
+                    final_event["usage"] = llm_out["usage"]
+                yield final_event
                 return
 
             # Update tracked messages at end of each step
@@ -1361,7 +1369,11 @@ class Agent(MCPServer):
                 self._current_messages = messages.copy()
 
                 # Return raw markdown - formatting happens in API/CLI layer
-                yield {"type": "final", "summary": final_content, "content_format": "markdown"}
+                final_event = {"type": "final", "summary": final_content, "content_format": "markdown"}
+                # Include usage data if available from final LLM call
+                if final_llm_out and "usage" in final_llm_out:
+                    final_event["usage"] = final_llm_out["usage"]
+                yield final_event
             else:
                 results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
                 yield {"type": "error", "message": "LLM planner reached max steps without final answer."}

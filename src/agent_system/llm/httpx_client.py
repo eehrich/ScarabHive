@@ -154,9 +154,12 @@ class HTTPXOpenAIClient(LLMClient):
 
     def supports_streaming(self) -> bool:
         """Check if this client supports streaming based on model capabilities."""
-        # Check if capabilities explicitly disable streaming
-        if self.capabilities and hasattr(self.capabilities, 'streaming'):
-            return self.capabilities.streaming
+        # Check if capabilities explicitly disable streaming (handle both dict and object)
+        if self.capabilities:
+            if isinstance(self.capabilities, dict):
+                return self.capabilities.get('streaming', True)
+            elif hasattr(self.capabilities, 'streaming'):
+                return self.capabilities.streaming
         return True  # Default to True if capabilities not set
 
     async def _make_request(
@@ -167,12 +170,23 @@ class HTTPXOpenAIClient(LLMClient):
     ) -> dict:
         """Make the actual HTTP request with proper cancellation and error handling."""
 
-        # Check if streaming is disabled in capabilities
-        if self.capabilities and hasattr(self.capabilities, 'streaming') and not self.capabilities.streaming:
+        # Check if streaming is disabled in capabilities (handle both dict and object)
+        streaming_enabled = True  # Default
+        if self.capabilities:
+            if isinstance(self.capabilities, dict):
+                streaming_enabled = self.capabilities.get('streaming', True)
+            elif hasattr(self.capabilities, 'streaming'):
+                streaming_enabled = self.capabilities.streaming
+        
+        logger.debug(f"_make_request: streaming_enabled={streaming_enabled}, capabilities type={type(self.capabilities)}")
+        
+        if not streaming_enabled:
             # Use non-streaming request
+            logger.debug("Using non-streaming request path")
             return await self._make_request_non_streaming(messages, tools, cancellation_token)
 
         # Use streaming request (default behavior)
+        logger.debug("Using streaming request path")
         final_result = None
         async for chunk in self._make_request_streaming(messages, tools, cancellation_token):
             if chunk.get("type") == "final":
@@ -193,6 +207,7 @@ class HTTPXOpenAIClient(LLMClient):
         Returns:
             dict: Response with 'assistant' key containing the assistant message
         """
+        logger.debug(f"_make_request_non_streaming called for model {self.model}")
 
         # Build request payload - convert ChatMessage objects to dicts
         message_dicts = []
@@ -254,14 +269,8 @@ class HTTPXOpenAIClient(LLMClient):
                     # Parse successful response
                     response_data = response.json()
 
-                    # Extract assistant message from choices
-                    if "choices" in response_data and len(response_data["choices"]) > 0:
-                        assistant_msg = response_data["choices"][0]["message"]
-                        return {"assistant": assistant_msg}
-                    else:
-                        # Unexpected response format
-                        logger.error(f"Unexpected response format: {response_data}")
-                        return {"assistant": {"role": "assistant", "content": ""}}
+                    # Use centralized response formatting (handles usage, tool_calls, etc.)
+                    return self._format_response(response_data)
 
             except httpx.HTTPStatusError:
                 raise  # Re-raise HTTP errors immediately
@@ -309,6 +318,7 @@ class HTTPXOpenAIClient(LLMClient):
             "model": self.model,
             "messages": message_dicts,
             "stream": True,  # ⚡ Enable streaming
+            "stream_options": {"include_usage": True},  # Request usage stats in stream
             **self.extra_params
         }
 
@@ -640,6 +650,8 @@ class HTTPXOpenAIClient(LLMClient):
     def _format_response(self, response_data: dict) -> dict:
         """Format OpenAI API response to our standard format."""
         try:
+            logger.debug(f"Formatting response_data keys: {list(response_data.keys())}")
+            
             choices = response_data.get("choices", [])
             if not choices:
                 return {"assistant": {"role": "assistant", "content": ""}}
@@ -660,15 +672,16 @@ class HTTPXOpenAIClient(LLMClient):
 
             # Track usage if available
             usage = response_data.get("usage", {})
+            logger.debug(f"Extracted usage from response_data: {usage}")
 
             result = {"assistant": assistant}
 
             if usage:
-                result["usage"] = {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0)
-                }
+                # Pass through complete usage data (OpenAI may include additional details like cached_tokens, reasoning_tokens etc.)
+                result["usage"] = usage
+                logger.debug(f"Added usage to result: {result['usage']}")
+            else:
+                logger.debug("No usage data in response_data")
 
             return result
 
