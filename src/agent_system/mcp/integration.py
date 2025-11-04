@@ -40,6 +40,7 @@ class MCPIntegration:
         self.plugin_registry = plugin_mcp_registry
         self.http_server = MCPHTTPServer(app)
         self.initialized = False
+        self.servers_bootstrapped = False  # Track if bootstrap_servers() was called
         self.configured_external_servers: Dict[str, RemoteMCPConfig] = {}  # Type-safe config storage
 
         # Tool caching with config-aware invalidation
@@ -60,6 +61,7 @@ class MCPIntegration:
             return
 
         await self._initialize_cache_settings(config)
+        await self._bootstrap_servers(config)  # Bootstrap agents BEFORE plugin discovery
         await self._discover_and_register_plugins(config)
         await self._register_plugin_http_endpoints()
         await self._register_plugin_hooks(config)
@@ -74,6 +76,29 @@ class MCPIntegration:
             ttl = config.external_servers.cache.tool_list_ttl
             self.client_manager.set_cache_ttl(ttl)
             logger.debug(f"MCP client manager cache TTL set to {ttl}s")
+
+    async def _bootstrap_servers(self, config: AgentSystemConfig) -> None:
+        """Bootstrap MCP servers and agents using bootstrap_servers().
+        
+        This is called once during initialization. If bootstrap_servers()
+        was already called externally (e.g., by build_mcp_app), skip it.
+        """
+        if self.servers_bootstrapped:
+            logger.debug("Servers already bootstrapped, skipping")
+            return
+        
+        from ..mcp.base import MCPRegistry
+        from ..servers.bootstrap import bootstrap_servers
+        
+        # Create temporary registry for bootstrap (agents will be auto-registered in plugin_registry)
+        temp_registry = MCPRegistry()
+        bootstrap_servers(config, temp_registry)
+        self.servers_bootstrapped = True
+        
+        logger.debug(
+            f"Bootstrap complete - {len(temp_registry.list())} servers in temp registry, "
+            f"{len(self.plugin_registry.list_servers())} servers in plugin_registry"
+        )
 
     async def _discover_and_register_plugins(self, config: AgentSystemConfig) -> None:
         """Discover and register enabled plugins."""

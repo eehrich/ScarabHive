@@ -40,14 +40,16 @@ def make_agent_plugin_factory(agent_cls: Type[Agent]) -> Callable[[str, AgentSys
             mcp_config: Plugin-specific MCP configuration (enabled, type, agent_config)
         """
         # Agent constructor signature: (name, system_config, mcp_config, registry, llm, llm_factory)
-        # Note: Registry is required but will be injected after bootstrap completes
-        # For now, we create an empty registry that will be populated later
+        # Note: Registry will be injected by bootstrap.py after all plugins are registered
+        # Create temporary empty registry that will be replaced by bootstrap
         registry = MCPRegistry()
         
+        # IMPORTANT: Do not call any methods that need registry access during __init__
+        # The registry will be populated and replaced by bootstrap.py
         inst = agent_cls(name, system_config, mcp_config, registry)
         
         logger.debug(
-            "Instantiated agent plugin %s (type=%s) via generic factory",
+            "Instantiated agent plugin %s (type=%s) via generic factory (registry will be injected)",
             name, mcp_config.type
         )
         return inst
