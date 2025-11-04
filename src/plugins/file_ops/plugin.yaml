@@ -1,9 +1,9 @@
-name: file_operations
+name: file_ops
 version: 1.0.0
 description: "Secure file operations for text files with sandboxed directory access"
 author: AgentSystem Team
 homepage: https://github.com/yourusername/agent-system
-entrypoint: server:FileOperationsServer
+entrypoint: server:FileOpsServer
 type: mcp_only
 category: utilities
 
