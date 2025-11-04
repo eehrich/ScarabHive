@@ -56,11 +56,16 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def read_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Read text file contents with pagination."""
+        status = params.get("_status")
+        
         try:
             file_path = params["file_path"]
             offset = params.get("offset", 0)
             limit = params.get("limit")
             encoding = params.get("encoding", "utf-8")
+            
+            if status:
+                await status.progress(f"Reading: {Path(file_path).name}")
             
             # Validate path
             safe_path = self.validator.validate_path(file_path, must_exist=True)
@@ -73,9 +78,20 @@ class FileOpsServer(SchemaBasedMCPServer):
                 }
             
             # Read file
-            return await self.operations.read_file_safe(
+            result = await self.operations.read_file_safe(
                 safe_path, offset=offset, limit=limit, encoding=encoding
             )
+            
+            if status:
+                lines_read = result.get("lines_read", 0)
+                total_lines = result.get("total_lines", 0)
+                await status.end(f"Read {lines_read}/{total_lines} lines", metadata={
+                    "file": str(safe_path),
+                    "lines_read": lines_read,
+                    "total_lines": total_lines
+                })
+            
+            return result
         
         except FileNotFoundError:
             return {
@@ -99,6 +115,8 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def create_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new file."""
+        status = params.get("_status")
+        
         try:
             file_path = params["file_path"]
             content = params["content"]
@@ -106,17 +124,29 @@ class FileOpsServer(SchemaBasedMCPServer):
             create_dirs = params.get("create_dirs", True)
             encoding = params.get("encoding", "utf-8")
             
+            if status:
+                await status.progress(f"Creating: {Path(file_path).name}")
+            
             # Validate path
             safe_path = self.validator.validate_path(file_path)
             
             # Create file
-            return await self.operations.create_file_safe(
+            result = await self.operations.create_file_safe(
                 safe_path,
                 content=content,
                 overwrite=overwrite,
                 create_dirs=create_dirs,
                 encoding=encoding
             )
+            
+            if status:
+                bytes_written = result.get("bytes_written", 0)
+                await status.end(f"Created ({bytes_written} bytes)", metadata={
+                    "file": str(safe_path),
+                    "bytes": bytes_written
+                })
+            
+            return result
         
         except SecurityError as e:
             return {
@@ -134,15 +164,20 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def edit_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Edit an existing file."""
+        status = params.get("_status")
+        
         try:
             file_path = params["file_path"]
             mode = params["mode"]
+            
+            if status:
+                await status.progress(f"Editing ({mode}): {Path(file_path).name}")
             
             # Validate path
             safe_path = self.validator.validate_path(file_path, must_exist=True)
             
             # Edit file
-            return await self.operations.edit_file_safe(
+            result = await self.operations.edit_file_safe(
                 safe_path,
                 mode=mode,
                 content=params.get("content"),
@@ -150,6 +185,28 @@ class FileOpsServer(SchemaBasedMCPServer):
                 new_string=params.get("new_string"),
                 line_number=params.get("line_number")
             )
+            
+            if status:
+                changes = result.get("changes", {})
+                if mode == "replace":
+                    await status.end(f"Replaced {changes.get('replacements', 0)} occurrences", metadata={
+                        "file": str(safe_path),
+                        "mode": mode,
+                        "replacements": changes.get("replacements", 0)
+                    })
+                elif mode == "append":
+                    await status.end("Appended content", metadata={
+                        "file": str(safe_path),
+                        "mode": mode
+                    })
+                elif mode == "insert":
+                    await status.end(f"Inserted at line {params.get('line_number', 0)}", metadata={
+                        "file": str(safe_path),
+                        "mode": mode,
+                        "line": params.get("line_number", 0)
+                    })
+            
+            return result
         
         except FileNotFoundError:
             return {
@@ -173,9 +230,14 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def delete_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Delete a file."""
+        status = params.get("_status")
+        
         try:
             file_path = params["file_path"]
             confirm = params.get("confirm", False)
+            
+            if status:
+                await status.progress(f"Deleting: {Path(file_path).name}")
             
             if not confirm:
                 return {
@@ -188,7 +250,14 @@ class FileOpsServer(SchemaBasedMCPServer):
             safe_path = self.validator.validate_path(file_path, must_exist=True)
             
             # Delete file
-            return await self.operations.delete_file_safe(safe_path)
+            result = await self.operations.delete_file_safe(safe_path)
+            
+            if status:
+                await status.end(f"Deleted: {safe_path.name}", metadata={
+                    "file": str(safe_path)
+                })
+            
+            return result
         
         except FileNotFoundError:
             return {
@@ -212,22 +281,40 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def list_directory(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List directory contents."""
+        status = params.get("_status")
+        
         try:
             dir_path = params["dir_path"]
             recursive = params.get("recursive", False)
             pattern = params.get("pattern")
             include_hidden = params.get("include_hidden", False)
             
+            if status:
+                msg = f"Listing: {Path(dir_path).name}"
+                if pattern:
+                    msg += f" ({pattern})"
+                await status.progress(msg)
+            
             # Validate path
             safe_path = self.validator.validate_path(dir_path, must_exist=True)
             
             # List directory
-            return await self.operations.list_directory_safe(
+            result = await self.operations.list_directory_safe(
                 safe_path,
                 recursive=recursive,
                 pattern=pattern,
                 include_hidden=include_hidden
             )
+            
+            if status:
+                total = result.get("total_items", 0)
+                await status.end(f"Found {total} items", metadata={
+                    "directory": str(safe_path),
+                    "total_items": total,
+                    "recursive": recursive
+                })
+            
+            return result
         
         except FileNotFoundError:
             return {
@@ -251,11 +338,26 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def search_files(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Search files by glob pattern."""
+        status = params.get("_status")
+        
         try:
             pattern = params["pattern"]
             max_results = params.get("max_results", 50)
             
-            return await self.search_engine.search_files(pattern, max_results)
+            if status:
+                await status.progress(f"Searching files: {pattern}")
+            
+            result = await self.search_engine.search_files(pattern, max_results)
+            
+            if status:
+                found = result.get("total_found", 0)
+                await status.end(f"Found {found} files", metadata={
+                    "pattern": pattern,
+                    "found": found,
+                    "truncated": result.get("truncated", False)
+                })
+            
+            return result
         
         except Exception as e:
             self.logger.error(f"Unexpected error in search_files: {e}", exc_info=True)
@@ -267,6 +369,8 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def grep_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Search text content across files."""
+        status = params.get("_status")
+        
         try:
             query = params["query"]
             is_regex = params.get("is_regex", False)
@@ -275,7 +379,13 @@ class FileOpsServer(SchemaBasedMCPServer):
             max_results = params.get("max_results", 100)
             context_lines = params.get("context_lines", 2)
             
-            return await self.search_engine.grep_search(
+            if status:
+                msg = f"Searching text: '{query[:40]}...'"
+                if include_pattern:
+                    msg += f" in {include_pattern}"
+                await status.progress(msg)
+            
+            result = await self.search_engine.grep_search(
                 query=query,
                 is_regex=is_regex,
                 include_pattern=include_pattern,
@@ -283,6 +393,18 @@ class FileOpsServer(SchemaBasedMCPServer):
                 max_results=max_results,
                 context_lines=context_lines
             )
+            
+            if status:
+                matches = result.get("total_matches", 0)
+                files = result.get("total_files", 0)
+                await status.end(f"Found {matches} matches in {files} files", metadata={
+                    "query": query[:50],
+                    "matches": matches,
+                    "files": files,
+                    "truncated": result.get("truncated", False)
+                })
+            
+            return result
         
         except Exception as e:
             self.logger.error(f"Unexpected error in grep_search: {e}", exc_info=True)
@@ -294,16 +416,34 @@ class FileOpsServer(SchemaBasedMCPServer):
     
     async def semantic_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Semantic/AI-powered search using embeddings."""
+        status = params.get("_status")
+        
         try:
             query = params["query"]
             max_results = params.get("max_results", 10)
             filter_pattern = params.get("filter_pattern")
             
-            return await self.search_engine.semantic_search(
+            if status:
+                msg = f"Semantic search: '{query[:40]}...'"
+                if filter_pattern:
+                    msg += f" ({filter_pattern})"
+                await status.progress(msg)
+            
+            result = await self.search_engine.semantic_search(
                 query=query,
                 max_results=max_results,
                 filter_pattern=filter_pattern
             )
+            
+            if status:
+                count = result.get("count", 0)
+                await status.end(f"Found {count} semantically similar files", metadata={
+                    "query": query[:50],
+                    "count": count,
+                    "filter": filter_pattern
+                })
+            
+            return result
         
         except Exception as e:
             self.logger.error(f"Unexpected error in semantic_search: {e}", exc_info=True)
