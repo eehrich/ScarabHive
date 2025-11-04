@@ -346,6 +346,27 @@ class FileOpsServer(SchemaBasedMCPServer):
                 "error_type": type(e).__name__
             }
     
+    async def semantic_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Semantic/AI-powered search using embeddings."""
+        try:
+            query = params["query"]
+            max_results = params.get("max_results", 10)
+            filter_pattern = params.get("filter_pattern")
+            
+            return await self.search_engine.semantic_search(
+                query=query,
+                max_results=max_results,
+                filter_pattern=filter_pattern
+            )
+        
+        except Exception as e:
+            self.logger.error(f"Unexpected error in semantic_search: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+    
     async def shutdown(self):
         """Cleanup on shutdown."""
         await self.search_engine.stop()

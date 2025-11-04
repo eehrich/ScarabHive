@@ -372,3 +372,89 @@ async def test_edit_file_replace_not_found(file_ops_server, tmp_allowed_dir):
     
     assert result["status"] == "error"
     assert "not found" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_basic(file_ops_server, tmp_allowed_dir):
+    """Test semantic search with ChromaDB."""
+    # Create test files with semantic content
+    (tmp_allowed_dir / "auth.py").write_text("""
+def verify_credentials(username, password):
+    \"\"\"Check if user credentials are valid.\"\"\"
+    return authenticate_user(username, password)
+
+def login(username, password):
+    \"\"\"User login function.\"\"\"
+    if verify_credentials(username, password):
+        create_session(username)
+        return True
+    return False
+""")
+    
+    (tmp_allowed_dir / "database.py").write_text("""
+def connect_database():
+    \"\"\"Establish database connection.\"\"\"
+    return DatabasePool.get_connection()
+
+def execute_query(sql):
+    \"\"\"Run SQL query on database.\"\"\"
+    conn = connect_database()
+    return conn.execute(sql)
+""")
+    
+    (tmp_allowed_dir / "utils.py").write_text("""
+def format_string(text):
+    \"\"\"Format text string.\"\"\"
+    return text.strip().lower()
+""")
+    
+    # Enable semantic search and build index
+    file_ops_server.search_engine.config["enable_semantic_search"] = True
+    file_ops_server.search_engine.config["enable_indexing"] = True
+    
+    try:
+        await file_ops_server.search_engine.rebuild_index()
+    except Exception as e:
+        # If ChromaDB not available, skip test
+        pytest.skip(f"ChromaDB not available: {e}")
+    
+    # Semantic search for authentication logic
+    result = await file_ops_server.semantic_search({
+        "query": "authentication and login logic",
+        "max_results": 5
+    })
+    
+    assert result["status"] == "success"
+    assert result["count"] >= 1
+    
+    # Should find auth.py (most relevant)
+    file_paths = [r["file_path"] for r in result["results"]]
+    assert any("auth.py" in path for path in file_paths)
+    
+    # Check similarity scores are reasonable
+    for match in result["results"]:
+        assert 0.0 <= match["similarity_score"] <= 1.0
+        assert "file_path" in match
+        assert "filename" in match
+    
+    # Semantic search for database code
+    result = await file_ops_server.semantic_search({
+        "query": "database connection and queries",
+        "max_results": 5
+    })
+    
+    assert result["status"] == "success"
+    file_paths = [r["file_path"] for r in result["results"]]
+    assert any("database.py" in path for path in file_paths)
+    
+    # Test with filter pattern
+    result = await file_ops_server.semantic_search({
+        "query": "authentication",
+        "max_results": 5,
+        "filter_pattern": "*.py"
+    })
+    
+    assert result["status"] == "success"
+    for match in result["results"]:
+        assert match["file_path"].endswith(".py")
+

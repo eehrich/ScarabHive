@@ -206,3 +206,34 @@ tools:
             description: "Number of context lines before/after match"
         required: ["query"]
         additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_semantic_search"
+      description: |
+        Semantic/AI-powered code search using embeddings. Finds files by meaning, not just keywords.
+        Uses ChromaDB for intelligent similarity search.
+        
+        Examples:
+          - "find authentication logic" → matches verify_credentials(), login(), auth functions
+          - "database connection code" → finds DB setup, connection pools, ORM configs
+          - "error handling patterns" → locates try/except blocks, error classes
+        
+        Better than grep for conceptual searches where exact keywords vary.
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Natural language search query describing what code you're looking for"
+          max_results:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+            description: "Maximum number of files to return"
+          filter_pattern:
+            type: string
+            description: "Optional glob pattern to filter results by file type (e.g., '*.py')"
+        required: ["query"]
+        additionalProperties: false

@@ -16,6 +16,11 @@ import aiofiles
 logger = logging.getLogger(__name__)
 
 
+class ChromaDBError(Exception):
+    """ChromaDB-related errors."""
+    pass
+
+
 class FileSearchEngine:
     """Fast file search with background indexing."""
     
@@ -39,6 +44,11 @@ class FileSearchEngine:
         self._indexing_task: Optional[asyncio.Task] = None
         self._index_lock = asyncio.Lock()
         self._indexing_started = False
+        
+        # ChromaDB for semantic search
+        self.chroma_client = None
+        self.chroma_collection = None
+        self._chroma_initialized = False
     
     def _ensure_indexing_started(self):
         """Start background indexing if not already started and if enabled."""
@@ -52,6 +62,43 @@ class FileSearchEngine:
             except RuntimeError:
                 # No event loop running yet, will be started on first use
                 pass
+    
+    def _init_chromadb(self):
+        """Initialize ChromaDB persistent client for semantic search."""
+        if self._chroma_initialized:
+            return
+        
+        try:
+            import chromadb
+            from chromadb.config import Settings
+            
+            # Get ChromaDB path from config or use default
+            chroma_path = Path(self.config.get(
+                "chroma_db_path",
+                "data/cache/file_ops_chromadb"
+            ))
+            chroma_path.mkdir(parents=True, exist_ok=True)
+            
+            self.chroma_client = chromadb.PersistentClient(
+                path=str(chroma_path),
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
+            
+            # Get or create collection
+            self.chroma_collection = self.chroma_client.get_or_create_collection(
+                name="file_ops_semantic_index",
+                metadata={"description": "Semantic index for file content"}
+            )
+            
+            self._chroma_initialized = True
+            logger.info(f"ChromaDB initialized at {chroma_path}")
+        
+        except Exception as e:
+            logger.error(f"Failed to initialize ChromaDB: {e}", exc_info=True)
+            raise ChromaDBError(f"ChromaDB initialization failed: {e}")
     
     async def _background_indexer(self):
         """Periodically rebuild index in background."""
@@ -77,8 +124,28 @@ class FileSearchEngine:
         new_mtimes: Dict[Path, float] = {}
         files_indexed = 0
         
+        # ChromaDB semantic index
+        semantic_enabled = self.config.get("enable_semantic_search", True)
+        if semantic_enabled:
+            self._init_chromadb()
+            # Clear existing semantic index (delete all documents)
+            if self.chroma_collection:
+                try:
+                    # Get all IDs and delete them
+                    existing_data = self.chroma_collection.get()
+                    if existing_data and existing_data["ids"]:
+                        self.chroma_collection.delete(ids=existing_data["ids"])
+                        logger.info(f"Cleared {len(existing_data['ids'])} existing documents from ChromaDB")
+                except Exception as e:
+                    logger.warning(f"Failed to clear ChromaDB collection: {e}")
+        
         max_size_kb = self.config.get("max_file_size_for_indexing_kb", 1024)
         max_size = max_size_kb * 1024
+        
+        # Collect file data for batch ChromaDB insertion
+        chroma_docs = []
+        chroma_ids = []
+        chroma_metadatas = []
         
         for base_dir in self.allowed_dirs:
             if not base_dir.exists():
@@ -101,14 +168,38 @@ class FileSearchEngine:
                     
                     # Index file content for text files
                     if self._is_text_file(file_path):
-                        await self._index_file_content(file_path, new_text_index)
+                        content = await self._index_file_content(file_path, new_text_index)
                         new_mtimes[file_path] = file_path.stat().st_mtime
+                        
+                        # Add to ChromaDB batch if semantic search enabled
+                        if semantic_enabled and content and self.chroma_collection:
+                            chroma_docs.append(content)
+                            chroma_ids.append(str(file_path))
+                            chroma_metadatas.append({
+                                "file_path": str(file_path),
+                                "filename": file_path.name,
+                                "extension": file_path.suffix,
+                                "size_bytes": str(size),
+                                "mtime": str(file_path.stat().st_mtime)
+                            })
                     
                     files_indexed += 1
                 
                 except (OSError, PermissionError) as e:
                     logger.debug(f"Skipping file {file_path}: {e}")
                     continue
+        
+        # Batch insert into ChromaDB
+        if semantic_enabled and chroma_docs and self.chroma_collection:
+            try:
+                self.chroma_collection.add(
+                    ids=chroma_ids,
+                    documents=chroma_docs,
+                    metadatas=chroma_metadatas
+                )
+                logger.info(f"Indexed {len(chroma_docs)} files in ChromaDB")
+            except Exception as e:
+                logger.error(f"ChromaDB batch insert failed: {e}", exc_info=True)
         
         # Atomic swap under lock
         async with self._index_lock:
@@ -168,8 +259,17 @@ class FileSearchEngine:
         }
         return path.suffix.lower() in text_extensions
     
-    async def _index_file_content(self, file_path: Path, index: Dict[str, List[tuple[Path, int]]]):
-        """Index file content for grep search."""
+    async def _index_file_content(self, file_path: Path, index: Dict[str, List[tuple[Path, int]]]) -> Optional[str]:
+        """
+        Index file content for grep search.
+        
+        Args:
+            file_path: Path to file
+            index: Text index to populate
+        
+        Returns:
+            File content string (for ChromaDB) or None on error
+        """
         try:
             async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = await f.read()
@@ -179,9 +279,12 @@ class FileSearchEngine:
             for pos, word in enumerate(words):
                 if len(word) >= 3:  # Index words with 3+ characters
                     index.setdefault(word, []).append((file_path, pos))
+            
+            return content  # Return content for ChromaDB
         
         except Exception as e:
             logger.debug(f"Failed to index {file_path}: {e}")
+            return None
     
     async def search_files(self, pattern: str, max_results: int = 50) -> Dict[str, Any]:
         """
@@ -378,6 +481,100 @@ class FileSearchEngine:
             return filtered
         
         return list(candidate_files)
+    
+    async def semantic_search(
+        self,
+        query: str,
+        max_results: int = 10,
+        filter_pattern: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Semantic/AI-powered search using ChromaDB embeddings.
+        
+        Finds files by meaning rather than exact keyword match.
+        Example: "authentication logic" will find login/verify functions.
+        
+        Args:
+            query: Natural language search query
+            max_results: Maximum number of results to return
+            filter_pattern: Optional file pattern to filter results (e.g., '*.py')
+        
+        Returns:
+            Dict with status, results (list of matches with similarity scores)
+        """
+        try:
+            # Initialize ChromaDB if needed
+            if not self._chroma_initialized:
+                self._init_chromadb()
+            
+            if not self.chroma_collection:
+                return {
+                    "status": "error",
+                    "error": "Semantic search not available (ChromaDB not initialized)",
+                    "error_type": "ChromaDBNotInitialized"
+                }
+            
+            # Perform semantic search
+            results = self.chroma_collection.query(
+                query_texts=[query],
+                n_results=max_results,
+                include=["documents", "metadatas", "distances"]
+            )
+            
+            if not results["ids"] or len(results["ids"][0]) == 0:
+                return {
+                    "status": "success",
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "message": "No files found"
+                }
+            
+            # Format results
+            matches = []
+            for i in range(len(results["ids"][0])):
+                file_path = results["ids"][0][i]
+                metadata = results["metadatas"][0][i]
+                distance = results["distances"][0][i]
+                
+                # Filter by pattern if specified
+                if filter_pattern:
+                    if not fnmatch.fnmatch(file_path, filter_pattern):
+                        continue
+                
+                # Calculate similarity score (1 - distance for easier understanding)
+                similarity = max(0.0, 1.0 - distance)
+                
+                matches.append({
+                    "file_path": file_path,
+                    "filename": metadata.get("filename", Path(file_path).name),
+                    "similarity_score": round(similarity, 4),
+                    "size_bytes": int(metadata.get("size_bytes", 0)),
+                    "extension": metadata.get("extension", "")
+                })
+            
+            return {
+                "status": "success",
+                "query": query,
+                "results": matches,
+                "count": len(matches),
+                "max_results": max_results
+            }
+        
+        except ChromaDBError as e:
+            logger.error(f"ChromaDB semantic search error: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": "ChromaDBError"
+            }
+        except Exception as e:
+            logger.error(f"Semantic search error: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
     
     async def stop(self):
         """Stop background indexing task."""
