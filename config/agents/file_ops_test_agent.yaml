@@ -8,7 +8,7 @@ plugins:
       
       agent_config:
         llm_profile: normal
-        max_steps: 20
+        max_steps: 200
         system_template: "config/prompts/file_ops_test_prompt.yaml"
         
         tools:

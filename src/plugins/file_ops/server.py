@@ -94,19 +94,27 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except FileNotFoundError:
+            error_msg = f"File not found: {params.get('file_path')}"
+            if status:
+                await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
             return {
                 "status": "error",
-                "error": f"File not found: {params.get('file_path')}",
+                "error": error_msg,
                 "error_type": "FileNotFoundError"
             }
         except SecurityError as e:
+            error_msg = str(e)
+            if status:
+                await status.error(error_msg, meta={"error_type": "SecurityError"})
             return {
                 "status": "error",
-                "error": str(e),
+                "error": error_msg,
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            self.logger.error(f"Unexpected error in read_file: {e}", exc_info=True)
+            logger.error(f"Unexpected error in read_file: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
@@ -149,13 +157,18 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except SecurityError as e:
+            error_msg = str(e)
+            if status:
+                await status.error(error_msg, meta={"error_type": "SecurityError"})
             return {
                 "status": "error",
-                "error": str(e),
+                "error": error_msg,
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            self.logger.error(f"Unexpected error in create_file: {e}", exc_info=True)
+            logger.error(f"Unexpected error in create_file: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
@@ -209,19 +222,27 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except FileNotFoundError:
+            error_msg = f"File not found: {params.get('file_path')}"
+            if status:
+                await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
             return {
                 "status": "error",
-                "error": f"File not found: {params.get('file_path')}",
+                "error": error_msg,
                 "error_type": "FileNotFoundError"
             }
         except SecurityError as e:
+            error_msg = str(e)
+            if status:
+                await status.error(error_msg, meta={"error_type": "SecurityError"})
             return {
                 "status": "error",
-                "error": str(e),
+                "error": error_msg,
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            self.logger.error(f"Unexpected error in edit_file: {e}", exc_info=True)
+            logger.error(f"Unexpected error in edit_file: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
@@ -260,19 +281,27 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except FileNotFoundError:
+            error_msg = f"File not found: {params.get('file_path')}"
+            if status:
+                await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
             return {
                 "status": "error",
-                "error": f"File not found: {params.get('file_path')}",
+                "error": error_msg,
                 "error_type": "FileNotFoundError"
             }
         except SecurityError as e:
+            error_msg = str(e)
+            if status:
+                await status.error(error_msg, meta={"error_type": "SecurityError"})
             return {
                 "status": "error",
-                "error": str(e),
+                "error": error_msg,
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            self.logger.error(f"Unexpected error in delete_file: {e}", exc_info=True)
+            logger.error(f"Unexpected error in delete_file: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
@@ -317,19 +346,27 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except FileNotFoundError:
+            error_msg = f"Directory not found: {params.get('dir_path')}"
+            if status:
+                await status.error(error_msg, meta={"error_type": "DirectoryNotFoundError"})
             return {
                 "status": "error",
-                "error": f"Directory not found: {params.get('dir_path')}",
+                "error": error_msg,
                 "error_type": "DirectoryNotFoundError"
             }
         except SecurityError as e:
+            error_msg = str(e)
+            if status:
+                await status.error(error_msg, meta={"error_type": "SecurityError"})
             return {
                 "status": "error",
-                "error": str(e),
+                "error": error_msg,
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            self.logger.error(f"Unexpected error in list_directory: {e}", exc_info=True)
+            logger.error(f"Unexpected error in list_directory: {e}", exc_info=True)
+            if status:
+                await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
@@ -360,7 +397,9 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except Exception as e:
-            self.logger.error(f"Unexpected error in search_files: {e}", exc_info=True)
+            logger.error(f"Unexpected error in search_files: {e}", exc_info=True)
+            if status:
+                await status.error(f"Search error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
@@ -407,7 +446,9 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except Exception as e:
-            self.logger.error(f"Unexpected error in grep_search: {e}", exc_info=True)
+            logger.error(f"Unexpected error in grep_search: {e}", exc_info=True)
+            if status:
+                await status.error(f"Grep error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
@@ -446,7 +487,9 @@ class FileOpsServer(SchemaBasedMCPServer):
             return result
         
         except Exception as e:
-            self.logger.error(f"Unexpected error in semantic_search: {e}", exc_info=True)
+            logger.error(f"Unexpected error in semantic_search: {e}", exc_info=True)
+            if status:
+                await status.error(f"Semantic search error: {e}", meta={"error_type": type(e).__name__})
             return {
                 "status": "error",
                 "error": str(e),
