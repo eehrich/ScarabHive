@@ -19,14 +19,14 @@ The plugin is included in AgentSystem by default. Enable it in `config/plugins.y
 ```yaml
 plugins:
   servers:
-    file_operations:
-      type: file_operations
+    file_ops:
+      type: file_ops
       enabled: true
       allowed_directories:
         - src
         - docs
         - tests
-        - tmp
+        - data/workspace
       max_file_size_mb: 10
       search:
         enable_indexing: true
@@ -39,7 +39,7 @@ plugins:
 
 ## Available Tools
 
-### 1. `file_operations_read_file`
+### 1. `file_ops_read_file`
 
 Read text file contents with optional pagination.
 
@@ -73,7 +73,7 @@ Read text file contents with optional pagination.
 
 ---
 
-### 2. `file_operations_create_file`
+### 2. `file_ops_create_file`
 
 Create a new file with atomic write guarantee.
 
@@ -111,7 +111,7 @@ Create a new file with atomic write guarantee.
 
 ---
 
-### 3. `file_operations_edit_file`
+### 3. `file_ops_edit_file`
 
 Edit existing file with three modes: append, replace, or insert.
 
@@ -167,7 +167,7 @@ Edit existing file with three modes: append, replace, or insert.
 
 ---
 
-### 4. `file_operations_delete_file`
+### 4. `file_ops_delete_file`
 
 Delete a file with confirmation requirement.
 
@@ -197,7 +197,7 @@ Delete a file with confirmation requirement.
 
 ---
 
-### 5. `file_operations_list_directory`
+### 5. `file_ops_list_directory`
 
 List directory contents with optional filtering and recursion.
 
@@ -240,7 +240,7 @@ List directory contents with optional filtering and recursion.
 
 ---
 
-### 6. `file_operations_file_exists`
+### 6. `file_ops_search_files`
 
 Check if a file or directory exists.
 
@@ -267,7 +267,7 @@ Check if a file or directory exists.
 
 ---
 
-### 7. `file_operations_get_file_info`
+### 7. `file_ops_grep_search`
 
 Get file metadata and statistics.
 
@@ -297,7 +297,7 @@ Get file metadata and statistics.
 
 ---
 
-### 8. `file_operations_search_files`
+### 8. `file_ops_semantic_search`
 
 Search for files by name using glob patterns. Uses background-indexed file name index for fast results.
 
@@ -336,7 +336,7 @@ Search for files by name using glob patterns. Uses background-indexed file name 
 
 ---
 
-### 9. `file_operations_grep_search`
+### 9. `file_ops_grep_search`
 
 Search file contents for text/regex patterns with context lines.
 
@@ -398,8 +398,8 @@ Search file contents for text/regex patterns with context lines.
 ### Plugin Configuration (`config/plugins.yaml`)
 
 ```yaml
-file_operations:
-  type: file_operations
+file_ops:
+  type: file_ops
   enabled: true
   
   # Security: Allowed directory whitelist
@@ -436,7 +436,7 @@ Add to agent configurations in `config/agents/*.yaml`:
 agent_config:
   tools:
     allowed:
-      - "file_operations_*"  # All file operations tools
+      - "file_ops_*"  # All file operations tools
 ```
 
 ## Security Model
@@ -550,45 +550,45 @@ Run commands directly from the command line for testing:
 source .venv/Scripts/activate
 
 # Read a file
-python -m plugins.file_operations.cli read /path/to/file.txt
+python -m plugins.file_ops.cli read /path/to/file.txt
 
 # Read with pagination
-python -m plugins.file_operations.cli read /path/to/file.txt --offset 10 --limit 50
+python -m plugins.file_ops.cli read /path/to/file.txt --offset 10 --limit 50
 
 # Create a file
-python -m plugins.file_operations.cli create /path/to/new.txt "Hello World" --overwrite
+python -m plugins.file_ops.cli create /path/to/new.txt "Hello World" --overwrite
 
 # Edit file (append)
-python -m plugins.file_operations.cli edit /path/to/file.txt --mode append --content "\nNew line"
+python -m plugins.file_ops.cli edit /path/to/file.txt --mode append --content "\nNew line"
 
 # Edit file (replace)
-python -m plugins.file_operations.cli edit /path/to/file.txt --mode replace \
+python -m plugins.file_ops.cli edit /path/to/file.txt --mode replace \
   --old-string "old text" --new-string "new text"
 
 # Edit file (insert)
-python -m plugins.file_operations.cli edit /path/to/file.txt --mode insert \
+python -m plugins.file_ops.cli edit /path/to/file.txt --mode insert \
   --line-number 5 --content "import logging"
 
 # Delete a file
-python -m plugins.file_operations.cli delete /path/to/file.txt --confirm
+python -m plugins.file_ops.cli delete /path/to/file.txt --confirm
 
 # List directory
-python -m plugins.file_operations.cli list /path/to/dir --recursive --pattern "*.py"
+python -m plugins.file_ops.cli list /path/to/dir --recursive --pattern "*.py"
 
 # Check existence
-python -m plugins.file_operations.cli exists /path/to/file.txt
+python -m plugins.file_ops.cli exists /path/to/file.txt
 
 # Get file info
-python -m plugins.file_operations.cli info /path/to/file.txt
+python -m plugins.file_ops.cli info /path/to/file.txt
 
 # Search files by name
-python -m plugins.file_operations.cli search "*.py" --search-dir /project/src --max-results 50
+python -m plugins.file_ops.cli search "*.py" --search-dir /project/src --max-results 50
 
 # Grep search (literal)
-python -m plugins.file_operations.cli grep "TODO" --context 2 --include-pattern "**/*.py"
+python -m plugins.file_ops.cli grep "TODO" --context 2 --include-pattern "**/*.py"
 
 # Grep search (regex)
-python -m plugins.file_operations.cli grep "def\s+\w+\(" --regex --include-pattern "src/**/*.py"
+python -m plugins.file_ops.cli grep "def\s+\w+\(" --regex --include-pattern "src/**/*.py"
 ```
 
 **CLI Notes:**
@@ -727,19 +727,19 @@ All tools return structured error responses:
 
 ```bash
 # Run all plugin tests
-pytest tests/test_plugin_file_operations_basic.py -v
+pytest tests/test_plugin_file_ops_basic.py -v
 
 # Run specific test
-pytest tests/test_plugin_file_operations_basic.py::test_create_and_read_file -v
+pytest tests/test_plugin_file_ops_basic.py::test_create_and_read_file -v
 
 # Run with coverage
-pytest tests/test_plugin_file_operations_basic.py --cov=plugins.file_operations
+pytest tests/test_plugin_file_ops_basic.py --cov=plugins.file_ops
 ```
 
 ### Architecture
 
 ```
-file_operations/
+file_ops/
 ├── __init__.py          # Package initialization
 ├── plugin.yaml          # Plugin metadata
 ├── schema.yaml          # Tool definitions
@@ -771,5 +771,5 @@ file_operations/
 
 For issues or questions:
 - Check this README's troubleshooting section
-- Review test files: `tests/test_plugin_file_operations_basic.py`
-- Check design docs: `docs/file_operations_plugin_design.md`
+- Review test files: `tests/test_plugin_file_ops_basic.py`
+- Check design docs: `docs/file_ops_plugin_design.md`

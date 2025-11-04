@@ -141,36 +141,6 @@ plugins:
           - "**/*.min.css"
           - "**/*.map"
     
-    # File Operations Test Agent - RESTRICTED to data/workspace/ for safe testing
-    file_ops_test_agent:
-      type: basic_agent
-      enabled: true
-      description: "Test agent for file_ops plugin - RESTRICTED to data/workspace/ directory only"
-      
-      agent_config:
-        llm_profile: normal
-        max_steps: 20
-        system_template: "config/prompts/file_ops_test_prompt.yaml"
-        
-        tools:
-          allowed:
-            - "file_ops/*"
-            - "basic_operations/*"
-            - "datetime/*"
-        
-        hooks:
-          enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
-      
-      metadata:
-        author: "AgentSystem"
-        version: "1.0.0"
-        tags: ["test", "file_operations", "development"]
-        category: "development"
-        visibility: "ui"
-    
     sub_agent_manager:
       type: sub_agent_manager
       enabled: true

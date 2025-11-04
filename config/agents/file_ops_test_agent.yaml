@@ -4,7 +4,7 @@ plugins:
     file_ops_test_agent:
       type: basic_agent
       enabled: true
-      description: "Test agent for file_operations plugin - RESTRICTED to tmp/ directory only for safe testing"
+      description: "Test agent for file_ops plugin - RESTRICTED to data/workspace directory only for safe testing"
       
       agent_config:
         llm_profile: normal
@@ -13,7 +13,7 @@ plugins:
         
         tools:
           allowed:
-            - "file_operations/*"
+            - "file_ops/*"
             - "basic_operations/*"
             - "datetime/*"
         
@@ -26,6 +26,6 @@ plugins:
       metadata:
         author: "AgentSystem"
         version: "1.0.0"
-        tags: ["test", "file_operations", "development"]
+        tags: ["test", "file_ops", "development"]
         category: "development"
         visibility: "ui"
