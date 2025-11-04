@@ -35,7 +35,8 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
 
                 func = tc.get("function", {})
                 func_name = func.get("name", "")
-                msg_tokens += len(func_name) // 4  # Function names are typically short
+                if func_name:  # Only count if name exists
+                    msg_tokens += len(func_name) // 4  # Function names are typically short
 
                 # Tool arguments - often JSON, handle differently
                 args_str = str(func.get("arguments", ""))

@@ -965,7 +965,11 @@ class Agent(MCPServer):
 
             # Get result
             llm_out = await llm_task
-            yield {"type": "thinking_complete", "assistant": llm_out.get("assistant", {})}
+            result = {"type": "thinking_complete", "assistant": llm_out.get("assistant", {})}
+            # Preserve usage data if present
+            if "usage" in llm_out:
+                result["usage"] = llm_out["usage"]
+            yield result
 
     async def _execute_llm_loop(
         self,
