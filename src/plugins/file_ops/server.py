@@ -85,7 +85,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             if status:
                 lines_read = result.get("lines_read", 0)
                 total_lines = result.get("total_lines", 0)
-                await status.end(f"Read {lines_read}/{total_lines} lines", metadata={
+                await status.end(f"Read {lines_read}/{total_lines} lines", meta={
                     "file": str(safe_path),
                     "lines_read": lines_read,
                     "total_lines": total_lines
@@ -141,7 +141,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             
             if status:
                 bytes_written = result.get("bytes_written", 0)
-                await status.end(f"Created ({bytes_written} bytes)", metadata={
+                await status.end(f"Created ({bytes_written} bytes)", meta={
                     "file": str(safe_path),
                     "bytes": bytes_written
                 })
@@ -189,18 +189,18 @@ class FileOpsServer(SchemaBasedMCPServer):
             if status:
                 changes = result.get("changes", {})
                 if mode == "replace":
-                    await status.end(f"Replaced {changes.get('replacements', 0)} occurrences", metadata={
+                    await status.end(f"Replaced {changes.get('replacements', 0)} occurrences", meta={
                         "file": str(safe_path),
                         "mode": mode,
                         "replacements": changes.get("replacements", 0)
                     })
                 elif mode == "append":
-                    await status.end("Appended content", metadata={
+                    await status.end("Appended content", meta={
                         "file": str(safe_path),
                         "mode": mode
                     })
                 elif mode == "insert":
-                    await status.end(f"Inserted at line {params.get('line_number', 0)}", metadata={
+                    await status.end(f"Inserted at line {params.get('line_number', 0)}", meta={
                         "file": str(safe_path),
                         "mode": mode,
                         "line": params.get("line_number", 0)
@@ -253,7 +253,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             result = await self.operations.delete_file_safe(safe_path)
             
             if status:
-                await status.end(f"Deleted: {safe_path.name}", metadata={
+                await status.end(f"Deleted: {safe_path.name}", meta={
                     "file": str(safe_path)
                 })
             
@@ -308,7 +308,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             
             if status:
                 total = result.get("total_items", 0)
-                await status.end(f"Found {total} items", metadata={
+                await status.end(f"Found {total} items", meta={
                     "directory": str(safe_path),
                     "total_items": total,
                     "recursive": recursive
@@ -351,7 +351,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             
             if status:
                 found = result.get("total_found", 0)
-                await status.end(f"Found {found} files", metadata={
+                await status.end(f"Found {found} files", meta={
                     "pattern": pattern,
                     "found": found,
                     "truncated": result.get("truncated", False)
@@ -397,7 +397,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             if status:
                 matches = result.get("total_matches", 0)
                 files = result.get("total_files", 0)
-                await status.end(f"Found {matches} matches in {files} files", metadata={
+                await status.end(f"Found {matches} matches in {files} files", meta={
                     "query": query[:50],
                     "matches": matches,
                     "files": files,
@@ -437,7 +437,7 @@ class FileOpsServer(SchemaBasedMCPServer):
             
             if status:
                 count = result.get("count", 0)
-                await status.end(f"Found {count} semantically similar files", metadata={
+                await status.end(f"Found {count} semantically similar files", meta={
                     "query": query[:50],
                     "count": count,
                     "filter": filter_pattern
