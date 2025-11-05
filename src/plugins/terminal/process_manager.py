@@ -1,0 +1,254 @@
+"""Background process management."""
+
+import asyncio
+import logging
+import uuid
+from datetime import datetime
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class ProcessManager:
+    """Manages background processes."""
+
+    def __init__(self, max_buffer_lines: int = 1000):
+        """
+        Initialize process manager.
+
+        Args:
+            max_buffer_lines: Maximum lines to keep in output buffers
+        """
+        self.processes: Dict[str, Dict] = {}
+        self.max_buffer_lines = max_buffer_lines
+
+    def generate_process_id(self) -> str:
+        """Generate unique process ID."""
+        return f"bg_proc_{uuid.uuid4().hex[:8]}"
+
+    async def register_process(
+        self,
+        process: asyncio.subprocess.Process,
+        command: str,
+        cwd: Optional[str] = None,
+        process_id: Optional[str] = None
+    ) -> str:
+        """
+        Register a background process.
+
+        Args:
+            process: Subprocess instance
+            command: Command being executed
+            cwd: Working directory
+            process_id: Optional custom process ID
+
+        Returns:
+            str: Process ID
+        """
+        if process_id is None:
+            process_id = self.generate_process_id()
+
+        self.processes[process_id] = {
+            "process": process,
+            "command": command,
+            "cwd": cwd,
+            "started_at": datetime.now().isoformat(),
+            "stdout_buffer": [],
+            "stderr_buffer": [],
+            "finished_at": None,
+            "exit_code": None
+        }
+
+        # Start output capture task
+        asyncio.create_task(self._capture_output(process_id))
+
+        logger.info(f"Registered background process {process_id}: {command}")
+        return process_id
+
+    async def _capture_output(self, process_id: str):
+        """
+        Capture output from background process.
+
+        Args:
+            process_id: Process ID to capture output from
+        """
+        if process_id not in self.processes:
+            return
+
+        proc_info = self.processes[process_id]
+        process = proc_info["process"]
+
+        async def read_stream(stream, buffer: List[str]):
+            """Read from stream and append to buffer."""
+            while True:
+                try:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    decoded = line.decode('utf-8', errors='replace')
+                    buffer.append(decoded)
+
+                    # Enforce buffer size limit
+                    if len(buffer) > self.max_buffer_lines:
+                        buffer.pop(0)
+                except Exception as e:
+                    logger.error(f"Error reading stream for {process_id}: {e}")
+                    break
+
+        # Capture stdout and stderr concurrently
+        await asyncio.gather(
+            read_stream(process.stdout, proc_info["stdout_buffer"]),
+            read_stream(process.stderr, proc_info["stderr_buffer"]),
+            return_exceptions=True
+        )
+
+        # Mark as finished
+        proc_info["finished_at"] = datetime.now().isoformat()
+        proc_info["exit_code"] = process.returncode
+        logger.info(f"Background process {process_id} finished with exit code {process.returncode}")
+
+    async def get_output(
+        self,
+        process_id: str,
+        stream: str = "both",
+        clear_buffer: bool = False
+    ) -> Dict:
+        """
+        Get output from a background process.
+
+        Args:
+            process_id: Process ID
+            stream: Which stream to get ("stdout", "stderr", "both")
+            clear_buffer: Clear buffer after reading
+
+        Returns:
+            dict: Output data with status, stdout, stderr, is_running, exit_code
+        """
+        if process_id not in self.processes:
+            return {
+                "status": "error",
+                "error": f"Process {process_id} not found",
+                "error_type": "ProcessNotFound"
+            }
+
+        proc_info = self.processes[process_id]
+        process = proc_info["process"]
+
+        # Get output based on stream parameter
+        stdout = ""
+        stderr = ""
+
+        if stream in ("stdout", "both"):
+            stdout = "".join(proc_info["stdout_buffer"])
+            if clear_buffer:
+                proc_info["stdout_buffer"].clear()
+
+        if stream in ("stderr", "both"):
+            stderr = "".join(proc_info["stderr_buffer"])
+            if clear_buffer:
+                proc_info["stderr_buffer"].clear()
+
+        return {
+            "status": "success",
+            "process_id": process_id,
+            "stdout": stdout,
+            "stderr": stderr,
+            "is_running": process.returncode is None,
+            "exit_code": process.returncode,
+            "started_at": proc_info["started_at"],
+            "finished_at": proc_info["finished_at"]
+        }
+
+    async def kill_process(
+        self,
+        process_id: str,
+        force: bool = False
+    ) -> Dict:
+        """
+        Kill a background process.
+
+        Args:
+            process_id: Process ID to kill
+            force: Use SIGKILL instead of SIGTERM
+
+        Returns:
+            dict: Status with killed flag and signal used
+        """
+        if process_id not in self.processes:
+            return {
+                "status": "error",
+                "error": f"Process {process_id} not found",
+                "error_type": "ProcessNotFound"
+            }
+
+        proc_info = self.processes[process_id]
+        process = proc_info["process"]
+
+        if process.returncode is not None:
+            return {
+                "status": "error",
+                "error": f"Process {process_id} already terminated with exit code {process.returncode}",
+                "error_type": "ProcessAlreadyTerminated"
+            }
+
+        signal_used = "SIGKILL" if force else "SIGTERM"
+
+        try:
+            if force:
+                process.kill()
+            else:
+                process.terminate()
+
+            # Wait for process to die (with timeout)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                # Force kill if terminate didn't work
+                logger.warning(f"Process {process_id} did not terminate, forcing kill")
+                process.kill()
+                await process.wait()
+                signal_used = "SIGKILL (forced)"
+
+            logger.info(f"Killed process {process_id} with {signal_used}")
+
+            return {
+                "status": "success",
+                "process_id": process_id,
+                "killed": True,
+                "signal": signal_used,
+                "exit_code": process.returncode
+            }
+
+        except Exception as e:
+            logger.error(f"Error killing process {process_id}: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+
+    def list_processes(self) -> List[Dict]:
+        """
+        List all registered background processes.
+
+        Returns:
+            list: List of process information dicts
+        """
+        result = []
+        for process_id, proc_info in self.processes.items():
+            result.append({
+                "process_id": process_id,
+                "command": proc_info["command"],
+                "cwd": proc_info["cwd"],
+                "started_at": proc_info["started_at"],
+                "finished_at": proc_info["finished_at"],
+                "is_running": proc_info["process"].returncode is None,
+                "exit_code": proc_info["exit_code"],
+                "pid": proc_info["process"].pid
+            })
+        return result
+
+    async def cleanup(self):
+        """Clean up all background processes."""
+        for process_id in list(self.processes.keys()):
+            await self.kill_process(process_id, force=True)

@@ -197,6 +197,44 @@ plugins:
       type: message_debugger
       enabled: true
     
+    terminal:
+      type: terminal
+      enabled: true
+      
+      # Security settings
+      security:
+        # Whitelist: If set, only these patterns are allowed
+        # whitelist:
+        #   - "^git .*"
+        #   - "^python .*"
+        #   - "^npm .*"
+        #   - "^pytest .*"
+        #   - "^ls .*"
+        #   - "^cat .*"
+        #   - "^grep .*"
+        
+        # Blacklist: Always blocked patterns
+        blacklist:
+          - "rm -rf /"
+          - "dd if="
+          - "mkfs"
+          - "chmod 777"
+        
+        # Allow chained commands (&&, ||, ;)
+        allow_command_chains: true
+      
+      # Resource limits
+      limits:
+        max_output_size_kb: 60  # Like GitHub Copilot
+        default_timeout_seconds: 300
+        max_timeout_seconds: 3600
+        max_concurrent_background: 10
+      
+      # Platform settings
+      platform:
+        bash_path: "auto"  # Auto-detect or specify path
+        initial_cwd: null  # Default to current directory
+
 # ================================
 # Hook Configuration
 # ================================
