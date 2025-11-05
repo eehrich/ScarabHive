@@ -1,149 +1,125 @@
 # Twitter Search Plugin
 
-The Twitter Search plugin enables searching recent tweets by query terms and returns structured tweet metadata. It provides access to public Twitter content for research, monitoring, and analysis purposes.
+Search recent tweets using the official Twitter API v2 via tweepy. This plugin provides access to public Twitter content for research, monitoring, and analysis.
 
 ## Overview
 
-This plugin searches Twitter/X for recent tweets matching specified query terms. It returns structured data including tweet content, author information, engagement metrics, and metadata, making it useful for social media research, trend analysis, and content monitoring.
+This plugin uses the **official Twitter API v2** through the `tweepy` Python library to search for recent tweets. It requires free API credentials from Twitter but provides reliable, legal access to Twitter data.
 
 ## Features
 
-### Core Operations
-- **Tweet Search**: Search recent tweets by keywords and phrases
-- **Structured Data**: Returns organized tweet metadata
-- **Engagement Metrics**: Likes, retweets, replies, and quote tweets
-- **Author Information**: User profiles and verification status
-- **Flexible Limits**: Configurable result counts (1-50 tweets)
-- **Recent Content**: Focus on recent and trending tweets
+- **Official API Access**: Uses Twitter API v2 (legal and stable)
+- **Recent Tweets**: Search tweets from the last 7 days (free tier)
+- **Rich Metadata**: Author info, engagement metrics, timestamps
+- **Rate Limit Friendly**: Automatically waits when rate limited
+- **Free Tier Support**: Works with free Twitter API access
+- **No Scraping**: Legal alternative to broken scrapers (snscrape, twint)
 
-### Data Provided
-- **Tweet Content**: Full text and media information
-- **Author Details**: Username, display name, verification status
-- **Engagement**: Like, retweet, reply, and quote counts
-- **Timestamps**: Tweet creation and last updated times
-- **Metadata**: Tweet ID, source, language, and more
+- **No Scraping**: Legal alternative to broken scrapers (snscrape, twint)
+
+## Setup Instructions
+
+### 1. Install Dependencies
+
+```bash
+pip install tweepy
+# or from plugin directory:
+pip install -r requirements.txt
+```
+
+### 2. Get Free Twitter API Credentials
+
+1. **Create Twitter Developer Account**
+   - Go to https://developer.twitter.com/en/portal/dashboard
+   - Sign up for free developer access
+   - Fill out the application (usually approved instantly for basic use)
+
+2. **Create an App**
+   - In the Developer Portal, create a new "Project" and "App"
+   - Give it a name (e.g., "AgentSystem Research")
+
+3. **Generate Bearer Token**
+   - Navigate to your App → "Keys and tokens"
+   - Click "Generate" under "Bearer Token"
+   - **Copy the token immediately** (you won't see it again!)
+
+4. **Set Environment Variable**
+   ```bash
+   # Linux/Mac:
+   export TWITTER_BEARER_TOKEN="your_bearer_token_here"
+   
+   # Windows (PowerShell):
+   $env:TWITTER_BEARER_TOKEN="your_bearer_token_here"
+   
+   # Or add to .env file:
+   TWITTER_BEARER_TOKEN=your_bearer_token_here
+   ```
+
+### 3. Verify Setup
+
+The plugin will log on startup:
+- ✅ "Twitter API v2 client initialized successfully" - Ready to use
+- ⚠️ "TWITTER_BEARER_TOKEN not found" - Setup needed
+
+## Free Tier Limits (2025)
+
+**Twitter API v2 Free Tier:**
+- 📊 **10,000 tweet reads** per month
+- 📝 **1,500 tweet posts** per month  
+- 📅 **Last 7 days** of tweets only (no historical data)
+- 🔢 **100 tweets** maximum per request
+- ⏱️ **Rate limits** enforced (plugin auto-waits)
+
+**Good for:**
+- Research and analysis
+- Trend monitoring
+- Brand mentions tracking
+- Academic projects
+
+**Not sufficient for:**
+- Large-scale data mining (need paid tier)
+- Historical analysis beyond 7 days
+- High-frequency monitoring
 
 ## Configuration
 
-Configure the Twitter Search plugin in `config/mcp.yaml`:
+## Configuration
+
+Add to `config/plugins.yaml`:
 
 ```yaml
-mcp:
-  enabled_servers:
-  - twitter_search
-
-servers:
-  twitter_search:
-    type: twitter_search
-    # Optional configuration
-    # default_limit: 10
-    # timeout: 20
+twitter_search:
+  plugin: twitter_search
+  enabled: true
+  # No additional config needed - uses environment variable TWITTER_BEARER_TOKEN
 ```
-
-### Environment Variables
-- `TWITTER_API_KEY`: Twitter API key (if using official API)
-- `TWITTER_BEARER_TOKEN`: Bearer token for Twitter API v2
-- `TWITTER_TIMEOUT`: Request timeout (default: 20 seconds)
 
 ## Usage Examples
 
 ### Basic Tweet Search
+
 ```python
-# Simple keyword search
 {
-  "action": "search",
   "query": "artificial intelligence",
   "limit": 10
 }
-
-# Hashtag search
-{
-  "action": "search",
-  "query": "#MachineLearning",
-  "max_results": 15
-}
 ```
 
-### Advanced Search Queries
-```python
-# Multiple keywords
-{
-  "action": "search",
-  "query": "python programming tutorial",
-  "limit": 20
-}
-
-# Specific user mentions
-{
-  "action": "search",
-  "query": "@openai GPT-5",
-  "max_results": 25
-}
-
-# Trending topics
-{
-  "action": "search",
-  "query": "#AI2025 OR #ArtificialIntelligence",
-  "limit": 30
-}
-```
-
-### Research and Monitoring
-```python
-# Brand monitoring
-{
-  "action": "search",
-  "query": "your-brand-name",
-  "limit": 50
-}
-
-# News tracking
-{
-  "action": "search", 
-  "query": "breaking news technology",
-  "max_results": 20
-}
-
-# Event monitoring
-{
-  "action": "search",
-  "query": "#ConferenceName",
-  "limit": 40
-}
-```
-
-## API Reference
-
-### Parameters
-
-- **action** (required): Search operation
-  - `search` - Search recent tweets
-
-- **query** (required): Search query for tweets
-  - Keywords, hashtags, mentions, phrases
-  - Boolean operators: AND, OR, NOT
-  - Exact phrases with quotes
-
-- **limit**: Maximum tweets to return
-  - Range: 1-50 (default: 10)
-  - Also accepts `max_results` parameter
-
-- **max_results**: Alternative limit parameter
-  - Same function as `limit`
-  - Range: 1-50 (default: 10)
-
-### Response Format
-
+**Response:**
 ```json
 {
+  "status": "success",
   "query": "artificial intelligence",
   "tweets": [
     {
-      "id": "1234567890123456789",
-      "text": "Exciting developments in artificial intelligence are changing how we work and live. The future is here! #AI",
+      "id": "1234567890",
+      "text": "Exciting AI developments...",
+      "created_at": "2025-11-05T10:30:00",
+      "lang": "en",
+      "source": "Twitter Web App",
       "author": {
         "username": "tech_expert",
-        "display_name": "Tech Expert",
+        "name": "Tech Expert",
         "verified": true,
         "followers_count": 15420
       },
@@ -152,58 +128,122 @@ servers:
         "retweets": 38,
         "replies": 12,
         "quotes": 5
-      },
-      "created_at": "2025-01-15T14:30:00Z",
-      "lang": "en",
-      "source": "Twitter Web App",
-      "urls": [
-        "https://example.com/ai-article"
-      ],
-      "hashtags": ["AI"],
-      "mentions": []
+      }
     }
   ],
-  "total_results": 10,
-  "search_time": 1.23
+  "total_results": 10
 }
 ```
 
-## Search Query Syntax
+### Hashtag Search
 
-### Basic Operators
-- **Keywords**: `artificial intelligence`
-- **Hashtags**: `#MachineLearning #AI`
-- **Mentions**: `@username`
-- **Exact Phrases**: `"exact phrase here"`
+```python
+{
+  "query": "#Python OR #MachineLearning",
+  "limit": 20
+}
+```
 
-### Advanced Operators
-- **Boolean AND**: `python AND machine learning`
-- **Boolean OR**: `AI OR "artificial intelligence"`
-- **Boolean NOT**: `AI NOT bitcoin`
-- **Grouping**: `(python OR java) AND programming`
+### User Mentions
 
-### Special Queries
-- **From User**: `from:username`
-- **To User**: `to:username`
-- **Replies**: `@username`
-- **Links**: `filter:links`
-- **Media**: `filter:media`
+```python
+{
+  "query": "@openai GPT",
+  "limit": 15
+}
+```
 
-## Content Types
+### Advanced Query Syntax
 
-### Included Content
-- **Original Tweets**: User-generated content
-- **Replies**: Responses to other tweets (configurable)
-- **Retweets**: Shared content (configurable)
-- **Quote Tweets**: Retweets with added commentary
-- **Media Tweets**: Tweets with images, videos, GIFs
+```python
+# Multiple keywords (AND)
+{"query": "python programming tutorial"}
 
-### Metadata Available
-- **Engagement Data**: Likes, retweets, replies, quotes
-- **Author Information**: Profile data and verification
-- **Timing Data**: Creation and update timestamps
-- **Content Analysis**: Language detection, source app
-- **Link Extraction**: URLs, media, hashtags, mentions
+# Boolean OR
+{"query": "#AI OR artificial intelligence"}
+
+# Exclude terms
+{"query": "bitcoin -crypto"}
+
+# From specific user
+{"query": "from:elonmusk"}
+
+# With links
+{"query": "machine learning filter:links"}
+```
+
+## Response Formats
+
+### Success Response
+
+```json
+{
+  "status": "success",
+  "query": "search term",
+  "tweets": [...],
+  "total_results": 10,
+  "api_info": {
+    "version": "Twitter API v2",
+    "search_window": "Last 7 days (free tier)",
+    "rate_limit_friendly": "Auto-waits on rate limits"
+  }
+}
+```
+
+### Setup Required Response
+
+When `TWITTER_BEARER_TOKEN` is not set:
+
+```json
+{
+  "status": "setup_required",
+  "query": "search term",
+  "message": "Twitter API credentials not configured",
+  "setup_instructions": {
+    "step_1": "Go to https://developer.twitter.com/en/portal/dashboard",
+    "step_2": "Create a free developer account",
+    "step_3": "Create a new App",
+    "step_4": "Generate Bearer Token",
+    "step_5": "Set environment variable: TWITTER_BEARER_TOKEN=your_token"
+  },
+  "free_tier_limits": {
+    "tweet_reads": "10,000 per month",
+    "search_window": "Last 7 days only"
+  }
+}
+```
+
+### Error Response
+
+```json
+{
+  "status": "error",
+  "query": "search term",
+  "error": "Error message",
+  "error_type": "TweepyException",
+  "message": "Twitter API request failed..."
+}
+```
+
+## Tweet Data Fields
+
+Each tweet includes:
+
+- **id**: Unique tweet ID
+- **text**: Full tweet content
+- **created_at**: ISO timestamp
+- **lang**: Language code (e.g., "en")
+- **source**: Platform used (e.g., "Twitter Web App")
+- **author**: User information
+  - `username`: Twitter handle
+  - `name`: Display name
+  - `verified`: Verification status
+  - `followers_count`: Follower count
+- **metrics**: Engagement stats
+  - `likes`: Like count
+  - `retweets`: Retweet count
+  - `replies`: Reply count
+  - `quotes`: Quote tweet count
 
 ## Rate Limits and Ethics
 

@@ -69,19 +69,24 @@ class TestTwitterSearchServer:
         assert tools[0]["function"]["name"] == "twitter_tweets"
 
     @pytest.mark.asyncio
-    async def test_twitter_server_search_returns_info(self, mock_system_config, mock_mcp_config):
-        """Test Twitter Search server returns informational message."""
-        server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
-
-        mock_status = AsyncMock()
-        result = await server.call("twitter_tweets", {"query": "test", "_status": mock_status})
+    async def test_twitter_server_search_no_credentials(self, mock_system_config, mock_mcp_config):
+        """Test Twitter Search server without credentials returns setup guide."""
+        from unittest.mock import patch
         
-        # Should return informational message about Twitter API restrictions
-        assert "engine" in result
-        assert result["engine"] == "twitter-info"
-        assert "message" in result
-        assert "alternatives" in result
-        assert isinstance(result["alternatives"], list)
+        # Mock tweepy as available but no credentials
+        with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', True):
+            server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+
+            mock_status = AsyncMock()
+            result = await server.call("twitter_tweets", {"query": "test", "_status": mock_status})
+            
+            # Should return setup instructions when no credentials configured
+            assert result["status"] == "setup_required"
+            assert "message" in result
+            assert "setup_instructions" in result
+            assert "free_tier_limits" in result
+            assert "alternatives" in result
+            assert isinstance(result["alternatives"], list)
 
     @pytest.mark.asyncio
     async def test_twitter_server_invalid_tool(self, mock_system_config, mock_mcp_config):
@@ -95,28 +100,113 @@ class TestTwitterSearchServer:
 
     @pytest.mark.asyncio
     async def test_twitter_server_empty_query(self, mock_system_config, mock_mcp_config):
-        """Test Twitter Search server with empty query."""
-        server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
-
-        mock_status = AsyncMock()
-        result = await server.call("twitter_tweets", {"query": "", "_status": mock_status})
+        """Test Twitter Search server with empty query (no credentials)."""
+        from unittest.mock import patch
         
-        # Should still return informational message
-        assert "engine" in result
-        assert result["engine"] == "twitter-info"
-        assert "suggestion" in result
+        # Mock tweepy as available but no credentials
+        with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', True):
+            server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+
+            mock_status = AsyncMock()
+            result = await server.call("twitter_tweets", {"query": "", "_status": mock_status})
+            
+            # Should return setup instructions when no credentials
+            assert result["status"] == "setup_required"
+            assert "setup_instructions" in result
 
     @pytest.mark.asyncio
-    async def test_twitter_server_suggestion_includes_query(self, mock_system_config, mock_mcp_config):
-        """Test Twitter Search server includes query in suggestion."""
+    async def test_twitter_server_with_mock_api(self, mock_system_config, mock_mcp_config):
+        """Test Twitter Search server with mocked tweepy module."""
+        from unittest.mock import patch, MagicMock
+        
+        # Create a fake tweepy module
+        fake_tweepy = MagicMock()
+        fake_client_instance = MagicMock()
+        fake_tweepy.Client = MagicMock(return_value=fake_client_instance)
+        
+        # Mock the module import
+        with patch.dict('sys.modules', {'tweepy': fake_tweepy}):
+            # Mock TWEEPY_AVAILABLE
+            with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', True):
+                with patch.dict('os.environ', {'TWITTER_BEARER_TOKEN': 'fake_token'}):
+                    # Re-import with mocked tweepy
+                    import plugins.twitter_search.server as server_module
+                    server_module.tweepy = fake_tweepy
+                    
+                    # Create server
+                    server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+                    server.client = fake_client_instance
+                    
+                    # Create mock tweet
+                    mock_tweet = MagicMock()
+                    mock_tweet.id = "123456"
+                    mock_tweet.text = "This is a test tweet about bitcoin"
+                    mock_tweet.created_at = None
+                    mock_tweet.lang = "en"
+                    mock_tweet.source = "Twitter Web App"
+                    mock_tweet.author_id = "user123"
+                    mock_tweet.public_metrics = {
+                        'like_count': 10,
+                        'retweet_count': 5,
+                        'reply_count': 2,
+                        'quote_count': 1
+                    }
+                    
+                    # Create mock response
+                    mock_response = MagicMock()
+                    mock_response.data = [mock_tweet]
+                    mock_response.includes = None
+                    fake_client_instance.search_recent_tweets.return_value = mock_response
+                    
+                    mock_status = AsyncMock()
+                    result = await server.call("twitter_tweets", {"query": "bitcoin", "_status": mock_status})
+                    
+                    # Should return successful result with tweets
+                    assert result["status"] == "success"
+                    assert result["query"] == "bitcoin"
+                    assert result["total_results"] == 1
+                    assert len(result["tweets"]) == 1
+                    assert result["tweets"][0]["text"] == "This is a test tweet about bitcoin"
+                    assert result["tweets"][0]["metrics"]["likes"] == 10
+
+    @pytest.mark.asyncio
+    async def test_twitter_server_cancellation(self, mock_system_config, mock_mcp_config):
+        """Test Twitter Search server respects cancellation token."""
+        from unittest.mock import MagicMock
+        
         server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
 
         mock_status = AsyncMock()
-        result = await server.call("twitter_tweets", {"query": "bitcoin", "_status": mock_status})
+        mock_token = MagicMock()
+        mock_token.is_cancelled = True
         
-        # Should include query in suggestion
-        assert "suggestion" in result
-        assert "bitcoin" in result["suggestion"]
+        result = await server.call("twitter_tweets", {
+            "query": "test",
+            "_status": mock_status,
+            "_cancellation_token": mock_token
+        })
+        
+        # Should return cancelled status
+        assert "cancelled" in result
+        assert result["cancelled"] is True
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_twitter_server_tweepy_not_installed(self, mock_system_config, mock_mcp_config):
+        """Test Twitter Search server when tweepy is not installed."""
+        from unittest.mock import patch
+        
+        # Mock TWEEPY_AVAILABLE to be False
+        with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', False):
+            server = TwitterSearchServer("twitter", mock_system_config, mock_mcp_config)
+            
+            mock_status = AsyncMock()
+            result = await server.call("twitter_tweets", {"query": "test", "_status": mock_status})
+            
+            # Should return error about missing tweepy
+            assert result["status"] == "error"
+            assert "tweepy" in result["error"].lower()
+            assert "Install tweepy" in result["message"]
 
 
 class TestTwitterSearchPluginFactory:
