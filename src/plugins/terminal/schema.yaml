@@ -1,0 +1,73 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_execute"
+      description: "Execute a shell command either synchronously (wait for completion) or as a background process."
+      parameters:
+        type: object
+        properties:
+          command:
+            type: string
+            description: "Shell command to execute"
+          background:
+            type: boolean
+            default: false
+            description: "Run as background process (default: false). If true, returns immediately with process_id."
+          cwd:
+            type: string
+            description: "Working directory for command execution (defaults to current directory)"
+          timeout:
+            type: number
+            minimum: 1
+            maximum: 3600
+            default: 300
+            description: "Timeout in seconds for foreground commands (1-3600, default: 300, ignored for background)"
+          env_vars:
+            type: object
+            description: "Environment variables to set (merged with current environment)"
+            additionalProperties:
+              type: string
+          process_id:
+            type: string
+            description: "Custom process ID for background processes (auto-generated if omitted, only used when background=true)"
+        required: ["command"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_output"
+      description: "Get stdout/stderr from a background process."
+      parameters:
+        type: object
+        properties:
+          process_id:
+            type: string
+            description: "Process ID from execute_background"
+          stream:
+            type: string
+            enum: ["stdout", "stderr", "both"]
+            default: "both"
+            description: "Which output stream to retrieve (stdout, stderr, or both)"
+          clear_buffer:
+            type: boolean
+            default: false
+            description: "Clear buffer after reading (default: false)"
+        required: ["process_id"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_kill_process"
+      description: "Terminate a background process."
+      parameters:
+        type: object
+        properties:
+          process_id:
+            type: string
+            description: "Process ID to kill (from execute with background=true)"
+          force:
+            type: boolean
+            default: false
+            description: "Use SIGKILL instead of SIGTERM (default: false)"
+        required: ["process_id"]
+        additionalProperties: false

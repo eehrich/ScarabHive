@@ -23,6 +23,7 @@ This README is a concise developer and user guide matching this repository layou
   - [Sequential Thinking](src/plugins/sequential_thinking/README.md) — Step-by-step reasoning with branching and revision
   - [SSH Control](src/plugins/ssh_control/README.md) — Multi-machine SSH management with web UI
   - [Sub-Agent Manager](src/plugins/sub_agent_manager/README.md) — Persistent sub-agent instances with conversation continuity
+  - [Terminal](src/plugins/terminal/README.md) — Safe shell command execution with background process support
   - [Twitter Search](src/plugins/twitter_search/README.md) — Twitter/X public content search
   - [User Management](src/plugins/user_management/) — Web-based user administration and role management
   - [Weather](src/plugins/weather/README.md) — Weather information with multiple data sources

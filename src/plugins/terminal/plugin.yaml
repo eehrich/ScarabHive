@@ -1,0 +1,7 @@
+name: terminal
+version: 1.0.0
+description: "Secure bash command execution with process management"
+author: AgentSystem Team
+entrypoint: server:TerminalServer
+type: mcp_only
+category: utilities
