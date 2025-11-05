@@ -355,11 +355,18 @@ class StatusScope:
                     if not error_msg or error_msg.strip() == "":
                         error_msg = f"{exc_type.__name__} occurred"
                     
+                    # Build meta with error information
+                    error_meta = {
+                        "error_type": exc_type.__name__
+                    }
+                    
                     await self.bus.publish(StatusEvent(
                         server=self.server,
                         request_id=self.request_id,
                         message=f"failed: {error_msg}",
                         phase=StatusPhase.ERROR,
+                        level="error",
+                        meta=error_meta,
                         parent_id=parent_id,
                         depth_level=depth_level
                     ))

@@ -498,31 +498,45 @@
         }
       }
     } else if (ev.phase === 'end') {
-      const operationDiv = activeOperations.get(operationKey);
-      if (operationDiv) {
-        const iconSpan = operationDiv.querySelector('.progress-icon');
-        const messageSpan = operationDiv.querySelector('.progress-message');
-        const timeSpan = operationDiv.querySelector('.progress-time');
-        // Respect backend hint to suppress the completion icon for internal helpers
-        const suppressIcon = ev.meta && ev.meta.suppress_completion_icon;
-        if (iconSpan) iconSpan.innerHTML = suppressIcon ? '' : '<div class="checkmark">✓</div>';
-        if (messageSpan) messageSpan.textContent = ev.message || 'Completed';
-        if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
-        operationDiv.classList.add('completed');
+      let operationDiv = activeOperations.get(operationKey);
+      // If END arrives before START was processed, create the operation now
+      if (!operationDiv) {
+        operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
+        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        if (requestId) {
+          registerNode(requestId, parentId, operationDiv, depthLevel);
+        }
       }
+      
+      const iconSpan = operationDiv.querySelector('.progress-icon');
+      const messageSpan = operationDiv.querySelector('.progress-message');
+      const timeSpan = operationDiv.querySelector('.progress-time');
+      // Respect backend hint to suppress the completion icon for internal helpers
+      const suppressIcon = ev.meta && ev.meta.suppress_completion_icon;
+      if (iconSpan) iconSpan.innerHTML = suppressIcon ? '' : '<div class="checkmark">✓</div>';
+      if (messageSpan) messageSpan.textContent = ev.message || 'Completed';
+      if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
+      operationDiv.classList.add('completed');
       activeOperations.delete(operationKey);
       // Keep tree structure intact for folding - don't clean up completed operations
     } else if (ev.phase === 'error') {
-      const operationDiv = activeOperations.get(operationKey);
-      if (operationDiv) {
-        const iconSpan = operationDiv.querySelector('.progress-icon');
-        const messageSpan = operationDiv.querySelector('.progress-message');
-        const timeSpan = operationDiv.querySelector('.progress-time');
-        if (iconSpan) iconSpan.innerHTML = '<div class="error-mark">✕</div>';
-        if (messageSpan) messageSpan.textContent = ev.message || 'Error occurred';
-        if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
-        operationDiv.classList.add('error');
+      let operationDiv = activeOperations.get(operationKey);
+      // If ERROR arrives before START was processed, create the operation now
+      if (!operationDiv) {
+        operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
+        insertOperationHierarchically(container, operationDiv, requestId, parentId, depthLevel);
+        if (requestId) {
+          registerNode(requestId, parentId, operationDiv, depthLevel);
+        }
       }
+      
+      const iconSpan = operationDiv.querySelector('.progress-icon');
+      const messageSpan = operationDiv.querySelector('.progress-message');
+      const timeSpan = operationDiv.querySelector('.progress-time');
+      if (iconSpan) iconSpan.innerHTML = '<div class="error-mark">✕</div>';
+      if (messageSpan) messageSpan.textContent = ev.message || 'Error occurred';
+      if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
+      operationDiv.classList.add('error');
       activeOperations.delete(operationKey);
       // Keep tree structure intact for folding - don't clean up errored operations
     }

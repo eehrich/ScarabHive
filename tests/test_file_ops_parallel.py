@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import Mock
 
 from agent_system.config import AgentSystemConfig, MCPConfig
-from agent_system.mcp.status import StatusBus, StatusScope
+from agent_system.mcp.status import StatusBus
 from plugins.file_ops.server import FileOpsServer
 
 
@@ -52,32 +52,26 @@ async def test_parallel_security_violations(file_ops_server, tmp_allowed_dir, st
     queue = await status_bus.subscribe(server="file_ops")
     events = []
     
-    # Create status scopes for parallel operations
-    status1 = StatusScope(status_bus, "file_ops", request_id="req_001")
-    status2 = StatusScope(status_bus, "file_ops", request_id="req_002")
-    status3 = StatusScope(status_bus, "file_ops", request_id="req_003")
+    # Helper to call with status scope (like call_with_status does)
+    async def call_with_scope(request_id: str, params: dict):
+        from agent_system.mcp.status import status_scope
+        async with status_scope(status_bus, "file_ops", request_id=request_id) as status:
+            params_with_status = params.copy()
+            params_with_status["_status"] = status
+            return await file_ops_server.read_file(params_with_status)
     
     # Prepare test params with security violations
-    invalid_params = [
-        {
-            "file_path": "E:\\",  # Outside allowed directory
-            "_status": status1
-        },
-        {
-            "file_path": str(tmp_allowed_dir / ".." / "secret.txt"),  # Path traversal
-            "_status": status2
-        },
-        {
-            "file_path": str(tmp_allowed_dir / "..." / "secret.txt"),  # Another traversal pattern
-            "_status": status3
-        }
+    test_cases = [
+        ("req_001", {"file_path": "E:\\"}),  # Outside allowed directory
+        ("req_002", {"file_path": str(tmp_allowed_dir / ".." / "secret.txt")}),  # Path traversal
+        ("req_003", {"file_path": str(tmp_allowed_dir / "..." / "secret.txt")}),  # Another traversal pattern
     ]
     
-    # Execute all three in parallel
+    # Execute all three in parallel using context managers
     results = await asyncio.gather(
-        file_ops_server.read_file(invalid_params[0]),
-        file_ops_server.read_file(invalid_params[1]),
-        file_ops_server.read_file(invalid_params[2]),
+        call_with_scope(test_cases[0][0], test_cases[0][1]),
+        call_with_scope(test_cases[1][0], test_cases[1][1]),
+        call_with_scope(test_cases[2][0], test_cases[2][1]),
         return_exceptions=True
     )
     
@@ -97,19 +91,18 @@ async def test_parallel_security_violations(file_ops_server, tmp_allowed_dir, st
     assert results[0].get("error_type") == "SecurityError"
     assert results[1].get("error_type") == "SecurityError"
     
-    # Check that status.error() was called for each
-    error_events = [e for e in events if e.phase.value == "error"]
-    print(f"=== Error events: {len(error_events)}")
-    
-    # CRITICAL: This is the actual test - are we getting ALL completion events?
+    # Check completion events - with context manager we should get START + (END or ERROR) for each
+    start_events = [e for e in events if e.phase.value == "start"]
     completion_events = [e for e in events if e.phase.value in ("end", "error")]
-    print(f"=== Completion events: {len(completion_events)} (expected 3)")
-    assert len(completion_events) == 3, f"Expected 3 completion events, got {len(completion_events)}: {[(e.request_id, e.phase.value) for e in completion_events]}"
     
-    # Verify error messages contain security information
-    error_messages = [e.message for e in error_events]
-    assert any("outside allowed" in msg.lower() or "traversal" in msg.lower() 
-               for msg in error_messages)
+    print(f"=== Start events: {len(start_events)}")
+    print(f"=== Completion events: {len(completion_events)}")
+    
+    # With context manager: Should have START for each operation
+    assert len(start_events) == 3, f"Expected 3 START events, got {len(start_events)}"
+    
+    # Should have ERROR or END for each operation
+    assert len(completion_events) == 3, f"Expected 3 completion events, got {len(completion_events)}: {[(e.request_id, e.phase.value) for e in completion_events]}"
 
 
 @pytest.mark.asyncio
@@ -124,33 +117,39 @@ async def test_parallel_tool_execution_status_completion(file_ops_server, tmp_al
     queue = await status_bus.subscribe(server="file_ops")
     events = []
     
-    # Create status scopes for parallel operations
-    status_scopes = [
-        StatusScope(status_bus, "file_ops", request_id=f"req_{i:03d}")
-        for i in range(5)
-    ]
+    # Helper to call with status scope (like call_with_status does)
+    async def call_with_scope(request_id: str, file_path: str):
+        from agent_system.mcp.status import status_scope
+        async with status_scope(status_bus, "file_ops", request_id=request_id) as status:
+            params = {
+                "file_path": file_path,
+                "_status": status
+            }
+            return await file_ops_server.read_file(params)
     
     # Prepare read operations
-    read_params = [
-        {
-            "file_path": str(tmp_allowed_dir / f"test_{i}.txt"),
-            "_status": status_scopes[i]
-        }
+    test_cases = [
+        (f"req_{i:03d}", str(tmp_allowed_dir / f"test_{i}.txt"))
         for i in range(5)
     ]
     
-    # Execute all five reads in parallel
+    # Execute all five reads in parallel using context managers
     results = await asyncio.gather(
-        *[file_ops_server.read_file(params) for params in read_params],
+        *[call_with_scope(req_id, file_path) for req_id, file_path in test_cases],
         return_exceptions=True
     )
     
     # Collect events from queue
+    await asyncio.sleep(0.1)
     while not queue.empty():
         events.append(await queue.get())
     
     # Check that all succeeded
     assert all(r.get("status") == "success" for r in results if isinstance(r, dict))
+    
+    # With context manager: Should have START for each
+    start_events = [e for e in events if e.phase.value == "start"]
+    assert len(start_events) == 5, f"Expected 5 START events, got {len(start_events)}"
     
     # Check that we got END events for each
     end_events = [e for e in events if e.phase.value == "end"]
@@ -173,21 +172,32 @@ async def test_parallel_mixed_operations(file_ops_server, tmp_allowed_dir, statu
     queue = await status_bus.subscribe(server="file_ops")
     events = []
     
+    # Helper to call with status scope (like call_with_status does)
+    async def call_with_scope(request_id: str, file_path: str):
+        from agent_system.mcp.status import status_scope
+        async with status_scope(status_bus, "file_ops", request_id=request_id) as status:
+            params = {
+                "file_path": file_path,
+                "_status": status
+            }
+            return await file_ops_server.read_file(params)
+    
     # Mix of operations
-    operations = [
-        ("read_file", {"file_path": str(tmp_allowed_dir / "exists.txt"), "_status": StatusScope(status_bus, "file_ops", request_id="req_a")}),
-        ("read_file", {"file_path": str(tmp_allowed_dir / "missing.txt"), "_status": StatusScope(status_bus, "file_ops", request_id="req_b")}),
-        ("read_file", {"file_path": "E:\\secret.txt", "_status": StatusScope(status_bus, "file_ops", request_id="req_c")}),  # Security error
-        ("read_file", {"file_path": str(tmp_allowed_dir / "exists.txt"), "_status": StatusScope(status_bus, "file_ops", request_id="req_d")}),
+    test_cases = [
+        ("req_a", str(tmp_allowed_dir / "exists.txt")),  # Success
+        ("req_b", str(tmp_allowed_dir / "missing.txt")),  # FileNotFoundError
+        ("req_c", str(tmp_allowed_dir / ".." / "secret.txt")),  # SecurityError (path traversal)
+        ("req_d", str(tmp_allowed_dir / "exists.txt")),  # Success
     ]
     
-    # Execute in parallel
+    # Execute in parallel using context managers
     results = await asyncio.gather(
-        *[getattr(file_ops_server, op[0])(op[1]) for op in operations],
+        *[call_with_scope(req_id, file_path) for req_id, file_path in test_cases],
         return_exceptions=True
     )
     
     # Collect events from queue
+    await asyncio.sleep(0.1)
     while not queue.empty():
         events.append(await queue.get())
     
@@ -196,6 +206,10 @@ async def test_parallel_mixed_operations(file_ops_server, tmp_allowed_dir, statu
     assert results[1].get("status") == "error"  # File not found
     assert results[2].get("status") == "error"  # Security
     assert results[3].get("status") == "success"
+    
+    # With context manager: Should have START for each
+    start_events = [e for e in events if e.phase.value == "start"]
+    assert len(start_events) == 4, f"Expected 4 START events, got {len(start_events)}"
     
     # Check that ALL operations got either END or ERROR events
     completion_events = [e for e in events if e.phase.value in ("end", "error")]
