@@ -16,6 +16,7 @@ plugins:
             - "file_ops/*"
             - "basic_operations/*"
             - "datetime/*"
+            - "terminal/*"
         
         hooks:
           enabled: true
