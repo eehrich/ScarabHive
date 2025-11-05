@@ -204,7 +204,7 @@ class TerminalServer(SchemaBasedMCPServer):
         if result["status"] == "success":
             exit_code = result.get("exit_code", 0)
             exec_time = result.get("execution_time", 0)
-            await status.complete(
+            await status.end(
                 f"Command completed (exit code {exit_code})",
                 meta={"execution_time": exec_time}
             )
@@ -254,7 +254,7 @@ class TerminalServer(SchemaBasedMCPServer):
             process_id=custom_process_id
         )
 
-        await status.complete(f"Background process started: {process_id}")
+        await status.end(f"Background process started: {process_id}")
 
         return {
             "status": "success",
@@ -293,7 +293,7 @@ class TerminalServer(SchemaBasedMCPServer):
         if result["status"] == "success":
             is_running = result.get("is_running", False)
             status_msg = "running" if is_running else "finished"
-            await status.complete(f"Retrieved output from {status_msg} process {process_id}")
+            await status.end(f"Retrieved output from {status_msg} process {process_id}")
         else:
             await status.error(f"Failed to get output: {result.get('error')}")
 
@@ -325,7 +325,7 @@ class TerminalServer(SchemaBasedMCPServer):
 
         if result["status"] == "success":
             signal_used = result.get("signal", signal_type)
-            await status.complete(f"Process {process_id} killed with {signal_used}")
+            await status.end(f"Process {process_id} killed with {signal_used}")
         else:
             await status.error(f"Failed to kill process: {result.get('error')}")
 

@@ -25,7 +25,7 @@ class TestTerminalExecuteUnified:
         class MockStatus:
             async def update(self, msg): pass
             async def progress(self, msg): pass
-            async def complete(self, msg, meta=None): pass
+            async def end(self, msg, meta=None): pass
             async def error(self, msg): pass
         return MockStatus()
 
