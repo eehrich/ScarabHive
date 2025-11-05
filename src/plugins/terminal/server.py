@@ -204,13 +204,14 @@ class TerminalServer(SchemaBasedMCPServer):
         if result["status"] == "success":
             exit_code = result.get("exit_code", 0)
             exec_time = result.get("execution_time", 0)
+            # Include command in end message for WebUI visibility
             await status.end(
-                f"Command completed (exit code {exit_code})",
-                meta={"execution_time": exec_time}
+                f"'{command}' completed (exit code {exit_code}, {exec_time:.2f}s)",
+                meta={"execution_time": exec_time, "exit_code": exit_code}
             )
         else:
             error_msg = result.get("error", "Unknown error")
-            await status.error(f"Command failed: {error_msg}")
+            await status.error(f"'{command}' failed: {error_msg}")
 
         return result
 
@@ -254,7 +255,8 @@ class TerminalServer(SchemaBasedMCPServer):
             process_id=custom_process_id
         )
 
-        await status.end(f"Background process started: {process_id}")
+        # Include command and process_id in end message for WebUI
+        await status.end(f"Background process '{command}' started (ID: {process_id}, PID: {process.pid})")
 
         return {
             "status": "success",
@@ -293,9 +295,15 @@ class TerminalServer(SchemaBasedMCPServer):
         if result["status"] == "success":
             is_running = result.get("is_running", False)
             status_msg = "running" if is_running else "finished"
-            await status.end(f"Retrieved output from {status_msg} process {process_id}")
+            stdout_len = len(result.get("stdout", ""))
+            stderr_len = len(result.get("stderr", ""))
+            # Include process_id and output size in end message
+            await status.end(
+                f"Output retrieved from process '{process_id}' ({status_msg}): "
+                f"{stdout_len} bytes stdout, {stderr_len} bytes stderr"
+            )
         else:
-            await status.error(f"Failed to get output: {result.get('error')}")
+            await status.error(f"Failed to get output from '{process_id}': {result.get('error')}")
 
         return result
 
@@ -325,9 +333,10 @@ class TerminalServer(SchemaBasedMCPServer):
 
         if result["status"] == "success":
             signal_used = result.get("signal", signal_type)
-            await status.end(f"Process {process_id} killed with {signal_used}")
+            # Include process_id and signal in end message
+            await status.end(f"Process '{process_id}' terminated with {signal_used}")
         else:
-            await status.error(f"Failed to kill process: {result.get('error')}")
+            await status.error(f"Failed to kill process '{process_id}': {result.get('error')}")
 
         return result
 
