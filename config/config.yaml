@@ -33,7 +33,7 @@ default_agent: meta_agent
 
 # Multi-user authentication and authorization (optional)
 auth: # type AuthConfig
-  enabled: true  # Set to true to enable multi-user authentication
+  enabled: false  # Set to true to enable multi-user authentication
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
   access_token_expire_minutes: 30

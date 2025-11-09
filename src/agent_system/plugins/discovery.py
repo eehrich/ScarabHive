@@ -30,9 +30,27 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
     for d in path.iterdir():
         if not d.is_dir():
             continue
-        plugin_file = d / "plugin.py"
+        
+        # Read plugin.yaml to determine entrypoint (default: plugin.py)
+        meta_file = d / "plugin.yaml"
+        entrypoint_module = "plugin"
+        entrypoint_factory = "PLUGIN_FACTORY"
+        
+        if meta_file.exists():
+            try:
+                with meta_file.open('r', encoding='utf-8') as fh:
+                    metadata = yaml.safe_load(fh) or {}
+                    entrypoint = metadata.get("entrypoint", "plugin:PLUGIN_FACTORY")
+                    if ":" in entrypoint:
+                        entrypoint_module, entrypoint_factory = entrypoint.split(":", 1)
+            except Exception as e:
+                logger.warning(f"Failed to read entrypoint from {meta_file}: {e}", exc_info=True)
+        
+        plugin_file = d / f"{entrypoint_module}.py"
         if not plugin_file.exists():
+            logger.debug(f"Skipping plugin {d.name}: entrypoint file {plugin_file} not found")
             continue
+            
         pkg_name = "plugins"
         plugin_pkg = f"{pkg_name}.{d.name}"
         try:
@@ -67,23 +85,35 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
             logger.warning(f"Plugin {plugin_file} register() failed: {e}", exc_info=True)
             continue
 
+        # Try to get factory using the configured factory name from entrypoint
+        factory = getattr(mod, entrypoint_factory, None)
+        
+        # Fallback to PLUGIN_FACTORY if configured name not found
+        if factory is None:
+            factory = getattr(mod, "PLUGIN_FACTORY", None)
+        
+        if factory is None:
+            logger.debug(f"Plugin {plugin_file} has no {entrypoint_factory} or PLUGIN_FACTORY")
+            continue
+        
         # Determine plugin name: prefer PLUGIN_NAME constant if present for backwards compatibility
         name = getattr(mod, "PLUGIN_NAME", None) or d.name
-        factory = getattr(mod, "PLUGIN_FACTORY", None)
+        
+        # Reload metadata with all fields
         metadata = None
-        meta_file = d / "plugin.yaml"
         if meta_file.exists():
             try:
                 with meta_file.open('r', encoding='utf-8') as fh:
                     metadata = yaml.safe_load(fh) or {}
             except Exception as e:
                 logger.warning(f"Failed to read plugin metadata {meta_file}: {e}", exc_info=True)
-        if factory:
-            try:
-                setattr(factory, '_plugin_metadata', metadata)
-            except Exception as e:
-                logger.debug(f"Failed to attach metadata to plugin factory: {e}")
-            out[name] = factory
+        
+        try:
+            setattr(factory, '_plugin_metadata', metadata)
+        except Exception as e:
+            logger.debug(f"Failed to attach metadata to plugin factory: {e}")
+        
+        out[name] = factory
 
     for p in path.glob("*.py"):
         if p.name == "__init__.py":

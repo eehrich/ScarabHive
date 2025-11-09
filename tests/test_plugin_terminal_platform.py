@@ -64,14 +64,17 @@ class TestPlatformDetector:
         """Test error when no bash found on Windows."""
         with patch('platform.system', return_value='Windows'):
             with patch('os.path.exists', return_value=False):
+                # Mock shutil.which at import time to avoid subprocess creation
                 with patch('shutil.which', return_value=None):
-                    detector = PlatformDetector()
-                    
-                    with pytest.raises(RuntimeError) as exc_info:
-                        detector.detect_bash()
-                    
-                    assert "No bash executable found" in str(exc_info.value)
-                    assert "Git Bash" in str(exc_info.value)
+                    # Also patch subprocess to prevent any subprocess calls
+                    with patch('subprocess.run', return_value=None):
+                        detector = PlatformDetector()
+                        
+                        with pytest.raises(RuntimeError) as exc_info:
+                            detector.detect_bash()
+                        
+                        assert "No bash executable found" in str(exc_info.value)
+                        assert "Git Bash" in str(exc_info.value)
 
     def test_no_bash_found_linux(self):
         """Test error when no bash found on Linux."""

@@ -146,10 +146,9 @@ class TestMCPIntegrationPluginDirs:
             )
         )
         
-        # Create MCPIntegration with mocked registry
-        mock_registry = MagicMock()
-        mock_registry.plugin_factories = {}
-        integration = MCPIntegration(mock_registry)
+        # Create MCPIntegration with config (not mock_registry)
+        # MCPIntegration requires AgentSystemConfig as parameter
+        integration = MCPIntegration(app=None, config=config)
         
         # The _discover_and_register_plugins method should use config.plugins.plugin_dirs
         # We can't easily test the private method, but we can verify the config is accessible

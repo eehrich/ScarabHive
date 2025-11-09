@@ -249,7 +249,14 @@ entrypoint: server:PLUGIN_FACTORY
 - **`version`**: Semantic version (x.y.z)
 - **`description`**: Short, clear description for users
 - **`author`**: Plugin author/maintainer
-- **`entrypoint`**: Points to the server class (`module:symbol`)
+- **`entrypoint`**: Module and factory name in format `module:FACTORY_NAME`
+  - Format: `module:FactoryFunction` (e.g., `plugin:PLUGIN_FACTORY`, `server:MyServer`)
+  - The discovery system loads **only** the specified module file
+  - Default if omitted: `plugin:PLUGIN_FACTORY` (loads `plugin.py`)
+  - Examples:
+    - `plugin:PLUGIN_FACTORY` → loads `plugin.py`, uses `PLUGIN_FACTORY` function
+    - `server:CustomServer` → loads `server.py`, uses `CustomServer` class
+    - `my_module:create_plugin` → loads `my_module.py`, uses `create_plugin()` function
 
 ### Plugin Types and Categories
 
@@ -321,7 +328,9 @@ tags:
 - **`version`**: Semantic version (x.y.z) for compatibility tracking  
 - **`description`**: Short, clear description for users and UIs
 - **`author`**: Plugin author/maintainer for support
-- **`entrypoint`**: Module and symbol path (`module:symbol`)
+- **`entrypoint`**: Module and factory name in format `module:FACTORY_NAME` (see Field Descriptions above for details)
+  - **Critical**: Only the specified module is loaded by the discovery system
+  - Default: `plugin:PLUGIN_FACTORY` if field is omitted
 
 **Plugin Classification:**
 - **`type`**: Plugin type (`mcp_only`, `web_only`, `hybrid`, `cli_only`)
@@ -1570,6 +1579,27 @@ async def _tool_with_background_tasks(self, params: dict):
 ### Web Endpoints and UI Integration
 
 Plugins can provide custom web interfaces and API endpoints accessible at `/plugins/<plugin_name>/`. This pattern allows plugins like `log_viewer` to serve web dashboards, APIs, and static assets:
+
+#### WebUI Button Configuration
+
+**Important**: To make your plugin appear in the WebUI header, you must explicitly enable the button in `schema.yaml`:
+
+```yaml
+web_ui:
+  button:
+    enabled: true  # REQUIRED! Defaults to false - button will be hidden if not set
+    text: "My Plugin"
+    icon: "🔧"
+  
+  panel:
+    title: "My Plugin Panel"
+    endpoint: "/plugins/my_plugin/panel"
+    type: "iframe"  # or "fetch" for JSON APIs
+    width: "800px"
+    height: "600px"
+```
+
+**Common Mistake**: Forgetting `enabled: true` will cause the button to not appear, even if all other configuration is correct. The system defaults to `false` to allow plugins to provide web endpoints without UI buttons.
 
 #### Basic Web Endpoints
 

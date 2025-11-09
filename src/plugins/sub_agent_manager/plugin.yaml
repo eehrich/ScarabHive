@@ -3,6 +3,8 @@ version: "1.0.0"
 description: "Manages persistent sub-agent instances for coordinator agents"
 plugin_type: sub_agent_manager
 author: "AgentSystem Team"
+type: hybrid
+entrypoint: plugin:PLUGIN_FACTORY
 
 # Server configuration
 server_config:

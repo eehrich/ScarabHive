@@ -6,3 +6,4 @@ description: >
   Converts Markdown responses to HTML for frontend display.
 author: AgentSystem Team
 type: hook
+entrypoint: plugin:PLUGIN_FACTORY

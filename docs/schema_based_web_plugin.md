@@ -226,6 +226,7 @@ description: My plugin description
 
 web_ui:
   button:
+    enabled: true  # REQUIRED: Defaults to false! Button is hidden unless explicitly enabled
     text: "My Plugin"
     icon: "🔧"
   
@@ -245,6 +246,8 @@ hooks:
 config:
   # Plugin configuration (optional)
 ```
+
+**Important**: The `web_ui.button.enabled` field defaults to `false`. Your plugin button will **not appear** in the UI unless you explicitly set `enabled: true`.
 
 ## Migration Guide
 

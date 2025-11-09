@@ -4,6 +4,8 @@ summary: "Web UI for user administration with multi-user authentication"
 homepage: "https://github.com/yourorg/agent-system"
 authors:
   - "AgentSystem Team"
+type: web_only
+entrypoint: plugin:PLUGIN_FACTORY
 capabilities:
   - web_ui
   - admin_tools
