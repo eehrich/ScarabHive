@@ -377,9 +377,8 @@ async def health_check_loop():
 
 ### 5.3 Parallel Connection
 
-**Configuration:**
+**Configuration in `external_servers:` section:**
 ```yaml
-# config/mcp_servers.yaml
 external_servers:
   connection:
     timeout: 5.0
@@ -472,9 +471,8 @@ async def call_tool(self, tool_name: str, arguments: dict) -> dict:
 | **Tool Lists** | `ToolCache` | 3600s (1 hour) | Manual, TTL |
 | **Tool Results** | Not cached | N/A | N/A |
 
-**Configuration:**
+**Configuration in `external_servers:` section:**
 ```yaml
-# config/mcp_servers.yaml
 external_servers:
   cache:
     enabled: true
@@ -537,9 +535,8 @@ Client                     MCP Server
 
 ### 7.3 Configuration
 
-**Server Configuration:**
+**Server Configuration in `external_servers:` section:**
 ```yaml
-# config/mcp_servers.yaml
 external_servers:
   remote_servers:
     my_server:

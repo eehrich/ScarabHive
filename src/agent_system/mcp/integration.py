@@ -102,11 +102,12 @@ class MCPIntegration:
 
     async def _discover_and_register_plugins(self, config: AgentSystemConfig) -> None:
         """Discover and register enabled plugins."""
-        plugin_dirs = ['src/plugins']  # Default plugin directory
+        # Use plugin_dirs from config, fallback to default
+        plugin_dirs = config.plugins.plugin_dirs if config.plugins and config.plugins.plugin_dirs else ['src/plugins']
         
         # Check if plugins are already discovered (singleton registry)
         if not self.plugin_registry.plugin_factories:
-            logger.debug("Discovering plugins for the first time")
+            logger.debug(f"Discovering plugins for the first time from dirs: {plugin_dirs}")
             self.plugin_registry.discover_plugins(plugin_dirs)
         else:
             logger.debug(

@@ -502,32 +502,35 @@ class PathValidator:
 
 ### Configuration
 
+Configuration in `plugins:` section:
+
 ```yaml
-# config/mcp_servers.yaml
-servers:
-  file_operations:
-    type: file_operations
-    enabled: true
-    allowed_directories:
-      - "e:/Projects/AgentSystem/src"
-      - "e:/Projects/AgentSystem/docs"
-      - "e:/Projects/AgentSystem/tests"
-      - "e:/Projects/AgentSystem/tmp"
-    max_file_size_mb: 10
-    default_encoding: "utf-8"
-    
-    # Search configuration
-    search:
-      enable_indexing: true
-      index_on_startup: true
-      auto_reindex_interval_seconds: 300  # Rebuild index every 5 minutes
-      max_file_size_for_indexing_kb: 1024  # Don't index files > 1MB
-      exclude_patterns:
-        - "**/.git/**"
-        - "**/__pycache__/**"
-        - "**/*.pyc"
-        - "**/node_modules/**"
-        - "**/.venv/**"
+plugins:
+  servers:
+    file_operations:
+      type: file_operations
+      enabled: true
+      config:
+        allowed_directories:
+          - "e:/Projects/AgentSystem/src"
+          - "e:/Projects/AgentSystem/docs"
+          - "e:/Projects/AgentSystem/tests"
+          - "e:/Projects/AgentSystem/tmp"
+        max_file_size_mb: 10
+        default_encoding: "utf-8"
+        
+        # Search configuration
+        search:
+          enable_indexing: true
+          index_on_startup: true
+          auto_reindex_interval_seconds: 300  # Rebuild index every 5 minutes
+          max_file_size_for_indexing_kb: 1024  # Don't index files > 1MB
+          exclude_patterns:
+            - "**/.git/**"
+            - "**/__pycache__/**"
+            - "**/*.pyc"
+            - "**/node_modules/**"
+            - "**/.venv/**"
         - "**/*.min.js"
 ```
 

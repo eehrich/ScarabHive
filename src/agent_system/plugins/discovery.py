@@ -241,8 +241,8 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = "agent
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
         try:
-            # All items in source_dirs are Path objects
-            p = raw
+            # Convert to Path object if string (config.plugins.plugin_dirs returns strings)
+            p = Path(raw) if isinstance(raw, str) else raw
 
             # Resolve relative paths
             if not p.is_absolute():

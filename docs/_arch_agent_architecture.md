@@ -344,15 +344,16 @@ server_config:
   max_tokens: 2000
 ```
 
-**`config/plugins.yaml`:**
+**Plugin configuration in `plugins:` section:**
 ```yaml
 plugins:
-  - name: my_agent
-    servers:
-      - instance_name: research_agent_1
-        enabled: true
-        config:
-          model: "gpt-4"
+  servers:
+    research_agent_1:
+      type: my_agent
+      enabled: true
+      config:
+        model: "gpt-4"
+        max_tokens: 2000
 ```
 
 ## Testing

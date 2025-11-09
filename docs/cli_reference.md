@@ -299,7 +299,7 @@ agent-cli plugins status
 # JSON output with enabled/disabled status for all plugins
 ```
 
-**Note:** To enable/disable plugins, edit `config/plugins.yaml` directly and set `enabled: true/false` for the specific plugin server.
+**Note:** To enable/disable plugins, modify the `plugins:` configuration section in any included config file. Set `enabled: true/false` under `plugins.servers.<plugin_name>`. The system automatically merges all plugin configurations from included YAML files.
 
 ---
 

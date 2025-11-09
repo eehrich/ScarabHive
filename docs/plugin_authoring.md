@@ -169,19 +169,43 @@ class HelloWorldServer(SchemaBasedMCPServer):
 PLUGIN_FACTORY = HelloWorldServer
 ```
 
+**CRITICAL**: `PLUGIN_FACTORY` **MUST** be defined in `plugin.py` (not in `server.py`)!  
+The plugin discovery mechanism only checks `plugin.py` for this export.
+
 That's it! Your plugin is ready to use.
 
 ## Plugin Structure and Layout
 
 ### Recommended Directory Structure
 
+**Option 1: Simple (all-in-one)**
 ```
 src/plugins/<plugin_name>/
   ├── plugin.yaml       # Plugin metadata
   ├── schema.yaml       # Tool definitions
-  ├── server.py         # Main server implementation
-  └── README.md         # Documentation and examples
+  ├── server.py         # Main server implementation + PLUGIN_FACTORY
+  └── README.md         # Documentation
 ```
+
+**Option 2: Separated (MCP-only plugins)**
+```
+src/plugins/<plugin_name>/
+  ├── plugin.yaml       # Plugin metadata
+  ├── schema.yaml       # Tool definitions
+  ├── plugin.py         # Business logic + PLUGIN_FACTORY export
+  ├── server.py         # MCP server wrapper (SchemaBasedMCPServer)
+  └── README.md         # Documentation
+```
+
+**CRITICAL for Option 2**: `plugin.py` MUST export `PLUGIN_FACTORY`!
+```python
+# plugin.py (end of file)
+from .server import MyPluginServer
+PLUGIN_FACTORY = MyPluginServer
+```
+
+**Why?** Plugin discovery (`discover_plugins()`) only checks `plugin.py`, not `server.py`!
+If `PLUGIN_FACTORY` is missing from `plugin.py`, your plugin won't be discovered.
 
 ### Test Structure
 
@@ -199,8 +223,11 @@ tests/
 
 - **`schema.yaml`**: Defines tools, parameters, and validation rules
 - **`plugin.yaml`**: Metadata for discovery (name, version, entry point)
-- **`server.py`**: Core logic, tool routing, and MCP protocol implementation
+- **`plugin.py`** (if separated structure): Core business logic + **MUST export PLUGIN_FACTORY**
+- **`server.py`**: MCP protocol implementation and tool routing
 - **`README.md`**: Usage examples, configuration options, troubleshooting
+
+**IMPORTANT**: If you use a separated structure (plugin.py + server.py), `plugin.py` MUST export `PLUGIN_FACTORY` because that's the only file checked during plugin discovery!
 
 ## Defining Metadata (`plugin.yaml`)
 
@@ -1762,26 +1789,78 @@ async def _tool_with_subtasks(self, params: dict):
 
 ### Plugin Configuration
 
-Operators configure plugins in `config/mcp_servers.yaml`:
+Plugins are configured using the **`plugins:`** configuration key. The system automatically merges plugin configurations from multiple YAML files through `config/config.yaml`'s include mechanism.
+
+**Configuration Structure:**
+
+All plugin configurations must use the `plugins:` top-level key with this structure:
 
 ```yaml
-mcp:
-  enabled_servers:
-    - web_scraper
-    - database_client
+plugins:
+  # Plugin discovery directories
+  plugin_dirs:
+    - src/plugins
+    - src/plugins_writer
 
-servers:
-  web_scraper:
-    type: web_scraper
-    timeout: 30
-    user_agent: "MyAgent/1.0"
-    max_retries: 3
-  
-  database_client:
-    type: database_client
-    connection_string: "postgresql://..."
-    pool_size: 10
+  # Default configuration inherited by all plugins
+  default_config:
+    enabled: false
+    # ... default settings ...
+
+  # Individual plugin configurations
+  servers:
+    my_plugin:
+      type: my_plugin
+      enabled: true
+      config:
+        # Plugin-specific settings
+        timeout: 30
+        max_retries: 3
 ```
+
+**Where to Add Plugin Configurations:**
+
+1. **Standard plugins**: Add to any file included by `config/config.yaml` (commonly in files under `config/` that are included)
+2. **Specialized namespaces**: Create separate config files (e.g., `config/agents_writer/plugin_configs.yaml`) that get auto-loaded via wildcard includes like `agents_writer/*.yaml`
+
+**Example - Standard Plugin Configuration:**
+
+```yaml
+# Any included config file (e.g., a file under config/ that's included in config.yaml)
+plugins:
+  servers:
+    web_scraper:
+      type: web_scraper
+      enabled: true
+      config:
+        timeout: 30
+        user_agent: "MyAgent/1.0"
+        max_retries: 3
+```
+
+**Example - Specialized Namespace Configuration:**
+
+```yaml
+# config/agents_writer/plugin_configs.yaml (auto-loaded via agents_writer/*.yaml include)
+# CRITICAL: Must have 'plugins:' wrapper to match the deep_merge structure!
+plugins:
+  servers:
+    writer_content:
+      type: writer_content
+      enabled: true
+      database: "data/writer/books.db"
+      config:
+        auto_linking: true
+        versioning: true
+```
+
+**Important Rules:**
+
+1. **Always use `plugins:` wrapper**: Without it, configs won't be merged correctly
+2. **Configs are deep-merged**: Multiple files can contribute to the `plugins:` section
+3. **Server configs must be under `plugins.servers`**: The `servers` key is required
+4. **Don't reference specific files in code**: Always access via `config.plugins.servers[name]`
+
 
 ### Reading Configuration in Your Plugin
 
@@ -2181,9 +2260,29 @@ PLUGIN_FACTORY = MyPluginServer
 ### Common Issues
 
 **Plugin not discovered:**
+- **MOST COMMON**: Missing `PLUGIN_FACTORY` in `plugin.py`
+  - ⚠️ **Discovery ONLY checks `plugin.py`**, not `server.py` or other files!
+  - Fix: Add to END of `plugin.py`:
+    ```python
+    from .server import MyPluginServer
+    PLUGIN_FACTORY = MyPluginServer
+    ```
 - Check `plugin.yaml` exists and has correct `entrypoint`
-- Verify `PLUGIN_FACTORY` is defined in your server module
+- Verify plugin directory is listed in `config/plugins.yaml` under `plugin_dirs`
+- Check for syntax errors in `plugin.py` that prevent import
 - Use `python -m agent_system.agent_cli plugins` to list discovered plugins
+
+**Debug plugin discovery:**
+```python
+from pathlib import Path
+from agent_system.plugins import discover_plugins
+
+# Test if your plugin is discoverable
+plugins = discover_plugins(Path('src/plugins'))
+print(plugins.keys())  # Is your plugin listed?
+
+# If missing, check plugin.py has PLUGIN_FACTORY
+```
 
 **Tools not working:**
 - Validate `schema.yaml` syntax (use online YAML validator)
