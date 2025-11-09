@@ -20,6 +20,7 @@ data/sessions/
 data/todos/
 data/memories/
 data/workspace/
+data/writer/
 src/plugins/context_summarizer/web_endpoints.py
 nul
 data/context_usage_tracker.json
