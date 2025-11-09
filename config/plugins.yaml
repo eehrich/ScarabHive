@@ -198,54 +198,6 @@ plugins:
       type: message_debugger
       enabled: true
     
-    writer_content:
-      type: writer_content
-      enabled: true
-      database: data/writer/books.db
-    
-    writer_state:
-      type: writer_state
-      enabled: true
-      database: data/writer/books.db
-    
-    writer_graph:
-      type: writer_graph
-      enabled: true
-      database: data/writer/books.db
-    
-    writer_review:
-      type: writer_review
-      enabled: true
-      database: data/writer/books.db
-    
-    writer_analysis:
-      type: writer_analysis
-      enabled: true
-      database: data/writer/books.db
-    
-    writer_export:
-      type: writer_export
-      enabled: true
-      database: data/writer/books.db
-      export_output_dir: data/writer/exports
-    
-    writer_search:
-      type: writer_search
-      enabled: true
-      database: data/writer/books.db
-      chroma_collection: writer_books
-    
-    writer_player:
-      type: writer_player
-      enabled: true
-      database: data/writer/books.db
-    
-    writer_admin:
-      type: writer_admin
-      enabled: true
-      database: data/writer/books.db
-      backup_dir: data/writer/backups
-    
     terminal:
       type: terminal
       enabled: true
