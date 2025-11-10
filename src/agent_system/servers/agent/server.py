@@ -1165,7 +1165,9 @@ class Agent(MCPServer):
                 timestamp=datetime.now(timezone.utc)
             )
             messages.append(assistant_msg)
-            context.messages.append(assistant_msg)
+            # Only append to context.messages if it's a different list
+            if context.messages is not messages:
+                context.messages.append(assistant_msg)
 
             # Execute post-LLM hooks to transform the response
             try:
@@ -1289,7 +1291,9 @@ class Agent(MCPServer):
 
                 # Add tool messages to conversation
                 messages.extend(tool_messages)
-                context.messages.extend(tool_messages)  # FIX: Also extend context.messages
+                # Only extend context.messages if it's a different list
+                if context.messages is not messages:
+                    context.messages.extend(tool_messages)
 
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
