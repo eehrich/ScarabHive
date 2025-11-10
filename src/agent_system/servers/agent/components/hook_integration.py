@@ -143,7 +143,7 @@ class HookIntegrationManager:
             Metadata may include 'content_format' if hooks modified the output format
         """
         if not self.is_enabled():
-            return llm_response
+            return llm_response, {}
         
         context = HookContext(
             hook_type=HookType.POST_LLM_CALL,
