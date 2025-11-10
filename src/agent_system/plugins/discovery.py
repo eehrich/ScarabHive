@@ -65,11 +65,12 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         except Exception as e:
             logger.debug(f"Failed to create module structure for plugin '{d.name}': {e}")
 
-        spec = importlib.util.spec_from_file_location(f"{plugin_pkg}.plugin", str(plugin_file))
+        spec = importlib.util.spec_from_file_location(f"{plugin_pkg}.{entrypoint_module}", str(plugin_file))
         if spec is None or spec.loader is None:
             logger.debug("Skipping plugin %s: cannot create spec", plugin_file)
             continue
         mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
         try:
             spec.loader.exec_module(mod)
         except Exception as e:
