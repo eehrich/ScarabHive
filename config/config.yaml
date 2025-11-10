@@ -14,6 +14,7 @@ includes:
   - mcp_server_mode.yaml
   - agents/*.yaml
   - agents_writer/*.yaml
+  - agents_for_dev/*.yaml
 
 # Context information automatically added to prompts
 context:

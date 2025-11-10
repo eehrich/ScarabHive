@@ -198,6 +198,15 @@ plugins:
       type: message_debugger
       enabled: true
     
+    writer_content:
+      type: writer_content
+      enabled: true
+      config:
+        database: "data/writer/books.db"
+        auto_linking: true
+        auto_versioning: true
+        max_versions: 10
+    
     terminal:
       type: terminal
       enabled: true
