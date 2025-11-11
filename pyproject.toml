@@ -72,6 +72,7 @@ mcp-script-interpreter = "plugins.script_interpreter.__main__:cli_main"
 mcp-basic-operations = "plugins.basic_operations.__main__:cli_main"
 mcp-todo-management = "plugins.todo_management.__main__:cli_main"
 mcp-file-ops = "plugins.file_ops.__main__:main"
+mcp-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
