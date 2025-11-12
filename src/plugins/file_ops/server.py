@@ -35,13 +35,26 @@ class FileOpsServer(SchemaBasedMCPServer):
         allowed_dirs = getattr(mcp_config, "allowed_directories", [])
         if not allowed_dirs:
             # Default to project root subdirectories
-            project_root = Path(system_config.project_root)
+            project_root = Path.cwd()
             allowed_dirs = [
                 str(project_root / "src"),
                 str(project_root / "docs"),
                 str(project_root / "tests"),
                 str(project_root / "tmp")
             ]
+        else:
+            # Resolve relative paths relative to project root
+            project_root = Path.cwd()
+            resolved_dirs = []
+            for dir_path in allowed_dirs:
+                if dir_path == ".":
+                    # Special case: "." means project root
+                    resolved_dirs.append(str(project_root))
+                else:
+                    # Resolve relative to project root
+                    resolved_path = (project_root / dir_path).resolve()
+                    resolved_dirs.append(str(resolved_path))
+            allowed_dirs = resolved_dirs
         
         # Initialize components
         self.validator = PathValidator(allowed_dirs)
@@ -49,6 +62,12 @@ class FileOpsServer(SchemaBasedMCPServer):
         
         # Initialize search engine with configuration
         search_config = getattr(mcp_config, "search", {})
+        
+        # Temporarily disable semantic search to avoid ChromaDB conflicts
+        if "enable_semantic_search" not in search_config:
+            search_config["enable_semantic_search"] = False
+            logger.info("Semantic search temporarily disabled to avoid ChromaDB conflicts")
+        
         self.search_engine = FileSearchEngine(self.validator.allowed_dirs, search_config)
         
         logger.info(f"FileOperationsServer initialized with {len(allowed_dirs)} allowed directories")
