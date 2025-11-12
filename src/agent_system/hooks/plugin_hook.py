@@ -54,6 +54,7 @@ class HookContext:
         metadata: Additional hook-specific metadata
         step: Current execution step number
         llm: Reference to the LLM client being used
+        cancellation_token: Optional cancellation token for graceful cancellation
     """
     hook_type: HookType
     request_id: str
@@ -69,6 +70,7 @@ class HookContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     step: int = 0
     llm: Optional[Any] = None
+    cancellation_token: Optional[Any] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert context to dictionary for serialization."""

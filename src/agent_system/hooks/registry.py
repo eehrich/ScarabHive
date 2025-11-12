@@ -506,7 +506,7 @@ class HookRegistry:
         """
         Create a deep copy of context for hook isolation.
         
-        Note: Some fields (agent, llm) are copied by reference since they're
+        Note: Some fields (agent, llm, cancellation_token) are copied by reference since they're
         stateful objects that hooks should not modify directly.
         """
         return HookContext(
@@ -524,6 +524,7 @@ class HookRegistry:
             metadata=copy.deepcopy(context.metadata),
             step=context.step,
             llm=context.llm,  # Reference copy
+            cancellation_token=context.cancellation_token,  # Reference copy
         )
     
     def _validate_hook_result(self, result: Any, hook_name: str) -> Optional[str]:

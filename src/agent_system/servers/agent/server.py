@@ -1081,15 +1081,39 @@ class Agent(MCPServer):
             # Emit thinking event before LLM call (for UI step display)
             yield {"type": "thinking", "step": step + 1}
 
-            # Execute pre-LLM hooks to transform messages
+            # Execute pre-LLM hooks with real-time status streaming
+            # NOTE: Hooks execute synchronously from this generator's perspective,
+            # so we use asyncio.create_task() + polling to stream status events
+            # during hook execution. This pattern is only needed for hooks that
+            # emit status messages (currently only context_summarizer).
+            # Other hook types (post_llm, session_start, session_end) don't need
+            # this pattern as they don't emit status events.
             try:
-                modified_messages = await self._hook_manager.execute_pre_llm_hooks(
-                    messages=messages,
-                    step=step,
-                    request_id=request_id,
-                    session_id=session_id,
-                    llm=active_llm
+                # Create async task for hook execution
+                hook_task = asyncio.create_task(
+                    self._hook_manager.execute_pre_llm_hooks(
+                        messages=messages,
+                        step=step,
+                        request_id=request_id,
+                        session_id=session_id,
+                        llm=active_llm,
+                        cancellation_token=main_token
+                    )
                 )
+                
+                # Stream status events while hook is running
+                while not hook_task.done():
+                    for status_event in yield_pending_status_events():
+                        yield status_event
+                    await asyncio.sleep(0.1)  # Poll every 100ms
+                
+                # Get hook result
+                modified_messages = await hook_task
+                
+                # Yield any final status events
+                for status_event in yield_pending_status_events():
+                    yield status_event
+                
                 if modified_messages is not None:
                     messages = modified_messages
             except Exception as e:
@@ -1170,15 +1194,34 @@ class Agent(MCPServer):
                 context.messages.append(assistant_msg)
 
             # Execute post-LLM hooks to transform the response
+            # NOTE: Using same polling pattern as pre_llm_hooks to support
+            # future hooks that may emit status messages during execution.
             try:
-                modified_response, hook_metadata = await self._hook_manager.execute_post_llm_hooks(
-                    messages=messages,
-                    llm_response=llm_out,  # Pass full LLM response including usage data
-                    step=step,
-                    request_id=request_id,
-                    session_id=session_id,
-                    llm=active_llm
+                # Create async task for hook execution
+                hook_task = asyncio.create_task(
+                    self._hook_manager.execute_post_llm_hooks(
+                        messages=messages,
+                        llm_response=llm_out,  # Pass full LLM response including usage data
+                        step=step,
+                        request_id=request_id,
+                        session_id=session_id,
+                        llm=active_llm
+                    )
                 )
+                
+                # Stream status events while hook is running
+                while not hook_task.done():
+                    for status_event in yield_pending_status_events():
+                        yield status_event
+                    await asyncio.sleep(0.1)  # Poll every 100ms
+                
+                # Get hook result
+                modified_response, hook_metadata = await hook_task
+                
+                # Yield any final status events
+                for status_event in yield_pending_status_events():
+                    yield status_event
+                
                 if modified_response is not None:
                     # Extract assistant data from modified response
                     modified_assistant = modified_response.get("assistant", {})

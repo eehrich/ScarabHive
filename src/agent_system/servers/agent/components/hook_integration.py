@@ -78,7 +78,8 @@ class HookIntegrationManager:
         step: int,
         request_id: str,
         session_id: str,
-        llm: Optional[Any] = None
+        llm: Optional[Any] = None,
+        cancellation_token: Optional[Any] = None
     ) -> List[ChatMessage]:
         """
         Execute pre-LLM hooks.
@@ -89,6 +90,7 @@ class HookIntegrationManager:
             request_id: Request identifier
             session_id: Session identifier
             llm: LLM client instance
+            cancellation_token: Optional cancellation token for graceful cancellation
             
         Returns:
             Potentially modified messages list
@@ -105,6 +107,7 @@ class HookIntegrationManager:
             messages=messages,
             step=step,
             llm=llm,
+            cancellation_token=cancellation_token,
         )
         
         modified_context = await self.registry.execute_hooks(
