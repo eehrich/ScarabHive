@@ -126,7 +126,7 @@ class SqliteQueryServer(SchemaBasedMCPServer):
         
         except sqlite3.Error as e:
             error_msg = f"SQL error: {str(e)}"
-            logger.error(error_msg)
+            logger.info(error_msg)
             await status.error(error_msg)
             return {"status": "error", "error": str(e)}
         except Exception as e:
