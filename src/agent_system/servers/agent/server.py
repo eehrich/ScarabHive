@@ -1036,6 +1036,8 @@ class Agent(MCPServer):
         for step in range(max_steps):
             # Drain any appended user messages before each step
             messages = await self._drain_appended_messages(request_id, messages)
+            # Sync context.messages after draining
+            context.messages = messages
 
             # Check for cancellation at the start of each step
             if self._is_cancelled(request_id):
@@ -1116,6 +1118,8 @@ class Agent(MCPServer):
                 
                 if modified_messages is not None:
                     messages = modified_messages
+                    # Also update context.messages so changes persist to session!
+                    context.messages = modified_messages
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
 
@@ -1337,6 +1341,8 @@ class Agent(MCPServer):
                 # Only extend context.messages if it's a different list
                 if context.messages is not messages:
                     context.messages.extend(tool_messages)
+                # IMPORTANT: If lists were different, they're now out of sync. Re-sync them.
+                context.messages = messages
 
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
@@ -1370,6 +1376,8 @@ class Agent(MCPServer):
 
             # Drain any final appended messages before next step
             messages = await self._drain_appended_messages(request_id, messages)
+            # Sync context.messages after draining
+            context.messages = messages
 
         # Max steps reached - warning and try to get final answer
         logger.warning(
