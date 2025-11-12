@@ -71,6 +71,7 @@ class FileSearchEngine:
         try:
             import chromadb
             from chromadb.config import Settings
+            from chromadb.utils import embedding_functions
             
             # Get ChromaDB path from config or use default
             chroma_path = Path(self.config.get(
@@ -87,10 +88,16 @@ class FileSearchEngine:
                 )
             )
             
+            # Create embedding function with GPU preference (fallback to CPU)
+            embedding_fn = embedding_functions.ONNXMiniLM_L6_V2(
+                preferred_providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+            )
+            
             # Get or create collection
             self.chroma_collection = self.chroma_client.get_or_create_collection(
                 name="file_ops_semantic_index",
-                metadata={"description": "Semantic index for file content"}
+                metadata={"description": "Semantic index for file content"},
+                embedding_function=embedding_fn
             )
             
             self._chroma_initialized = True
