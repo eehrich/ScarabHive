@@ -132,7 +132,9 @@ plugins:
       max_file_size_mb: 10
       search:
         enable_indexing: true
-        auto_reindex_interval: 300  # 5 minutes
+        index_on_startup: true
+        enable_semantic_search: true
+        auto_reindex_interval: 3600 
         exclude_patterns:
           - "**/.git/**"
           - "**/__pycache__/**"
@@ -140,7 +142,36 @@ plugins:
           - "**/.venv/**"
           - "**/*.min.js"
           - "**/*.min.css"
+          - "**/*.map"        
+
+    workspace_file_ops:
+      type: file_ops
+      enabled: true
+      allowed_directories:
+        - .
+      max_file_size_mb: 200
+      search:
+        enable_indexing: true
+        index_on_startup: false  # Don't auto-index on startup (too slow for large workspace)
+        enable_semantic_search: true
+        auto_reindex_interval: 3600  # 1 hour (reduced from 5 min to avoid constant rebuilds)
+        exclude_patterns:
+          - "**/.git/**"
+          - "**/cache/**"
+          - "**/.tmp/**"
+          - "**/.backups/**"
+          - "**/.pytest_cache/**"
+          - "**/.ruff_cache/**"
+          - "**/.mypy_cache/**"
+          - "**/__pycache__/**"
+          - "**/node_modules/**"
+          - "**/.venv/**"
+          - "**/*.min.js"
+          - "**/*.min.css"
           - "**/*.map"
+
+
+  
     
     #sqlite_query:
     #  type: sqlite_query
