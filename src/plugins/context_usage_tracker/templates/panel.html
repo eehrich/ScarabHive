@@ -267,6 +267,17 @@
     </div>
 
     <script>
+        // Prevent parent page scroll when scrolling in this panel
+        document.addEventListener('wheel', function(e) {
+            const scrollable = document.scrollingElement || document.documentElement;
+            const atTop = scrollable.scrollTop === 0;
+            const atBottom = scrollable.scrollHeight - scrollable.scrollTop === scrollable.clientHeight;
+            
+            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+
         let autoRefreshInterval = null;
         let tokenChart = null;
         let currentSessionOnly = true; // Filter by current session by default
