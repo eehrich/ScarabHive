@@ -9,10 +9,49 @@ web_ui:
   panel:
     enabled: true
     title: "TODO Management"
-    endpoint: "/plugins/{{ name }}/panel"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     width: "1000px"
     height: "800px"
+  
+  # Web endpoint definitions (schema-based routing)
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "get_panel"
+      response_type: "html"
+      description: "Render the TODO management dashboard"
+    
+    - path: "/tasks"
+      method: "GET"
+      handler: "get_tasks"
+      response_type: "json"
+      description: "Get tasks with filters (session_id, status, priority, tags)"
+    
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get summary statistics"
+    
+    - path: "/tasks/{task_id}/start"
+      method: "POST"
+      handler: "start_task"
+      response_type: "json"
+      description: "Start task (set status to in-progress)"
+    
+    - path: "/tasks/{task_id}/complete"
+      method: "POST"
+      handler: "complete_task"
+      response_type: "json"
+      description: "Complete task (set status to completed)"
+    
+    - path: "/tasks/{task_id}"
+      method: "DELETE"
+      handler: "delete_task"
+      response_type: "json"
+      description: "Delete task"
 
 hooks:
   - name: inject_todo_tasks

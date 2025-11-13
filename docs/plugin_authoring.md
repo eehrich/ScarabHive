@@ -804,19 +804,20 @@ Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixi
 - `get_schema_data()` - access full schema (not just tools)
 - `clear_schema_cache()` - development/testing utility
 
-### Method 2: Web-Only Plugin
+### Method 2: Web-Only Plugin (Schema-Based Routing)
 
-For plugins that only provide web endpoints (no MCP tools):
+For plugins that only provide web endpoints (no MCP tools), you can use **schema-based routing** for cleaner, more maintainable code:
 
 ```python
-# src/plugins/my_dashboard/endpoints.py
-"""Web-only plugin - provides dashboard endpoints"""
+# src/plugins/my_dashboard/web_endpoints.py
+"""Web-only plugin - provides dashboard endpoints using schema-based routing"""
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 from agent_system.plugins.web_adapter import PluginWebInterface
+from agent_system.plugins.schema_router import create_schema_router
 from agent_system.config import AgentSystemConfig, MCPConfig
 
 class DashboardWebEndpoints(PluginWebInterface):
@@ -833,53 +834,64 @@ class DashboardWebEndpoints(PluginWebInterface):
         self.templates = Jinja2Templates(directory=str(template_dir))
     
     def get_web_router(self) -> APIRouter:
-        """Return FastAPI router with dashboard endpoints"""
-        router = APIRouter(prefix=f"/plugins/{self.name}")
+        """Return FastAPI router generated from schema"""
+        schema_path = Path(__file__).parent / "schema.yaml"
+        return create_schema_router(
+            handler_class=self,
+            schema_path=schema_path,
+            router_prefix=f"/plugins/{self.name}"
+        )
+    
+    # Handler methods (called by schema router)
+    
+    async def dashboard_home(self, request: Request) -> HTMLResponse:
+        """Main dashboard page"""
+        return self.templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            {"plugin_name": self.name}
+        )
+    
+    async def get_metrics(self, request: Request) -> dict:
+        """API endpoint for metrics data"""
+        return {
+            "cpu_usage": 45.2,
+            "memory_usage": 67.8,
+            "disk_usage": 23.1,
+            "active_processes": 156
+        }
+    
+    async def get_status(self, request: Request) -> dict:
+        """System status endpoint"""
+        return {"status": "healthy", "uptime": "2d 14h 23m"}
+    
+    async def serve_static(self, request: Request, file_path: str) -> FileResponse:
+        """Serve static assets (CSS, JS, images)"""
+        from fastapi import HTTPException
         
-        @router.get("/", response_class=HTMLResponse)
-        async def dashboard_home(request: Request):
-            """Main dashboard page"""
-            return self.templates.TemplateResponse(
-                request,
-                "dashboard.html",
-                {"plugin_name": self.name}
-            )
+        static_dir = Path(__file__).parent / "static"
+        file_full_path = static_dir / file_path
         
-        @router.get("/api/metrics")
-        async def get_metrics():
-            """API endpoint for metrics data"""
-            return {
-                "cpu_usage": 45.2,
-                "memory_usage": 67.8,
-                "disk_usage": 23.1,
-                "active_processes": 156
-            }
+        if not file_full_path.exists():
+            raise HTTPException(status_code=404)
         
-        @router.get("/api/status")
-        async def get_status():
-            """System status endpoint"""
-            return {"status": "healthy", "uptime": "2d 14h 23m"}
+        return FileResponse(file_full_path)
+    async def serve_static(self, request: Request, file_path: str) -> FileResponse:
+        """Serve static assets (CSS, JS, images)"""
+        from fastapi import HTTPException
         
-        @router.get("/static/{file_path:path}")
-        async def serve_static(file_path: str):
-            """Serve static assets (CSS, JS, images)"""
-            from fastapi.responses import FileResponse
-            from fastapi import HTTPException
-            
-            static_dir = Path(__file__).parent / "static"
-            file_full_path = static_dir / file_path
-            
-            if not file_full_path.exists():
-                raise HTTPException(status_code=404)
-            
-            return FileResponse(file_full_path)
+        static_dir = Path(__file__).parent / "static"
+        file_full_path = static_dir / file_path
         
-        return router
+        if not file_full_path.exists():
+            raise HTTPException(status_code=404)
+        
+        return FileResponse(file_full_path)
     
     def get_panels(self):
         """Register dashboard panel in main UI"""
         return [{
-            "id": f"{self.name}_panel",
+            "id": f"{self.name}",
             "title": "System Dashboard",
             "url": f"/plugins/{self.name}/",
             "icon": "dashboard",
@@ -889,7 +901,7 @@ class DashboardWebEndpoints(PluginWebInterface):
         }]
 
 # src/plugins/my_dashboard/plugin.py
-from .endpoints import DashboardWebEndpoints
+from .web_endpoints import DashboardWebEndpoints
 from agent_system.config import AgentSystemConfig, MCPConfig
 
 class DashboardPlugin:
@@ -919,9 +931,38 @@ type: web_only
 entrypoint: plugin:PLUGIN_FACTORY
 ```
 
-**Web-Only Schema (no tools):**
+**Schema with Endpoints (schema.yaml):**
 ```yaml
-# No tools section needed for web-only plugins
+# Schema-based routing configuration
+name: "{{ name }}"
+version: "1.0.0"
+description: "System dashboard web interface"
+
+# Define all endpoints with handlers
+endpoints:
+  - path: "/"
+    method: "GET"
+    handler: "dashboard_home"
+    response_type: "html"
+    description: "Main dashboard page"
+  
+  - path: "/api/metrics"
+    method: "GET"
+    handler: "get_metrics"
+    response_type: "json"
+    description: "System metrics data"
+  
+  - path: "/api/status"
+    method: "GET"
+    handler: "get_status"
+    response_type: "json"
+    description: "System status information"
+  
+  - path: "/static/{file_path:path}"
+    method: "GET"
+    handler: "serve_static"
+    response_type: "response"
+    description: "Serve static assets"
 
 # Web UI configuration
 web_ui:
@@ -929,7 +970,8 @@ web_ui:
   button_text: "System Dashboard"
   button_icon: "📊"
   panel_title: "System Monitoring Dashboard"
-  panel_endpoint: "/plugins/my_dashboard/"
+  panel_id: "{{ name }}"
+  endpoint: "/plugins/{{ name }}/"
   panel_type: "iframe"
   description: "Real-time system monitoring and metrics"
   
@@ -940,19 +982,33 @@ web_ui:
       position: "center"
       width: "100%"
       height: "600px"
-      url: "/plugins/{name}/"
-  
-  endpoints:
-    - path: "/api/metrics"
-      method: "GET"
-      description: "System metrics data"
-    - path: "/api/status"
-      method: "GET"
-      description: "System status information"
-    - path: "/"
-      method: "GET"
-      description: "Main dashboard page"
+      url: "/plugins/{{ name }}/"
 ```
+
+> **Note:** For more details on schema-based routing, see [Schema-Based Web Routing](./schema_based_web_routing.md).
+
+#### Legacy Manual Routing (Not Recommended)
+
+If you need to manually define routes without the schema system, you can still use traditional FastAPI decorators:
+
+```python
+def get_web_router(self) -> APIRouter:
+    """Traditional manual routing (legacy approach)"""
+    router = APIRouter(prefix=f"/plugins/{self.name}")
+    
+    @router.get("/", response_class=HTMLResponse)
+    async def dashboard_home(request: Request):
+        return self.templates.TemplateResponse(...)
+    
+    return router
+```
+
+However, **schema-based routing is preferred** because:
+- Single source of truth (schema.yaml)
+- Automatic validation at startup
+- Better documentation
+- Cleaner code separation
+- Easier to maintain and test
 
 **Accessible at:** `http://localhost:8000/plugins/my_dashboard/`
 
