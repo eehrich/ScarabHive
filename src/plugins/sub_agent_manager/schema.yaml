@@ -77,7 +77,7 @@ tools:
 # Web UI configuration
 web_ui:
   button:
-    enabled: true
+    enabled: false
     text: "{{name}}"
     icon: "🤖"
   
