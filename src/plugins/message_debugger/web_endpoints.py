@@ -8,8 +8,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse
+
+from agent_system.plugins.schema_router import create_schema_router
 
 logger = logging.getLogger(__name__)
 
@@ -17,65 +19,24 @@ logger = logging.getLogger(__name__)
 class MessageDebuggerWebFactory:
     """Web UI factory for message debugger plugin."""
     
-    def __init__(self, message_history: List[Dict[str, Any]], name: str = "message_debugger"):
+    def __init__(self, message_history: List[Dict[str, Any]], name: str = "message_debugger", server=None):
         """Initialize web factory with shared message history.
         
         Args:
             message_history: Shared list of message snapshots
             name: Plugin instance name for dynamic routing
+            server: Server instance for schema access
         """
         self.name = name
         self.message_history = message_history
+        self.server = server
         self.plugin_dir = Path(__file__).parent
-        self.router = APIRouter(prefix=f"/plugins/{self.name}")
-        
-        # Register all routes
-        self._register_routes()
     
-    def _register_routes(self):
-        """Register all API and panel routes."""
-        # API routes
-        self.router.add_api_route(
-            "/snapshots",
-            self.list_snapshots,
-            methods=["GET"]
-        )
-        self.router.add_api_route(
-            "/snapshots/{index}",
-            self.get_snapshot,
-            methods=["GET"]
-        )
-        self.router.add_api_route(
-            "/snapshots",
-            self.clear_snapshots,
-            methods=["DELETE"]
-        )
-        self.router.add_api_route(
-            "/stats",
-            self.get_stats,
-            methods=["GET"]
-        )
-        # Panel route
-        self.router.add_api_route(
-            "/panel",
-            self.render_panel,
-            methods=["GET"],
-            response_class=HTMLResponse
-        )
-        # Static file routes
-        self.router.add_api_route(
-            "/static/panel.css",
-            self.serve_css,
-            methods=["GET"]
-        )
-        self.router.add_api_route(
-            "/static/panel.js",
-            self.serve_js,
-            methods=["GET"]
-        )
+    # Handler methods (called by schema router)
     
     async def list_snapshots(
         self,
+        request: Request,
         agent_name: str | None = Query(default=None, description="Filter by agent name"),
         session_id: str | None = Query(default=None, description="Filter by session ID"),
         limit: int = Query(default=50, ge=1, le=500, description="Maximum snapshots to return")
@@ -98,14 +59,14 @@ class MessageDebuggerWebFactory:
             'snapshots': snapshots
         }
     
-    async def get_snapshot(self, index: int):
+    async def get_snapshot(self, request: Request, index: int):
         """Get detailed information for a specific snapshot."""
         if index < 0 or index >= len(self.message_history):
             raise HTTPException(status_code=404, detail="Snapshot not found")
         
         return self.message_history[index]
     
-    async def clear_snapshots(self):
+    async def clear_snapshots(self, request: Request):
         """Clear all captured message snapshots."""
         count = len(self.message_history)
         self.message_history.clear()
@@ -114,7 +75,7 @@ class MessageDebuggerWebFactory:
             'removed_count': count
         }
     
-    async def get_stats(self):
+    async def get_stats(self, request: Request):
         """Get statistics about captured messages."""
         if not self.message_history:
             return {
@@ -148,7 +109,7 @@ class MessageDebuggerWebFactory:
             'average_tokens_per_snapshot': total_tokens / len(self.message_history) if self.message_history else 0
         }
     
-    async def render_panel(self) -> HTMLResponse:
+    async def render_panel(self, request: Request) -> HTMLResponse:
         """Render the message debugger panel HTML.
         
         Returns:
@@ -177,7 +138,7 @@ class MessageDebuggerWebFactory:
                 media_type="text/html"
             )
     
-    async def serve_css(self):
+    async def serve_css(self, request: Request):
         """Serve the panel CSS file."""
         css_path = self.plugin_dir / "static" / "panel.css"
         return FileResponse(
@@ -185,7 +146,7 @@ class MessageDebuggerWebFactory:
             media_type="text/css"
         )
     
-    async def serve_js(self):
+    async def serve_js(self, request: Request):
         """Serve the panel JavaScript file."""
         js_path = self.plugin_dir / "static" / "panel.js"
         return FileResponse(
@@ -195,20 +156,13 @@ class MessageDebuggerWebFactory:
     
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router for web UI."""
-        return self.router
-    
-    def get_static_assets(self) -> Path | None:
-        """Return path to static assets (none for this plugin)."""
-        return None
-    
-    def get_panels(self) -> List[Dict[str, Any]]:
-        """Return UI panel definitions for integration into main UI."""
-        return [
-            {
-                'id': 'message-debugger',
-                'title': 'Message Debugger',
-                'icon': '🔍',
-                'endpoint': '/plugins/message_debugger/panel',
-                'category': 'debugging'
-            }
-        ]
+        # Get schema from server if available
+        schema = self.server.get_schema_data() if self.server and hasattr(self.server, 'get_schema_data') else {}
+        
+        # Generate router from schema
+        return create_schema_router(
+            plugin_name=self.name,
+            schema=schema,
+            handler_class=self
+        )
+
