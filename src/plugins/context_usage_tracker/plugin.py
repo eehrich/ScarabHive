@@ -129,7 +129,7 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
         self.hooks_plugin = ContextUsageTrackerHooks(plugin_dir, self.tracker)
 
         # Initialize web factory
-        self.web_factory = ContextUsageWebFactory(self.tracker)
+        self.web_factory = ContextUsageWebFactory(server=self)
 
         logger.info(f"Context Usage Tracker Plugin initialized: {name}")
 
