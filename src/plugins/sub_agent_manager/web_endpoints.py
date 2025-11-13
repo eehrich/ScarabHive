@@ -7,6 +7,8 @@ from fastapi import APIRouter, Request, Query, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
+from agent_system.plugins.schema_router import create_schema_router
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,171 +44,114 @@ class SubAgentManagerWebFactory:
         self.templates = Jinja2Templates(directory=str(self.templates_dir))
     
     def get_web_router(self) -> APIRouter:
-        """Get the FastAPI router for this plugin's web endpoints."""
-        router = APIRouter(prefix=f"/plugins/{self.server.name}")
+        """Get the FastAPI router for this plugin's web endpoints.
         
-        @router.get("/panel", response_class=HTMLResponse)
-        async def get_panel(request: Request):
-            """Render the Sub-Agent Manager dashboard."""
-            return self.render_panel(request)
+        Routes are automatically generated from schema.yaml endpoint definitions.
+        """
+        # Get schema from server (already loaded with Jinja2 templates rendered)
+        schema = self.server.get_schema_data() if hasattr(self.server, 'get_schema_data') else {}
         
-        @router.get("/sub-agents")
-        async def get_sub_agents(
-            session_id: str = Query(..., description="Parent session ID"),
-            include_completed: bool = Query(False, description="Include archived sub-agents")
-        ):
-            """
-            Get all sub-agents for a session (JSON).
+        # Generate router from schema
+        return create_schema_router(
+            plugin_name=self.server.name,
+            schema=schema,
+            handler_class=self
+        )
+    
+    # ========== Handler methods (called by schema router) ==========
+    
+    async def get_panel(self, request: Request) -> HTMLResponse:
+        """Render the Sub-Agent Manager dashboard (handler for GET /)."""
+        return self.render_panel(request)
+    
+    async def get_sub_agents_json(
+        self,
+        request: Request,
+        session_id: str = Query(..., description="Parent session ID"),
+        include_completed: bool = Query(False, description="Include archived sub-agents")
+    ) -> JSONResponse:
+        """Get all sub-agents for a session (handler for GET /sub-agents)."""
+        try:
+            session_service = get_session_service()
             
-            Args:
-                session_id: Parent session ID (required)
-                include_completed: Include archived sub-agents (default: false)
-            """
-            try:
-                # Get session_service from app
-                session_service = get_session_service()
-                
-                # Build params as server expects (with injected session_service)
-                params = {
-                    "_session_id": session_id,
-                    "_session_service": session_service,
-                    "include_completed": include_completed
-                }
-                
-                result = await self.server._handle_list(params)
-                
-                if result.get("status") == "error":
-                    raise HTTPException(status_code=500, detail=result.get("error"))
-                
-                return JSONResponse(result)
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error fetching sub-agents: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        @router.get("/sub-agents/{instance_id}")
-        async def get_sub_agent_info(
-            instance_id: str,
-            session_id: str = Query(..., description="Parent session ID")
-        ):
-            """
-            Get detailed info about specific sub-agent (JSON).
+            params = {
+                "_session_id": session_id,
+                "_session_service": session_service,
+                "include_completed": include_completed
+            }
             
-            Args:
-                instance_id: Sub-agent instance ID
-                session_id: Parent session ID
-            """
-            try:
-                # Get session_service from app
-                session_service = get_session_service()
-                
-                params = {
-                    "_session_id": session_id,
-                    "_session_service": session_service,
-                    "instance_id": instance_id
-                }
-                
-                result = await self.server._handle_info(params)
-                
-                if result.get("status") == "error":
-                    status_code = 404 if "not found" in result.get("error", "").lower() else 500
-                    raise HTTPException(status_code=status_code, detail=result.get("error"))
-                
-                return JSONResponse(result)
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error fetching sub-agent {instance_id}: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        @router.delete("/sub-agents/{instance_id}")
-        async def delete_sub_agent(
-            instance_id: str,
-            session_id: str = Query(..., description="Parent session ID")
-        ):
-            """
-            Archive sub-agent (JSON).
+            result = await self.server._handle_list(params)
             
-            Args:
-                instance_id: Sub-agent instance ID
-                session_id: Parent session ID
-            """
-            try:
-                # Get session_service from app
-                session_service = get_session_service()
-                
-                params = {
-                    "_session_id": session_id,
-                    "_session_service": session_service,
-                    "instance_id": instance_id
-                }
-                
-                result = await self.server._handle_delete(params)
-                
-                if result.get("status") == "error":
-                    status_code = 404 if "not found" in result.get("error", "").lower() else 500
-                    raise HTTPException(status_code=status_code, detail=result.get("error"))
-                
-                return JSONResponse(result)
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error deleting sub-agent {instance_id}: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        @router.get("/stats")
-        async def get_stats(
-            session_id: str = Query(..., description="Parent session ID")
-        ):
-            """
-            Get statistics about sub-agents (JSON).
+            if result.get("status") == "error":
+                raise HTTPException(status_code=500, detail=result.get("error"))
             
-            Args:
-                session_id: Parent session ID
-            """
-            try:
-                # Get session_service from app
-                session_service = get_session_service()
-                
-                params = {
-                    "_session_id": session_id,
-                    "_session_service": session_service,
-                    "include_completed": True  # Get all for stats
-                }
-                
-                result = await self.server._handle_list(params)
-                
-                if result.get("status") == "error":
-                    raise HTTPException(status_code=500, detail=result.get("error"))
-                
-                instances = result.get("instances", [])
-                
-                # Calculate stats
-                stats = {
-                    "total": len(instances),
-                    "active": len([i for i in instances if i.get("status") == "active"]),
-                    "archived": len([i for i in instances if i.get("status") == "archived"]),
-                    "by_agent_type": {}
-                }
-                
-                # Count by agent type
-                for instance in instances:
-                    agent_type = instance.get("agent_type", "unknown")
-                    stats["by_agent_type"][agent_type] = stats["by_agent_type"].get(agent_type, 0) + 1
-                
-                return JSONResponse(stats)
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error fetching stats: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        return router
+            return JSONResponse(result)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching sub-agents: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    async def get_sub_agent_detail(
+        self,
+        request: Request,
+        agent_id: str,
+        session_id: str = Query(..., description="Parent session ID")
+    ) -> JSONResponse:
+        """Get detailed info about specific sub-agent (handler for GET /sub-agents/{agent_id})."""
+        try:
+            session_service = get_session_service()
+            
+            params = {
+                "_session_id": session_id,
+                "_session_service": session_service,
+                "instance_id": agent_id
+            }
+            
+            result = await self.server._handle_info(params)
+            
+            if result.get("status") == "error":
+                status_code = 404 if "not found" in result.get("error", "").lower() else 500
+                raise HTTPException(status_code=status_code, detail=result.get("error"))
+            
+            return JSONResponse(result)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching sub-agent {agent_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    async def delete_sub_agent(
+        self,
+        request: Request,
+        agent_id: str,
+        session_id: str = Query(..., description="Parent session ID")
+    ) -> JSONResponse:
+        """Archive sub-agent (handler for DELETE /sub-agents/{agent_id})."""
+        try:
+            session_service = get_session_service()
+            
+            params = {
+                "_session_id": session_id,
+                "_session_service": session_service,
+                "instance_id": agent_id
+            }
+            
+            result = await self.server._handle_delete(params)
+            
+            if result.get("status") == "error":
+                status_code = 404 if "not found" in result.get("error", "").lower() else 500
+                raise HTTPException(status_code=status_code, detail=result.get("error"))
+            
+            return JSONResponse(result)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting sub-agent {agent_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
     
     def render_panel(self, request: Request) -> HTMLResponse:
         """

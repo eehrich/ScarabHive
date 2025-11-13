@@ -142,38 +142,35 @@ async def get_menu_items(
         ])
     
     # Add plugin menu items
-    # Load menu items from schema.yaml
+    # Load menu items from schema.yaml (already rendered with Jinja2 templates)
+    from agent_system.plugins.mcp_adapter import plugin_mcp_registry
+    
     for name, plugin in plugin_web_registry.web_plugins.items():
         try:
-            # Get schema path from plugin metadata
-            metadata = plugin_web_registry.plugin_metadata.get(name, {})
-            schema_path = metadata.get('schema_path')
+            # Get schema from already registered plugin server (includes Jinja2 template rendering)
+            plugin_server = plugin_mcp_registry.get_server(name)
             
-            if schema_path:
-                import yaml
-                from pathlib import Path
-                schema_file = Path(schema_path)
-                if schema_file.exists():
-                    with open(schema_file, 'r') as f:
-                        schema = yaml.safe_load(f)
+            if plugin_server and hasattr(plugin_server, 'plugin_schema') and plugin_server.plugin_schema:
+                schema = plugin_server.plugin_schema
+                logger.debug(f"Got schema for {name} from plugin server")
+                
+                web_ui = schema.get('web_ui', {})
+                menu_config = web_ui.get('menu', {})
+                
+                if menu_config.get('enabled', False):
+                    schema_items = menu_config.get('items', [])
+                    logger.debug(f"Loaded {len(schema_items)} menu items from schema for {name}")
                     
-                    web_ui = schema.get('web_ui', {})
-                    menu_config = web_ui.get('menu', {})
-                    
-                    if menu_config.get('enabled', False):
-                        schema_items = menu_config.get('items', [])
-                        logger.debug(f"Loaded {len(schema_items)} menu items from schema for {name}")
+                    # Add items with filtering
+                    for item in schema_items:
+                        # Filter admin-only items
+                        if item.get("requires_admin", False):
+                            if not current_user or current_user.role != UserRole.ADMIN:
+                                continue
                         
-                        # Add items with filtering
-                        for item in schema_items:
-                            # Filter admin-only items
-                            if item.get("requires_admin", False):
-                                if not current_user or current_user.role != UserRole.ADMIN:
-                                    continue
-                            
-                            item_config = dict(item)
-                            item_config["plugin_name"] = name
-                            items.append(item_config)
+                        item_config = dict(item)
+                        item_config["plugin_name"] = name
+                        items.append(item_config)
                 
         except Exception as e:
             logger.error(f"Error getting menu items from plugin {name}: {e}", exc_info=True)

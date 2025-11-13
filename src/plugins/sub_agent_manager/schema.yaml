@@ -78,16 +78,57 @@ tools:
 web_ui:
   button:
     enabled: true
-    text: "Sub-Agents"
+    text: "{{name}}"
     icon: "🤖"
   
+  # Dropdown menu integration
+  menu:
+    enabled: true 
+    items:
+      - id: "sub_agents"
+        menu_id: "user"  
+        section: "Sub-Agents" 
+        label: "{{ name }}"
+        action: "openPanel"
+        panel_id: "{{ name }}"
+        icon: "🤖"
+        requires_admin: false
+        order: 100
+        tooltip: "Sub-Agent-Manager"
+
   panel:
     enabled: true
     title: "Sub-Agent Manager"
-    endpoint: "/plugins/{{ name }}/panel"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     width: "1000px"
     height: "800px"
+
+  # Access control
+  requires_auth: true
+  requires_role: null  # No role restriction - all authenticated users
+  
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "get_panel"
+      response_type: "html"
+      description: "Sub-agent manager web UI panel"
+    - path: "/sub-agents"
+      method: "GET"
+      handler: "get_sub_agents_json"
+      response_type: "json"
+      description: "List all sub-agents for current session"
+    - path: "/sub-agents/{agent_id}"
+      method: "GET"
+      handler: "get_sub_agent_detail"
+      response_type: "json"
+      description: "Get details of specific sub-agent"
+    - path: "/sub-agents/{agent_id}"
+      method: "DELETE"
+      handler: "delete_sub_agent"
+      response_type: "json"
+      description: "Delete/archive sub-agent instance"
 
 # Hook configuration
 hooks:
