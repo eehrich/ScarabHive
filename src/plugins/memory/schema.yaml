@@ -9,10 +9,54 @@ web_ui:
   panel:
     enabled: true
     title: "Memory Manager"
-    endpoint: "/plugins/{{ name }}/panel"
+    panel_id: "{{ name }}"
+    endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     width: "1000px"
     height: "800px"
+  
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "get_panel"
+      response_type: "html"
+      description: "Render the Memory management dashboard"
+    
+    - path: "/memories"
+      method: "GET"
+      handler: "get_memories"
+      response_type: "json"
+      description: "Get memories with pagination and sorting"
+    
+    - path: "/memories/{memory_id}"
+      method: "GET"
+      handler: "get_memory"
+      response_type: "json"
+      description: "Get a single memory by ID"
+    
+    - path: "/memories/search"
+      method: "POST"
+      handler: "search_memories"
+      response_type: "json"
+      description: "Semantic search for memories"
+    
+    - path: "/memories"
+      method: "POST"
+      handler: "create_memory"
+      response_type: "json"
+      description: "Create a new memory"
+    
+    - path: "/memories/{memory_id}"
+      method: "DELETE"
+      handler: "delete_memory"
+      response_type: "json"
+      description: "Delete a memory"
+    
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get summary statistics"
 
 hooks:
   - name: inject_memory_context
