@@ -131,7 +131,7 @@ llm_system:
 
     gpt-realtime:
       provider: openai
-      model: gpt-4o-realtime-preview-2024-12-17
+      model: gpt-realtime
       openai_api_key: ***REMOVED***
       context_window: 27900
       request_timeout: 180
