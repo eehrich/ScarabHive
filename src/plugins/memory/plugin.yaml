@@ -3,7 +3,9 @@ version: 1.0.0
 description: Persistent memory storage with semantic search for agent conversations
 author: AgentSystem
 entrypoint: plugin:PLUGIN_FACTORY
-type: hybrid
+type:
+- mcp-server
+- web
 category: productivity
 requires:
   agent_system: '>=0.4.0'

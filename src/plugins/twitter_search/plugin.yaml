@@ -4,7 +4,8 @@ version: 1.0.0
 description: Twitter/X Search via official API v2 with tweepy - requires free API
   credentials
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+- mcp-server
 category: tools
 requires:
   agent_system: '>=0.4.0'

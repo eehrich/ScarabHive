@@ -196,32 +196,41 @@ class PluginValidator:
             return  # schema.yaml is optional
 
         # Check for tools section (if MCP plugin)
-        plugin_type = self.plugin_yaml.get("type", "mcp_only")
+        plugin_types = self.plugin_yaml.get("type", ["mcp-server"])
 
-        if "mcp" in plugin_type or plugin_type == "hybrid":
+        # Handle both old string format and new list format for backward compatibility
+        if isinstance(plugin_types, str):
+            self.warnings.append(
+                f"Plugin type is using deprecated string format: '{plugin_types}'. "
+                "Please update to list format (e.g., ['mcp-server'], ['web'], ['mcp-server', 'web'])"
+            )
+            # Convert old string format to list for validation
+            plugin_types = self._convert_old_type_format(plugin_types)
+
+        if "mcp-server" in plugin_types:
             if "tools" not in self.schema_yaml:
                 self.errors.append(
-                    f"MCP plugin type '{plugin_type}' requires 'tools' section in schema.yaml"
+                    f"MCP plugin type {plugin_types} requires 'tools' section in schema.yaml"
                 )
             else:
                 self._validate_tools_section()
 
         # Check for hooks section (if hooks plugin)
-        if "hooks" in plugin_type or plugin_type == "hooks_only":
+        if "hooks" in plugin_types:
             if "hooks" not in self.schema_yaml:
                 self.errors.append(
-                    f"Hooks plugin type '{plugin_type}' requires 'hooks' section in schema.yaml"
+                    f"Hooks plugin type {plugin_types} requires 'hooks' section in schema.yaml"
                 )
             else:
                 self._validate_hooks_section()
 
-        # Check for web_ui section (if web or hybrid plugin)
-        if plugin_type in ["web_only", "hybrid", "web_with_hooks", "hybrid_with_hooks"]:
+        # Check for web_ui section (if web plugin)
+        if "web" in plugin_types:
             if "web_ui" in self.schema_yaml:
                 self._validate_web_ui_section()
             else:
                 self.warnings.append(
-                    f"Web plugin type '{plugin_type}' should have 'web_ui' section in schema.yaml"
+                    f"Web plugin type {plugin_types} should have 'web_ui' section in schema.yaml"
                 )
 
     def _validate_tools_section(self) -> None:
@@ -482,33 +491,58 @@ class PluginValidator:
         if not self.plugin_yaml or not self.schema_yaml:
             return
 
-        plugin_type = self.plugin_yaml.get("type", "mcp_only")
+        plugin_types = self.plugin_yaml.get("type", ["mcp-server"])
+
+        # Handle both old string format and new list format
+        if isinstance(plugin_types, str):
+            plugin_types = self._convert_old_type_format(plugin_types)
 
         # Check consistency between plugin type and schema content
         has_tools = "tools" in self.schema_yaml
         has_hooks = "hooks" in self.schema_yaml
 
-        if "mcp" in plugin_type and not has_tools:
+        if "mcp-server" in plugin_types and not has_tools:
             self.warnings.append(
-                f"Plugin type '{plugin_type}' suggests MCP tools but schema.yaml has no 'tools' section"
+                f"Plugin type {plugin_types} suggests MCP tools but schema.yaml has no 'tools' section"
             )
 
-        if plugin_type == "hooks_only" and has_tools:
+        if plugin_types == ["hooks"] and has_tools:
             self.warnings.append(
-                "Plugin type 'hooks_only' but schema.yaml defines tools"
+                "Plugin type ['hooks'] but schema.yaml defines tools"
             )
 
-        if "hooks" in plugin_type and not has_hooks:
+        if "hooks" in plugin_types and not has_hooks:
             self.warnings.append(
-                f"Plugin type '{plugin_type}' suggests hooks but schema.yaml has no 'hooks' section"
+                f"Plugin type {plugin_types} suggests hooks but schema.yaml has no 'hooks' section"
             )
+
+    def _convert_old_type_format(self, old_type: str) -> list[str]:
+        """Convert old string type format to new list format.
+
+        Mapping:
+        - mcp_only -> ["mcp-server"]
+        - web_only -> ["web"]
+        - hooks_only -> ["hooks"]
+        - hybrid -> ["mcp-server", "web"]
+        - mcp_with_hooks -> ["mcp-server", "hooks"]
+        - web_with_hooks -> ["web", "hooks"]
+        - hybrid_with_hooks -> ["mcp-server", "web", "hooks"]
+        """
+        mapping = {
+            "mcp_only": ["mcp-server"],
+            "web_only": ["web"],
+            "hooks_only": ["hooks"],
+            "hybrid": ["mcp-server", "web"],
+            "mcp_with_hooks": ["mcp-server", "hooks"],
+            "web_with_hooks": ["web", "hooks"],
+            "hybrid_with_hooks": ["mcp-server", "web", "hooks"],
+        }
+        return mapping.get(old_type, ["mcp-server"])
 
     def _validate_template_variables(self) -> None:
         """Validate template variable usage in schema.yaml."""
         if not self.schema_yaml:
             return
-
-        import re
 
         schema_str = yaml.dump(self.schema_yaml)
 
@@ -908,7 +942,7 @@ def main():
                             structured[key] = value
                     return structured
 
-                structured_config = structure_config(discovered_config)
+                _ = structure_config(discovered_config)  # noqa: F841
 
                 # Load existing config from schema.yaml to check what's missing
                 existing_config = {}

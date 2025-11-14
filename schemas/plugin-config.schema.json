@@ -34,18 +34,15 @@
       "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*:[a-zA-Z_][a-zA-Z0-9_]*$"
     },
     "type": {
-      "type": "string",
-      "description": "Plugin type indicating capabilities",
-      "enum": [
-        "mcp_only",
-        "web_only",
-        "hybrid",
-        "mcp_with_hooks",
-        "web_with_hooks",
-        "hybrid_with_hooks",
-        "hooks_only"
-      ],
-      "default": "mcp_only"
+      "type": "array",
+      "description": "Plugin capabilities as a list. Combine values to describe multi-capability plugins.",
+      "items": {
+        "type": "string",
+        "enum": ["mcp-server", "web", "hooks", "custom"]
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "default": ["mcp-server"]
     },
     "category": {
       "type": "string",

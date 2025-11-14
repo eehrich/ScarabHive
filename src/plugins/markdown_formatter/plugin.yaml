@@ -6,7 +6,8 @@ description: 'Formats LLM output as Markdown and converts to HTML. Injects syste
 
   '
 author: AgentSystem Team
-type: hooks_only
+type:
+- hooks
 entrypoint: plugin:PLUGIN_FACTORY
 requires:
   agent_system: '>=0.4.0'

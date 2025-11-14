@@ -3,7 +3,8 @@ author: Enrico Ehrich
 version: 0.1.0
 description: DuckDuckGo web search plugin (wraps ddgs or duckduckgo-search packages)
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+- mcp-server
 category: tools
 requires:
   agent_system: '>=0.4.0'

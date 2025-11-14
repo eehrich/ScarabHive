@@ -3,7 +3,8 @@ version: 1.0.0
 author: AgentSystem Team
 description: Basic agent plugin providing agent execution capabilities as MCP tools
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+- mcp-server
 category: tools
 tags:
 - agent

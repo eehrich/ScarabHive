@@ -1,7 +1,7 @@
 # Plugin Hook System
 
-**Status:** Production Ready  
-**Version:** 1.0  
+**Status:** Production Ready
+**Version:** 1.0
 **Last Updated:** 2025-10-14
 
 ## Table of Contents
@@ -66,14 +66,14 @@ Agent Execution Flow
 
 ### PRE_LLM_CALL
 
-**Trigger:** Before sending messages to LLM  
-**Use Cases:** Context optimization, prompt injection, validation  
+**Trigger:** Before sending messages to LLM
+**Use Cases:** Context optimization, prompt injection, validation
 **Can Modify:** Messages, agent configuration
 
 ```python
 async def on_pre_llm_call(self, context: HookContext) -> HookResult:
     """Executed before LLM call.
-    
+
     Common use cases:
     - Optimize context (remove duplicates, truncate)
     - Inject system prompts
@@ -89,14 +89,14 @@ async def on_pre_llm_call(self, context: HookContext) -> HookResult:
 
 ### POST_LLM_CALL
 
-**Trigger:** After receiving LLM response  
-**Use Cases:** Response validation, logging, statistics  
+**Trigger:** After receiving LLM response
+**Use Cases:** Response validation, logging, statistics
 **Can Modify:** LLM response, metadata
 
 ```python
 async def on_post_llm_call(self, context: HookContext) -> HookResult:
     """Executed after LLM call.
-    
+
     Common use cases:
     - Log response and timing
     - Validate response format
@@ -111,14 +111,14 @@ async def on_post_llm_call(self, context: HookContext) -> HookResult:
 
 ### PRE_TOOL_CALL
 
-**Trigger:** Before executing a tool  
-**Use Cases:** Parameter validation, access control, logging  
+**Trigger:** Before executing a tool
+**Use Cases:** Parameter validation, access control, logging
 **Can Modify:** Tool parameters, execution decision
 
 ```python
 async def on_pre_tool_call(self, context: HookContext) -> HookResult:
     """Executed before tool call.
-    
+
     Common use cases:
     - Validate tool parameters
     - Check access permissions
@@ -129,14 +129,14 @@ async def on_pre_tool_call(self, context: HookContext) -> HookResult:
 
 ### POST_TOOL_CALL
 
-**Trigger:** After tool execution  
-**Use Cases:** Result validation, error handling, logging  
+**Trigger:** After tool execution
+**Use Cases:** Result validation, error handling, logging
 **Can Modify:** Tool result, error handling
 
 ```python
 async def on_post_tool_call(self, context: HookContext) -> HookResult:
     """Executed after tool call.
-    
+
     Common use cases:
     - Validate tool results
     - Log execution time
@@ -147,28 +147,28 @@ async def on_post_tool_call(self, context: HookContext) -> HookResult:
 
 ### FORMAT_OUTPUT
 
-**Trigger:** Before returning output to user  
-**Use Cases:** Multi-format rendering (HTML, ANSI, text), filtering  
+**Trigger:** Before returning output to user
+**Use Cases:** Multi-format rendering (HTML, ANSI, text), filtering
 **Can Modify:** Final output content based on target format
 
 ```python
 async def on_format_output(self, context: HookContext) -> HookResult:
     """Executed before output formatting.
-    
+
     Context provides:
     - output: The content to format (usually Markdown)
     - output_format: Target format ('html', 'ansi', 'text', 'markdown')
-    
+
     Common use cases:
     - Convert markdown to HTML (web frontend with syntax highlighting)
     - Convert markdown to ANSI (CLI with colors)
     - Apply custom formatting per interface
     - Filter sensitive information
     - Add metadata/footers
-    
+
     Example:
         target_format = context.output_format or 'text'
-        
+
         if target_format == 'html':
             # Convert to HTML with Prism.js syntax highlighting
             html = markdown_to_html(context.output)
@@ -195,14 +195,14 @@ async def on_format_output(self, context: HookContext) -> HookResult:
 
 ### SESSION_START
 
-**Trigger:** When agent session begins  
-**Use Cases:** Initialization, logging, setup  
+**Trigger:** When agent session begins
+**Use Cases:** Initialization, logging, setup
 **Can Modify:** Session metadata, initialization
 
 ```python
 async def on_session_start(self, context: HookContext) -> HookResult:
     """Executed at session start.
-    
+
     Common use cases:
     - Initialize session tracking
     - Log session start
@@ -216,14 +216,14 @@ async def on_session_start(self, context: HookContext) -> HookResult:
 
 ### SESSION_END
 
-**Trigger:** When agent session ends  
-**Use Cases:** Cleanup, statistics, logging  
+**Trigger:** When agent session ends
+**Use Cases:** Cleanup, statistics, logging
 **Can Modify:** Cleanup operations, final statistics
 
 ```python
 async def on_session_end(self, context: HookContext) -> HookResult:
     """Executed at session end.
-    
+
     Common use cases:
     - Clean up resources
     - Log session summary
@@ -248,7 +248,7 @@ class MyPlugin(PluginHook):
     def __init__(self, name: str, config: dict = None):
         super().__init__(name, config or {})
         # Plugin initialization
-    
+
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         # Hook implementation
         return HookResult(
@@ -341,12 +341,12 @@ hooks:
       order:
         after: ["begin"]
         before: ["summarize_context"]
-    
+
     context_summarizer.summarize_context:
       order:
         after: ["optimize_context"]
         before: ["validate_messages"]
-    
+
     message_validator.validate_messages:
       order:
         after: ["summarize_context"]
@@ -396,7 +396,7 @@ config:
     description: "Maximum items to process"
     minimum: 1
     maximum: 1000
-  
+
   enable_feature:
     type: boolean
     default: true
@@ -412,11 +412,11 @@ from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 class MyPlugin(SchemaBasedPluginHook):
     def __init__(self, plugin_dir: Path | str):
         super().__init__(plugin_dir)
-        
+
         # Load config from schema
         config = self.get_config()
         self.max_items = config.get('max_items', {}).get('default', 100)
-    
+
     # Handler name MUST match hook name in schema.yaml
     async def my_hook_handler(self, context: HookContext) -> HookResult:
         # Implementation
@@ -531,11 +531,11 @@ agents:
             enabled: true
             max_tasks: 20
             filter_status: ["not-started", "in-progress", "blocked"]
-          
+
           # Disable globally enabled hook for this agent
           markdown_formatter.format_markdown_output:
             enabled: false
-  
+
   simple_agent:
     agent_config:
       hooks:
@@ -680,7 +680,7 @@ result = HookResult(
      overrides:
        inject_todo_tasks:
          enabled: true
-   
+
    # ✅ CORRECT - Full plugin.hook_name format
    hooks:
      overrides:
@@ -689,9 +689,9 @@ result = HookResult(
    ```
 
 2. **Plugin Type Not Hybrid**
-   - Plugin must have `type: hybrid` (not `type: mcp_only`)
+   - Plugin must have hooks in its `type` list (e.g., `type: [hooks]` or `type: [mcp-server, hooks]`)
    - Check `src/plugins/{plugin}/plugin.yaml`
-   
+
 3. **Missing PLUGIN_FACTORY**
    - Ensure `plugin.py` exports `PLUGIN_FACTORY` function
    - Standard pattern: `def PLUGIN_FACTORY(...) -> ServerClass`

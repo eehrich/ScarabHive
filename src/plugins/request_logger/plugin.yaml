@@ -3,7 +3,8 @@ version: 1.0.0
 author: AgentSystem Team
 description: Example hook plugin that logs agent requests and responses
 entrypoint: plugin:PLUGIN_FACTORY
-type: hooks_only
+type:
+- hooks
 category: monitoring
 tags:
 - hooks

@@ -4,7 +4,8 @@ description: Route requests to different LLM providers for specialized tasks or 
 version: 1.0.0
 author: AgentSystem
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+- mcp-server
 category: tools
 license: MIT
 dependencies:

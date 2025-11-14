@@ -5,7 +5,8 @@ description: 'Validates and sanitizes messages before LLM calls to ensure safety
 
   '
 author: AgentSystem Team
-type: hooks_only
+type:
+- hooks
 entrypoint: plugin:PLUGIN_FACTORY
 requires:
   agent_system: '>=0.4.0'

@@ -36,6 +36,49 @@ python src/scripts/validate_plugin.py --all
 python src/scripts/validate_plugin.py --plugin basic_operations --verbose
 ```
 
+### Extract Config Parameters from Code
+
+Analyze plugin code and display found config parameters (read-only, does not modify files):
+
+```bash
+# Extract config for a single plugin
+python src/scripts/validate_plugin.py --plugin basic_operations --extract-config
+
+# Extract config for all plugins
+python src/scripts/validate_plugin.py --all --extract-config
+```
+
+**Output Example:**
+```
+======================================================================
+Extracted Config: file_ops
+======================================================================
+
+max_file_size: 10485760
+allowed_extensions: ['.txt', '.md', '.json', '.py']
+security:
+  audit_log: true
+  read_only_paths: []
+```
+
+### Merge Config into schema.yaml
+
+Merge extracted config parameters into `schema.yaml` (adds missing keys only, preserves existing documentation):
+
+```bash
+# Merge config for a single plugin
+python src/scripts/validate_plugin.py --plugin basic_operations --merge-config
+
+# Merge config for all plugins
+python src/scripts/validate_plugin.py --all --merge-config
+```
+
+**Notes:**
+- Only adds missing config keys that exist in code but not in schema.yaml
+- Preserves existing config values and documentation in schema.yaml
+- Uses AST analysis to extract config from plugin code
+- Supports nested config structures (e.g., `security.audit_log`)
+
 ## What It Checks
 
 ### File Structure
@@ -46,7 +89,7 @@ python src/scripts/validate_plugin.py --plugin basic_operations --verbose
 ### plugin.yaml Validation
 - ✓ Valid against JSON schema (`schemas/plugin-config.schema.json`)
 - ✓ Required fields: `name`, `version`, `description`, `entrypoint`
-- ✓ Valid plugin type (mcp_only, web_only, hybrid, hooks_only, etc.)
+- ✓ Valid plugin type (list of: `mcp-server`, `web`, `hooks`, `custom`)
 - ✓ Valid category (tools, monitoring, data, etc.)
 - ✓ Entrypoint format: `module:FACTORY`
 
@@ -76,6 +119,20 @@ python src/scripts/validate_plugin.py --plugin basic_operations --verbose
 - ✓ Valid hook types (pre_llm_call, post_tool_call, etc.)
 - ✓ Hook ordering (before/after directives)
 - ✓ Hook timeout settings
+
+### Config Extraction (--extract-config)
+- ✓ AST-based code analysis to find config usage
+- ✓ Detects nested config structures (e.g., `security.audit_log`)
+- ✓ Identifies default values from code
+- ✓ Supports both flat and hierarchical config
+- ✓ Handles getattr() patterns with defaults
+
+### Config Merging (--merge-config)
+- ✓ Adds missing config keys to schema.yaml
+- ✓ Preserves existing config and documentation
+- ✓ Creates nested YAML structures from flat keys
+- ✓ Proper YAML formatting (multi-line lists, quoted special chars)
+- ✓ Backup-friendly (only writes if changes needed)
 
 ## Output
 

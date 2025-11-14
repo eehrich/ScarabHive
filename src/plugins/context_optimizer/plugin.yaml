@@ -5,7 +5,8 @@ description: 'Optimizes conversation context before LLM calls by removing redund
 
   '
 author: AgentSystem Team
-type: hooks_only
+type:
+- hooks
 entrypoint: plugin:PLUGIN_FACTORY
 category: hooks
 requires:

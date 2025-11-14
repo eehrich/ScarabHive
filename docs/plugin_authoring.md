@@ -137,24 +137,24 @@ from agent_system.config import AgentSystemConfig, MCPConfig
 
 class HelloWorldServer(SchemaBasedMCPServer):
     """Simple hello world plugin demonstrating modern API."""
-    
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         """
         Modern constructor signature.
-        
+
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
             mcp_config: Plugin-specific configuration (MCPConfig from mcp_servers.yaml)
         """
         super().__init__(name, system_config, mcp_config)
-        
+
         # Extract plugin-specific configuration from mcp_config
         self.greeting_prefix = mcp_config.get("greeting_prefix", "Hello")
-        
+
         # Log effective configuration
         self.logger.info(f"HelloWorld configured: prefix='{self.greeting_prefix}'")
-    
+
     async def say_hello(self, params: dict) -> dict:
         """
         Tool method - automatically called by generic dispatcher.
@@ -162,14 +162,14 @@ class HelloWorldServer(SchemaBasedMCPServer):
         """
         name = params.get("name", "World")
         return {
-            "status": "success", 
+            "status": "success",
             "message": f"{self.greeting_prefix}, {name}!"
         }
 
 PLUGIN_FACTORY = HelloWorldServer
 ```
 
-**CRITICAL**: `PLUGIN_FACTORY` **MUST** be defined in `plugin.py` (not in `server.py`)!  
+**CRITICAL**: `PLUGIN_FACTORY` **MUST** be defined in `plugin.py` (not in `server.py`)!
 The plugin discovery mechanism only checks `plugin.py` for this export.
 
 That's it! Your plugin is ready to use.
@@ -261,22 +261,24 @@ entrypoint: server:PLUGIN_FACTORY
 ### Plugin Types and Categories
 
 ```yaml
-# MCP-only plugin
+# MCP-only plugin (provides MCP server/tools)
 name: web_scraper
 version: 1.0.0
 description: "Web scraping tools for content extraction"
 author: "Your Name"
 entrypoint: server:WebScraperServer
-type: mcp_only
+type:
+  - mcp-server
 category: tools
 
-# Web-only plugin  
+# Web-only plugin (provides web UI/endpoints)
 name: monitoring_dashboard
 version: 1.2.0
 description: "System monitoring dashboard with real-time metrics"
 author: "Team Name"
 entrypoint: plugin:DashboardPlugin
-type: web_only
+type:
+  - web
 category: monitoring
 
 # Hybrid plugin (MCP + Web)
@@ -285,18 +287,41 @@ version: 1.0.0
 description: "Real-time log streaming and viewing with web interface"
 author: "AgentSystem Team"
 entrypoint: plugin:LogViewerPlugin
-type: hybrid
+type:
+  - mcp-server
+  - web
 category: monitoring
 
-# CLI-only plugin
-name: data_converter
+# Hooks-only plugin (lifecycle event handlers)
+name: request_logger
 version: 1.0.0
-description: "Data format conversion utilities"
-author: "Utilities Team"
-entrypoint: cli:main
-type: cli_only
-category: utilities
+description: "Logs agent lifecycle events"
+author: "AgentSystem"
+entrypoint: plugin:PLUGIN_FACTORY
+type:
+  - hooks
+category: monitoring
+
+# Multi-capability plugin (MCP + Web + Hooks)
+name: todo
+version: 1.0.0
+description: "Todo management with tools, web UI, and hooks"
+author: "AgentSystem"
+entrypoint: plugin:PLUGIN_FACTORY
+type:
+  - mcp-server
+  - web
+  - hooks
+category: productivity
 ```
+
+**Type Field Options:**
+- `mcp-server`: Plugin provides MCP tools/server
+- `web`: Plugin provides web UI/endpoints
+- `hooks`: Plugin provides lifecycle event hooks
+- `custom`: Plugin has custom capabilities
+
+Combine multiple types by listing them (e.g., `[mcp-server, web]` for hybrid plugins).
 
 ### Advanced Options
 
@@ -306,7 +331,9 @@ version: 2.1.0
 description: "Advanced plugin with dependencies and configuration"
 author: "Team Name"
 entrypoint: server:AdvancedServer
-type: hybrid
+type:
+  - mcp-server
+  - web
 category: tools
 
 # Dependencies (for external packages)
@@ -325,7 +352,7 @@ tags:
 
 **Core Fields:**
 - **`name`**: Unique plugin identifier (used in configuration and URLs)
-- **`version`**: Semantic version (x.y.z) for compatibility tracking  
+- **`version`**: Semantic version (x.y.z) for compatibility tracking
 - **`description`**: Short, clear description for users and UIs
 - **`author`**: Plugin author/maintainer for support
 - **`entrypoint`**: Module and factory name in format `module:FACTORY_NAME` (see Field Descriptions above for details)
@@ -333,7 +360,7 @@ tags:
   - Default: `plugin:PLUGIN_FACTORY` if field is omitted
 
 **Plugin Classification:**
-- **`type`**: Plugin type (`mcp_only`, `web_only`, `hybrid`, `cli_only`)
+- **`type`**: List of plugin capabilities (`mcp-server`, `web`, `hooks`, `custom`)
 - **`category`**: Functional category (`tools`, `monitoring`, `data`, `ui`, `utilities`)
 - **`tags`**: Searchable keywords for discovery
 
@@ -453,13 +480,13 @@ properties:
     type: string
     format: uri
     description: "Valid URL"
-  
+
   # Enum values
   format:
     type: string
     enum: ["json", "xml", "csv"]
     description: "Output format"
-  
+
   # Number with range
   timeout:
     type: number
@@ -467,14 +494,14 @@ properties:
     maximum: 300
     default: 30
     description: "Timeout in seconds"
-  
+
   # Array of strings
   tags:
     type: array
     items:
       type: string
     description: "List of tags"
-  
+
   # Complex object
   options:
     type: object
@@ -503,7 +530,7 @@ tools:
             type: string
             format: uri
         required: ["url"]
-  
+
   - type: function
     function:
       name: parse_html
@@ -514,7 +541,7 @@ tools:
           html:
             type: string
         required: ["html"]
-  
+
   - type: function
     function:
       name: extract_links
@@ -535,7 +562,7 @@ web_ui:
   panel_endpoint: "/plugins/web_scraper/dashboard"
   panel_type: "fetch"
   description: "Web scraping tools with real-time monitoring"
-  
+
   panels:
     - id: "scraper_panel"
       title: "Scraping Status"
@@ -544,7 +571,7 @@ web_ui:
       width: "400px"
       height: "300px"
       url: "/plugins/{name}/status"
-  
+
   endpoints:
     - path: "/api/scrape"
       method: "POST"
@@ -579,7 +606,7 @@ web_ui:
   panel_endpoint: "/plugins/my_plugin/panel"
   panel_type: "fetch"  # "fetch" or "iframe"
   description: "Plugin description for UI"
-  
+
   # Panel configuration
   panels:
     - id: "my_plugin_panel"
@@ -589,7 +616,7 @@ web_ui:
       width: "800px"
       height: "600px"
       url: "/plugins/{name}/panel.html"
-  
+
   # Document your endpoints for API discovery
   endpoints:
     - path: "/api/data"
@@ -667,31 +694,31 @@ from agent_system.config.models import AgentSystemConfig, MCPServerConfig
 
 class WebScrapingServer(SchemaBasedMCPServer):
     """Modern schema-based plugin with automatic tool routing."""
-    
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPServerConfig):
         """
         Modern constructor signature.
-        
+
         Args:
             name: Plugin instance name (used for tool prefixing in schema templates)
             system_config: System-wide configuration (ports, paths, etc.)
             mcp_config: Plugin-specific configuration from config/plugins.yaml
         """
         super().__init__(name, system_config, mcp_config)
-        
+
         # Extract plugin-specific configuration from mcp_config.config
         config = mcp_config.config or {}
         self.timeout = float(config.get("timeout", 30))
         self.user_agent = config.get("user_agent", "AgentSystem/1.0")
         self.max_retries = int(config.get("max_retries", 3))
-        
+
         # Validate configuration
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
-        
+
         # System-wide config examples (optional)
         self.base_url = system_config.api_base_url if hasattr(system_config, 'api_base_url') else None
-        
+
         # Log effective configuration
         import logging
         logger = logging.getLogger(__name__)
@@ -702,28 +729,28 @@ class WebScrapingServer(SchemaBasedMCPServer):
 
     # Tool methods - automatically called by SchemaBasedMixin.call() dispatcher
     # Method names MUST match tool names in schema.yaml exactly!
-    
+
     async def fetch_url(self, params: dict) -> dict:
         """
         Fetch content from a URL.
-        
+
         This method is automatically called when the 'fetch_url' tool is invoked.
         No manual routing needed - SchemaBasedMixin.call() dispatches automatically.
         """
         url = params["url"]
-        
+
         # Extract runtime parameters (automatically injected by framework)
         status = params.get("_status")
         token = params.get("_cancellation_token")
         request_id = params.get("request_id")
-        
+
         if status:
             await status.progress(f"Fetching {url}")
-        
+
         # Check cancellation before starting
         if token and token.is_cancelled:
             return {"status": "cancelled", "request_id": request_id}
-        
+
         try:
             import aiohttp
             timeout_cfg = aiohttp.ClientTimeout(total=self.timeout)
@@ -731,12 +758,12 @@ class WebScrapingServer(SchemaBasedMCPServer):
                 headers = {"User-Agent": self.user_agent}
                 async with session.get(url, headers=headers) as response:
                     content = await response.text()
-                    
+
             if status:
                 await status.complete(f"Fetched {len(content)} bytes from {url}")
-                    
+
             return {
-                "status": "success", 
+                "status": "success",
                 "content": content,
                 "url": url,
                 "status_code": response.status
@@ -746,23 +773,23 @@ class WebScrapingServer(SchemaBasedMCPServer):
                 await status.error(f"Failed to fetch {url}: {e}")
             self.logger.error(f"fetch_url failed: {e}", exc_info=True)
             return {
-                "status": "error", 
-                "error": str(e), 
+                "status": "error",
+                "error": str(e),
                 "request_id": request_id
             }
-    
+
     async def parse_html(self, params: dict) -> dict:
         """
         Parse HTML content.
-        
+
         Another tool method - also automatically routed by generic dispatcher.
         """
         html = params["html"]
-        
+
         try:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, 'html.parser')
-            
+
             return {
                 "status": "success",
                 "title": soup.title.string if soup.title else None,
@@ -822,17 +849,17 @@ from agent_system.config import AgentSystemConfig, MCPConfig
 
 class DashboardWebEndpoints(PluginWebInterface):
     """Web endpoints for dashboard plugin"""
-    
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         """Modern constructor signature for web-only plugins."""
         self.name = name
         self.system_config = system_config
         self.mcp_config = mcp_config
-        
+
         # Setup templates
         template_dir = Path(__file__).parent / "templates"
         self.templates = Jinja2Templates(directory=str(template_dir))
-    
+
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router generated from schema"""
         schema_path = Path(__file__).parent / "schema.yaml"
@@ -841,9 +868,9 @@ class DashboardWebEndpoints(PluginWebInterface):
             schema_path=schema_path,
             router_prefix=f"/plugins/{self.name}"
         )
-    
+
     # Handler methods (called by schema router)
-    
+
     async def dashboard_home(self, request: Request) -> HTMLResponse:
         """Main dashboard page"""
         return self.templates.TemplateResponse(
@@ -851,7 +878,7 @@ class DashboardWebEndpoints(PluginWebInterface):
             "dashboard.html",
             {"plugin_name": self.name}
         )
-    
+
     async def get_metrics(self, request: Request) -> dict:
         """API endpoint for metrics data"""
         return {
@@ -860,34 +887,34 @@ class DashboardWebEndpoints(PluginWebInterface):
             "disk_usage": 23.1,
             "active_processes": 156
         }
-    
+
     async def get_status(self, request: Request) -> dict:
         """System status endpoint"""
         return {"status": "healthy", "uptime": "2d 14h 23m"}
-    
+
     async def serve_static(self, request: Request, file_path: str) -> FileResponse:
         """Serve static assets (CSS, JS, images)"""
         from fastapi import HTTPException
-        
+
         static_dir = Path(__file__).parent / "static"
         file_full_path = static_dir / file_path
-        
+
         if not file_full_path.exists():
             raise HTTPException(status_code=404)
-        
+
         return FileResponse(file_full_path)
     async def serve_static(self, request: Request, file_path: str) -> FileResponse:
         """Serve static assets (CSS, JS, images)"""
         from fastapi import HTTPException
-        
+
         static_dir = Path(__file__).parent / "static"
         file_full_path = static_dir / file_path
-        
+
         if not file_full_path.exists():
             raise HTTPException(status_code=404)
-        
+
         return FileResponse(file_full_path)
-    
+
     def get_panels(self):
         """Register dashboard panel in main UI"""
         return [{
@@ -906,15 +933,15 @@ from agent_system.config import AgentSystemConfig, MCPConfig
 
 class DashboardPlugin:
     """Web-only plugin (no MCP server)"""
-    
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         """Modern constructor - matches MCP server signature."""
         self.web_endpoints = DashboardWebEndpoints(name, system_config, mcp_config)
-    
+
     # Web interface delegation
     def get_web_router(self):
         return self.web_endpoints.get_web_router()
-    
+
     def get_panels(self):
         return self.web_endpoints.get_panels()
 
@@ -927,7 +954,8 @@ PLUGIN_FACTORY = DashboardPlugin
 name: my_dashboard
 version: 1.0.0
 description: "System dashboard web interface"
-type: web_only
+type:
+  - web
 entrypoint: plugin:PLUGIN_FACTORY
 ```
 
@@ -945,19 +973,19 @@ endpoints:
     handler: "dashboard_home"
     response_type: "html"
     description: "Main dashboard page"
-  
+
   - path: "/api/metrics"
     method: "GET"
     handler: "get_metrics"
     response_type: "json"
     description: "System metrics data"
-  
+
   - path: "/api/status"
     method: "GET"
     handler: "get_status"
     response_type: "json"
     description: "System status information"
-  
+
   - path: "/static/{file_path:path}"
     method: "GET"
     handler: "serve_static"
@@ -974,7 +1002,7 @@ web_ui:
   endpoint: "/plugins/{{ name }}/"
   panel_type: "iframe"
   description: "Real-time system monitoring and metrics"
-  
+
   panels:
     - id: "main_dashboard"
       title: "System Overview"
@@ -995,11 +1023,11 @@ If you need to manually define routes without the schema system, you can still u
 def get_web_router(self) -> APIRouter:
     """Traditional manual routing (legacy approach)"""
     router = APIRouter(prefix=f"/plugins/{self.name}")
-    
+
     @router.get("/", response_class=HTMLResponse)
     async def dashboard_home(request: Request):
         return self.templates.TemplateResponse(...)
-    
+
     return router
 ```
 
@@ -1033,10 +1061,10 @@ from pathlib import Path
 
 class MyMCPServer(SchemaBasedMCPServer):
     """MCP server component with modern signature."""
-    
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         super().__init__(name, system_config, mcp_config)
-    
+
     # Tool methods - automatically routed by generic dispatcher
     async def my_tool(self, params: dict) -> dict:
         """Tool method matching 'my_tool' in schema.yaml."""
@@ -1044,7 +1072,7 @@ class MyMCPServer(SchemaBasedMCPServer):
 
 class MyWebEndpoints(PluginWebInterface):
     """Web endpoints component with modern signature."""
-    
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         self.name = name
         self.system_config = system_config
@@ -1053,16 +1081,16 @@ class MyWebEndpoints(PluginWebInterface):
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router with custom endpoints"""
         router = APIRouter(prefix=f"/plugins/{self.name}")
-        
+
         @router.get("/status")
         async def get_status():
             return {"status": "active", "plugin": self.name}
-        
+
         @router.get("/dashboard")
         async def dashboard():
             # Serve custom web UI
             return {"message": "Custom dashboard here"}
-        
+
         return router
 
     def get_panels(self):
@@ -1076,26 +1104,26 @@ class MyWebEndpoints(PluginWebInterface):
 
 class MyHybridPlugin:
     """Hybrid plugin combining MCP and web capabilities."""
-    
+
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         """Modern constructor signature for hybrid plugins."""
         self.mcp_server = MyMCPServer(name, system_config, mcp_config)
         self.web_endpoints = MyWebEndpoints(name, system_config, mcp_config)
-    
+
     # MCP interface delegation
     async def call(self, tool: str, params: dict):
         """Delegate to MCP server - generic dispatcher handles routing."""
         return await self.mcp_server.call(tool, params)
-    
+
     def get_tools(self):
         """Delegate to MCP server for tool discovery."""
         return self.mcp_server.get_tools()
-    
-    # Web interface delegation  
+
+    # Web interface delegation
     def get_web_router(self):
         """Delegate to web endpoints for router."""
         return self.web_endpoints.get_web_router()
-    
+
     def get_panels(self):
         """Delegate to web endpoints for UI panels."""
         return self.web_endpoints.get_panels()
@@ -1142,7 +1170,7 @@ class OldPlugin(SchemaBasedMCPServer):
     def __init__(self, name, config, ssl_verify=True):
         super().__init__(name, config, ssl_verify)
         self.timeout = self.config.get("timeout", 30)
-    
+
     async def call(self, tool: str, params: dict):
         if tool == "fetch_url":
             return await self._fetch_url(params)
@@ -1150,7 +1178,7 @@ class OldPlugin(SchemaBasedMCPServer):
             return await self._parse_html(params)
         else:
             return {"status": "error", "error": f"Unknown tool: {tool}"}
-    
+
     async def _fetch_url(self, params: dict):
         # Implementation...
         pass
@@ -1160,14 +1188,14 @@ class ModernPlugin(SchemaBasedMCPServer):
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         super().__init__(name, system_config, mcp_config)
         self.timeout = mcp_config.get("timeout", 30)
-    
+
     # No call() override needed - generic dispatcher handles routing!
-    
+
     async def fetch_url(self, params: dict) -> dict:
         """Method name matches tool name - automatically routed."""
         # Implementation...
         pass
-    
+
     async def parse_html(self, params: dict) -> dict:
         """Another tool - also automatically routed."""
         # Implementation...
@@ -1211,7 +1239,7 @@ Agent-based plugins are ideal for:
 ```
 src/plugins/my_agent/
 ├── plugin.yaml          # Metadata
-├── schema.yaml          # Tool definitions  
+├── schema.yaml          # Tool definitions
 ├── server.py           # Agent class implementation
 └── plugin.py           # Factory function
 ```
@@ -1221,7 +1249,8 @@ src/plugins/my_agent/
 name: my_agent
 version: 1.0.0
 description: "Agent-based plugin for complex tasks"
-type: mcp_only
+type:
+  - mcp-server
 entrypoint: plugin:PLUGIN_FACTORY
 dependencies:
   - agent_system>=0.1.0
@@ -1254,9 +1283,9 @@ dependencies:
 
 **3. Agent Implementation (`server.py`):**
 
-> **💡 Choosing the Right Base Class:**  
-> - Use `SchemaBasedAgent` (recommended) for agents with declarative `schema.yaml` tool definitions  
-> - Use `Agent` only if tools require runtime generation or complex logic  
+> **💡 Choosing the Right Base Class:**
+> - Use `SchemaBasedAgent` (recommended) for agents with declarative `schema.yaml` tool definitions
+> - Use `Agent` only if tools require runtime generation or complex logic
 > - See [Agent Architecture Guide](agent_architecture.md#when-to-use-each-base-class) for decision guide
 
 ```python
@@ -1266,10 +1295,10 @@ from agent_system.config.models import AgentSystemConfig, MCPServerConfig
 
 class MyAgent(SchemaBasedAgent):
     """Agent with schema.yaml tool definitions (automatically loaded)."""
-    
+
     def __init__(
-        self, 
-        system_config: AgentSystemConfig, 
+        self,
+        system_config: AgentSystemConfig,
         mcp_config: MCPServerConfig,
         registry=None
     ):
@@ -1279,25 +1308,25 @@ class MyAgent(SchemaBasedAgent):
             mcp_config=mcp_config,
             registry=registry
         )
-    
+
     # Tool handler methods match tool names in schema.yaml
     async def handle_execute_task(self, arguments: dict) -> str:
         """Execute complex task using agent capabilities."""
         task = arguments["task"]
         context = arguments.get("context", "")
-        
+
         # Use agent's conversation capabilities
         prompt = f"Execute this task: {task}"
         if context:
             prompt += f"\n\nContext: {context}"
-        
+
         # Process through agent conversation
         messages = [{"content": prompt, "role": "user"}]
         response = await self.run_conversation(messages)
-        
+
         result = response[-1]["content"] if response else "No response"
         return f"Task completed: {result}"
-    
+
     async def handle_list_tools(self, arguments: dict) -> str:
         """List all available tools."""
         tools = self.get_tools()
@@ -1310,7 +1339,7 @@ from agent_system.servers.agent import Agent
 
 class CustomAgent(Agent):
     """Agent with programmatically defined tools."""
-    
+
     def get_tools(self) -> list[dict]:
         """Define tools programmatically (overrides base implementation)."""
         return [
@@ -1326,7 +1355,7 @@ class CustomAgent(Agent):
                 }
             }
         ]
-    
+
     async def handle_dynamic_tool(self, arguments: dict) -> str:
         """Handle dynamically defined tool."""
         return f"Processed: {arguments['input']}"
@@ -1348,21 +1377,21 @@ def PLUGIN_FACTORY(
     **kwargs
 ) -> MyAgent:
     """Create and configure the agent plugin."""
-    
+
     # Use parent_llm config if available
     if parent_llm:
         config = config.copy()
         config["llm"] = parent_llm
-    
+
     # Create agent config
     agent_config = AgentConfig(**config)
-    
+
     # Create and register agent
     agent = MyAgent(name=name, config=agent_config.model_dump())
-    
+
     # Bootstrap with registry (gives access to other agents/tools)
     agent.bootstrap_servers(registry)
-    
+
     return agent
 ```
 
@@ -1416,7 +1445,7 @@ For MCP-enabled plugins, your server class must implement:
 The agent passes these special parameters in `params`:
 
 - **`_status`**: StatusScope for progress updates
-- **`_cancellation_token`**: CancellationToken for cooperative cancellation  
+- **`_cancellation_token`**: CancellationToken for cooperative cancellation
 - **`request_id`/`requestId`**: String for correlation and logging
 
 Always extract these early in your tool methods:
@@ -1427,10 +1456,10 @@ async def _my_tool(self, params: dict):
     status = params.get("_status")
     token = params.get("_cancellation_token")
     request_id = params.get("request_id") or params.get("requestId")
-    
+
     # Extract tool parameters
     user_input = params["input"]  # from schema.yaml
-    
+
     # Your implementation...
 ```
 
@@ -1445,11 +1474,11 @@ async def _my_tool(self, params: dict):
     # Validate required parameters
     if "query" not in params:
         return {"status": "error", "error": "Missing required parameter: query"}
-    
+
     query = params["query"]
     if not isinstance(query, str) or not query.strip():
         return {"status": "error", "error": "Query must be a non-empty string"}
-    
+
     # Optional parameters with defaults
     limit = params.get("limit", 10)
     if not isinstance(limit, int) or limit < 1:
@@ -1473,7 +1502,7 @@ return {
 
 # Error response
 return {
-    "status": "error", 
+    "status": "error",
     "error": "Detailed error message",
     "error_code": "INVALID_INPUT",  # Optional
     "request_id": request_id
@@ -1496,26 +1525,26 @@ Use the `_status` parameter to provide real-time feedback:
 ```python
 async def _long_running_tool(self, params: dict):
     status = params.get("_status")
-    
+
     if status:
         await status.progress("Starting analysis...")
-    
+
     # Do some work
     for i, item in enumerate(items):
         if status and i % 10 == 0:
             await status.progress(f"Processing item {i+1}/{len(items)}")
-        
+
         # Process item...
-    
+
     if status:
         await status.info("Analysis complete")
-    
+
     return {"status": "success", "results": results}
 ```
 
 **Status Methods:**
 - `await status.progress("message")` - Progress updates
-- `await status.info("message")` - Informational messages  
+- `await status.info("message")` - Informational messages
 - `await status.error("message")` - Error notifications
 - `await status.warning("message")` - Warning messages
 
@@ -1554,19 +1583,19 @@ if token and token.is_forced:
 async def _long_operation(self, params: dict):
     token = params.get("_cancellation_token")
     request_id = params.get("request_id")
-    
+
     # Early exit if already cancelled
     if token and token.is_cancelled:
         return {"status": "cancelled", "request_id": request_id}
-    
+
     # Register cleanup
     async def cleanup():
         # Close files, connections, etc.
         await self._close_resources()
-    
+
     if token:
         token.add_cleanup_callback(cleanup)
-    
+
     try:
         # Do work in chunks, check cancellation frequently
         for i in range(100):
@@ -1574,13 +1603,13 @@ async def _long_operation(self, params: dict):
             if token and token.is_cancelled:
                 await token.cleanup()  # Run cleanup callbacks
                 return {"status": "cancelled", "request_id": request_id}
-            
+
             # Do a small amount of work
             await self._process_chunk(i)
             await asyncio.sleep(0.1)  # Yield control
-        
+
         return {"status": "success", "processed": 100}
-    
+
     finally:
         # Remove cleanup callback
         if token:
@@ -1600,15 +1629,15 @@ from agent_system.utils.cancellation import get_cancellation_manager
 async def _tool_with_background_tasks(self, params: dict):
     token = params.get("_cancellation_token")
     request_id = params.get("request_id")
-    
+
     # Create background task
     task = asyncio.create_task(self._background_worker())
-    
+
     # Register with cancellation manager
     manager = get_cancellation_manager()
     tool_request_id = f"{request_id}_{self.task_counter:03d}"
     manager.register_task(tool_request_id, task)
-    
+
     try:
         # Wait for task or cancellation
         while not task.done():
@@ -1616,10 +1645,10 @@ async def _tool_with_background_tasks(self, params: dict):
                 task.cancel()
                 return {"status": "cancelled"}
             await asyncio.sleep(0.1)
-        
+
         result = await task
         return {"status": "success", "result": result}
-    
+
     except asyncio.CancelledError:
         return {"status": "cancelled"}
 ```
@@ -1646,7 +1675,7 @@ web_ui:
     enabled: true  # REQUIRED! Defaults to false - button will be hidden if not set
     text: "My Plugin"
     icon: "🔧"
-  
+
   panel:
     title: "My Plugin Panel"
     endpoint: "/plugins/my_plugin/panel"
@@ -1668,27 +1697,27 @@ class MyWebEndpoints(PluginWebInterface):
     def __init__(self, name: str, config: dict):
         self.name = name
         self.config = config
-        
+
     def get_web_router(self) -> APIRouter:
         """Define custom API endpoints"""
         router = APIRouter(prefix=f"/plugins/{self.name}")
-        
+
         @router.get("/api/data")
         async def get_data():
             return {"data": "example", "plugin": self.name}
-        
+
         @router.post("/api/action")
         async def perform_action(request: Request):
             data = await request.json()
             # Process action...
             return {"result": "success"}
-        
+
         @router.get("/dashboard", response_class=HTMLResponse)
         async def dashboard():
             return "<h1>Custom Dashboard</h1><p>Plugin interface here</p>"
-        
+
         return router
-    
+
     def get_panels(self) -> List[Dict[str, Any]]:
         """Register UI panels in the main interface"""
         return [{
@@ -1709,26 +1738,26 @@ from fastapi.templating import Jinja2Templates
 class MyWebEndpoints(PluginWebInterface):
     def __init__(self, name: str, config: dict):
         self.name = name
-        
+
         # Setup templates and static files
         self.templates_dir = Path(__file__).parent / "templates"
         self.static_dir = Path(__file__).parent / "static"
         self.templates = Jinja2Templates(directory=str(self.templates_dir))
-    
+
     def get_web_router(self) -> APIRouter:
         router = APIRouter(prefix=f"/plugins/{self.name}")
-        
+
         # Serve static files (CSS, JS, images)
         @router.get("/static/{file_path:path}")
         async def serve_static(file_path: str):
             from fastapi import HTTPException
             from fastapi.responses import FileResponse
-            
+
             file_full_path = self.static_dir / file_path
             if not file_full_path.exists():
                 raise HTTPException(status_code=404)
             return FileResponse(file_full_path)
-        
+
         # Template-based pages
         @router.get("/panel", response_class=HTMLResponse)
         async def panel(request: Request):
@@ -1737,9 +1766,9 @@ class MyWebEndpoints(PluginWebInterface):
                 "panel.html",
                 {"plugin_name": self.name, "config": self.config}
             )
-        
+
         return router
-    
+
     def get_static_assets(self) -> Optional[Path]:
         """Return path to static assets directory"""
         return self.static_dir if self.static_dir.exists() else None
@@ -1767,12 +1796,12 @@ logger = logging.getLogger(__name__)
 async def run_tool(args: Namespace):
     """Execute plugin tool from command line"""
     server = MyPluginServer("cli", config={"debug": args.debug})
-    
+
     params = {
         "input": args.input,
         # Add other parameters...
     }
-    
+
     try:
         result = await server.call(args.tool, params)
         return result
@@ -1784,21 +1813,21 @@ def create_parser() -> ArgumentParser:
     """Create command line parser"""
     parser = ArgumentParser(description="My Plugin CLI")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    
+
     # Tool command
     tool_parser = subparsers.add_parser("tool", help="Execute plugin tool")
     tool_parser.add_argument("tool", help="Tool name to execute")
     tool_parser.add_argument("--input", required=True, help="Input data")
-    
+
     return parser
 
 def main():
     """Main CLI entry point"""
     parser = create_parser()
     args = parser.parse_args()
-    
+
     if args.command == "tool":
         result = asyncio.run(run_tool(args))
         print(json.dumps(result, indent=2))
@@ -1835,7 +1864,7 @@ mcp-my-plugin tool my_tool --input "test data"
 
 - **Async support**: Use `asyncio.run()` for async operations
 - **JSON output**: Return results as JSON for scripting
-- **Error handling**: Catch exceptions and return error objects  
+- **Error handling**: Catch exceptions and return error objects
 - **Debug mode**: Support `--debug` flag for verbose logging
 - **Help text**: Provide clear descriptions and examples
 - **Configuration**: Allow CLI to override plugin config options
@@ -1851,22 +1880,22 @@ import asyncio
 async def _tool_with_subtasks(self, params: dict):
     token = params.get("_cancellation_token")
     request_id = params.get("request_id")
-    
+
     # Create subtasks
     manager = get_cancellation_manager()
     tasks = []
-    
+
     for i in range(3):
         task = asyncio.create_task(self._subtask(i))
         task_id = f"{request_id}_{i:03d}"
         manager.register_task(task_id, task)
         tasks.append(task)
-    
+
     try:
         # Wait for completion or cancellation
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return {"status": "success", "results": results}
-    
+
     except asyncio.CancelledError:
         return {"status": "cancelled"}
 ```
@@ -1957,19 +1986,19 @@ from agent_system.config import AgentSystemConfig, MCPConfig
 class WebScraperServer(SchemaBasedMCPServer):
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         super().__init__(name, system_config, mcp_config)
-        
+
         # Extract plugin-specific configuration from mcp_config
         self.timeout = float(mcp_config.get("timeout", 30))
         self.user_agent = mcp_config.get("user_agent", "AgentSystem/1.0")
         self.max_retries = int(mcp_config.get("max_retries", 3))
-        
+
         # Validate configuration
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
-        
+
         # Access system-wide configuration (optional)
         # system_config.api_base_url, system_config.log_level, etc.
-        
+
         # Log effective configuration
         self.logger.info(
             f"WebScraping configured: timeout={self.timeout}, "
@@ -1989,12 +2018,12 @@ from agent_system.config import AgentSystemConfig, MCPConfig
 class APIClientServer(SchemaBasedMCPServer):
     def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
         super().__init__(name, system_config, mcp_config)
-        
+
         # Sensitive config from environment
         self.api_key = os.getenv("API_CLIENT_KEY")
         if not self.api_key:
             raise ValueError("API_CLIENT_KEY environment variable required")
-        
+
         # Non-sensitive config from mcp_config
         self.base_url = mcp_config.get("base_url", "https://api.example.com")
 ```
@@ -2007,7 +2036,7 @@ Tests go in the project root `tests/` directory with naming convention:
 ```
 tests/
 ├── test_plugin_<plugin_name>_basic.py       # Basic functionality
-├── test_plugin_<plugin_name>_integration.py # Integration tests  
+├── test_plugin_<plugin_name>_integration.py # Integration tests
 ├── test_plugin_<plugin_name>_cancellation.py # Cancellation behavior
 └── test_plugin_<plugin_name>_config.py      # Configuration handling
 ```
@@ -2022,20 +2051,20 @@ from src.plugins.web_scraper.server import WebScraperServer
 @pytest.mark.asyncio
 async def test_fetch_url_success():
     server = WebScraperServer("web_scraper", {"timeout": 10})
-    
+
     result = await server.call("fetch_url", {
         "url": "https://httpbin.org/json"
     })
-    
+
     assert result["status"] == "success"
     assert "content" in result
 
-@pytest.mark.asyncio 
+@pytest.mark.asyncio
 async def test_invalid_tool():
     server = WebScraperServer("web_scraper", {})
-    
+
     result = await server.call("invalid_tool", {})
-    
+
     assert result["status"] == "error"
     assert "Unknown tool" in result["error"]
 ```
@@ -2053,10 +2082,10 @@ from agent_system.utils.cancellation import CancellationToken
 @pytest.mark.asyncio
 async def test_cancellation_during_operation():
     server = WebScraperServer("web_scraper", {})
-    
+
     # Create a cancellation token
     token = CancellationToken()
-    
+
     # Start long operation
     task = asyncio.create_task(
         server.call("long_operation", {
@@ -2064,11 +2093,11 @@ async def test_cancellation_during_operation():
             "request_id": "test_123"
         })
     )
-    
+
     # Cancel after short delay
     await asyncio.sleep(0.1)
     await token.cancel()
-    
+
     # Should return cancelled status
     result = await task
     assert result["status"] == "cancelled"
@@ -2077,17 +2106,17 @@ async def test_cancellation_during_operation():
 @pytest.mark.asyncio
 async def test_early_cancellation_check():
     server = WebScraperServer("web_scraper", {})
-    
+
     # Pre-cancelled token
     token = CancellationToken()
     await token.cancel()
-    
+
     # Should return immediately
     result = await server.call("any_tool", {
         "_cancellation_token": token,
         "request_id": "test_456"
     })
-    
+
     assert result["status"] == "cancelled"
     assert result["request_id"] == "test_456"
 ```
@@ -2099,10 +2128,10 @@ async def test_early_cancellation_check():
 class MockStatus:
     def __init__(self):
         self.messages = []
-    
+
     async def progress(self, msg):
         self.messages.append(("progress", msg))
-    
+
     async def error(self, msg):
         self.messages.append(("error", msg))
 
@@ -2110,12 +2139,12 @@ class MockStatus:
 async def test_status_reporting():
     server = WebScraperServer("web_scraper", {})
     status = MockStatus()
-    
+
     await server.call("fetch_url", {
         "url": "https://example.com",
         "_status": status
     })
-    
+
     # Check that progress was reported
     assert len(status.messages) > 0
     assert any("Fetching" in msg for _, msg in status.messages)
@@ -2132,20 +2161,20 @@ from agent_system.plugins.discovery import discover_all_plugins
 def test_plugin_discovery():
     """Test that the plugin is discovered correctly."""
     plugins = discover_all_plugins()
-    
+
     plugin_names = [p[0] for p in plugins]
     assert "web_scraper" in plugin_names
 
 def test_plugin_schema_valid():
     """Test that schema.yaml is valid."""
     from agent_system.plugins.schema_loader import load_schema_from_dir
-    
+
     plugin_dir = Path("src/plugins/web_scraper")
     schema = load_schema_from_dir(plugin_dir)
-    
+
     assert "tools" in schema
     assert len(schema["tools"]) > 0
-    
+
     # Check first tool has required fields
     tool = schema["tools"][0]
     assert "type" in tool
@@ -2173,7 +2202,7 @@ pytest tests/test_plugin_web_scraper_* --cov=src.plugins.web_scraper
 
 Internal plugins live in `src/plugins/` and are discovered automatically. No additional packaging needed.
 
-### For External Distribution  
+### For External Distribution
 
 Package as a Python package with entry points:
 
@@ -2269,17 +2298,17 @@ PLUGIN_FACTORY = MyPluginServer
 
 ### Design Principles
 
-✅ **Small, focused tools** - One tool, one responsibility  
-✅ **Clear naming** - Use action verbs: `fetch_url`, `parse_html`, `extract_data`  
-✅ **Good error messages** - Help users understand what went wrong  
-✅ **Consistent responses** - Always include `status` field  
-✅ **Documentation** - README with examples and troubleshooting  
+✅ **Small, focused tools** - One tool, one responsibility
+✅ **Clear naming** - Use action verbs: `fetch_url`, `parse_html`, `extract_data`
+✅ **Good error messages** - Help users understand what went wrong
+✅ **Consistent responses** - Always include `status` field
+✅ **Documentation** - README with examples and troubleshooting
 
 ### Implementation Checklist
 
 **Required for MCP plugins:**
 - [ ] `schema.yaml` with proper tool definitions
-- [ ] `plugin.yaml` with metadata  
+- [ ] `plugin.yaml` with metadata
 - [ ] Server class extending `SchemaBasedMCPServer`
 - [ ] Support for `_status` parameter
 - [ ] Support for `_cancellation_token` parameter
@@ -2293,13 +2322,13 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] `web_ui` section in `schema.yaml` with panel/endpoint configuration
 - [ ] `get_web_router()` and `get_panels()` implementation
 - [ ] Static assets handling (CSS, JS, images)
-- [ ] `plugin.yaml` with `type: hybrid` and `category` metadata
+- [ ] `plugin.yaml` with `type: [mcp-server, web]` and `category` metadata
 
 **Required for web-only plugins:**
 - [ ] Web endpoints class extending `PluginWebInterface`
 - [ ] `web_ui` section in `schema.yaml` (no tools section needed)
 - [ ] `get_web_router()` returning FastAPI router with `/plugins/<name>/` prefix
-- [ ] `plugin.yaml` with `type: web_only` and `category` metadata
+- [ ] `plugin.yaml` with `type: [web]` and `category` metadata
 - [ ] Static assets handling (CSS, JS, images)
 - [ ] UI panels registration via `get_panels()`
 - [ ] Security considerations for web access
@@ -2336,7 +2365,7 @@ PLUGIN_FACTORY = MyPluginServer
 ### Security Considerations
 
 - **Input validation**: Never trust user input
-- **Sanitize outputs**: Escape HTML, validate URLs  
+- **Sanitize outputs**: Escape HTML, validate URLs
 - **Rate limiting**: Implement rate limiting for external APIs
 - **Secrets**: Use environment variables, never hardcode credentials
 - **Sandboxing**: Consider process isolation for untrusted plugins
@@ -2423,7 +2452,7 @@ print(schema)
 ### Getting Help
 
 - Check existing plugins in `src/plugins/` for examples
-- Read the MCP specification for protocol details  
+- Read the MCP specification for protocol details
 - Check logs in `logs/` directory for error details
 - Use `python -m agent_system.agent_cli plugins --help` for CLI options
 
@@ -2496,7 +2525,7 @@ config:
     type: integer
     default: 100
     description: "Maximum items to process"
-  
+
   enable_feature:
     type: boolean
     default: true
@@ -2510,22 +2539,22 @@ from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 
 class MyHookPlugin(SchemaBasedPluginHook):
     """Example hooks-only plugin."""
-    
+
     def __init__(self, plugin_dir: Path | str):
         super().__init__(plugin_dir)
-        
+
         # Load config from schema
         config = self.get_config()
         self.max_items = config.get('max_items', {}).get('default', 100)
         self.enabled = config.get('enable_feature', {}).get('default', True)
-    
+
     # Handler name MUST match hook name in schema.yaml
     async def my_handler(self, context: HookContext) -> HookResult:
         """Handle pre-LLM call hook.
-        
+
         Args:
             context: Hook execution context with messages, agent, metadata
-            
+
         Returns:
             HookResult with success status and optionally modified context
         """
@@ -2533,12 +2562,12 @@ class MyHookPlugin(SchemaBasedPluginHook):
             # Access context data
             messages = context.messages or []
             session_id = context.session_id
-            
+
             # Perform hook logic
             if self.enabled and len(messages) > self.max_items:
                 # Modify context (example)
                 modified_messages = messages[-self.max_items:]
-                
+
                 # Create modified context
                 modified_context = HookContext(
                     hook_type=context.hook_type,
@@ -2549,21 +2578,21 @@ class MyHookPlugin(SchemaBasedPluginHook):
                     llm_response=context.llm_response,
                     metadata=context.metadata
                 )
-                
+
                 return HookResult(
                     success=True,
                     modified=True,  # We modified the context
                     context=modified_context,
                     metadata={'items_removed': len(messages) - len(modified_messages)}
                 )
-            
+
             # No modifications needed
             return HookResult(
                 success=True,
                 modified=False,
                 context=context
             )
-            
+
         except Exception as e:
             # Always return HookResult, never raise
             return HookResult(
@@ -2610,12 +2639,12 @@ hooks:
     order:
       after: ["begin"]
       before: ["summarize_context"]
-  
+
   - name: summarize_context
     order:
       after: ["optimize_context"]
       before: ["validate_messages"]
-  
+
   - name: validate_messages
     order:
       after: ["summarize_context"]
@@ -2688,7 +2717,7 @@ async def log_request(self, context: HookContext) -> HookResult:
 async def validate_messages(self, context: HookContext) -> HookResult:
     """Validate message format."""
     messages = context.messages or []
-    
+
     for msg in messages:
         if 'role' not in msg or 'content' not in msg:
             return HookResult(
@@ -2697,7 +2726,7 @@ async def validate_messages(self, context: HookContext) -> HookResult:
                 context=context,
                 error="Invalid message format: missing role or content"
             )
-    
+
     return HookResult(success=True, modified=False, context=context)
 ```
 
@@ -2707,12 +2736,12 @@ async def add_timestamp(self, context: HookContext) -> HookResult:
     """Add timestamps to messages."""
     messages = context.messages or []
     modified_messages = []
-    
+
     for msg in messages:
         if 'timestamp' not in msg:
             msg['timestamp'] = datetime.now().isoformat()
         modified_messages.append(msg)
-    
+
     modified_context = HookContext(
         hook_type=context.hook_type,
         request_id=context.request_id,
@@ -2722,7 +2751,7 @@ async def add_timestamp(self, context: HookContext) -> HookResult:
         llm_response=context.llm_response,
         metadata=context.metadata
     )
-    
+
     return HookResult(
         success=True,
         modified=True,
@@ -2754,9 +2783,9 @@ async def test_my_handler(plugin):
             {'role': 'assistant', 'content': 'Hi there!'}
         ]
     )
-    
+
     result = await plugin.my_handler(context)
-    
+
     assert result.success is True
     assert result.modified is False  # Or True if modified
     assert result.error is None
@@ -2781,21 +2810,21 @@ from agent_system.hooks import PluginHook, HookContext, HookResult
 
 class MyHybridPlugin(MCPServer, PluginHook):
     """Plugin with both tools and hooks."""
-    
+
     def __init__(self, name: str, config: dict = None):
         MCPServer.__init__(self, name, config)
         PluginHook.__init__(self, name, config)
-    
+
     # MCP Tools
     async def call(self, name: str, arguments: dict) -> dict:
         if name == "my_tool":
             return await self._my_tool(**arguments)
         raise ValueError(f"Unknown tool: {name}")
-    
+
     async def _my_tool(self, param: str) -> dict:
         """Example tool."""
         return {"result": f"Processed: {param}"}
-    
+
     # Hook Handlers
     async def on_session_start(self, context: HookContext) -> HookResult:
         """Initialize at session start."""

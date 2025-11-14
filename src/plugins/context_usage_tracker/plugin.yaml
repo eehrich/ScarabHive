@@ -1,6 +1,8 @@
 name: context_usage_tracker
 version: 1.0.0
-type: web_with_hooks
+type:
+- web
+- hooks
 author: AgentSystem
 description: Tracks LLM context usage and token consumption with web UI
 entrypoint: plugin:PLUGIN_FACTORY

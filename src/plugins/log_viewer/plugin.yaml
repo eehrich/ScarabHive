@@ -3,7 +3,9 @@ version: 1.0.0
 author: AgentSystem Team
 description: Real-time log streaming and viewing plugin with web UI
 entrypoint: plugin:PLUGIN_FACTORY
-type: hybrid
+type:
+- mcp-server
+- web
 category: monitoring
 requires:
   agent_system: '>=0.4.0'

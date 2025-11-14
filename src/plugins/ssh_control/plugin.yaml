@@ -4,7 +4,8 @@ author: AgentSystem Team
 description: SSH-based control for multiple remote Linux machines with command execution,
   file transfers, and system monitoring
 entrypoint: plugin:PLUGIN_FACTORY
-type: mcp_only
+type:
+- mcp-server
 category: infrastructure
 tags:
 - ssh

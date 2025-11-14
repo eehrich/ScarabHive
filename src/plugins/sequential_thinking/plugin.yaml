@@ -4,7 +4,8 @@ description: Step-by-step reasoning tool with branching and revision support for
   problem-solving
 author: AgentSystem Team
 entrypoint: server:SequentialThinkingServer
-type: mcp_only
+type:
+- mcp-server
 category: reasoning
 requires:
   agent_system: '>=0.4.0'

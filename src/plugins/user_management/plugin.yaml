@@ -1,6 +1,7 @@
 name: user_management
 version: 1.0.0
-type: web_only
+type:
+- web
 entrypoint: plugin:PLUGIN_FACTORY
 description: Provides a comprehensive web interface for user management.
 requires:
