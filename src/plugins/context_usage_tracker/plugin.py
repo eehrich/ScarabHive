@@ -145,14 +145,6 @@ class ContextUsageTrackerPlugin(SchemaBasedPluginWebInterface):
         """Get the web router for this plugin."""
         return self.web_factory.get_web_router()
 
-    def get_panels(self) -> List[Dict[str, Any]]:
-        """Get panel definitions for this plugin."""
-        return self.web_factory.get_panels()
-
-    def get_static_assets(self) -> Dict[str, Path]:
-        """Get static assets for this plugin."""
-        return self.web_factory.get_static_assets()
-
 
 # Plugin factory
 PLUGIN_FACTORY = ContextUsageTrackerPlugin

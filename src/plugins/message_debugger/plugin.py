@@ -48,18 +48,6 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
     def get_web_router(self):
         """Return FastAPI router for web UI."""
         return self.web_factory.get_web_router()
-    
-    def get_static_assets(self):
-        """Return path to static assets."""
-        return self.web_factory.get_static_assets()
-    
-    def get_panels(self):
-        """Return UI panel definitions."""
-        return self.web_factory.get_panels()
-    
-    def create_panel(self):
-        """Create panel HTML."""
-        return self.web_factory.create_panel()
 
 
 PLUGIN_FACTORY = MessageDebuggerHybridPlugin
