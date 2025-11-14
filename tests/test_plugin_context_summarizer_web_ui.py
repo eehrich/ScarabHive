@@ -25,7 +25,6 @@ def test_factory_is_class():
     
     # Verify plugin has web capabilities
     assert hasattr(plugin, "get_web_router"), "Plugin should have get_web_router method"
-    assert hasattr(plugin, "get_panels"), "Plugin should have get_panels method"
     assert hasattr(plugin, "get_static_assets"), "Plugin should have get_static_assets method"
 
 

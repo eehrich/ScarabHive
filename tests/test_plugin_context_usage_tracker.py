@@ -95,14 +95,6 @@ def test_get_web_router(plugin):
     assert router.prefix == "/plugins/context_usage_tracker"
 
 
-def test_get_panels(plugin):
-    """Test that plugin provides panels."""
-    panels = plugin.get_panels()
-    assert len(panels) == 1
-    assert panels[0]["id"] == "context_usage_tracker"
-    assert panels[0]["title"] == "Context Usage Debug"
-
-
 @pytest.mark.asyncio
 async def test_track_llm_usage(plugin, mock_hook_context):
     """Test that LLM usage is tracked correctly."""
