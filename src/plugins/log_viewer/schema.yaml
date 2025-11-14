@@ -58,23 +58,50 @@ web_ui:
   panel:
     enabled: true
     title: "Real-time Log Viewer"
-    endpoint: "/plugins/{{ name }}/panel"
+    panel_id: "log_viewer"
+    endpoint: "/plugins/log_viewer/panel"
     type: "fetch"  # How to load content: "fetch" or "iframe"
     description: "View application logs with polling-based updates (avoids infinite logging loops)"
   
   endpoints:
-    - path: "/plugins/{{ name }}/logs/list"
+    - path: "/logs/list"
       method: "GET"
+      handler: "list_log_files"
+      response_type: "json"
       description: "List available log files with metadata"
-    - path: "/plugins/{{ name }}/logs/content/{log_name}"
+    
+    - path: "/logs/content/{log_name:path}"
       method: "GET"
+      handler: "get_log_content"
+      response_type: "json"
       description: "Get log file content with optional timestamp filtering (avoids infinite loops)"
-    - path: "/plugins/{{ name }}/logs/poll/{log_name}"
+    
+    - path: "/logs/download/{log_name:path}"
       method: "GET"
+      handler: "download_log_file"
+      response_type: "response"
+      description: "Download entire log file"
+    
+    - path: "/logs/poll/{log_name:path}"
+      method: "GET"
+      handler: "poll_log_updates"
+      response_type: "json"
       description: "Poll for log updates since last timestamp (non-streaming approach)"
-    - path: "/plugins/{{ name }}/panel.html"
+    
+    - path: "/panel.html"
       method: "GET"
+      handler: "panel_html"
+      response_type: "html"
       description: "Main log viewer UI panel"
-    - path: "/plugins/{{ name }}/static/{file_path}"
+    
+    - path: "/panel"
       method: "GET"
+      handler: "panel"
+      response_type: "html"
+      description: "Main log viewer UI panel (alternate endpoint)"
+    
+    - path: "/static/{file_path:path}"
+      method: "GET"
+      handler: "serve_static"
+      response_type: "response"
       description: "Static assets (CSS, JS, images)"

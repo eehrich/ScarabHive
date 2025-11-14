@@ -5,3 +5,14 @@ description: Real-time log streaming and viewing plugin with web UI
 entrypoint: plugin:PLUGIN_FACTORY
 type: hybrid
 category: monitoring
+
+# Standard Configuration (add to config/plugins.yaml under log_viewer:)
+config:
+ log_files:
+   - logs/agent-cli.log
+   - logs/api.log
+   - logs/cli.log
+   - logs/http_server.log
+   - logs/llm_router.log
+ max_lines: 20           # Maximum lines to return per request
+ refresh_interval: 1.0   # Polling interval in seconds for UI updates

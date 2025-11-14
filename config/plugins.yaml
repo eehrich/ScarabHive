@@ -119,7 +119,13 @@ plugins:
     log_viewer:
       type: log_viewer
       enabled: true
-    
+      log_files:
+        - logs/api.log
+        - logs/cli.log
+
+      max_lines: 20           # Maximum lines to return per request
+      refresh_interval: 1.0   # Polling interval in seconds for UI updates
+
     script_interpreter:
       type: script_interpreter
       enabled: true
