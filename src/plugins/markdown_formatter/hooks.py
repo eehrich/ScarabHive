@@ -69,6 +69,10 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 # Note: Do NOT use 'codehilite' - it generates incompatible CSS classes
                 extensions.append('fenced_code')
             
+            # Add nl2br to convert newlines to <br> tags
+            # This ensures list items appear on separate lines
+            extensions.append('nl2br')
+            
             # Configure fenced_code to use 'language-' prefix for Prism.js
             extension_configs = {
                 'fenced_code': {
@@ -245,6 +249,10 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 # Convert Markdown to HTML
                 html_content = self.markdown_converter.convert(output)
                 
+                # Fix list rendering: ensure lists have proper line breaks
+                # Markdown requires blank line before lists, but LLMs often forget this
+                html_content = self._fix_list_formatting(html_content)
+                
                 # Sanitize HTML if enabled
                 if self.sanitize_html:
                     html_content = self._sanitize_html(html_content)
@@ -400,5 +408,55 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
         
         # Simple tag whitelist (more sophisticated solutions would use bleach library)
         # For now, we trust markdown library's output and just remove obvious threats
+        
+        return html
+    
+    def _fix_list_formatting(self, html: str) -> str:
+        """Fix inline list items that should be on separate lines.
+        
+        When markdown lists are not properly separated by blank lines,
+        they get rendered inline. This fixes that by ensuring list items
+        appear on separate lines.
+        
+        Args:
+            html: HTML content that may contain inline list items
+            
+        Returns:
+            HTML with properly formatted lists
+        """
+        # Pattern: text followed by list items rendered inline (without proper <ul>/<ol>)
+        # Example: "<p>Text - Item 1 - Item 2 - Item 3</p>"
+        # Should be: "<p>Text</p><ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul>"
+        
+        # Find paragraphs containing multiple "- " or "• " list markers
+        def fix_inline_list(match):
+            content = match.group(1)
+            
+            # Check if this looks like an inline list (multiple - or • on one line)
+            if content.count(' - ') >= 2 or content.count(' • ') >= 2:
+                # Split by list markers
+                parts = re.split(r'\s[-•]\s', content)
+                
+                # First part might be intro text
+                intro = parts[0].strip()
+                items = [p.strip() for p in parts[1:] if p.strip()]
+                
+                # Build proper list HTML
+                html_parts = []
+                if intro:
+                    html_parts.append(f'<p>{intro}</p>')
+                if items:
+                    html_parts.append('<ul>')
+                    for item in items:
+                        html_parts.append(f'<li>{item}</li>')
+                    html_parts.append('</ul>')
+                
+                return ''.join(html_parts)
+            
+            # Not an inline list, return as-is
+            return match.group(0)
+        
+        # Apply fix to paragraphs
+        html = re.sub(r'<p>(.*?)</p>', fix_inline_list, html, flags=re.DOTALL)
         
         return html
