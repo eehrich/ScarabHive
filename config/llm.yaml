@@ -66,9 +66,9 @@ llm_system:
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
         
-    gpt-5:
+    gpt-5.1:
       provider: openai_httpx
-      model: gpt-5
+      model: gpt-5.1
       openai_api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
@@ -78,6 +78,49 @@ llm_system:
         image_input: true
         audio_input: false
         video_input: false
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
+        max_image_size: 20971520  # 20MB
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true
+
+    gpt-5.1-codex:
+      provider: openai_httpx
+      model: gpt-5.1-codex
+      openai_api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        audio_input: false
+        video_input: false
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions, assistants]
+        default_api_type: chat_completions
+        max_image_size: 20971520  # 20MB
+        supported_image_formats: [jpeg, png, gif, webp]
+        image_detail_control: true      
+
+    gpt-5.1-codex-mini:
+      provider: openai_httpx
+      model: gpt-5.1-codex-mini
+      openai_api_key: ***REMOVED***
+      context_window: 272000
+      request_timeout: 180
+      httpx_timeouts:
+        connect: 10.0
+        read: 240.0
+        write: 10.0
+        pool: 5.0
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
         streaming: false
         json_mode: true
         supported_api_types: [chat_completions, assistants]
@@ -176,10 +219,10 @@ llm_system:
       max_steps: 100
     normal:
       model_ref: gpt-5-mini
-      description: "Fast model for quick responses"
+      description: "Fast model for medium reasoning tasks"
       max_steps: 100
     think:
-      model_ref: gpt-5
+      model_ref: gpt-5.1
       description: "Advanced model for complex reasoning"
       max_steps: 100
     big:
@@ -188,8 +231,16 @@ llm_system:
       max_steps: 100      
     chat:
       model_ref: deepseek-chat
-      description: "Cheap and fast none thinking model, for medium complex tasks"
+      description: "Cheap and fast none thinking model, for medium complex tasks."
       max_steps: 100
+    code:
+      model_ref: gpt-5.1-codex
+      description: "Special LLM for Codeing tasks and code understanding, for complex reasoning tasks."
+      max_steps: 100     
+    code-mini:
+      model_ref: gpt-5.1-codex-mini
+      description: "Special LLM for Codeing tasks and code understanding, for medium reasoning tasks."
+      max_steps: 100          
     realtime:
       model_ref: gpt-realtime-mini
       description: "Realtime answers, for medium complex tasks"
