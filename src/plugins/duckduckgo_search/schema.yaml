@@ -25,3 +25,7 @@ tools:
             description: "Custom cache TTL in seconds (overrides default)"
         required: [query]
         additionalProperties: false
+
+config:
+  cache_ttl: 900
+  cache_enabled: true

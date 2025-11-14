@@ -1,8 +1,10 @@
 name: web_research_agent
-author: "Enrico Ehrich"
+author: Enrico Ehrich
 version: 0.1.0
-description: "Specialized web research agent combining DuckDuckGo search with web scraping capabilities"
+description: Specialized web research agent combining DuckDuckGo search with web scraping
+  capabilities
 entrypoint: plugin:PLUGIN_FACTORY
 type: mcp_only
 category: tools
-visibility: both  # Optional: "ui", "tool", "both" (default), or "private"
+requires:
+  agent_system: '>=0.4.0'

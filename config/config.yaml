@@ -3,7 +3,7 @@
 # ================================
 
 name: "AgentSystem"
-version: "0.3.0"
+version: "0.4.0"
 description: "Scarab Flexible AI Agent System using MCP"
 
 # all included configs
@@ -18,15 +18,15 @@ includes:
 
 # Context information automatically added to prompts
 context:
-  auto_datetime: true 
-  timezone: "Europe/Berlin"  
-  location: "Germany" 
+  auto_datetime: true
+  timezone: "Europe/Berlin"
+  location: "Germany"
 
 network: # type NetworkConfig
   ssl_verify: false
   host: 127.0.0.1
   port: 8000
-  disable_cache: true  
+  disable_cache: true
 
 
 # define the agent which will be startet by default if no other agent is specified
@@ -38,15 +38,15 @@ auth: # type AuthConfig
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
   access_token_expire_minutes: 30
-  
+
   # Database settings
   database_path: "data/users.db"
-  
+
   # Security settings
   rate_limit_enabled: false  # Disabled for development
   requests_per_minute: 60
   security_headers_enabled: true
-  
+
   # CORS settings
   cors_enabled: true
   cors_origins:
@@ -56,13 +56,13 @@ auth: # type AuthConfig
     - "*"
   cors_headers:
     - "*"
-  
+
   # Trusted hosts (optional, uncomment and configure for production)
   # trusted_hosts:
   #   - "localhost"
   #   - "127.0.0.1"
   #   - "*.yourdomain.com"
-  
+
   # Default admin user (created on first startup if no users exist)
   default_admin_username: "admin"
   default_admin_password: "admin"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
@@ -83,7 +83,7 @@ logging: # type LoggingConfig
   cancellation: # type CancellationConfig
     cleanup_timeout: 10.0  # Seconds to wait for graceful cleanup before forcing termination
     monitor_interval: 1.0  # Seconds between timeout checks
- 
+
 
 
 

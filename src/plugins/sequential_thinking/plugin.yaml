@@ -1,29 +1,10 @@
 name: sequential_thinking
 version: 1.0.0
-description: Step-by-step reasoning tool with branching and revision support for complex problem-solving
+description: Step-by-step reasoning tool with branching and revision support for complex
+  problem-solving
 author: AgentSystem Team
 entrypoint: server:SequentialThinkingServer
 type: mcp_only
 category: reasoning
-
-config_schema:
-  max_history_size:
-    type: integer
-    default: 100
-    description: Maximum thoughts per session before oldest are removed
-  session_ttl_seconds:
-    type: integer
-    default: 3600
-    description: "Session expiration time in seconds (default: 1 hour)"
-  enable_branching:
-    type: boolean
-    default: true
-    description: Allow branching to explore alternative approaches
-  enable_revisions:
-    type: boolean
-    default: true
-    description: Allow revising previous thoughts with new insights
-  max_summary_thoughts:
-    type: integer
-    default: 10
-    description: Default maximum thoughts in summaries
+requires:
+  agent_system: '>=0.4.0'

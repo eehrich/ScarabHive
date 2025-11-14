@@ -12,7 +12,7 @@ tools:
               type: string
             description: "Optional list of tags to filter machines"
         required: []
-    
+
   - type: function
     function:
       name: "{{ name }}_execute"
@@ -35,7 +35,7 @@ tools:
         required:
           - machine
           - command
-    
+
   - type: function
     function:
       name: "{{ name }}_upload_file"
@@ -59,7 +59,7 @@ tools:
           - machine
           - local_path
           - remote_path
-    
+
   - type: function
     function:
       name: "{{ name }}_download_file"
@@ -80,7 +80,7 @@ tools:
           - machine
           - remote_path
           - local_path
-    
+
   - type: function
     function:
       name: "{{ name }}_check_connection"
@@ -92,7 +92,7 @@ tools:
             type: string
             description: "Single machine name."
         required: []
-  
+
   - type: function
     function:
       name: "{{ name }}_add_machine"
@@ -159,7 +159,7 @@ tools:
             auth_method: "password"
             password: "temp123"
             persistent: false
-  
+
   - type: function
     function:
       name: "{{ name }}_remove_machine"
@@ -197,7 +197,7 @@ web_ui:
     text: "SSH Control"
     icon: "🖥️"
     tooltip: "SSH Machine Control Panel"
-  
+
   # Panel configuration
   panel:
     enabled: true
@@ -206,7 +206,7 @@ web_ui:
     endpoint: "/plugins/{{ name }}/panel"
     type: "iframe"
     description: "Control and monitor SSH-connected machines"
-  
+
   endpoints:
     - path: "/panel.html"
       method: "GET"
@@ -296,3 +296,16 @@ web_ui:
       handler: "execute_command_stream"
       response_type: "response"
       description: "Execute command with streaming SSE output"
+
+config:
+  machines:
+  security:
+    # Prevents MITM attacks by verifying host keys against known_hosts file
+    strict_host_key_checking: true
+    known_hosts_file: ~/.ssh/known_hosts
+    # Security compliance: logs all SSH commands with timestamps and machine info
+    # Useful for audit trails and debugging
+    audit_log: true
+    audit_log_file: logs/ssh_control_audit.log
+  plugins: null
+  servers: null

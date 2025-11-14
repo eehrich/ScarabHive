@@ -71,3 +71,26 @@ tools:
             description: "Use SIGKILL instead of SIGTERM (default: false)"
         required: ["process_id"]
         additionalProperties: false
+
+config:
+  security:
+    # Blacklist patterns prevent dangerous commands from executing
+    # Improves security over basic command execution (similar to GitHub Copilot's safeguards)
+    blacklist:
+      - rm -rf /
+      - dd if=
+      - mkfs
+      - chmod 777
+    allow_command_chains: true
+  limits:
+    # Output size matches GitHub Copilot's run_in_terminal limit (60KB)
+    max_output_size_kb: 60
+    default_timeout_seconds: 300
+    max_timeout_seconds: 3600
+    max_concurrent_background: 10
+  platform:
+    # 'auto' = automatically detect bash location on system
+    # Persistent terminal sessions: environment variables and cwd persist across commands
+    bash_path: auto
+    # null = use terminal's default working directory
+    initial_cwd: null

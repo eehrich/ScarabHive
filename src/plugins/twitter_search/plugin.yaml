@@ -1,7 +1,10 @@
 name: twitter_search
-author: "Enrico Ehrich"
+author: Enrico Ehrich
 version: 1.0.0
-description: "Twitter/X Search via official API v2 with tweepy - requires free API credentials"
+description: Twitter/X Search via official API v2 with tweepy - requires free API
+  credentials
 entrypoint: plugin:PLUGIN_FACTORY
 type: mcp_only
 category: tools
+requires:
+  agent_system: '>=0.4.0'

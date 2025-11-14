@@ -17,3 +17,6 @@ tools:
             description: "Maximum number of tweets to return"
         required: [query]
         additionalProperties: false
+
+config:
+  ssl_verify: true

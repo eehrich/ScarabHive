@@ -100,3 +100,8 @@ web_ui:
       handler: "serve_static"
       response_type: "response"
       description: "Static assets (CSS, JS, images)"
+
+config:
+  items_per_page: 20
+  allow_self_delete: false
+  show_api_keys: true

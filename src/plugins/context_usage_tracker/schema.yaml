@@ -45,3 +45,6 @@ web_ui:
       handler: "clear_history"
       response_type: "json"
       description: "Clear usage history"
+
+config:
+  context_window: 0

@@ -1,37 +1,21 @@
 name: ssh_control
 version: 1.0.0
-author: "AgentSystem Team"
-description: "SSH-based control for multiple remote Linux machines with command execution, file transfers, and system monitoring"
+author: AgentSystem Team
+description: SSH-based control for multiple remote Linux machines with command execution,
+  file transfers, and system monitoring
 entrypoint: plugin:PLUGIN_FACTORY
 type: mcp_only
 category: infrastructure
 tags:
-  - ssh
-  - remote
-  - linux
-  - automation
-  - devops
-
-# Dependencies
+- ssh
+- remote
+- linux
+- automation
+- devops
 dependencies:
-  - asyncssh>=2.14.0
-  - cryptography>=41.0.0
-  - pydantic>=2.0.0
-
-# Minimum requirements
+- asyncssh>=2.14.0
+- cryptography>=41.0.0
+- pydantic>=2.0.0
 requires:
-  python: ">=3.11"
-  agent_system: ">=1.0.0"
-
-# Configuration notes
-configuration:
-  description: "Configure SSH machines in mcp.yaml under ssh_control section"
-  example: |
-    ssh_control:
-      machines:
-        - name: server1
-          host: example.com
-          port: 22
-          username: deploy
-          auth_method: key
-          key_path: ~/.ssh/id_rsa
+  python: '>=3.11'
+  agent_system: '>=0.4.0'

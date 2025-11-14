@@ -1,8 +1,11 @@
 name: message_validator
 version: 1.0.0
-description: >
-  Validates and sanitizes messages before LLM calls to ensure safety,
+description: 'Validates and sanitizes messages before LLM calls to ensure safety,
   proper formatting, and compliance with content policies.
+
+  '
 author: AgentSystem Team
-type: hook
+type: hooks_only
 entrypoint: plugin:PLUGIN_FACTORY
+requires:
+  agent_system: '>=0.4.0'

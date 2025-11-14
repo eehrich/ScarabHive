@@ -4,7 +4,7 @@
   "title": "Agent System Plugin Configuration Schema",
   "description": "Schema for plugin.yaml files in the Agent System",
   "type": "object",
-  "required": ["name", "version", "description", "entrypoint"],
+  "required": ["name", "version", "description", "entrypoint", "requires"],
   "properties": {
     "name": {
       "type": "string",
@@ -19,6 +19,10 @@
     "author": {
       "type": "string",
       "description": "Plugin author name or organization"
+    },
+    "license": {
+      "type": "string",
+      "description": "License identifier (e.g., MIT, Apache-2.0, proprietary)"
     },
     "description": {
       "type": "string",
@@ -55,6 +59,11 @@
         "security",
         "development",
         "hooks",
+        "utilities",
+        "productivity",
+        "debugging",
+        "reasoning",
+        "infrastructure",
         "other"
       ]
     },
@@ -75,6 +84,7 @@
     "requires": {
       "type": "object",
       "description": "Minimum version requirements",
+      "required": ["agent_system"],
       "properties": {
         "python": {
           "type": "string",
@@ -82,9 +92,11 @@
         },
         "agent_system": {
           "type": "string",
-          "description": "Minimum AgentSystem version (e.g., '>=1.0.0')"
+          "description": "Minimum AgentSystem version (e.g., '>=0.3.0')",
+          "default": ">=0.3.0"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "tools": {
       "type": "array",
@@ -119,6 +131,11 @@
           }
         }
       }
+    },
+    "config": {
+      "type": "object",
+      "description": "Default configuration for the plugin (serves as documentation)",
+      "additionalProperties": true
     },
     "hooks": {
       "type": "array",

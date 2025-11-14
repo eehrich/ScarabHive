@@ -1,48 +1,8 @@
 name: sub_agent_manager
-version: "1.0.0"
-description: "Manages persistent sub-agent instances for coordinator agents"
-plugin_type: sub_agent_manager
-author: "AgentSystem Team"
+version: 1.0.0
+description: Manages persistent sub-agent instances for coordinator agents
+author: AgentSystem Team
 type: hybrid
 entrypoint: plugin:PLUGIN_FACTORY
-
-# Server configuration
-server_config:
-  # Maximum sub-agents per parent session
-  max_sub_agents_per_session: 10
-  
-  # Maximum message history per sub-agent
-  max_message_history: 100
-  
-  # Auto-cleanup threshold (hours since last use)
-  auto_cleanup_hours: 24
-  
-  # Maximum nesting depth for recursive sub-agents (1=root, 2=sub, 3=sub-sub, etc.)
-  max_nesting_depth: 5
-  
-  # Agent filtering (multi-instance support)
-  # Filter by agent INSTANCE names (not types), enabling fine-grained control
-  # Use "*" for all agents, or specific list for restrictions
-  # Examples: 
-  #   ["coding_agent", "testing_agent", "code_reviewer_agent"]
-  #   ["web_research_agent", "meta_web_research_agent"]
-  #   ["basic_agent", "meta_*"]  # glob patterns supported
-  allowed_agents: ["*"]
-  
-  # Blocked agents (blacklist)
-  # Example: ["meta_agent"] to prevent spawning meta_agent as sub-agent
-  blocked_agents: []
-
-# Hook configuration for system prompt injection
-hook_config:
-  # Enable context injection
-  inject_context_enabled: true
-  
-  # Maximum sub-agents shown in prompt
-  max_sub_agents_shown: 10
-  
-  # Show completed/archived sub-agents
-  show_completed: false
-  
-  # Format: markdown | text
-  format: markdown
+requires:
+  agent_system: '>=0.4.0'

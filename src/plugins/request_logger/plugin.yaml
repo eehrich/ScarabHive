@@ -1,12 +1,14 @@
 name: request_logger
 version: 1.0.0
-author: "AgentSystem Team"
-description: "Example hook plugin that logs agent requests and responses"
+author: AgentSystem Team
+description: Example hook plugin that logs agent requests and responses
 entrypoint: plugin:PLUGIN_FACTORY
-type: hooks
+type: hooks_only
 category: monitoring
 tags:
-  - hooks
-  - logging
-  - monitoring
-  - example
+- hooks
+- logging
+- monitoring
+- example
+requires:
+  agent_system: '>=0.4.0'

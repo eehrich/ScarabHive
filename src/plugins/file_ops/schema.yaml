@@ -187,12 +187,12 @@ tools:
       description: |
         Semantic/AI-powered code search using embeddings. Finds files by meaning, not just keywords.
         Uses ChromaDB for intelligent similarity search.
-        
+
         Examples:
           - "find authentication logic" → matches verify_credentials(), login(), auth functions
           - "database connection code" → finds DB setup, connection pools, ORM configs
           - "error handling patterns" → locates try/except blocks, error classes
-        
+
         Better than grep for conceptual searches where exact keywords vary.
       parameters:
         type: object
@@ -211,3 +211,27 @@ tools:
             description: "Optional glob pattern to filter results by file type (e.g., '*.py')"
         required: ["query"]
         additionalProperties: false
+
+config:
+  # Sandbox security: restricts file operations to these directories only
+  # Prevents path traversal attacks and unauthorized file access
+  allowed_directories:
+    - data/workspace
+  max_file_size_for_indexing_kb: 1024
+  max_file_size_mb: 10
+  search:
+    enable_indexing: true
+    index_on_startup: true
+    # Requires ChromaDB Python package for vector embeddings and similarity search
+    enable_semantic_search: true
+    auto_reindex_interval: 3600
+    # Exclude patterns optimize indexing performance by skipping large binary/generated files
+    # Also reduces memory usage and search noise
+    exclude_patterns:
+      - '**/.git/**'
+      - '**/__pycache__/**'
+      - '**/node_modules/**'
+      - '**/.venv/**'
+      - '**/*.min.js'
+      - '**/*.min.css'
+      - '**/*.map'

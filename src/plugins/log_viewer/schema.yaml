@@ -105,3 +105,9 @@ web_ui:
       handler: "serve_static"
       response_type: "response"
       description: "Static assets (CSS, JS, images)"
+config:
+  log_files:
+    - logs/api.log
+    - logs/cli.log
+  max_lines: 20
+  refresh_interval: 1.0

@@ -48,3 +48,8 @@ tools:
             default: false
             description: "Include detailed status information"
         additionalProperties: false
+
+config:
+  precision: 2
+  max_text_length: 1000
+  enable_debug: null

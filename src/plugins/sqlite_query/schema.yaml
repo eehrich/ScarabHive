@@ -21,3 +21,7 @@ tools:
               - "PRAGMA table_info(books)"
         required: ["sql"]
         additionalProperties: false
+
+config:
+  database: default.db
+  query_timeout: 30

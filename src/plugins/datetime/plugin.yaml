@@ -1,7 +1,9 @@
 name: datetime
-author: "Enrico Ehrich"
+author: Enrico Ehrich
 version: 0.1.0
-description: "Date/time utilities optimized for MCP usage"
+description: Date/time utilities optimized for MCP usage
 entrypoint: plugin:PLUGIN_FACTORY
 type: mcp_only
 category: utilities
+requires:
+  agent_system: '>=0.4.0'

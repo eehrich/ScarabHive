@@ -15,7 +15,7 @@ tools:
         - info: Get detailed status and recent activity of specific sub-agent
         - delete: Archive sub-agent instance
 
-        IMPORTANT: 
+        IMPORTANT:
         - Operations are BLOCKING - you receive full result before tool returns.
         - Same instance_id cannot run concurrently. Use different instances for parallel work.
 
@@ -32,46 +32,46 @@ tools:
               - list: List all active sub-agents
               - info: Get detailed info about specific sub-agent
               - delete: Archive sub-agent instance
-          
+
           # Parameters for 'create' operation
           agent_type:
             type: string
             description: |
               Agent type to spawn (required for 'create').
               Available agents: {{ allowed_agents }}
-          
+
           task:
             type: string
             description: |
               Initial task description (required for 'create').
               This will be the first message in the sub-agent's session.
-          
+
           instance_label:
             type: string
             description: |
               Optional custom label for readability (create only).
               Auto-generated if omitted. Format: alphanumeric, underscore, hyphen.
-          
+
           # Parameters for 'continue', 'info', 'delete' operations
           instance_id:
             type: string
             description: |
               Sub-agent instance ID (required for continue/info/delete).
               This was returned when the sub-agent was created.
-          
+
           message:
             type: string
             description: |
               New message for sub-agent (required for 'continue').
               The sub-agent sees this in context of previous conversation.
-          
+
           # Parameters for 'list' operation
           include_completed:
             type: boolean
             description: |
               Include archived sub-agents in list (list only, default: false).
             default: false
-        
+
         required: [operation]
 
 # Web UI configuration
@@ -80,14 +80,14 @@ web_ui:
     enabled: false
     text: "{{name}}"
     icon: "🤖"
-  
+
   # Dropdown menu integration
   menu:
-    enabled: true 
+    enabled: true
     items:
       - id: "sub_agents"
-        menu_id: "user"  
-        section: "Sub-Agents" 
+        menu_id: "user"
+        section: "Sub-Agents"
         label: "{{ name }}"
         action: "openPanel"
         panel_id: "{{ name }}"
@@ -107,7 +107,7 @@ web_ui:
   # Access control
   requires_auth: true
   requires_role: null  # No role restriction - all authenticated users
-  
+
   endpoints:
     - path: "/"
       method: "GET"
@@ -142,3 +142,29 @@ hooks:
     order:
       after: ["begin"]  # Run after initialization hooks
       before: ["end"]   # Run before finalization hooks
+
+config:
+  max_sub_agents_per_session: 10
+  max_nesting_depth: 5
+  max_message_history: 100
+  allowed_agents:
+    - basic_agent
+    - web_research_agent
+    - financial_analyst_agent
+    - code_reviewer_agent
+    - meta_web_research_agent
+    - parallel_thinking_agent
+    - thinking_agent
+  blocked_agents:
+  hook_config:
+    enabled: true
+    inject_sub_agent_context:
+      # Injects active sub-agent list into coordinator's system prompt
+      # Gives coordinator agent visibility into available sub-agents for follow-up tasks
+      enabled: true
+      # Limits number of sub-agents shown to prevent system prompt bloat
+      # Only shows N most recently active sub-agents
+      max_sub_agents_shown: 5
+      show_completed: false
+      show_tool_state: true
+      format: markdown

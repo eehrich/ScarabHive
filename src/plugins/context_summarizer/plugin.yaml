@@ -1,8 +1,10 @@
 name: context_summarizer
-description: Intelligent LLM-based conversation summarization with percentage-based triggers
+description: Intelligent LLM-based conversation summarization with percentage-based
+  triggers
 version: 1.0.0
 type: web_with_hooks
 author: AgentSystem
 entrypoint: plugin:PLUGIN_FACTORY
 category: hooks
-
+requires:
+  agent_system: '>=0.4.0'

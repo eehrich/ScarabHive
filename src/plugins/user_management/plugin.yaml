@@ -1,23 +1,7 @@
 name: user_management
-version: "1.0.0"
-summary: "Web UI for user administration with multi-user authentication"
-homepage: "https://github.com/yourorg/agent-system"
-authors:
-  - "AgentSystem Team"
+version: 1.0.0
 type: web_only
 entrypoint: plugin:PLUGIN_FACTORY
-capabilities:
-  - web_ui
-  - admin_tools
-
-mcp:
-  enabled: false  # This plugin only provides web UI, no MCP tools
-
 description: Provides a comprehensive web interface for user management.
-
-
-configuration:
-  items_per_page: 20
-  allow_self_delete: false
-  show_api_keys: true
-  require_email_validation: false
+requires:
+  agent_system: '>=0.4.0'

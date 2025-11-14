@@ -1,9 +1,12 @@
 name: markdown_formatter
 version: 1.0.0
-description: >
-  Formats LLM output as Markdown and converts to HTML.
-  Injects system prompt to guide LLM to generate Markdown output.
-  Converts Markdown responses to HTML for frontend display.
+description: 'Formats LLM output as Markdown and converts to HTML. Injects system
+  prompt to guide LLM to generate Markdown output. Converts Markdown responses to
+  HTML for frontend display.
+
+  '
 author: AgentSystem Team
-type: hook
+type: hooks_only
 entrypoint: plugin:PLUGIN_FACTORY
+requires:
+  agent_system: '>=0.4.0'

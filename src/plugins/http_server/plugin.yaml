@@ -7,3 +7,5 @@ type: mcp_only
 category: utilities
 license: MIT
 dependencies: []
+requires:
+  agent_system: '>=0.4.0'

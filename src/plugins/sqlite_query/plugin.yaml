@@ -1,13 +1,14 @@
 name: sqlite_query
 version: 1.0.0
-description: "Simple SQL execution for debugging SQLite databases"
-author: "AgentSystem Team"
+description: Simple SQL execution for debugging SQLite databases
+author: AgentSystem Team
 entrypoint: plugin:PLUGIN_FACTORY
 type: mcp_only
 category: tools
-
 tags:
-  - database
-  - sql
-  - sqlite
-  - debugging
+- database
+- sql
+- sqlite
+- debugging
+requires:
+  agent_system: '>=0.4.0'
