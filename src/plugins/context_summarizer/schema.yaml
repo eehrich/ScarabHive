@@ -87,17 +87,24 @@ web_ui:
   panel:
     enabled: true
     title: "Context Summarizer"
-    endpoint: "/plugins/{{ name }}/panel"
+    panel_id: "context_summarizer"
+    endpoint: "/plugins/context_summarizer/panel"
     type: "iframe"
     description: "View summarization events with before/after message counts and token savings"
   
   endpoints:
-    - path: "/plugins/{{ name }}/history"
+    - path: "/history"
       method: "GET"
+      handler: "get_history"
+      response_type: "json"
       description: "Get summarization event history with timestamps and statistics"
-    - path: "/plugins/{{ name }}/stats"
+    - path: "/stats"
       method: "GET"
+      handler: "get_stats"
+      response_type: "json"
       description: "Get aggregated summarization statistics"
-    - path: "/plugins/{{ name }}/panel"
+    - path: "/panel"
       method: "GET"
+      handler: "render_panel"
+      response_type: "html"
       description: "Main context summarizer UI panel"

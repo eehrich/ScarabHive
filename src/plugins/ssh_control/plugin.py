@@ -38,7 +38,8 @@ class SSHControlHybridPlugin:
             system_config,
             mcp_config,
             connection_manager=self.mcp_server.connection_manager,
-            command_history=self.command_history
+            command_history=self.command_history,
+            plugin=self
         )
     
     # MCP Server interface methods

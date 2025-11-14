@@ -33,7 +33,11 @@ class ContextSummarizerHybridPlugin(SchemaBasedPluginWebInterface):
         self.hooks_plugin = ContextSummarizerPlugin(plugin_dir, summarization_history=self._summarization_history)
         
         # Create web UI factory with plugin name for dynamic routing
-        self.web_factory = ContextSummarizerWebFactory(self._summarization_history, name=name)
+        self.web_factory = ContextSummarizerWebFactory(
+            self._summarization_history,
+            name=name,
+            plugin=self
+        )
     
     # Hook interface - delegate to hooks plugin
     def get_hooks(self):
@@ -48,18 +52,32 @@ class ContextSummarizerHybridPlugin(SchemaBasedPluginWebInterface):
     def get_web_router(self):
         """Return FastAPI router for web UI."""
         return self.web_factory.get_web_router()
-    
-    def get_static_assets(self):
-        """Return path to static assets."""
-        return self.web_factory.get_static_assets()
-    
-    def get_panels(self):
-        """Return UI panel definitions."""
-        return self.web_factory.get_panels()
-    
-    def create_panel(self):
-        """Create panel HTML."""
-        return self.web_factory.create_panel()
 
+    def get_static_assets(self):
+        """Context summarizer does not expose static assets."""
+        return None
+
+    def get_panels(self):
+        """Return panel configuration derived from schema."""
+        schema = self.get_schema_data()
+        web_ui = schema.get("web_ui", {}) if schema else {}
+        panel = web_ui.get("panel", {})
+
+        if not panel.get("enabled", False):
+            return []
+
+        panel_id = panel.get("panel_id", f"{self.name}_panel")
+        endpoint = panel.get("endpoint", f"/plugins/{self.name}/panel")
+
+        return [
+            {
+                "id": panel_id,
+                "title": panel.get("title", "Context Summarizer"),
+                "url": endpoint,
+                "icon": panel.get("icon", "📝"),
+                "category": panel.get("category", "monitoring"),
+            }
+        ]
+    
 
 PLUGIN_FACTORY = ContextSummarizerHybridPlugin
