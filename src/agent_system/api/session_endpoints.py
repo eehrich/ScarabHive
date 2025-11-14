@@ -159,8 +159,13 @@ async def get_session(
             # Format messages using the correct agent's hooks
             if formatting_agent:
                 try:
+                    # CRITICAL: Create a COPY of messages for formatting to avoid modifying stored session
+                    # The session dict is loaded from storage and modifications would persist on next load
+                    import copy
+                    formatted_messages = copy.deepcopy(session["messages"])
+                    
                     # Format each assistant message using agent's hooks
-                    for msg in session["messages"]:
+                    for msg in formatted_messages:
                         if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
                             # Only format if not already formatted
                             if not msg.get("content_format") or msg.get("content_format") != "html":
@@ -177,6 +182,10 @@ async def get_session(
                                     logger.warning(f"Failed to format message in session {session_id}: {format_error}")
                                     # Keep original content if formatting fails
                                     msg["content_format"] = "text"
+                    
+                    # Replace session messages with formatted copy (only affects this HTTP response)
+                    session["messages"] = formatted_messages
+                    
                 except Exception as hook_error:
                     logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
                     # Return session without formatting if hook access fails
@@ -235,8 +244,13 @@ async def get_session_messages(
             # Format messages using the correct agent's hooks
             if formatting_agent:
                 try:
+                    # CRITICAL: Create a COPY of messages for formatting to avoid modifying stored session
+                    # The session dict is loaded from storage and modifications would persist on next load
+                    import copy
+                    formatted_messages = copy.deepcopy(session["messages"])
+                    
                     # Format each assistant message using agent's hooks
-                    for msg in session["messages"]:
+                    for msg in formatted_messages:
                         if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
                             # Only format if not already formatted
                             if not msg.get("content_format") or msg.get("content_format") != "html":
@@ -253,6 +267,10 @@ async def get_session_messages(
                                     logger.warning(f"Failed to format message in session {session_id}: {format_error}")
                                     # Keep original content if formatting fails
                                     msg["content_format"] = "text"
+                    
+                    # Replace session messages with formatted copy (only affects this HTTP response)
+                    session["messages"] = formatted_messages
+                    
                 except Exception as hook_error:
                     logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
                     # Return session without formatting if hook access fails
