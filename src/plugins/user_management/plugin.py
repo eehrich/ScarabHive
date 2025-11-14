@@ -26,8 +26,8 @@ class UserManagementPlugin(SchemaBasedPluginWebInterface):
         self.allow_self_delete = getattr(mcp_config, 'allow_self_delete', False)
         self.show_api_keys = getattr(mcp_config, 'show_api_keys', True)
         
-        # Initialize web endpoints
-        self.web_endpoints = UserManagementWebEndpoints(name, system_config, mcp_config)
+        # Initialize web endpoints with plugin reference for schema access
+        self.web_endpoints = UserManagementWebEndpoints(name, system_config, mcp_config, plugin=self)
     
     # MCP Server interface methods (no-op since this is web-only)
     async def call(self, tool: str = None, params: dict = None, *args, **kwargs):
@@ -45,17 +45,4 @@ class UserManagementPlugin(SchemaBasedPluginWebInterface):
         """Delegate to web endpoints"""
         return self.web_endpoints.get_web_router()
     
-    def get_static_assets(self):
-        """Delegate to web endpoints"""
-        return self.web_endpoints.get_static_assets()
-    
-    def get_panels(self):
-        """Delegate to web endpoints"""
-        return self.web_endpoints.get_panels()
-    
-    def get_security_config(self):
-        """Delegate to web endpoints"""
-        return self.web_endpoints.get_security_config()
-
-
 PLUGIN_FACTORY = UserManagementPlugin
