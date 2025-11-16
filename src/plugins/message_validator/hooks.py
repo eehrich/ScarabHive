@@ -60,22 +60,22 @@ class ValidationResult:
 
 class InternalMessageValidator:
     """Internal validator for message sequences - contains all validation logic."""
-    
+
     def __init__(self, log_level: str = "warning"):
         self.log_level = log_level.lower()
-        
+
     def validate_and_repair(
-        self, 
-        messages: List[ChatMessage], 
+        self,
+        messages: List[ChatMessage],
         context: str = "unknown"
     ) -> ValidationResult:
         """
         Validate message sequence and apply automatic repairs.
-        
+
         Args:
             messages: List of chat messages to validate
             context: Context identifier for logging
-            
+
         Returns:
             ValidationResult with issues found and repaired messages
         """
@@ -86,46 +86,38 @@ class InternalMessageValidator:
                 repaired_messages=[],
                 repair_summary="Empty message list"
             )
-        
-        # Log message structure for debugging tool_call issues (debug level)
-        logger.debug(
-            f"[{context}] Validating {len(messages)} messages. "
-            f"Last message: role={messages[-1].role}, "
-            f"has_tool_calls={bool(messages[-1].tool_calls)}, "
-            f"message_roles=[{', '.join(m.role for m in messages[-5:])}]"
-        )
-        
+
         issues: List[ValidationIssue] = []
-        
+
         # Run all validation checks
         issues.extend(self._check_tool_call_consistency(messages))
         issues.extend(self._check_tool_names(messages))
         issues.extend(self._check_content_structure(messages))
         issues.extend(self._check_message_sequence(messages))
-        
+
         # Apply repairs if issues found
         repaired_messages = messages
         repair_summary = "No issues found"
-        
+
         if issues:
             repaired_messages = self._apply_repairs(messages, issues)
             repair_summary = self._generate_repair_summary(issues)
             self._log_validation_issues(issues, context, repair_summary)
-        
+
         is_valid = not any(issue.severity == "error" for issue in issues)
-        
+
         return ValidationResult(
             is_valid=is_valid,
             issues=issues,
             repaired_messages=repaired_messages,
             repair_summary=repair_summary
         )
-    
+
     def _check_tool_call_consistency(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
         """Check for orphaned tool calls and missing tool responses."""
         issues = []
         pending_tool_calls: Dict[str, int] = {}  # tool_call_id -> message_index
-        
+
         for i, msg in enumerate(messages):
             if msg.role == "assistant" and msg.tool_calls:
                 # Register tool calls that need responses
@@ -134,7 +126,7 @@ class InternalMessageValidator:
                         pending_tool_calls[tool_call.id] = i
                     elif isinstance(tool_call, dict) and 'id' in tool_call:
                         pending_tool_calls[tool_call['id']] = i
-                        
+
             elif msg.role == "tool":
                 # Check if this tool response has a matching call
                 tool_call_id = getattr(msg, 'tool_call_id', None)
@@ -142,7 +134,7 @@ class InternalMessageValidator:
                     # Try extracting from dict representation
                     msg_dict = msg.model_dump()
                     tool_call_id = msg_dict.get('tool_call_id')
-                    
+
                 if tool_call_id:
                     if tool_call_id in pending_tool_calls:
                         # Found matching tool call
@@ -151,7 +143,7 @@ class InternalMessageValidator:
                         # Orphaned tool response
                         issues.append(ValidationIssue(
                             type="orphaned_tool_response",
-                            severity="warning", 
+                            severity="warning",
                             message_index=i,
                             description=f"Tool response with id '{tool_call_id}' has no matching assistant tool call",
                             details={"tool_call_id": tool_call_id}
@@ -161,40 +153,41 @@ class InternalMessageValidator:
                     issues.append(ValidationIssue(
                         type="missing_tool_call_id",
                         severity="error",
-                        message_index=i, 
+                        message_index=i,
                         description="Tool message missing tool_call_id",
                         details={"content_preview": str(msg.content)[:100]}
                     ))
-        
+
         # Report any remaining pending tool calls (orphaned)
-        # BUT: If the last message is an assistant with tool_calls, don't mark as orphaned
-        # because tool responses are expected to be added AFTER this validation (pre_llm_call hook)
-        last_msg_is_tool_call = False
-        if messages:
-            last_msg = messages[-1]
-            if last_msg.role == "assistant" and last_msg.tool_calls:
-                last_msg_is_tool_call = True
-        
+        # CRITICAL FIX: ALL pending tool_calls without responses are orphaned!
+        # OpenAI API requires: "An assistant message with 'tool_calls' must be followed
+        # by tool messages responding to each 'tool_call_id'"
+        #
+        # This happens when:
+        # 1. Previous LLM call made tool_calls but they were interrupted (cancelled)
+        # 2. Conversation history was persisted with orphaned tool_calls
+        # 3. New LLM call tries to use this invalid history
+        #
+        # We MUST remove the tool_calls from the assistant message to make history valid.
+
         for tool_call_id, msg_idx in pending_tool_calls.items():
-            # Only report orphaned if NOT the last message (which expects responses to follow)
-            if not (last_msg_is_tool_call and msg_idx == len(messages) - 1):
-                logger.warning(
-                    f"Orphaned tool_call detected: id={tool_call_id}, msg_idx={msg_idx}"
-                )
-                issues.append(ValidationIssue(
-                    type="orphaned_tool_call",
-                    severity="error",
-                    message_index=msg_idx,
-                    description=f"Assistant tool call '{tool_call_id}' has no corresponding tool response",
-                    details={"tool_call_id": tool_call_id}
-                ))
-            
+            logger.warning(
+                f"Orphaned tool_call detected: id={tool_call_id}, msg_idx={msg_idx}"
+            )
+            issues.append(ValidationIssue(
+                type="orphaned_tool_call",
+                severity="error",
+                message_index=msg_idx,
+                description=f"Assistant tool call '{tool_call_id}' has no corresponding tool response",
+                details={"tool_call_id": tool_call_id}
+            ))
+
         return issues
-    
+
     def _check_tool_names(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
         """Check that tool names comply with OpenAI's naming requirements."""
         issues = []
-        
+
         for i, msg in enumerate(messages):
             if msg.role == "assistant" and msg.tool_calls:
                 for tool_idx, tool_call in enumerate(msg.tool_calls):
@@ -205,7 +198,7 @@ class InternalMessageValidator:
                     elif isinstance(tool_call, dict):
                         if 'function' in tool_call and isinstance(tool_call['function'], dict):
                             tool_name = tool_call['function'].get('name')
-                    
+
                     if tool_name and not OPENAI_TOOL_NAME_PATTERN.match(tool_name):
                         issues.append(ValidationIssue(
                             type="invalid_tool_name",
@@ -218,16 +211,16 @@ class InternalMessageValidator:
                                 "pattern": "^[a-zA-Z0-9_-]+$"
                             }
                         ))
-                        
+
         return issues
-    
+
     def _check_content_structure(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
         """Check for malformed or problematic content structures."""
         issues = []
-        
+
         for i, msg in enumerate(messages):
             content = msg.content
-            
+
             if content is None and not msg.tool_calls and msg.role == "assistant":
                 issues.append(ValidationIssue(
                     type="empty_assistant_message",
@@ -236,13 +229,13 @@ class InternalMessageValidator:
                     description="Assistant message with no content and no tool calls",
                     details={"role": msg.role}
                 ))
-                
+
         return issues
-    
+
     def _check_message_sequence(self, messages: List[ChatMessage]) -> List[ValidationIssue]:
         """Check for problematic message sequences."""
         issues = []
-        
+
         # Check for consecutive assistant messages
         for i in range(len(messages) - 1):
             if messages[i].role == "assistant" and messages[i + 1].role == "assistant":
@@ -253,40 +246,32 @@ class InternalMessageValidator:
                     description="Two consecutive assistant messages found",
                     details={"next_index": i + 1}
                 ))
-                
+
         return issues
-    
+
     def _apply_repairs(self, messages: List[ChatMessage], issues: List[ValidationIssue]) -> List[ChatMessage]:
         """Apply automatic repairs to fix validation issues."""
         repaired = messages.copy()
-        
+
         # Collect indices of messages to remove
         remove_indices: Set[int] = set()
-        
-        # Track tool_call_ids that will be removed
-        removed_tool_call_ids: Set[str] = set()
-        
+
+        # Track which assistant messages need their tool_calls removed
+        messages_to_strip_tool_calls: Set[int] = set()
+
         for issue in issues:
             if issue.type == "orphaned_tool_call":
-                # Remove assistant messages with orphaned tool calls
+                # Remove tool_calls from assistant message instead of adding fake responses
+                # This is cleaner and avoids sending fake tool execution results to LLM
                 msg_idx = issue.message_index
-                remove_indices.add(msg_idx)
-                
-                # Collect tool_call_ids from this message
-                if 0 <= msg_idx < len(repaired):
-                    msg = repaired[msg_idx]
-                    if msg.role == "assistant" and msg.tool_calls:
-                        for tc in msg.tool_calls:
-                            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-                            if tc_id:
-                                removed_tool_call_ids.add(tc_id)
-                
+                messages_to_strip_tool_calls.add(msg_idx)
+
             elif issue.type == "orphaned_tool_response":
                 remove_indices.add(issue.message_index)
-                
+
             elif issue.type == "missing_tool_call_id":
                 remove_indices.add(issue.message_index)
-            
+
             elif issue.type == "invalid_tool_name":
                 # Try to repair invalid tool names
                 msg_idx = issue.message_index
@@ -294,7 +279,7 @@ class InternalMessageValidator:
                     msg = repaired[msg_idx]
                     original_name = issue.details.get("tool_name", "")
                     sanitized_name = self._sanitize_tool_name(original_name)
-                    
+
                     if sanitized_name and OPENAI_TOOL_NAME_PATTERN.match(sanitized_name):
                         # Apply repair
                         if msg.role == "assistant" and msg.tool_calls:
@@ -303,72 +288,84 @@ class InternalMessageValidator:
                                 tool_call = msg.tool_calls[tool_idx]
                                 if hasattr(tool_call, 'function'):
                                     tool_call.function.name = sanitized_name
-                                logger.info(f"Repaired tool name: '{original_name}' -> '{sanitized_name}'")
                     else:
                         remove_indices.add(msg_idx)
-        
-        # Also remove any tool responses that belong to removed tool_calls (CASCADING REMOVAL)
-        if removed_tool_call_ids:
-            for i, msg in enumerate(repaired):
-                if msg.role == "tool" and hasattr(msg, "tool_call_id"):
-                    if msg.tool_call_id in removed_tool_call_ids:
-                        remove_indices.add(i)
-                        logger.debug(
-                            f"Cascading removal: tool response to removed tool_call_id={msg.tool_call_id}"
-                        )
-        
+
         # Remove problematic messages (in reverse order to preserve indices)
         for idx in sorted(remove_indices, reverse=True):
             if 0 <= idx < len(repaired):
                 repaired.pop(idx)
-                
+
+        # Strip tool_calls from assistant messages with orphaned calls
+        # We do this AFTER removals to work with adjusted indices
+        for msg_idx in messages_to_strip_tool_calls:
+            # Adjust index after removals
+            adjusted_idx = msg_idx
+            for removed_idx in sorted(remove_indices):
+                if removed_idx < msg_idx:
+                    adjusted_idx -= 1
+
+            if 0 <= adjusted_idx < len(repaired):
+                msg = repaired[adjusted_idx]
+                if msg.role == "assistant" and msg.tool_calls:
+                    # Create a new message without tool_calls
+                    # Preserve content if it exists
+                    new_content = msg.content if msg.content else "Tool execution was interrupted"
+
+                    # Create new ChatMessage without tool_calls
+                    repaired[adjusted_idx] = ChatMessage(
+                        role="assistant",
+                        content=new_content,
+                        name=msg.name if hasattr(msg, 'name') else None
+                    )
+
         return repaired
-    
-    
+
+
     def _sanitize_tool_name(self, name: str) -> str:
         """Attempt to sanitize an invalid tool name."""
         if not name:
             return ""
-        
+
         sanitized = name.replace("/", "__")
         sanitized = sanitized.replace(".", "_")
         sanitized = sanitized.replace(" ", "_")
         sanitized = re.sub(r'[^a-zA-Z0-9_-]', '', sanitized)
         sanitized = re.sub(r'_{3,}', '__', sanitized)
         sanitized = sanitized.strip('_')
-        
+
         return sanitized
-    
+
     def _generate_repair_summary(self, issues: List[ValidationIssue]) -> str:
         """Generate human-readable repair summary."""
         if not issues:
             return "No repairs needed"
-            
+
         error_count = len([i for i in issues if i.severity == "error"])
         warning_count = len([i for i in issues if i.severity == "warning"])
-        
+
         issue_types = {}
         for issue in issues:
             issue_types[issue.type] = issue_types.get(issue.type, 0) + 1
-            
+
         type_summary = ", ".join([f"{count} {issue_type}" for issue_type, count in issue_types.items()])
-        
+
         parts = []
         if error_count:
             parts.append(f"{error_count} errors")
         if warning_count:
             parts.append(f"{warning_count} warnings")
-        
+
         return f"Found {', '.join(parts)}: {type_summary}"
-    
+
     def _log_validation_issues(self, issues: List[ValidationIssue], context: str, repair_summary: str):
         """Log validation issues with appropriate detail level."""
         if not issues:
             return
-            
+
         error_issues = [i for i in issues if i.severity == "error"]
-        warning_issues = [i for i in issues if i.severity == "warning"] 
-        
+        warning_issues = [i for i in issues if i.severity == "warning"]
+
         if error_issues or warning_issues:
             logger.warning(
                 f"Message validation auto-repaired {len(issues)} issues in {context}: {repair_summary}"
@@ -378,31 +375,29 @@ class InternalMessageValidator:
 class MessageValidatorPlugin(SchemaBasedPluginHook):
     """
     Schema-based hook plugin for message validation.
-    
+
     Hook definitions and configuration are loaded from schema.yaml.
     """
-    
+
     def __init__(self, plugin_dir: Path | str):
         """Initialize the message validator plugin.
-        
+
         Args:
             plugin_dir: Directory containing schema.yaml
         """
         super().__init__(plugin_dir)
-        
+
         # Get config
         config = self.get_config()
         log_level = config.get('log_level', 'warning')
-        
+
         # Initialize internal validator
         self.validator = InternalMessageValidator(log_level=log_level)
-        
-        logger.info("MessageValidatorPlugin initialized with comprehensive validation")
-    
+
     async def validate_messages(self, context: HookContext) -> HookResult:
         """
         Main validation hook - validates and repairs messages.
-        
+
         Performs:
         1. Tool call consistency checking (orphaned calls/responses)
         2. Tool name validation (OpenAI API compliance)
@@ -412,10 +407,10 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
         """
         try:
             messages = context.messages or []
-            
+
             if not messages:
                 return HookResult(success=True, modified=False, context=context)
-            
+
             # Convert dict messages to ChatMessage objects if needed
             chat_messages = []
             for msg in messages:
@@ -423,15 +418,42 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                     chat_messages.append(ChatMessage(**msg))
                 else:
                     chat_messages.append(msg)
-            
+
             # Run validation and repair
             result = self.validator.validate_and_repair(chat_messages, context="message_validator")
-            
+
             # Update context with repaired messages (keep as ChatMessage objects!)
             modified_context = replace(context, messages=result.repaired_messages)
-            
-            modified = len(result.issues) > 0
-            
+
+            # Detect if messages were actually modified
+            # Check if validator returned the same list reference (no issues found)
+            # vs. a new list (issues found and repaired)
+            if result.repaired_messages is chat_messages:
+                # Same reference = no repairs were made
+                modified = False
+            elif len(result.repaired_messages) != len(chat_messages):
+                # Different lengths = definitely modified
+                modified = True
+            else:
+                # Same length but possibly different content - compare objects
+                # This catches cases where tool_calls were stripped from messages
+                modified = result.repaired_messages != chat_messages
+
+            # Fallback: if we have error-level issues, something should have been repaired
+            if not modified and any(issue.severity == "error" for issue in result.issues):
+                logger.warning(
+                    f"Validator reported {len(result.issues)} error-level issues "
+                    "but returned same message list - this indicates a validator bug"
+                )
+                modified = True
+
+            # Log when messages were repaired
+            if modified and result.issues:
+                logger.warning(
+                    f"Hook 'message_validator.validate_messages' repaired {len(result.issues)} issues: "
+                    f"{result.repair_summary}"
+                )
+
             return HookResult(
                 success=True,
                 modified=modified,
@@ -441,31 +463,31 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                     'issues_count': len(result.issues)
                 }
             )
-            
+
         except Exception as e:
             logger.exception(f"Error in message validation: {e}")
             return HookResult(success=False, modified=False, context=context, error=str(e))
-    
+
     async def validate_structure(self, context: HookContext) -> HookResult:
         """
         Validates message structure - runs before main validator.
-        
+
         Checks:
         - Messages have required fields
         - Basic structure integrity
         """
         try:
             messages = context.messages or []
-            
+
             if not messages:
                 return HookResult(success=True, modified=False, context=context)
-            
+
             # Get config
             config = self.get_config()
             strict_mode = config.get('strict_mode', False)
-            
+
             errors = []
-            
+
             for i, msg in enumerate(messages):
                 # Check basic structure
                 if isinstance(msg, ChatMessage):
@@ -480,17 +502,17 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                         if strict_mode:
                             return HookResult(success=False, modified=False, context=context, error=error)
                         errors.append(error)
-            
+
             if errors:
                 logger.warning(f"Structure validation issues: {'; '.join(errors)}")
-            
+
             return HookResult(
                 success=True,
                 modified=False,
                 context=context,
                 metadata={'structure_errors': errors}
             )
-            
+
         except Exception as e:
             logger.exception(f"Error in structure validation: {e}")
             return HookResult(success=False, modified=False, context=context, error=str(e))

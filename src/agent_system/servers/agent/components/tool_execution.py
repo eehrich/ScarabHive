@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
-    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None, 
+    def __init__(self, registry: MCPRegistry, agent: Optional[Agent] = None,
                  status_forwarder: Optional[StatusEventForwarder] = None):
         self.registry = registry  # Legacy registry (empty for now)
         # Optional Agent instance for centralized counters and MCP integration access
@@ -59,7 +59,7 @@ class ToolExecutionManager:
 
     async def _invoke_tool(self, tool_name: str, params: Dict[str, Any]):
         """Execute a tool call against the registry and return results.
-        
+
         Modern interface: tool_name IS the function/method to call.
         No separate action_name needed - the tool name identifies the exact operation.
         """
@@ -81,19 +81,19 @@ class ToolExecutionManager:
             except Exception as e:
                 logger.exception("Plugin tool %s invocation failed: %s", tool_name, e)
                 raise
-        
+
         # If no plugin adapter, try to get server directly (for config agents)
         server = None
         if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
             server = self._agent._get_server_from_any_registry(tool_name)
-        
+
         # Final fallback to legacy registry (though it's usually empty)
         if not server:
             server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
 
         if not server:
             raise RuntimeError(f"Unknown tool: {tool_name}")
-        
+
         try:
             # Check if server has call_with_status (MCP server interface)
             if hasattr(server, 'call_with_status'):
@@ -109,10 +109,10 @@ class ToolExecutionManager:
     async def execute_tools(self, tool_calls: List[Dict], tool_name_mapping: Dict[str, str],
                           available_tools: List[str], step: int, request_id: str | None = None) -> tuple[List[ChatMessage], List[Dict], List[Dict]]:
         """Execute all tool calls and return tool result messages, events, and results.
-        
+
         This is a convenience wrapper around execute_tools_streaming() for backward compatibility
         and testing. It collects all streaming results and returns them as a tuple.
-        
+
         For production use with real-time status streaming, use execute_tools_streaming() directly.
 
         Returns:
@@ -121,7 +121,7 @@ class ToolExecutionManager:
         tool_messages = []
         events_to_yield = []
         results_to_add: List[Dict] = []
-        
+
         # Collect all results from the streaming version
         async for item in self.execute_tools_streaming(tool_calls, tool_name_mapping, available_tools, step, request_id):
             if item["type"] == "status":
@@ -146,29 +146,29 @@ class ToolExecutionManager:
         user_id: str | None = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
-        
+
         This async generator allows status events from sub-agents to be streamed
         to the client while tools are still executing, instead of buffering them
         until all tools complete.
-        
+
         Args:
             session_id: Agent session ID to inject into tool params for session-aware tools
             user_id: User ID to inject into tool params for multi-user isolation
-        
+
         Yields:
             Dict with either:
             - {"type": "status", "event": {...}} - Status event to forward
-            - {"type": "tool_events", "events": [...]} - Tool execution events  
+            - {"type": "tool_events", "events": [...]} - Tool execution events
             - {"type": "complete", "messages": [...], "results": [...]} - Final results
         """
         # Store session_id and user_id for use in tool execution
         self._current_session_id = session_id
         self._current_user_id = user_id
-        
+
         tool_messages = []
         events_to_yield = []
         results_to_add: List[Dict] = []
-        
+
         # Prepare tool executions (same as execute_tools())
         valid_tool_executions = []
 
@@ -237,13 +237,13 @@ class ToolExecutionManager:
             while pending:
                 # Wait for any task completion or timeout (50ms polling interval)
                 done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
-                
+
                 # Yield any pending status events from sub-agents
                 if self._status_forwarder:
                     status_events = self._status_forwarder.get_pending_events()
                     for status_event in status_events:
                         yield {"type": "status", "event": status_event}
-                
+
                 # Process completed tasks
                 for task in done:
                     try:
@@ -264,11 +264,11 @@ class ToolExecutionManager:
                 status_events = self._status_forwarder.get_pending_events()
                 for status_event in status_events:
                     yield {"type": "status", "event": status_event}
-        
+
         # Yield tool execution events
         if events_to_yield:
             yield {"type": "tool_events", "events": events_to_yield}
-        
+
         # Yield final completion with all results
         yield {
             "type": "complete",
@@ -336,6 +336,21 @@ class ToolExecutionManager:
                     # Task was force-cancelled
                     logger.warning("Tool %s force-cancelled (request_id: %s)", tool_name, request_id)
                     return self._create_cancelled_response(tc, tool_name, openai_tool_name, request_id, forced=True)
+                except Exception as e:
+                    # Tool execution failed with exception - CRITICAL: Must return error response to avoid orphaned tool_calls
+                    logger.exception("Tool %s execution failed (request_id: %s): %s", tool_name, request_id, e)
+                    tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                    error_content = json.dumps({
+                        "error": f"Tool '{tool_name}' execution failed: {str(e)}",
+                        "type": type(e).__name__
+                    })
+                    message = ChatMessage(
+                        role="tool",
+                        tool_call_id=tool_call_id,
+                        name=sanitize_for_llm(openai_tool_name),
+                        content=sanitize_json_content(error_content)
+                    )
+                    return message, [{"type": "tool_error", "tool": tool_name, "error": str(e), "request_id": request_id}], []
 
             except CancellationError as e:
                 # Tool gracefully cancelled itself
@@ -424,7 +439,7 @@ class ToolExecutionManager:
                 logger.exception("External tool %s invocation failed: %s", tool_name, e)
                 tool_call_id = tc.get("id") or f"{tool_name}-error-{int(time.time()*1000)}"
                 error_content = json.dumps({"error": f"Tool invocation failed: {str(e)}"})
-            
+
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,
@@ -437,20 +452,20 @@ class ToolExecutionManager:
                                  params: Dict[str, Any], step: int, request_id: str | None = None) -> tuple[ChatMessage, List[Dict], List[Dict]]:
         """Execute a plugin tool (or config agent tool)."""
         # CRITICAL FIX: Check if tool_name exists as a registered server FIRST
-        # This prevents prefix-based false positives where "sysadmin_agent_manager" 
+        # This prevents prefix-based false positives where "sysadmin_agent_manager"
         # incorrectly matches "sysadmin_agent_" prefix check
         server = None
-        
+
         # Try to get server from registries first
         if self._agent and hasattr(self._agent, '_get_server_from_any_registry'):
             server = self._agent._get_server_from_any_registry(tool_name)
-        
+
         # If not found in registry, check if it's an own tool using prefix check
         if not server and self._agent and tool_name.startswith(f"{self._agent.name}_"):
             # This is likely an own tool - use the agent itself as the server
             server = self._agent
             logger.debug(f"Tool '{tool_name}' is agent's own tool (prefix match), using self as server")
-        
+
         # Legacy fallback paths (for systems not using _get_server_from_any_registry)
         if not server:
             # Get plugin server from MCP integration plugin registry
@@ -468,7 +483,7 @@ class ToolExecutionManager:
                     agent_registry = self._agent.registry
                     if agent_registry and tool_name in agent_registry.list():
                         server = agent_registry.get(tool_name)
-                
+
                 # Final fallback to legacy registry (though it may be empty)
                 if not server:
                     server = self.registry.get(tool_name) if tool_name in self.registry.list() else None
@@ -484,38 +499,38 @@ class ToolExecutionManager:
 
         try:
             logger.info("Invoking tool %s with params %s", openai_tool_name, params)
-            
+
             # Inject session context from current execution context if available
             if self._current_session_id or self._current_user_id or request_id or (self._agent and hasattr(self._agent, 'name')) or (self._agent and hasattr(self._agent, 'registry')):
                 params = params.copy()  # Don't mutate original
-                
+
                 if self._current_session_id:
                     params["_session_id"] = self._current_session_id
                     logger.debug(f"✓ Injected session_id '{self._current_session_id}' into tool params")
-                
+
                 if self._current_user_id:
                     params["_user_id"] = self._current_user_id
                     logger.debug(f"✓ Injected user_id '{self._current_user_id}' into tool params")
-                
+
                 if request_id:
                     params["_request_id"] = request_id
                     logger.debug(f"✓ Injected request_id '{request_id}' into tool params")
-                
+
                 if self._agent and hasattr(self._agent, 'name'):
                     params["_agent_name"] = self._agent.name
                     logger.debug(f"✓ Injected agent_name '{self._agent.name}' into tool params")
-                
+
                 # Inject the agent instance itself for tools that need it
                 # Tools can access agent._session_service, agent.registry, etc.
                 if self._agent:
                     params["_agent"] = self._agent
                     logger.debug("✓ Injected agent instance into tool params")
-                
+
             if hasattr(server, 'call_with_status'):
                 tool_result = await server.call_with_status(openai_tool_name, params)
             else:
                 tool_result = await server.call(openai_tool_name, params)
-                
+
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
             results.append({
@@ -548,7 +563,7 @@ class ToolExecutionManager:
                 logger.exception("Tool %s invocation failed: %s", tool_name, e)
                 tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
                 error_content = json.dumps({"error": sanitize_for_llm(str(e))})
-            
+
             message = ChatMessage(
                 role="tool",
                 tool_call_id=tool_call_id,

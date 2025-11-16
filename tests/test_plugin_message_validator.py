@@ -40,20 +40,23 @@ class TestToolCallConsistency:
             ),
             ChatMessage(role="assistant", content="It's sunny and 72°F!")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert result.is_valid
         assert len(result.issues) == 0
         assert len(result.repaired_messages) == 4
 
     def test_orphaned_tool_call(self):
         """Test detection of orphaned tool call (no response).
-        
-        Note: If the assistant message with tool_calls is the LAST message,
-        it's NOT considered orphaned because tool responses are expected
-        to be added AFTER validation (e.g., in pre_llm_call hook scenario).
+
+        CRITICAL FIX: ALL tool_calls without responses are orphaned!
+        This happens when previous LLM calls made tool_calls but execution
+        was interrupted. The conversation history contains assistant messages
+        with tool_calls but no tool responses, which violates OpenAI API rules.
+
+        Repair strategy: Strip tool_calls from assistant message (keep message).
         """
         # Case 1: Assistant with tool_calls is NOT the last message -> orphaned
         messages = [
@@ -65,20 +68,23 @@ class TestToolCallConsistency:
             ),
             ChatMessage(role="user", content="Any update?")  # Another message after
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert not result.is_valid
         # Should detect orphaned tool call
         orphaned_issues = [i for i in result.issues if i.type == "orphaned_tool_call"]
         assert len(orphaned_issues) == 1
         assert orphaned_issues[0].severity == "error"
-        # Repaired messages should remove the assistant with orphaned tool call
-        assert len(result.repaired_messages) < len(messages)
-        
-        # Case 2: Assistant with tool_calls IS the last message -> NOT orphaned
-        # (tool responses will be added after validation)
+        # Repaired messages should KEEP same count but strip tool_calls
+        assert len(result.repaired_messages) == len(messages)
+        # Assistant message should have no tool_calls anymore
+        assert result.repaired_messages[1].role == "assistant"
+        assert result.repaired_messages[1].tool_calls is None
+
+        # Case 2: Assistant with tool_calls IS the last message -> ALSO orphaned!
+        # This is the critical fix - these MUST be detected to prevent OpenAI 400 errors
         messages_last = [
             ChatMessage(role="user", content="What's the weather?"),
             ChatMessage(
@@ -87,15 +93,16 @@ class TestToolCallConsistency:
                 tool_calls=[{"id": "call_1", "function": {"name": "weather_forecast"}}]
             )
         ]
-        
+
         result_last = validator.validate_and_repair(messages_last, "test")
-        
-        # Should be valid (tool responses expected to follow)
-        assert result_last.is_valid
+
+        # Should be INVALID now (orphaned tool_calls detected)
+        assert not result_last.is_valid
         orphaned_issues_last = [i for i in result_last.issues if i.type == "orphaned_tool_call"]
-        assert len(orphaned_issues_last) == 0
-        # Messages should remain unchanged
+        assert len(orphaned_issues_last) == 1
+        # Messages count stays same, but tool_calls are stripped
         assert len(result_last.repaired_messages) == len(messages_last)
+        assert result_last.repaired_messages[1].tool_calls is None
 
     def test_orphaned_tool_response(self):
         """Test detection of orphaned tool response (no call)."""
@@ -109,10 +116,10 @@ class TestToolCallConsistency:
             ),
             ChatMessage(role="assistant", content="Got it!")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert len(result.issues) == 1
         assert result.issues[0].type == "orphaned_tool_response"
         assert result.issues[0].severity == "warning"
@@ -126,10 +133,10 @@ class TestToolCallConsistency:
             ChatMessage(role="tool", content="Some data", name="test_tool"),
             ChatMessage(role="assistant", content="Got it!")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert not result.is_valid
         assert len(result.issues) == 1
         assert result.issues[0].type == "missing_tool_call_id"
@@ -151,10 +158,10 @@ class TestToolCallConsistency:
             ChatMessage(role="tool", content="3:00 PM", tool_call_id="call_2"),
             ChatMessage(role="assistant", content="Weather is sunny, time is 3 PM")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert result.is_valid
         assert len(result.issues) == 0
 
@@ -169,10 +176,10 @@ class TestContentStructure:
             ChatMessage(role="assistant", content=None),
             ChatMessage(role="user", content="Are you there?")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert len(result.issues) == 1
         assert result.issues[0].type == "empty_assistant_message"
         assert result.issues[0].severity == "warning"
@@ -188,10 +195,10 @@ class TestContentStructure:
             ),
             ChatMessage(role="tool", content="Sunny", tool_call_id="call_1")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         # Should not flag as empty assistant since it has tool_calls
         empty_assistant_issues = [i for i in result.issues if i.type == "empty_assistant_message"]
         assert len(empty_assistant_issues) == 0
@@ -210,10 +217,10 @@ class TestMessageSequence:
             ChatMessage(role="assistant", content="Hi there!"),
             ChatMessage(role="assistant", content="How can I help?")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert len(result.issues) == 1
         assert result.issues[0].type == "consecutive_assistant_messages"
         assert result.issues[0].severity == "warning"
@@ -226,10 +233,10 @@ class TestMessageSequence:
             ChatMessage(role="user", content="How are you?"),
             ChatMessage(role="assistant", content="I'm good!")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         # Should not have sequence issues
         sequence_issues = [i for i in result.issues if i.type == "consecutive_assistant_messages"]
         assert len(sequence_issues) == 0
@@ -239,7 +246,11 @@ class TestRepairFunctionality:
     """Test message repair functionality."""
 
     def test_repair_removes_orphaned_tool_call(self):
-        """Test that repair removes messages with orphaned tool calls."""
+        """Test that repair strips tool_calls from messages with orphaned calls.
+
+        NEW BEHAVIOR: Keep the assistant message, but remove tool_calls.
+        This is cleaner than removing the entire message or adding fake responses.
+        """
         messages = [
             ChatMessage(role="user", content="Hello"),
             ChatMessage(
@@ -249,14 +260,16 @@ class TestRepairFunctionality:
             ),
             ChatMessage(role="user", content="Anything?")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
-        # Repaired messages should have removed the assistant with orphaned tool call
-        assert len(result.repaired_messages) == 2
+
+        # Repaired messages should KEEP all messages but strip tool_calls
+        assert len(result.repaired_messages) == 3
         assert result.repaired_messages[0].role == "user"
-        assert result.repaired_messages[1].role == "user"
+        assert result.repaired_messages[1].role == "assistant"
+        assert result.repaired_messages[1].tool_calls is None  # tool_calls removed!
+        assert result.repaired_messages[2].role == "user"
 
     def test_repair_removes_orphaned_tool_response(self):
         """Test that repair removes orphaned tool responses."""
@@ -265,10 +278,10 @@ class TestRepairFunctionality:
             ChatMessage(role="tool", content="Data", tool_call_id="call_999"),
             ChatMessage(role="assistant", content="Done")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         # Should remove the orphaned tool response
         assert len(result.repaired_messages) == 2
         assert all(msg.role != "tool" for msg in result.repaired_messages)
@@ -280,10 +293,10 @@ class TestRepairFunctionality:
             ChatMessage(role="tool", content="Data", name="test"),
             ChatMessage(role="assistant", content="Done")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         # Should remove the tool message without ID
         assert len(result.repaired_messages) == 2
         assert all(msg.role != "tool" for msg in result.repaired_messages)
@@ -298,10 +311,10 @@ class TestRepairSummary:
             ChatMessage(role="user", content="Hello"),
             ChatMessage(role="assistant", content="Hi!")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert result.repair_summary == "No issues found"
 
     def test_summary_with_issues(self):
@@ -315,10 +328,10 @@ class TestRepairSummary:
             ),
             ChatMessage(role="tool", content="Data", tool_call_id="call_999")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         # Should have error and warning
         assert "error" in result.repair_summary or "warning" in result.repair_summary
         assert "orphaned" in result.repair_summary
@@ -330,10 +343,10 @@ class TestValidationResult:
     def test_validation_result_structure(self):
         """Test that ValidationResult has all required fields."""
         messages = [ChatMessage(role="user", content="Hello")]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert hasattr(result, 'is_valid')
         assert hasattr(result, 'issues')
         assert hasattr(result, 'repaired_messages')
@@ -349,10 +362,10 @@ class TestValidationResult:
             ChatMessage(role="user", content="Hello"),
             ChatMessage(role="assistant", content=None)
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         if result.issues:
             issue = result.issues[0]
             assert hasattr(issue, 'type')
@@ -377,10 +390,10 @@ class TestComplexScenarios:
                 tool_call_id="call_999"  # Orphaned tool response
             )
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         # Should detect multiple issues
         assert len(result.issues) >= 2
         issue_types = [i.type for i in result.issues]
@@ -404,10 +417,10 @@ class TestComplexScenarios:
             ChatMessage(role="tool", content="Result 2", tool_call_id="call_2"),
             ChatMessage(role="assistant", content="Done!")
         ]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert result.is_valid
         assert len(result.issues) == 0
 
@@ -418,10 +431,10 @@ class TestEdgeCases:
     def test_empty_message_list(self):
         """Test validation with empty message list."""
         messages = []
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert result.is_valid
         assert len(result.issues) == 0
         assert len(result.repaired_messages) == 0
@@ -429,12 +442,289 @@ class TestEdgeCases:
     def test_single_message(self):
         """Test validation with single message."""
         messages = [ChatMessage(role="user", content="Hello")]
-        
+
         validator = InternalMessageValidator()
         result = validator.validate_and_repair(messages, "test")
-        
+
         assert result.is_valid
         assert len(result.repaired_messages) == 1
+
+
+class TestHookIntegration:
+    """Test Hook integration to verify modified flag and context propagation."""
+
+    def test_hook_sets_modified_true_when_repairs_made(self):
+        """Test that Hook returns modified=True when validator makes repairs."""
+        from plugins.message_validator.hooks import MessageValidatorPlugin
+        from agent_system.hooks import HookContext, HookType
+        from pathlib import Path
+        import asyncio
+
+        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "message_validator"
+        plugin = MessageValidatorPlugin(plugin_dir)
+
+        # Create context with orphaned tool_calls
+        messages = [
+            {"role": "user", "content": "test"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1", "function": {"name": "test_tool"}}]
+            },
+            {"role": "user", "content": "continue"}
+        ]
+        context = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="test_req",
+            session_id="test_session",
+            messages=messages
+        )
+
+        # Execute hook
+        result = asyncio.run(plugin.validate_messages(context))
+
+        # Verify modified flag is set
+        assert result.success
+        assert result.modified, "Hook should return modified=True when repairs are made"
+        assert result.metadata["issues_count"] > 0
+        assert "orphaned" in result.metadata["validation_result"].lower()
+
+    def test_hook_sets_modified_false_when_no_issues(self):
+        """Test that Hook returns modified=False when no repairs needed."""
+        from plugins.message_validator.hooks import MessageValidatorPlugin
+        from agent_system.hooks import HookContext, HookType
+        from pathlib import Path
+        import asyncio
+
+        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "message_validator"
+        plugin = MessageValidatorPlugin(plugin_dir)
+
+        # Create context with valid messages
+        messages = [
+            {"role": "user", "content": "test"},
+            {"role": "assistant", "content": "response"}
+        ]
+        context = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="test_req",
+            session_id="test_session",
+            messages=messages
+        )
+
+        # Execute hook
+        result = asyncio.run(plugin.validate_messages(context))
+
+        # Verify modified flag is NOT set
+        assert result.success
+        assert not result.modified, "Hook should return modified=False when no repairs needed"
+        assert result.metadata["issues_count"] == 0
+
+    def test_hook_propagates_repaired_messages_in_context(self):
+        """Test that Hook propagates repaired messages back in context."""
+        from plugins.message_validator.hooks import MessageValidatorPlugin
+        from agent_system.hooks import HookContext, HookType
+        from pathlib import Path
+        import asyncio
+
+        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "message_validator"
+        plugin = MessageValidatorPlugin(plugin_dir)
+
+        # Create context with orphaned tool_calls
+        messages = [
+            {"role": "user", "content": "test"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1", "function": {"name": "test_tool"}}]
+            }
+        ]
+        context = HookContext(
+            hook_type=HookType.PRE_LLM_CALL,
+            request_id="test_req",
+            session_id="test_session",
+            messages=messages
+        )
+
+        # Execute hook
+        result = asyncio.run(plugin.validate_messages(context))
+
+        # Verify repaired messages are in context
+        assert result.success
+        assert result.modified
+        assert len(result.context.messages) == 2
+        # Verify tool_calls were stripped
+        repaired_assistant = result.context.messages[1]
+        assert repaired_assistant.tool_calls is None
+        assert repaired_assistant.content == "Tool execution was interrupted"
+
+
+class TestOrphanedToolCallsAdvanced:
+    """Advanced tests for orphaned tool_calls detection and repair."""
+
+    def test_orphaned_toolcall_at_end_of_history(self):
+        """Test critical case: orphaned tool_call as last message.
+
+        This is the case that causes OpenAI 400 errors:
+        - Previous LLM call made tool_calls
+        - Request was cancelled/interrupted
+        - tool_calls persisted in history without responses
+        - Next LLM call fails with "insufficient tool messages"
+        """
+        messages = [
+            ChatMessage(role="user", content="What's the weather?"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "get_weather"}}]
+            )
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect orphaned tool_call even at end of history
+        assert not result.is_valid
+        orphaned_issues = [i for i in result.issues if i.type == "orphaned_tool_call"]
+        assert len(orphaned_issues) == 1
+
+        # Should strip tool_calls from assistant message
+        assert len(result.repaired_messages) == 2
+        assert result.repaired_messages[1].role == "assistant"
+        assert result.repaired_messages[1].tool_calls is None
+        assert result.repaired_messages[1].content == "Tool execution was interrupted"
+
+    def test_multiple_orphaned_toolcalls_same_message(self):
+        """Test multiple orphaned tool_calls in one assistant message."""
+        messages = [
+            ChatMessage(role="user", content="Tell me about weather and news"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {"id": "call_1", "function": {"name": "get_weather"}},
+                    {"id": "call_2", "function": {"name": "get_news"}},
+                    {"id": "call_3", "function": {"name": "search_web"}}
+                ]
+            ),
+            ChatMessage(role="user", content="Still waiting...")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect all 3 orphaned tool_calls
+        assert not result.is_valid
+        orphaned_issues = [i for i in result.issues if i.type == "orphaned_tool_call"]
+        assert len(orphaned_issues) == 3
+
+        # Should strip all tool_calls
+        assert result.repaired_messages[1].tool_calls is None
+
+    def test_partial_tool_responses(self):
+        """Test case where some tool_calls have responses, others don't."""
+        messages = [
+            ChatMessage(role="user", content="Get weather and news"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {"id": "call_1", "function": {"name": "get_weather"}},
+                    {"id": "call_2", "function": {"name": "get_news"}}
+                ]
+            ),
+            ChatMessage(role="tool", content="Sunny", tool_call_id="call_1"),
+            ChatMessage(role="user", content="What about the news?")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect orphaned call_2
+        assert not result.is_valid
+        orphaned_issues = [i for i in result.issues if i.type == "orphaned_tool_call"]
+        assert len(orphaned_issues) == 1
+        assert orphaned_issues[0].details["tool_call_id"] == "call_2"
+
+    def test_orphaned_tool_calls_with_content(self):
+        """Test orphaned tool_calls with existing content in assistant message."""
+        messages = [
+            ChatMessage(role="user", content="Search for Python docs"),
+            ChatMessage(
+                role="assistant",
+                content="Let me search for that...",
+                tool_calls=[{"id": "call_1", "function": {"name": "web_search"}}]
+            ),
+            ChatMessage(role="user", content="Never mind")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect orphaned tool_call
+        assert not result.is_valid
+
+        # Should preserve original content when stripping tool_calls
+        assert result.repaired_messages[1].content == "Let me search for that..."
+        assert result.repaired_messages[1].tool_calls is None
+
+    def test_consecutive_orphaned_tool_calls(self):
+        """Test multiple orphaned tool_calls in consecutive messages."""
+        messages = [
+            ChatMessage(role="user", content="First request"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_1", "function": {"name": "tool1"}}]
+            ),
+            ChatMessage(role="user", content="Second request"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_2", "function": {"name": "tool2"}}]
+            ),
+            ChatMessage(role="user", content="Third request")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect both orphaned tool_calls
+        orphaned_issues = [i for i in result.issues if i.type == "orphaned_tool_call"]
+        assert len(orphaned_issues) == 2
+
+        # Should strip tool_calls from both assistant messages
+        assert result.repaired_messages[1].tool_calls is None
+        assert result.repaired_messages[3].tool_calls is None
+
+    def test_orphaned_then_valid_sequence(self):
+        """Test orphaned tool_call followed by valid tool_call sequence."""
+        messages = [
+            ChatMessage(role="user", content="First try"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_orphaned", "function": {"name": "tool1"}}]
+            ),
+            ChatMessage(role="user", content="Try again"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{"id": "call_valid", "function": {"name": "tool2"}}]
+            ),
+            ChatMessage(role="tool", content="Success", tool_call_id="call_valid")
+        ]
+
+        validator = InternalMessageValidator()
+        result = validator.validate_and_repair(messages, "test")
+
+        # Should detect only the orphaned one
+        orphaned_issues = [i for i in result.issues if i.type == "orphaned_tool_call"]
+        assert len(orphaned_issues) == 1
+        assert orphaned_issues[0].details["tool_call_id"] == "call_orphaned"
+
+        # Should only strip first assistant's tool_calls
+        assert result.repaired_messages[1].tool_calls is None
+        assert result.repaired_messages[3].tool_calls is not None
 
     # Note: ChatMessage.tool_calls must be list of dicts, not custom objects
     # Test removed as it tests unsupported tool_calls format
