@@ -6,7 +6,7 @@ Provides web UI for viewing usage statistics and history.
 """
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.factory import resolve_llm_config_for_agent

@@ -214,7 +214,7 @@ class FileOperations:
                         # Line ending mismatch detected
                         return {
                             "status": "error",
-                            "error": f"String not found with exact whitespace. Detected CRLF/LF mismatch.",
+                            "error": "String not found with exact whitespace. Detected CRLF/LF mismatch.",
                             "error_type": "WhitespaceMatchError",
                             "file_path": str(path),
                             "hint": "The file uses different line endings than your search string. Normalize line endings or use replace_lines mode."
@@ -227,7 +227,7 @@ class FileOperations:
                     if stripped_old_string in stripped_content:
                         return {
                             "status": "error",
-                            "error": f"String not found with exact whitespace. Content matches but spaces/tabs differ.",
+                            "error": "String not found with exact whitespace. Content matches but spaces/tabs differ.",
                             "error_type": "WhitespaceMatchError",
                             "file_path": str(path),
                             "hint": "Whitespace (spaces/tabs) doesn't match exactly. Copy the exact indentation from the file or use replace_lines mode."
