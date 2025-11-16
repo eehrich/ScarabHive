@@ -88,37 +88,34 @@ class FileSearchEngine:
                 )
             )
             
-            # Create embedding function with GPU preference (fallback to CPU)
-            embedding_fn = embedding_functions.ONNXMiniLM_L6_V2(
-                preferred_providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
-            )
+            # Create embedding function with auto-detection of available providers
+            # Don't specify preferred_providers to let ONNX auto-detect what's available
+            # This prevents errors when CUDA or other specific providers aren't installed
+            embedding_fn = embedding_functions.ONNXMiniLM_L6_V2()
             
             # Robust collection initialization with error handling
+            # Always recreate collection to ensure embedding function compatibility
+            # This prevents issues with persisted collections that have incompatible provider settings
+            collection_name = "file_ops_semantic_index"
+            
             try:
-                # First try to get existing collection
-                self.chroma_collection = self.chroma_client.get_collection(
-                    name="file_ops_semantic_index"
-                )
-                logger.info("Loaded existing ChromaDB collection")
-                
-            except Exception as get_error:
-                # If collection doesn't exist or has issues, create new one
-                logger.info(f"Creating new ChromaDB collection: {get_error}")
-                
-                # Try to delete existing collection if it exists but has issues
-                try:
-                    self.chroma_client.delete_collection("file_ops_semantic_index")
-                    logger.info("Deleted problematic ChromaDB collection")
-                except Exception as delete_error:
-                    logger.debug(f"No collection to delete or delete failed: {delete_error}")
-                
-                # Create new collection
+                # Delete existing collection if it exists (to avoid provider mismatch issues)
+                self.chroma_client.delete_collection(collection_name)
+                logger.info(f"Deleted existing ChromaDB collection '{collection_name}'")
+            except Exception as delete_error:
+                logger.debug(f"No existing collection to delete: {delete_error}")
+            
+            # Create new collection with current embedding function
+            try:
                 self.chroma_collection = self.chroma_client.create_collection(
-                    name="file_ops_semantic_index",
+                    name=collection_name,
                     metadata={"description": "Semantic index for file content"},
                     embedding_function=embedding_fn
                 )
-                logger.info("Created new ChromaDB collection")
+                logger.info(f"Created new ChromaDB collection '{collection_name}'")
+            except Exception as create_error:
+                logger.error(f"Failed to create ChromaDB collection: {create_error}")
+                raise ChromaDBError(f"Collection creation failed: {create_error}")
             
             self._chroma_initialized = True
             logger.info(f"ChromaDB initialized at {chroma_path}")
