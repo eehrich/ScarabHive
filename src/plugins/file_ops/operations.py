@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class FileOperations:
     """Safe file operation implementations."""
-    
+
     async def read_file_safe(
         self,
         path: Path,
@@ -24,36 +24,59 @@ class FileOperations:
     ) -> Dict[str, Any]:
         """
         Read file contents with pagination support.
-        
+
         Args:
             path: File path to read
             offset: Starting line number (0-indexed)
             limit: Maximum number of lines to read
             encoding: Text encoding
-        
+
         Returns:
             Dict with status, content, total_lines, lines_read, offset, encoding, file_path
         """
         try:
+            # If no pagination (offset=0 and no limit), read entire file preserving original line endings
+            if offset == 0 and limit is None:
+                async with aiofiles.open(path, 'r', encoding=encoding, errors='replace', newline='') as f:
+                    content = await f.read()
+
+                # Count lines for metadata
+                total_lines = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
+
+                return {
+                    "status": "success",
+                    "content": content,
+                    "total_lines": total_lines,
+                    "lines_read": total_lines,
+                    "offset": 0,
+                    "encoding": encoding,
+                    "file_path": str(path)
+                }
+
+            # Pagination mode: need to process line by line
             lines = []
             total_lines = 0
-            
-            async with aiofiles.open(path, 'r', encoding=encoding, errors='replace') as f:
+
+            async with aiofiles.open(path, 'r', encoding=encoding, errors='replace', newline='') as f:
                 async for line in f:
                     if total_lines >= offset and (limit is None or len(lines) < limit):
-                        lines.append(line.rstrip('\n'))
+                        # Preserve line endings - don't strip them
+                        lines.append(line)
                     total_lines += 1
-            
+
+            # Join without adding extra newlines (they're already in the lines)
+            content = ''.join(lines)
+
             return {
                 "status": "success",
-                "content": '\n'.join(lines),
+                "content": content,
                 "total_lines": total_lines,
                 "lines_read": len(lines),
                 "offset": offset,
                 "encoding": encoding,
                 "file_path": str(path)
             }
-        
+
         except UnicodeDecodeError as e:
             logger.warning(f"Encoding error reading {path}: {e}")
             return {
@@ -70,7 +93,7 @@ class FileOperations:
                 "error_type": type(e).__name__,
                 "file_path": str(path)
             }
-    
+
     async def create_file_safe(
         self,
         path: Path,
@@ -81,14 +104,14 @@ class FileOperations:
     ) -> Dict[str, Any]:
         """
         Create a new file atomically.
-        
+
         Args:
             path: File path to create
             content: File content
             overwrite: Allow overwriting existing file
             create_dirs: Auto-create parent directories
             encoding: Text encoding
-        
+
         Returns:
             Dict with status, file_path, bytes_written, created_dirs
         """
@@ -101,37 +124,37 @@ class FileOperations:
                     "error_type": "FileExistsError",
                     "file_path": str(path)
                 }
-            
+
             # Create parent directories if needed
             created_dirs = []
             if create_dirs and not path.parent.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 created_dirs.append(str(path.parent))
-            
+
             # Write to temporary file first
             temp_path = path.with_suffix(path.suffix + ".tmp")
-            
+
             try:
                 async with aiofiles.open(temp_path, 'w', encoding=encoding) as f:
                     await f.write(content)
-                
+
                 # Atomic rename
                 temp_path.replace(path)
-                
+
                 bytes_written = path.stat().st_size
-                
+
                 return {
                     "status": "success",
                     "file_path": str(path),
                     "bytes_written": bytes_written,
                     "created_dirs": created_dirs
                 }
-            
+
             finally:
                 # Cleanup temp file if still exists
                 if temp_path.exists():
                     temp_path.unlink()
-        
+
         except Exception as e:
             logger.error(f"Error creating file {path}: {e}", exc_info=True)
             return {
@@ -140,7 +163,7 @@ class FileOperations:
                 "error_type": type(e).__name__,
                 "file_path": str(path)
             }
-    
+
     async def edit_file_safe(
         self,
         path: Path,
@@ -155,7 +178,7 @@ class FileOperations:
     ) -> Dict[str, Any]:
         """
         Edit an existing file using various modes.
-        
+
         Args:
             path: File to edit
             mode: Edit mode (append, replace, insert, replace_lines)
@@ -166,7 +189,7 @@ class FileOperations:
             start_line: Start line for replace_lines mode (1-indexed, inclusive)
             end_line: End line for replace_lines mode (1-indexed, inclusive)
             encoding: Text encoding
-        
+
         Returns:
             Dict with status, file_path, mode, changes
         """
@@ -178,11 +201,11 @@ class FileOperations:
                     "error_type": "FileNotFoundError",
                     "file_path": str(path)
                 }
-            
+
             # Read current content
             async with aiofiles.open(path, 'r', encoding=encoding) as f:
                 current_content = await f.read()
-            
+
             # Apply edit based on mode
             if mode == "append":
                 if content is None:
@@ -193,7 +216,7 @@ class FileOperations:
                     }
                 new_content = current_content + content
                 changes = {"appended_bytes": len(content)}
-            
+
             elif mode == "replace":
                 if old_string is None or new_string is None:
                     return {
@@ -201,49 +224,130 @@ class FileOperations:
                         "error": "Parameters 'old_string' and 'new_string' are required for replace mode",
                         "error_type": "ValidationError"
                     }
-                
+
                 # Try exact match first
                 replacements = current_content.count(old_string)
-                
+
                 if replacements == 0:
-                    # Try with normalized line endings (CRLF <-> LF)
+                    # Flexible matching: normalize line endings (accept both CRLF and LF)
                     normalized_content = current_content.replace('\r\n', '\n')
                     normalized_old_string = old_string.replace('\r\n', '\n')
-                    
+                    normalized_new_string = new_string.replace('\r\n', '\n')
+
+                    # Try with normalized line endings
                     if normalized_old_string in normalized_content:
-                        # Line ending mismatch detected
+                        # Match found with normalized line endings - use this
+                        logger.info("Using normalized line endings for replacement (CRLF/LF flexibility)")
+                        # Detect original line ending style and apply to new_string
+                        if '\r\n' in current_content:
+                            normalized_new_string = normalized_new_string.replace('\n', '\r\n')
+
+                        new_content = normalized_content.replace(normalized_old_string, normalized_new_string)
+                        replacements = normalized_content.count(normalized_old_string)
+
+                        # Restore original line ending style in final content
+                        if '\r\n' in current_content:
+                            new_content = new_content.replace('\n', '\r\n')
+                    else:
+                        # Check if it's only whitespace difference (informative error)
+                        stripped_content = normalized_content.replace(' ', '').replace('\t', '')
+                        stripped_old_string = normalized_old_string.replace(' ', '').replace('\t', '')
+
+                        if stripped_old_string in stripped_content:
+                            # Content matches but whitespace differs - provide detailed analysis
+                            # Find the position where content matches
+                            pos = stripped_content.find(stripped_old_string)
+
+                            # Reconstruct position in original content
+                            char_count = 0
+                            for i, char in enumerate(normalized_content):
+                                if char not in (' ', '\t'):
+                                    if char_count == pos:
+                                        # Found start position - extract a few lines for comparison
+                                        lines_before = normalized_content[:i].count('\n')
+                                        start_line = max(0, lines_before)
+
+                                        # Get the relevant lines from file
+                                        file_lines = normalized_content.splitlines()
+                                        search_lines = normalized_old_string.splitlines()
+
+                                        if start_line < len(file_lines) and search_lines:
+                                            # Build corrected oldString with proper whitespace
+                                            corrected_lines = []
+                                            for j, search_line in enumerate(search_lines):
+                                                file_idx = start_line + j
+                                                if file_idx < len(file_lines):
+                                                    file_line = file_lines[file_idx]
+                                                    # Extract leading whitespace from file
+                                                    file_leading = len(file_line) - len(file_line.lstrip())
+                                                    file_ws = file_line[:file_leading]
+                                                    # Apply to search line content
+                                                    search_content = search_line.lstrip()
+                                                    corrected_lines.append(file_ws + search_content)
+                                                else:
+                                                    corrected_lines.append(search_line)
+
+                                            corrected_old_string = '\n'.join(corrected_lines)
+
+                                            # Show first mismatched line with detailed whitespace info
+                                            file_line = file_lines[start_line]
+                                            search_line = search_lines[0]
+
+                                            # Analyze whitespace
+                                            file_leading = len(file_line) - len(file_line.lstrip())
+                                            search_leading = len(search_line) - len(search_line.lstrip())
+
+                                            file_ws = file_line[:file_leading]
+                                            search_ws = search_line[:search_leading]
+
+                                            ws_details = f"Line {start_line + 1}: "
+                                            if file_leading != search_leading:
+                                                ws_details += f"Expected {file_leading} leading whitespace chars, got {search_leading}. "
+
+                                            file_tabs = file_ws.count('\t')
+                                            file_spaces = file_ws.count(' ')
+                                            search_tabs = search_ws.count('\t')
+                                            search_spaces = search_ws.count(' ')
+
+                                            if file_tabs != search_tabs or file_spaces != search_spaces:
+                                                ws_details += f"File has {file_tabs} tabs + {file_spaces} spaces, search has {search_tabs} tabs + {search_spaces} spaces."
+
+                                            logger.warning(f"String found with whitespace differences in {path}: {ws_details}")
+                                            return {
+                                                "status": "error",
+                                                "error": f"String not found with exact whitespace. {ws_details}",
+                                                "error_type": "WhitespaceMatchError",
+                                                "file_path": str(path),
+                                                "file_sample": file_line,
+                                                "search_sample": search_line,
+                                                "corrected_old_string": corrected_old_string,
+                                                "hint": "Whitespace (spaces/tabs) doesn't match exactly. Use the 'corrected_old_string' value for oldString parameter."
+                                            }
+                                        break
+                                    char_count += 1
+
+                            # Fallback if detailed analysis fails
+                            logger.warning(f"String found with whitespace differences in {path}")
+                            return {
+                                "status": "error",
+                                "error": "String not found with exact whitespace. Content matches but spaces/tabs differ.",
+                                "error_type": "WhitespaceMatchError",
+                                "file_path": str(path),
+                                "hint": "Whitespace (spaces/tabs) doesn't match exactly. Copy the exact indentation from the file."
+                            }
+
+                        # True not found
                         return {
                             "status": "error",
-                            "error": "String not found with exact whitespace. Detected CRLF/LF mismatch.",
-                            "error_type": "WhitespaceMatchError",
+                            "error": f"String not found in file: {old_string[:50]}...",
+                            "error_type": "StringNotFoundError",
                             "file_path": str(path),
-                            "hint": "The file uses different line endings than your search string. Normalize line endings or use replace_lines mode."
+                            "hint": "String does not exist in file. Check spelling and ensure you have the correct content."
                         }
-                    
-                    # Check if it's a whitespace-only difference
-                    stripped_content = normalized_content.replace(' ', '').replace('\t', '')
-                    stripped_old_string = normalized_old_string.replace(' ', '').replace('\t', '')
-                    
-                    if stripped_old_string in stripped_content:
-                        return {
-                            "status": "error",
-                            "error": "String not found with exact whitespace. Content matches but spaces/tabs differ.",
-                            "error_type": "WhitespaceMatchError",
-                            "file_path": str(path),
-                            "hint": "Whitespace (spaces/tabs) doesn't match exactly. Copy the exact indentation from the file or use replace_lines mode."
-                        }
-                    
-                    # True not found
-                    return {
-                        "status": "error",
-                        "error": f"String not found in file: {old_string[:50]}...",
-                        "error_type": "StringNotFoundError",
-                        "file_path": str(path),
-                        "hint": "String does not exist in file. Check spelling and ensure you have the correct content."
-                    }
-                
-                new_content = current_content.replace(old_string, new_string)
-                
+                else:
+                    # Exact match found - use it directly
+                    new_content = current_content.replace(old_string, new_string)
+
                 # Find modified lines
                 old_lines = current_content.splitlines()
                 new_lines = new_content.splitlines()
@@ -251,12 +355,12 @@ class FileOperations:
                     i for i, (old, new) in enumerate(zip(old_lines, new_lines))
                     if old != new
                 ]
-                
+
                 changes = {
                     "replacements": replacements,
                     "lines_modified": modified_lines
                 }
-            
+
             elif mode == "insert":
                 if content is None:
                     return {
@@ -270,9 +374,9 @@ class FileOperations:
                         "error": "Parameter 'line_number' is required for insert mode",
                         "error_type": "ValidationError"
                     }
-                
+
                 lines = current_content.splitlines(keepends=True)
-                
+
                 # Validate line number
                 if line_number < 0 or line_number > len(lines):
                     return {
@@ -281,12 +385,12 @@ class FileOperations:
                         "error_type": "ValidationError",
                         "file_path": str(path)
                     }
-                
+
                 # Insert content at line
                 lines.insert(line_number, content + '\n')
                 new_content = ''.join(lines)
                 changes = {"inserted_at_line": line_number}
-            
+
             elif mode == "replace_lines":
                 if content is None:
                     return {
@@ -300,10 +404,10 @@ class FileOperations:
                         "error": "Parameters 'start_line' and 'end_line' are required for replace_lines mode",
                         "error_type": "ValidationError"
                     }
-                
+
                 lines = current_content.splitlines(keepends=True)
                 total_lines = len(lines)
-                
+
                 # Validate line numbers (1-indexed, inclusive)
                 if start_line < 1 or start_line > total_lines:
                     return {
@@ -312,7 +416,7 @@ class FileOperations:
                         "error_type": "ValidationError",
                         "file_path": str(path)
                     }
-                
+
                 if end_line < start_line or end_line > total_lines:
                     return {
                         "status": "error",
@@ -320,52 +424,52 @@ class FileOperations:
                         "error_type": "ValidationError",
                         "file_path": str(path)
                     }
-                
+
                 # Replace lines (convert to 0-indexed for slicing)
                 start_idx = start_line - 1
                 end_idx = end_line  # end_line is inclusive, so we don't subtract 1 from slice end
-                
+
                 # Ensure content ends with newline if replacing multiple lines
                 replacement_content = content if content.endswith('\n') else content + '\n'
-                
+
                 # Build new content: before + replacement + after
                 new_lines = lines[:start_idx] + [replacement_content] + lines[end_idx:]
                 new_content = ''.join(new_lines)
-                
+
                 changes = {
                     "lines_replaced": end_line - start_line + 1,
                     "start_line": start_line,
                     "end_line": end_line
                 }
-            
+
             else:
                 return {
                     "status": "error",
                     "error": f"Invalid mode: {mode}. Must be one of: append, replace, insert, replace_lines",
                     "error_type": "ValidationError"
                 }
-            
+
             # Write updated content atomically
             temp_path = path.with_suffix(path.suffix + ".tmp")
-            
+
             try:
                 async with aiofiles.open(temp_path, 'w', encoding=encoding) as f:
                     await f.write(new_content)
-                
+
                 # Atomic rename
                 temp_path.replace(path)
-            
+
             finally:
                 if temp_path.exists():
                     temp_path.unlink()
-            
+
             return {
                 "status": "success",
                 "file_path": str(path),
                 "mode": mode,
                 "changes": changes
             }
-        
+
         except Exception as e:
             logger.error(f"Error editing file {path}: {e}", exc_info=True)
             return {
@@ -374,14 +478,14 @@ class FileOperations:
                 "error_type": type(e).__name__,
                 "file_path": str(path)
             }
-    
+
     async def delete_file_safe(self, path: Path) -> Dict[str, Any]:
         """
         Delete a file safely.
-        
+
         Args:
             path: File to delete
-        
+
         Returns:
             Dict with status, file_path
         """
@@ -393,7 +497,7 @@ class FileOperations:
                     "error_type": "FileNotFoundError",
                     "file_path": str(path)
                 }
-            
+
             if not path.is_file():
                 return {
                     "status": "error",
@@ -401,15 +505,15 @@ class FileOperations:
                     "error_type": "NotAFileError",
                     "file_path": str(path)
                 }
-            
+
             path.unlink()
-            
+
             return {
                 "status": "success",
                 "file_path": str(path),
                 "message": "File deleted successfully"
             }
-        
+
         except Exception as e:
             logger.error(f"Error deleting file {path}: {e}", exc_info=True)
             return {
@@ -418,7 +522,7 @@ class FileOperations:
                 "error_type": type(e).__name__,
                 "file_path": str(path)
             }
-    
+
     async def list_directory_safe(
         self,
         dir_path: Path,
@@ -428,13 +532,13 @@ class FileOperations:
     ) -> Dict[str, Any]:
         """
         List directory contents with filtering.
-        
+
         Args:
             dir_path: Directory to list
             recursive: Recursively list subdirectories
             pattern: Glob pattern to filter files
             include_hidden: Include hidden files
-        
+
         Returns:
             Dict with status, dir_path, files, directories
         """
@@ -446,7 +550,7 @@ class FileOperations:
                     "error_type": "DirectoryNotFoundError",
                     "dir_path": str(dir_path)
                 }
-            
+
             if not dir_path.is_dir():
                 return {
                     "status": "error",
@@ -454,26 +558,26 @@ class FileOperations:
                     "error_type": "NotADirectoryError",
                     "dir_path": str(dir_path)
                 }
-            
+
             files = []
             directories = []
-            
+
             # Choose glob method
             if recursive:
                 items = dir_path.rglob(pattern or "*")
             else:
                 items = dir_path.glob(pattern or "*")
-            
+
             for item in items:
                 # Skip hidden files unless requested
                 if not include_hidden and item.name.startswith('.'):
                     continue
-                
+
                 if item.is_file():
                     files.append(str(item))
                 elif item.is_dir():
                     directories.append(str(item))
-            
+
             return {
                 "status": "success",
                 "dir_path": str(dir_path),
@@ -482,7 +586,7 @@ class FileOperations:
                 "total_files": len(files),
                 "total_directories": len(directories)
             }
-        
+
         except Exception as e:
             logger.error(f"Error listing directory {dir_path}: {e}", exc_info=True)
             return {

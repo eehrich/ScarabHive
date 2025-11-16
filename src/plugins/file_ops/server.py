@@ -78,10 +78,13 @@ class FileOpsServer(SchemaBasedMCPServer):
         status = params.get("_status")
 
         try:
-            file_path = params["file_path"]
+            file_path = params["filePath"]
+            # Copilot uses 1-indexed offset
             offset = params.get("offset", 0)
+            if offset > 0:
+                offset -= 1  # Convert 1-indexed to 0-indexed for internal use
             limit = params.get("limit")
-            encoding = params.get("encoding", "utf-8")
+            encoding = "utf-8"  # Always UTF-8
 
             if status:
                 await status.progress(f"Reading: {Path(file_path).name}")
@@ -145,11 +148,11 @@ class FileOpsServer(SchemaBasedMCPServer):
         status = params.get("_status")
 
         try:
-            file_path = params["file_path"]
+            file_path = params["filePath"]
             content = params["content"]
-            overwrite = params.get("overwrite", False)
-            create_dirs = params.get("create_dirs", True)
-            encoding = params.get("encoding", "utf-8")
+            overwrite = False  # Never overwrite (Copilot behavior)
+            create_dirs = True  # Always create dirs
+            encoding = "utf-8"  # Always UTF-8
 
             if status:
                 await status.progress(f"Creating: {Path(file_path).name}")
@@ -194,30 +197,31 @@ class FileOpsServer(SchemaBasedMCPServer):
                 "error_type": type(e).__name__
             }
 
-    async def edit_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Edit an existing file."""
+    async def replace_string_in_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace exact string match in file (VSCode/Copilot-style).
+
+        This is a convenience wrapper around edit_file with mode='replace'.
+        Uses exact string matching - oldString must match precisely including whitespace.
+        """
         status = params.get("_status")
 
         try:
-            file_path = params["file_path"]
-            mode = params["mode"]
+            file_path = params["filePath"]  # Note: Copilot uses camelCase
+            old_string = params["oldString"]
+            new_string = params["newString"]
 
             if status:
-                await status.progress(f"Editing ({mode}): {Path(file_path).name}")
+                await status.progress(f"Replacing in: {Path(file_path).name}")
 
             # Validate path
             safe_path = self.validator.validate_path(file_path, must_exist=True)
 
-            # Edit file
+            # Use edit_file's replace mode
             result = await self.operations.edit_file_safe(
                 safe_path,
-                mode=mode,
-                content=params.get("content"),
-                old_string=params.get("old_string"),
-                new_string=params.get("new_string"),
-                line_number=params.get("line_number"),
-                start_line=params.get("start_line"),
-                end_line=params.get("end_line")
+                mode="replace",
+                old_string=old_string,
+                new_string=new_string
             )
 
             # Check if operation failed
@@ -225,104 +229,23 @@ class FileOpsServer(SchemaBasedMCPServer):
                 if status:
                     await status.error(result.get("error", "Unknown error"), meta={
                         "error_type": result.get("error_type", "UnknownError"),
-                        "file": str(safe_path),
-                        "mode": mode
+                        "file": str(safe_path)
                     })
                 return result
 
-            # Success - call status.end()
+            # Success
             if status:
                 changes = result.get("changes", {})
-                if mode == "replace":
-                    await status.end(f"Edited {safe_path.name}: {changes.get('replacements', 0)} replacements", meta={
-                        "file": str(safe_path),
-                        "mode": mode,
-                        "replacements": changes.get("replacements", 0)
-                    })
-                elif mode == "append":
-                    await status.end(f"Edited {safe_path.name}: appended content", meta={
-                        "file": str(safe_path),
-                        "mode": mode
-                    })
-                elif mode == "insert":
-                    await status.end(f"Edited {safe_path.name}: inserted at line {params.get('line_number', 0)}", meta={
-                        "file": str(safe_path),
-                        "mode": mode,
-                        "line": params.get("line_number", 0)
-                    })
-                elif mode == "replace_lines":
-                    lines_replaced = changes.get("lines_replaced", 0)
-                    await status.end(f"Edited {safe_path.name}: replaced {lines_replaced} lines ({changes.get('start_line')}-{changes.get('end_line')})", meta={
-                        "file": str(safe_path),
-                        "mode": mode,
-                        "lines_replaced": lines_replaced,
-                        "start_line": changes.get("start_line"),
-                        "end_line": changes.get("end_line")
-                    })
-
-            return result
-
-        except FileNotFoundError:
-            error_msg = f"File not found: {params.get('file_path')}"
-            if status:
-                await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
-            return {
-                "status": "error",
-                "error": error_msg,
-                "error_type": "FileNotFoundError"
-            }
-        except SecurityError as e:
-            error_msg = str(e)
-            if status:
-                await status.error(error_msg, meta={"error_type": "SecurityError"})
-            return {
-                "status": "error",
-                "error": error_msg,
-                "error_type": "SecurityError"
-            }
-        except Exception as e:
-            logger.error(f"Unexpected error in edit_file: {e}", exc_info=True)
-            if status:
-                await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
-            return {
-                "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
-
-    async def delete_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Delete a file."""
-        status = params.get("_status")
-
-        try:
-            file_path = params["file_path"]
-            confirm = params.get("confirm", False)
-
-            if status:
-                await status.progress(f"Deleting: {Path(file_path).name}")
-
-            if not confirm:
-                return {
-                    "status": "error",
-                    "error": "Deletion requires confirm=true parameter",
-                    "error_type": "ConfirmationRequired"
-                }
-
-            # Validate path
-            safe_path = self.validator.validate_path(file_path, must_exist=True)
-
-            # Delete file
-            result = await self.operations.delete_file_safe(safe_path)
-
-            if status:
-                await status.end(f"Deleted: {safe_path.name}", meta={
-                    "file": str(safe_path)
+                replacements = changes.get("replacements", 0)
+                await status.end(f"Replaced in {safe_path.name}: {replacements} occurrence(s)", meta={
+                    "file": str(safe_path),
+                    "replacements": replacements
                 })
 
             return result
 
         except FileNotFoundError:
-            error_msg = f"File not found: {params.get('file_path')}"
+            error_msg = f"File not found: {params.get('filePath')}"
             if status:
                 await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
             return {
@@ -340,7 +263,7 @@ class FileOpsServer(SchemaBasedMCPServer):
                 "error_type": "SecurityError"
             }
         except Exception as e:
-            logger.error(f"Unexpected error in delete_file: {e}", exc_info=True)
+            logger.error(f"Unexpected error in replace_string_in_file: {e}", exc_info=True)
             if status:
                 await status.error(f"Unexpected error: {e}", meta={"error_type": type(e).__name__})
             return {

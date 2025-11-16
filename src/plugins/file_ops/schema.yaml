@@ -2,117 +2,60 @@ tools:
   - type: function
     function:
       name: "{{ name }}_read_file"
-      description: "Read contents of a text file. Supports offset/limit for large files."
+      description: "Read the contents of a file. Line numbers are 1-indexed. This tool will truncate its output at 2000 lines and may be called repeatedly with offset and limit parameters to read larger files in chunks."
       parameters:
         type: object
         properties:
-          file_path:
+          filePath:
             type: string
-            description: "Absolute or relative path to file"
+            description: "The absolute path of the file to read."
           offset:
             type: integer
-            minimum: 0
-            description: "Start reading from this line number (0-indexed)"
+            minimum: 1
+            description: "Optional: the 1-based line number to start reading from. Only use this if the file is too large to read at once. If not specified, the file will be read from the beginning."
           limit:
             type: integer
             minimum: 1
-            description: "Maximum number of lines to read"
-          encoding:
-            type: string
-            default: "utf-8"
-            description: "Text encoding (utf-8, latin-1, etc.)"
-        required: ["file_path"]
+            description: "Optional: the maximum number of lines to read. Only use this together with `offset` if the file is too large to read at once."
+        required: ["filePath"]
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_create_file"
-      description: "Create a new text file. Fails if file already exists unless overwrite=true."
+      description: "This is a tool for creating a new file in the workspace. The file will be created with the specified content. The directory will be created if it does not already exist. Never use this tool to edit a file that already exists."
       parameters:
         type: object
         properties:
-          file_path:
+          filePath:
             type: string
-            description: "Path where file will be created"
+            description: "The absolute path to the file to create."
           content:
             type: string
-            description: "File content to write"
-          overwrite:
-            type: boolean
-            default: false
-            description: "Allow overwriting existing file"
-          create_dirs:
-            type: boolean
-            default: true
-            description: "Auto-create parent directories"
-          encoding:
-            type: string
-            default: "utf-8"
-            description: "Text encoding"
-        required: ["file_path", "content"]
+            description: "The content to write to the file."
+        required: ["filePath", "content"]
         additionalProperties: false
 
   - type: function
     function:
-      name: "{{ name }}_edit_file"
+      name: "{{ name }}_replace_string_in_file"
       description: |
-        Edit an existing file. Supports multiple edit modes:
-        
-        - **append**: Add content to end of file
-        - **replace**: Replace exact string match (SENSITIVE to whitespace, line endings)
-          WARNING: Must match EXACTLY including spaces, tabs, CRLF/LF. For structured files (YAML, JSON), use replace_lines instead.
-        - **insert**: Insert content at specific line (0-indexed)
-        - **replace_lines**: Replace line range (1-indexed, inclusive). RECOMMENDED for structured files.
-          Example: start_line=5, end_line=7 replaces lines 5, 6, and 7 with new content.
-      
-      parameters:
-        type: object
-        properties:
-          file_path:
-            type: string
-            description: "Path to file to edit"
-          mode:
-            type: string
-            enum: ["append", "replace", "insert", "replace_lines"]
-            description: "Edit mode - see function description for details"
-          content:
-            type: string
-            description: "Content to add/insert/replace (for append/insert/replace_lines modes)"
-          old_string:
-            type: string
-            description: "Exact string to replace (for replace mode) - must match whitespace and line endings exactly"
-          new_string:
-            type: string
-            description: "Replacement string (for replace mode)"
-          line_number:
-            type: integer
-            minimum: 0
-            description: "Line number to insert at (for insert mode, 0-indexed)"
-          start_line:
-            type: integer
-            minimum: 1
-            description: "Start line for replace_lines mode (1-indexed, inclusive)"
-          end_line:
-            type: integer
-            minimum: 1
-            description: "End line for replace_lines mode (1-indexed, inclusive)"
-        required: ["file_path", "mode"]
-        additionalProperties: false
+        This is a tool for making edits in an existing file in the workspace. For moving or renaming files, use run in terminal tool with the 'mv' command instead. For larger edits, split them into smaller edits and call the edit tool multiple times to ensure accuracy. Before editing, always ensure you have the context to understand the file's contents and context. To edit a file, provide: 1) filePath (absolute path), 2) oldString (MUST be the exact literal text to replace including all whitespace, indentation, newlines, and surrounding code etc), and 3) newString (MUST be the exact literal text to replace \`oldString\` with (also including all whitespace, indentation, newlines, and surrounding code etc.). Ensure the resulting code is correct and idiomatic.). Each use of this tool replaces exactly ONE occurrence of oldString.
 
-  - type: function
-    function:
-      name: "{{ name }}_delete_file"
-      description: "Delete a file. Requires confirmation for safety."
+        CRITICAL for \`oldString\`: Must uniquely identify the single instance to change. Include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. If this string matches multiple locations, or does not match exactly, the tool will fail.
       parameters:
         type: object
         properties:
-          file_path:
+          filePath:
             type: string
-            description: "Path to file to delete"
-          confirm:
-            type: boolean
-            description: "Must be true to confirm deletion"
-        required: ["file_path", "confirm"]
+            description: "An absolute path to the file to edit."
+          oldString:
+            type: string
+            description: "The exact literal text to replace, preferably unescaped. For single replacements (default), include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. For multiple replacements, specify expected_replacements parameter. If this string is not the exact literal text (i.e. you escaped it) or does not match exactly, the tool will fail."
+          newString:
+            type: string
+            description: "The exact literal text to replace `old_string` with, preferably unescaped. Provide the EXACT text. Ensure the resulting code is correct and idiomatic."
+        required: ["filePath", "oldString", "newString"]
         additionalProperties: false
 
   - type: function
