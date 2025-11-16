@@ -355,10 +355,13 @@ class FileOpsServer(SchemaBasedMCPServer):
             )
             
             if status:
-                total = result.get("total_items", 0)
-                await status.end(f"Listed {safe_path.name}: {total} items", meta={
+                total_files = result.get("total_files", 0)
+                total_dirs = result.get("total_directories", 0)
+                total = total_files + total_dirs
+                await status.end(f"Listed {safe_path.name}: {total_files} files, {total_dirs} directories", meta={
                     "directory": str(safe_path),
-                    "total_items": total,
+                    "total_files": total_files,
+                    "total_directories": total_dirs,
                     "recursive": recursive
                 })
             
