@@ -220,6 +220,17 @@ class FileOpsServer(SchemaBasedMCPServer):
                 end_line=params.get("end_line")
             )
 
+            # Check if operation failed
+            if result.get("status") == "error":
+                if status:
+                    await status.error(result.get("error", "Unknown error"), meta={
+                        "error_type": result.get("error_type", "UnknownError"),
+                        "file": str(safe_path),
+                        "mode": mode
+                    })
+                return result
+
+            # Success - call status.end()
             if status:
                 changes = result.get("changes", {})
                 if mode == "replace":

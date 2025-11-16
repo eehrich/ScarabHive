@@ -23,37 +23,37 @@ class ChromaDBError(Exception):
 
 class FileSearchEngine:
     """Fast file search with background indexing."""
-    
+
     def __init__(self, allowed_dirs: List[Path], config: Dict[str, Any]):
         """
         Initialize search engine with background indexing.
-        
+
         Args:
             allowed_dirs: List of directories to index
             config: Search configuration (enable_indexing, exclude_patterns, etc.)
         """
         self.allowed_dirs = allowed_dirs
         self.config = config
-        
+
         # In-memory indexes
         self.text_index: Dict[str, List[tuple[Path, int]]] = {}  # word -> [(file, position)]
         self.file_name_index: Dict[str, List[Path]] = {}  # filename_lower -> [paths]
         self.file_mtimes: Dict[Path, float] = {}  # Track modifications
-        
+
         # Indexing control
         self._indexing_task: Optional[asyncio.Task] = None
         self._index_lock = asyncio.Lock()
         self._indexing_started = False
-        
+
         # ChromaDB for semantic search
         self.chroma_client = None
         self.chroma_collection = None
         self._chroma_initialized = False
-    
+
     def _ensure_indexing_started(self):
         """Start background indexing if not already started and if enabled."""
-        if (not self._indexing_started and 
-            self.config.get("enable_indexing", True) and 
+        if (not self._indexing_started and
+            self.config.get("enable_indexing", True) and
             self.config.get("index_on_startup", True)):
             try:
                 # Try to create task if event loop is running
@@ -62,24 +62,24 @@ class FileSearchEngine:
             except RuntimeError:
                 # No event loop running yet, will be started on first use
                 pass
-    
+
     def _init_chromadb(self):
         """Initialize ChromaDB persistent client for semantic search."""
         if self._chroma_initialized:
             return
-        
+
         try:
             import chromadb
             from chromadb.config import Settings
             from chromadb.utils import embedding_functions
-            
+
             # Get ChromaDB path from config or use default
             chroma_path = Path(self.config.get(
                 "chroma_db_path",
                 "data/cache/file_ops_chromadb"
             ))
             chroma_path.mkdir(parents=True, exist_ok=True)
-            
+
             self.chroma_client = chromadb.PersistentClient(
                 path=str(chroma_path),
                 settings=Settings(
@@ -87,24 +87,24 @@ class FileSearchEngine:
                     allow_reset=True
                 )
             )
-            
+
             # Create embedding function with auto-detection of available providers
             # Don't specify preferred_providers to let ONNX auto-detect what's available
             # This prevents errors when CUDA or other specific providers aren't installed
             embedding_fn = embedding_functions.ONNXMiniLM_L6_V2()
-            
+
             # Robust collection initialization with error handling
             # Always recreate collection to ensure embedding function compatibility
             # This prevents issues with persisted collections that have incompatible provider settings
             collection_name = "file_ops_semantic_index"
-            
+
             try:
                 # Delete existing collection if it exists (to avoid provider mismatch issues)
                 self.chroma_client.delete_collection(collection_name)
                 logger.info(f"Deleted existing ChromaDB collection '{collection_name}'")
             except Exception as delete_error:
                 logger.debug(f"No existing collection to delete: {delete_error}")
-            
+
             # Create new collection with current embedding function
             try:
                 self.chroma_collection = self.chroma_client.create_collection(
@@ -116,19 +116,19 @@ class FileSearchEngine:
             except Exception as create_error:
                 logger.error(f"Failed to create ChromaDB collection: {create_error}")
                 raise ChromaDBError(f"Collection creation failed: {create_error}")
-            
+
             self._chroma_initialized = True
             logger.info(f"ChromaDB initialized at {chroma_path}")
-        
+
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB: {e}", exc_info=True)
             raise ChromaDBError(f"ChromaDB initialization failed: {e}")
-    
+
     async def _background_indexer(self):
         """Periodically rebuild index in background."""
         # First run: full rebuild
         first_run = True
-        
+
         while True:
             try:
                 if first_run:
@@ -136,18 +136,18 @@ class FileSearchEngine:
                     first_run = False
                 else:
                     await self.rebuild_index(incremental=True)  # Incremental updates after that
-                
+
                 # Wait for next cycle
                 interval = self.config.get("auto_reindex_interval_seconds", 300)
                 await asyncio.sleep(interval)
-            
+
             except Exception as e:
                 logger.error(f"Indexing error: {e}", exc_info=True)
                 await asyncio.sleep(60)  # Retry after 1 minute
-    
+
     async def rebuild_index(self, status_callback=None, incremental=True):
         """Full or incremental index rebuild with optional progress callbacks.
-        
+
         Args:
             status_callback: Optional callback function for progress updates
             incremental: If True, only update modified files (default). If False, full rebuild.
@@ -159,13 +159,13 @@ class FileSearchEngine:
             logger.info("FILE_OPS: Starting full index rebuild...")
         logger.info("=" * 60)
         start_time = time.time()
-        
+
         if status_callback:
             if incremental and self.file_mtimes:
                 await status_callback("Starting incremental index update...")
             else:
                 await status_callback("Starting full index rebuild...")
-        
+
         # For incremental: keep existing indexes, only update changed files
         if incremental and self.file_mtimes:
             new_text_index = self.text_index.copy()
@@ -175,11 +175,11 @@ class FileSearchEngine:
             new_text_index: Dict[str, List[tuple[Path, int]]] = {}
             new_file_index: Dict[str, List[Path]] = {}
             new_mtimes: Dict[Path, float] = {}
-        
+
         files_indexed = 0
         files_updated = 0
         files_removed = 0
-        
+
         # ChromaDB semantic index
         semantic_enabled = self.config.get("enable_semantic_search", True)
         if semantic_enabled and not incremental:
@@ -204,42 +204,42 @@ class FileSearchEngine:
         elif semantic_enabled and incremental:
             # For incremental: just init, don't clear
             self._init_chromadb()
-        
+
         max_size_kb = self.config.get("max_file_size_for_indexing_kb", 1024)
         max_size = max_size_kb * 1024
-        
+
         # Collect file data for batch ChromaDB insertion
         chroma_docs = []
         chroma_ids = []
         chroma_metadatas = []
         chroma_ids_to_delete = []  # For incremental updates
-        
+
         # Track seen files for incremental cleanup
         seen_files: Set[Path] = set()
-        
+
         # Progress tracking
         last_progress_time = time.time()
         progress_interval = 2.0  # Update every 2 seconds
-        
+
         for base_dir in self.allowed_dirs:
             if not base_dir.exists():
                 continue
-            
+
             async for file_path in self._iter_files(base_dir):
                 # Skip excluded patterns
                 if self._is_excluded(file_path):
                     continue
-                
+
                 seen_files.add(file_path)
-                
+
                 # Skip large files
                 try:
                     size = file_path.stat().st_size
                     if size > max_size:
                         continue
-                    
+
                     current_mtime = file_path.stat().st_mtime
-                    
+
                     # For incremental: skip unchanged files
                     if incremental and file_path in new_mtimes:
                         if new_mtimes[file_path] == current_mtime:
@@ -262,19 +262,19 @@ class FileSearchEngine:
                             # Mark for ChromaDB deletion
                             if semantic_enabled and self.chroma_collection:
                                 chroma_ids_to_delete.append(str(file_path))
-                    
+
                     # Index filename
                     filename_lower = file_path.name.lower()
                     if filename_lower not in new_file_index:
                         new_file_index[filename_lower] = []
                     if file_path not in new_file_index[filename_lower]:
                         new_file_index[filename_lower].append(file_path)
-                    
+
                     # Index file content for text files
                     if self._is_text_file(file_path):
                         content = await self._index_file_content(file_path, new_text_index)
                         new_mtimes[file_path] = current_mtime
-                        
+
                         # Add to ChromaDB batch if semantic search enabled
                         if semantic_enabled and content and self.chroma_collection:
                             chroma_docs.append(content)
@@ -286,9 +286,9 @@ class FileSearchEngine:
                                 "size_bytes": str(size),
                                 "mtime": str(current_mtime)
                             })
-                    
+
                     files_indexed += 1
-                    
+
                     # Periodic progress updates
                     current_time = time.time()
                     if (current_time - last_progress_time) >= progress_interval:
@@ -299,11 +299,11 @@ class FileSearchEngine:
                         if status_callback:
                             await status_callback(f"Indexed {files_indexed} files, {len(chroma_docs)} for semantic search...")
                         last_progress_time = current_time
-                
+
                 except (OSError, PermissionError) as e:
                     logger.debug(f"Skipping file {file_path}: {e}")
                     continue
-        
+
         # For incremental: remove deleted files from index
         if incremental:
             deleted_files = set(new_mtimes.keys()) - seen_files
@@ -326,7 +326,7 @@ class FileSearchEngine:
                     # Mark for ChromaDB deletion
                     if semantic_enabled and self.chroma_collection:
                         chroma_ids_to_delete.append(str(file_path))
-        
+
         # Delete old ChromaDB entries for updated/deleted files
         if semantic_enabled and chroma_ids_to_delete and self.chroma_collection:
             try:
@@ -334,7 +334,7 @@ class FileSearchEngine:
                 self.chroma_collection.delete(ids=chroma_ids_to_delete)
             except Exception as e:
                 logger.warning(f"FILE_OPS: Failed to delete from ChromaDB: {e}")
-        
+
         # Batch insert into ChromaDB (with chunking to avoid batch size limits)
         if semantic_enabled and chroma_docs and self.chroma_collection:
             logger.info(f"FILE_OPS: Creating embeddings for {len(chroma_docs)} files...")
@@ -343,30 +343,30 @@ class FileSearchEngine:
                 await status_callback(f"Creating embeddings for {len(chroma_docs)} files (this may take a while)...")
             try:
                 embedding_start = time.time()
-                
+
                 # ChromaDB has a max batch size (~5000), so chunk large inserts
                 BATCH_SIZE = 5000
                 for i in range(0, len(chroma_docs), BATCH_SIZE):
                     batch_end = min(i + BATCH_SIZE, len(chroma_docs))
                     logger.info(f"FILE_OPS: Processing embedding batch {i//BATCH_SIZE + 1} ({i+1}-{batch_end} of {len(chroma_docs)})")
-                    
+
                     self.chroma_collection.add(
                         ids=chroma_ids[i:batch_end],
                         documents=chroma_docs[i:batch_end],
                         metadatas=chroma_metadatas[i:batch_end]
                     )
-                
+
                 embedding_time = time.time() - embedding_start
                 logger.info(f"FILE_OPS: Created embeddings for {len(chroma_docs)} files in {embedding_time:.2f}s")
             except Exception as e:
                 logger.error(f"FILE_OPS: ChromaDB batch insert failed: {e}", exc_info=True)
-        
+
         # Atomic swap under lock
         async with self._index_lock:
             self.text_index = new_text_index
             self.file_name_index = new_file_index
             self.file_mtimes = new_mtimes
-        
+
         elapsed = time.time() - start_time
         if incremental and self.file_mtimes:
             final_msg = f"FILE_OPS: Incremental update complete! Checked {files_indexed} files, updated {files_updated}, removed {files_removed if 'files_removed' in locals() else 0} in {elapsed:.2f}s"
@@ -377,14 +377,14 @@ class FileSearchEngine:
         logger.info("=" * 60)
         if status_callback:
             await status_callback(final_msg)
-    
+
     async def _iter_files(self, base_dir: Path):
         """Async generator for all files in directory tree."""
         stack = [base_dir]
-        
+
         while stack:
             current = stack.pop()
-            
+
             try:
                 for item in current.iterdir():
                     if item.is_dir():
@@ -393,11 +393,11 @@ class FileSearchEngine:
                             stack.append(item)
                     elif item.is_file():
                         yield item
-            
+
             except (OSError, PermissionError) as e:
                 logger.debug(f"Cannot access {current}: {e}")
                 continue
-    
+
     def _is_excluded(self, path: Path) -> bool:
         """Check if path matches exclude patterns."""
         exclude_patterns = self.config.get("exclude_patterns", [
@@ -408,14 +408,14 @@ class FileSearchEngine:
             "**/.venv/**",
             "**/*.min.js"
         ])
-        
+
         path_str = str(path)
         for pattern in exclude_patterns:
             if fnmatch.fnmatch(path_str, pattern):
                 return True
-        
+
         return False
-    
+
     def _is_text_file(self, path: Path) -> bool:
         """Heuristic check if file is text (by extension)."""
         text_extensions = {
@@ -427,34 +427,34 @@ class FileSearchEngine:
             '.toml'  # Ensure .toml files are indexed
         }
         return path.suffix.lower() in text_extensions
-    
+
     async def _index_file_content(self, file_path: Path, index: Dict[str, List[tuple[Path, int]]]) -> Optional[str]:
         """
         Index file content for grep search.
-        
+
         Args:
             file_path: Path to file
             index: Text index to populate
-        
+
         Returns:
             File content string (for ChromaDB) or None on error
         """
         try:
             async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = await f.read()
-            
+
             # Simple word-based tokenization
             words = re.findall(r'\w+', content.lower())
             for pos, word in enumerate(words):
                 if len(word) >= 2:  # Index words with 2+ characters (reduced from 3 for better coverage)
                     index.setdefault(word, []).append((file_path, pos))
-            
+
             return content  # Return content for ChromaDB
-        
+
         except Exception as e:
             logger.debug(f"Failed to index {file_path}: {e}")
             return None
-    
+
     async def _ensure_index_fresh(self):
         """Ensure index is up-to-date with a quick incremental update if needed."""
         # If no index exists yet, build initial index
@@ -467,11 +467,11 @@ class FileSearchEngine:
             except Exception as e:
                 logger.error(f"FILE_OPS: Failed to build initial index: {e}")
                 return
-        
+
         # Check if enough time has passed since last update (e.g., 30 seconds)
         current_time = time.time()
         last_update = getattr(self, '_last_incremental_update', 0)
-        
+
         # Don't update too frequently (every 30 seconds max)
         if current_time - last_update > 30:
             try:
@@ -480,54 +480,87 @@ class FileSearchEngine:
                 self._last_incremental_update = current_time
             except Exception as e:
                 logger.warning(f"FILE_OPS: Incremental update failed: {e}")
-    
+
     async def search_files(self, pattern: str, max_results: int = 50) -> Dict[str, Any]:
         """
         Fast file search by glob pattern.
-        
+
         Args:
-            pattern: Glob pattern (e.g., '*.py', '**/*.test.ts')
+            pattern: Glob pattern (e.g., '*.py', '**/*.test.ts', 'src/**/*.py')
+                    Patterns can include path components and will be matched
+                    relative to each allowed directory.
             max_results: Maximum number of files to return
-        
+
         Returns:
             Dict with status, files, total_found, truncated
         """
         try:
             self._ensure_indexing_started()  # Start indexing if not already started
             await self._ensure_index_fresh()  # Quick incremental update if needed
-            
+
             results: Set[Path] = set()
             pattern_lower = pattern.lower()
-            
-            # Use index for filename search
-            async with self._index_lock:
-                for filename, paths in self.file_name_index.items():
-                    if fnmatch.fnmatch(filename, pattern_lower):
-                        results.update(paths)
-                        if len(results) >= max_results:
-                            break
-            
+
+            # Determine if pattern contains path separators
+            has_path_sep = "/" in pattern or "\\" in pattern
+
+            # Use index for filename-only search
+            if not has_path_sep:
+                async with self._index_lock:
+                    for filename, paths in self.file_name_index.items():
+                        if fnmatch.fnmatch(filename, pattern_lower):
+                            results.update(paths)
+                            if len(results) >= max_results:
+                                break
+
             # If not enough results, try path-based glob on allowed dirs
             if len(results) < max_results:
                 for base_dir in self.allowed_dirs:
                     if not base_dir.exists():
                         continue
-                    
-                    for path in base_dir.rglob(pattern):
+
+                    # For patterns with path components, try to match relative to base_dir
+                    # If pattern starts with a subdir of base_dir, make it relative
+                    search_pattern = pattern
+                    if has_path_sep:
+                        # Try to make pattern relative to base_dir
+                        try:
+                            # Convert to Path for comparison
+                            pattern_parts = Path(pattern).parts
+                            base_parts = base_dir.parts
+
+                            # If pattern starts with parts that match base_dir, strip them
+                            if len(pattern_parts) > 0 and len(base_parts) > 0:
+                                # Check if pattern starts with end of base_dir path
+                                # E.g., base_dir ends with "data/workspace" and pattern is "data/workspace/*.txt"
+                                matching_parts = 0
+                                for i in range(len(base_parts)):
+                                    base_suffix = base_parts[-(i+1):]
+                                    if len(pattern_parts) > i and pattern_parts[:i+1] == base_suffix:
+                                        matching_parts = i + 1
+
+                                if matching_parts > 0:
+                                    # Remove the matching prefix from pattern
+                                    search_pattern = str(Path(*pattern_parts[matching_parts:]))
+                        except Exception:
+                            # If path manipulation fails, use original pattern
+                            pass
+
+                    for path in base_dir.rglob(search_pattern):
                         if path.is_file() and not self._is_excluded(path):
                             results.add(path)
                             if len(results) >= max_results:
                                 break
-            
+
             files_list = sorted([str(p) for p in results])[:max_results]
-            
+
             return {
                 "status": "success",
                 "files": files_list,
                 "total_found": len(files_list),
                 "truncated": len(results) > max_results
             }
-        
+
         except Exception as e:
             logger.error(f"File search error: {e}", exc_info=True)
             return {
@@ -535,7 +568,7 @@ class FileSearchEngine:
                 "error": str(e),
                 "error_type": type(e).__name__
             }
-    
+
     async def grep_search(
         self,
         query: str,
@@ -547,7 +580,7 @@ class FileSearchEngine:
     ) -> Dict[str, Any]:
         """
         Fast text search using index.
-        
+
         Args:
             query: Search query (literal or regex)
             is_regex: Treat query as regex pattern
@@ -555,20 +588,20 @@ class FileSearchEngine:
             case_sensitive: Case-sensitive search
             max_results: Maximum matches to return
             context_lines: Lines of context before/after
-        
+
         Returns:
             Dict with status, matches, total_matches, total_files, truncated
         """
         try:
             self._ensure_indexing_started()  # Start indexing if not already started
             await self._ensure_index_fresh()  # Quick incremental update if needed
-            
+
             matches = []
             files_searched = 0
-            
+
             # Get candidate files from index (if query has searchable tokens)
             candidate_files = await self._get_candidate_files(query, include_pattern, case_sensitive)
-            
+
             # Compile regex if needed
             pattern = None
             if is_regex:
@@ -581,18 +614,18 @@ class FileSearchEngine:
                         "error": f"Invalid regex: {e}",
                         "error_type": "RegexError"
                     }
-            
+
             # Search in candidate files
             for file_path in candidate_files:
                 if len(matches) >= max_results:
                     break
-                
+
                 try:
                     async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         lines = await f.readlines()
-                    
+
                     files_searched += 1
-                    
+
                     for line_num, line in enumerate(lines, 1):
                         # Check match
                         if is_regex:
@@ -603,17 +636,17 @@ class FileSearchEngine:
                             check_query = query if case_sensitive else query.lower()
                             if check_query not in check_line:
                                 continue
-                        
+
                         # Found match - extract context
                         context_before = [
-                            line_text.rstrip('\n') for line_text in 
+                            line_text.rstrip('\n') for line_text in
                             lines[max(0, line_num - context_lines - 1):line_num - 1]
                         ]
                         context_after = [
-                            line_text.rstrip('\n') for line_text in 
+                            line_text.rstrip('\n') for line_text in
                             lines[line_num:line_num + context_lines]
                         ]
-                        
+
                         matches.append({
                             "file_path": str(file_path),
                             "line_number": line_num,
@@ -621,13 +654,13 @@ class FileSearchEngine:
                             "context_before": context_before,
                             "context_after": context_after
                         })
-                        
+
                         if len(matches) >= max_results:
                             break
-                
+
                 except Exception as e:
                     logger.debug(f"Search error in {file_path}: {e}")
-            
+
             return {
                 "status": "success",
                 "matches": matches,
@@ -635,7 +668,7 @@ class FileSearchEngine:
                 "total_files": files_searched,
                 "truncated": len(matches) >= max_results
             }
-        
+
         except Exception as e:
             logger.error(f"Grep search error: {e}", exc_info=True)
             return {
@@ -643,7 +676,7 @@ class FileSearchEngine:
                 "error": str(e),
                 "error_type": type(e).__name__
             }
-    
+
     async def _get_candidate_files(
         self,
         query: str,
@@ -652,12 +685,12 @@ class FileSearchEngine:
     ) -> List[Path]:
         """Get candidate files from index based on query tokens."""
         candidate_files: Set[Path] = set()
-        
+
         # Extract tokens from query
         query_lower = query if case_sensitive else query.lower()
         tokens = re.findall(r'\w+', query_lower)
         tokens = [t for t in tokens if len(t) >= 2]  # Only tokens with 2+ chars (reduced from 3 for better coverage)
-        
+
         async with self._index_lock:
             if tokens and self.text_index:
                 # Find files containing query tokens
@@ -668,7 +701,7 @@ class FileSearchEngine:
             else:
                 # Fallback: all indexed files
                 candidate_files = set(self.file_mtimes.keys())
-        
+
         # Filter by include_pattern if specified
         if include_pattern:
             filtered = []
@@ -678,16 +711,16 @@ class FileSearchEngine:
                 # Convert to forward slashes for consistent matching
                 path_normalized = path_str.replace('\\', '/')
                 pattern_normalized = include_pattern.replace('\\', '/')
-                
+
                 # Match against full path or just filename
                 if (fnmatch.fnmatch(path_normalized, pattern_normalized) or
                     fnmatch.fnmatch(path_normalized, f"**/{pattern_normalized}") or
                     fnmatch.fnmatch(path.name, pattern_normalized)):
                     filtered.append(path)
             return filtered
-        
+
         return list(candidate_files)
-    
+
     async def semantic_search(
         self,
         query: str,
@@ -696,15 +729,15 @@ class FileSearchEngine:
     ) -> Dict[str, Any]:
         """
         Semantic/AI-powered search using ChromaDB embeddings.
-        
+
         Finds files by meaning rather than exact keyword match.
         Example: "authentication logic" will find login/verify functions.
-        
+
         Args:
             query: Natural language search query
             max_results: Maximum number of results to return
             filter_pattern: Optional file pattern to filter results (e.g., '*.py')
-        
+
         Returns:
             Dict with status, results (list of matches with similarity scores)
         """
@@ -712,24 +745,24 @@ class FileSearchEngine:
             # Initialize ChromaDB if needed
             if not self._chroma_initialized:
                 self._init_chromadb()
-            
+
             # Ensure index is fresh before semantic search
             await self._ensure_index_fresh()
-            
+
             if not self.chroma_collection:
                 return {
                     "status": "error",
                     "error": "Semantic search not available (ChromaDB not initialized)",
                     "error_type": "ChromaDBNotInitialized"
                 }
-            
+
             # Perform semantic search
             results = self.chroma_collection.query(
                 query_texts=[query],
                 n_results=max_results,
                 include=["documents", "metadatas", "distances"]
             )
-            
+
             if not results["ids"] or len(results["ids"][0]) == 0:
                 return {
                     "status": "success",
@@ -738,25 +771,25 @@ class FileSearchEngine:
                     "count": 0,
                     "message": "No files found"
                 }
-            
+
             # Format results
             matches = []
             for i in range(len(results["ids"][0])):
                 file_path = results["ids"][0][i]
                 metadata = results["metadatas"][0][i]
                 distance = results["distances"][0][i]
-                
+
                 # Filter by pattern if specified
                 if filter_pattern:
                     if not fnmatch.fnmatch(file_path, filter_pattern):
                         continue
-                
+
                 # Calculate similarity score from distance
                 # ChromaDB uses squared L2 distance (0 = identical, larger = less similar)
                 # Convert to similarity score: 1 / (1 + distance)
                 # This gives range [0, 1] where 1 is perfect match, approaching 0 for very different
                 similarity = 1.0 / (1.0 + distance)
-                
+
                 matches.append({
                     "file_path": file_path,
                     "filename": metadata.get("filename", Path(file_path).name),
@@ -765,10 +798,10 @@ class FileSearchEngine:
                     "size_bytes": int(metadata.get("size_bytes", 0)),
                     "extension": metadata.get("extension", "")
                 })
-            
+
             # Sort by similarity score (highest first)
             matches.sort(key=lambda x: x["similarity_score"], reverse=True)
-            
+
             return {
                 "status": "success",
                 "query": query,
@@ -776,7 +809,7 @@ class FileSearchEngine:
                 "count": len(matches),
                 "max_results": max_results
             }
-        
+
         except ChromaDBError as e:
             logger.error(f"ChromaDB semantic search error: {e}", exc_info=True)
             return {
@@ -791,7 +824,7 @@ class FileSearchEngine:
                 "error": str(e),
                 "error_type": type(e).__name__
             }
-    
+
     async def stop(self):
         """Stop background indexing task and cleanup resources."""
         # Cancel background indexing
@@ -803,7 +836,7 @@ class FileSearchEngine:
                 pass
             self._indexing_task = None
             self._indexing_started = False
-        
+
         # Cleanup ChromaDB resources
         if self.chroma_client:
             try:
@@ -814,7 +847,7 @@ class FileSearchEngine:
                 self._chroma_initialized = False
             except Exception as e:
                 logger.debug(f"ChromaDB cleanup warning: {e}")
-        
+
         # Clear in-memory indexes
         self.text_index.clear()
         self.file_name_index.clear()
