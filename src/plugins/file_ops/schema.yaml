@@ -55,7 +55,16 @@ tools:
   - type: function
     function:
       name: "{{ name }}_edit_file"
-      description: "Edit an existing file. Supports append, replace, and insert modes."
+      description: |
+        Edit an existing file. Supports multiple edit modes:
+        
+        - **append**: Add content to end of file
+        - **replace**: Replace exact string match (SENSITIVE to whitespace, line endings)
+          WARNING: Must match EXACTLY including spaces, tabs, CRLF/LF. For structured files (YAML, JSON), use replace_lines instead.
+        - **insert**: Insert content at specific line (0-indexed)
+        - **replace_lines**: Replace line range (1-indexed, inclusive). RECOMMENDED for structured files.
+          Example: start_line=5, end_line=7 replaces lines 5, 6, and 7 with new content.
+      
       parameters:
         type: object
         properties:
@@ -64,14 +73,14 @@ tools:
             description: "Path to file to edit"
           mode:
             type: string
-            enum: ["append", "replace", "insert"]
-            description: "Edit mode: append to end, replace string, or insert at line"
+            enum: ["append", "replace", "insert", "replace_lines"]
+            description: "Edit mode - see function description for details"
           content:
             type: string
-            description: "Content to add/insert (for append/insert modes)"
+            description: "Content to add/insert/replace (for append/insert/replace_lines modes)"
           old_string:
             type: string
-            description: "String to replace (for replace mode)"
+            description: "Exact string to replace (for replace mode) - must match whitespace and line endings exactly"
           new_string:
             type: string
             description: "Replacement string (for replace mode)"
@@ -79,6 +88,14 @@ tools:
             type: integer
             minimum: 0
             description: "Line number to insert at (for insert mode, 0-indexed)"
+          start_line:
+            type: integer
+            minimum: 1
+            description: "Start line for replace_lines mode (1-indexed, inclusive)"
+          end_line:
+            type: integer
+            minimum: 1
+            description: "End line for replace_lines mode (1-indexed, inclusive)"
         required: ["file_path", "mode"]
         additionalProperties: false
 

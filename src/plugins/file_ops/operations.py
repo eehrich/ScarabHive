@@ -149,6 +149,8 @@ class FileOperations:
         old_string: Optional[str] = None,
         new_string: Optional[str] = None,
         line_number: Optional[int] = None,
+        start_line: Optional[int] = None,
+        end_line: Optional[int] = None,
         encoding: str = "utf-8"
     ) -> Dict[str, Any]:
         """
@@ -156,11 +158,13 @@ class FileOperations:
         
         Args:
             path: File to edit
-            mode: Edit mode (append, replace, insert)
-            content: Content to add (append/insert modes)
+            mode: Edit mode (append, replace, insert, replace_lines)
+            content: Content to add (append/insert/replace_lines modes)
             old_string: String to replace (replace mode)
             new_string: Replacement string (replace mode)
-            line_number: Line number to insert at (insert mode)
+            line_number: Line number to insert at (insert mode, 0-indexed)
+            start_line: Start line for replace_lines mode (1-indexed, inclusive)
+            end_line: End line for replace_lines mode (1-indexed, inclusive)
             encoding: Text encoding
         
         Returns:
@@ -198,14 +202,44 @@ class FileOperations:
                         "error_type": "ValidationError"
                     }
                 
-                # Count replacements
+                # Try exact match first
                 replacements = current_content.count(old_string)
+                
                 if replacements == 0:
+                    # Try with normalized line endings (CRLF <-> LF)
+                    normalized_content = current_content.replace('\r\n', '\n')
+                    normalized_old_string = old_string.replace('\r\n', '\n')
+                    
+                    if normalized_old_string in normalized_content:
+                        # Line ending mismatch detected
+                        return {
+                            "status": "error",
+                            "error": f"String not found with exact whitespace. Detected CRLF/LF mismatch.",
+                            "error_type": "WhitespaceMatchError",
+                            "file_path": str(path),
+                            "hint": "The file uses different line endings than your search string. Normalize line endings or use replace_lines mode."
+                        }
+                    
+                    # Check if it's a whitespace-only difference
+                    stripped_content = normalized_content.replace(' ', '').replace('\t', '')
+                    stripped_old_string = normalized_old_string.replace(' ', '').replace('\t', '')
+                    
+                    if stripped_old_string in stripped_content:
+                        return {
+                            "status": "error",
+                            "error": f"String not found with exact whitespace. Content matches but spaces/tabs differ.",
+                            "error_type": "WhitespaceMatchError",
+                            "file_path": str(path),
+                            "hint": "Whitespace (spaces/tabs) doesn't match exactly. Copy the exact indentation from the file or use replace_lines mode."
+                        }
+                    
+                    # True not found
                     return {
                         "status": "error",
                         "error": f"String not found in file: {old_string[:50]}...",
                         "error_type": "StringNotFoundError",
-                        "file_path": str(path)
+                        "file_path": str(path),
+                        "hint": "String does not exist in file. Check spelling and ensure you have the correct content."
                     }
                 
                 new_content = current_content.replace(old_string, new_string)
@@ -253,10 +287,61 @@ class FileOperations:
                 new_content = ''.join(lines)
                 changes = {"inserted_at_line": line_number}
             
+            elif mode == "replace_lines":
+                if content is None:
+                    return {
+                        "status": "error",
+                        "error": "Parameter 'content' is required for replace_lines mode",
+                        "error_type": "ValidationError"
+                    }
+                if start_line is None or end_line is None:
+                    return {
+                        "status": "error",
+                        "error": "Parameters 'start_line' and 'end_line' are required for replace_lines mode",
+                        "error_type": "ValidationError"
+                    }
+                
+                lines = current_content.splitlines(keepends=True)
+                total_lines = len(lines)
+                
+                # Validate line numbers (1-indexed, inclusive)
+                if start_line < 1 or start_line > total_lines:
+                    return {
+                        "status": "error",
+                        "error": f"Invalid start_line {start_line}. File has {total_lines} lines (1-indexed).",
+                        "error_type": "ValidationError",
+                        "file_path": str(path)
+                    }
+                
+                if end_line < start_line or end_line > total_lines:
+                    return {
+                        "status": "error",
+                        "error": f"Invalid end_line {end_line}. Must be >= start_line ({start_line}) and <= {total_lines}.",
+                        "error_type": "ValidationError",
+                        "file_path": str(path)
+                    }
+                
+                # Replace lines (convert to 0-indexed for slicing)
+                start_idx = start_line - 1
+                end_idx = end_line  # end_line is inclusive, so we don't subtract 1 from slice end
+                
+                # Ensure content ends with newline if replacing multiple lines
+                replacement_content = content if content.endswith('\n') else content + '\n'
+                
+                # Build new content: before + replacement + after
+                new_lines = lines[:start_idx] + [replacement_content] + lines[end_idx:]
+                new_content = ''.join(new_lines)
+                
+                changes = {
+                    "lines_replaced": end_line - start_line + 1,
+                    "start_line": start_line,
+                    "end_line": end_line
+                }
+            
             else:
                 return {
                     "status": "error",
-                    "error": f"Invalid mode: {mode}. Must be one of: append, replace, insert",
+                    "error": f"Invalid mode: {mode}. Must be one of: append, replace, insert, replace_lines",
                     "error_type": "ValidationError"
                 }
             

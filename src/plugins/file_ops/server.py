@@ -215,7 +215,9 @@ class FileOpsServer(SchemaBasedMCPServer):
                 content=params.get("content"),
                 old_string=params.get("old_string"),
                 new_string=params.get("new_string"),
-                line_number=params.get("line_number")
+                line_number=params.get("line_number"),
+                start_line=params.get("start_line"),
+                end_line=params.get("end_line")
             )
             
             if status:
@@ -236,6 +238,15 @@ class FileOpsServer(SchemaBasedMCPServer):
                         "file": str(safe_path),
                         "mode": mode,
                         "line": params.get("line_number", 0)
+                    })
+                elif mode == "replace_lines":
+                    lines_replaced = changes.get("lines_replaced", 0)
+                    await status.end(f"Edited {safe_path.name}: replaced {lines_replaced} lines ({changes.get('start_line')}-{changes.get('end_line')})", meta={
+                        "file": str(safe_path),
+                        "mode": mode,
+                        "lines_replaced": lines_replaced,
+                        "start_line": changes.get("start_line"),
+                        "end_line": changes.get("end_line")
                     })
             
             return result
