@@ -198,6 +198,20 @@ llm_system:
         streaming: true
         json_mode: true
 
+    deepseek-chat-nostream:
+      provider: ollama
+      model: deepseek-chat
+      openai_api_key: "***REMOVED***"
+      ollama_url: https://api.deepseek.com
+      ollama_mode: openai_compat
+      context_window: 100000 # 128K context size totally
+      request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        json_mode: true
+
     deepseek-chat-small:
       provider: ollama
       model: deepseek-chat
@@ -233,6 +247,10 @@ llm_system:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks."
       max_steps: 100
+     chat-nostream:
+      model_ref: deepseek-chat-nostream
+      description: "Cheap and fast none thinking model, for medium complex tasks."
+      max_steps: 100     
     code:
       model_ref: gpt-5.1-codex
       description: "Special LLM for Codeing tasks and code understanding, for complex reasoning tasks."
