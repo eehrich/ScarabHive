@@ -421,3 +421,189 @@ def format_string(text):
     for match in result["results"]:
         assert match["file_path"].endswith(".py")
 
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_lines(file_ops_server, tmp_allowed_dir):
+    """Test replace_lines mode - replace a range of lines."""
+    # Create test file with 5 lines
+    test_file = tmp_allowed_dir / "replace_lines.txt"
+    test_file.write_text("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n")
+    
+    # Replace lines 2-3 with new content
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "content": "NEW Line 2\nNEW Line 3",
+        "start_line": 2,
+        "end_line": 3
+    })
+    
+    assert result["status"] == "success"
+    assert result["mode"] == "replace_lines"
+    assert result["changes"]["lines_replaced"] == 2
+    assert result["changes"]["start_line"] == 2
+    assert result["changes"]["end_line"] == 3
+    
+    # Verify content
+    content = test_file.read_text()
+    lines = content.splitlines()
+    assert len(lines) == 5
+    assert lines[0] == "Line 1"
+    assert lines[1] == "NEW Line 2"
+    assert lines[2] == "NEW Line 3"
+    assert lines[3] == "Line 4"
+    assert lines[4] == "Line 5"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_lines_single_line(file_ops_server, tmp_allowed_dir):
+    """Test replace_lines mode with single line (start_line == end_line)."""
+    test_file = tmp_allowed_dir / "replace_single.txt"
+    test_file.write_text("Line 1\nLine 2\nLine 3\n")
+    
+    # Replace only line 2
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "content": "REPLACED Line 2",
+        "start_line": 2,
+        "end_line": 2
+    })
+    
+    assert result["status"] == "success"
+    assert result["changes"]["lines_replaced"] == 1
+    
+    # Verify content
+    lines = test_file.read_text().splitlines()
+    assert lines[0] == "Line 1"
+    assert lines[1] == "REPLACED Line 2"
+    assert lines[2] == "Line 3"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_lines_invalid_range(file_ops_server, tmp_allowed_dir):
+    """Test replace_lines with invalid line ranges."""
+    test_file = tmp_allowed_dir / "invalid_range.txt"
+    test_file.write_text("Line 1\nLine 2\nLine 3\n")
+    
+    # Test start_line > end_line
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "content": "New content",
+        "start_line": 3,
+        "end_line": 1
+    })
+    
+    assert result["status"] == "error"
+    assert "Invalid end_line" in result["error"]
+    
+    # Test start_line out of range (0)
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "content": "New content",
+        "start_line": 0,
+        "end_line": 2
+    })
+    
+    assert result["status"] == "error"
+    assert "Invalid start_line" in result["error"]
+    
+    # Test end_line beyond file length
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "content": "New content",
+        "start_line": 1,
+        "end_line": 10
+    })
+    
+    assert result["status"] == "error"
+    assert "Invalid end_line" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_crlf_detection(file_ops_server, tmp_allowed_dir):
+    """Test replace mode detects CRLF/LF mismatch."""
+    test_file = tmp_allowed_dir / "crlf_test.txt"
+    # File uses LF line endings
+    test_file.write_text("Line 1\nLine 2\nLine 3\n")
+    
+    # Try to replace with CRLF in search string
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace",
+        "old_string": "Line 1\r\n",  # CRLF
+        "new_string": "Modified Line 1\n"
+    })
+    
+    assert result["status"] == "error"
+    assert result["error_type"] == "WhitespaceMatchError"
+    assert "CRLF/LF mismatch" in result["error"]
+    assert "hint" in result
+    assert "line endings" in result["hint"].lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_whitespace_detection(file_ops_server, tmp_allowed_dir):
+    """Test replace mode detects spaces/tabs mismatch."""
+    test_file = tmp_allowed_dir / "whitespace_test.txt"
+    # File uses spaces for indentation
+    test_file.write_text("    indented line\nno indent\n")
+    
+    # Try to replace with tabs instead of spaces
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace",
+        "old_string": "\tindented line",  # Tab
+        "new_string": "    modified line"  # Spaces
+    })
+    
+    assert result["status"] == "error"
+    assert result["error_type"] == "WhitespaceMatchError"
+    assert "spaces/tabs differ" in result["error"]
+    assert "hint" in result
+    assert "whitespace" in result["hint"].lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_lines_missing_params(file_ops_server, tmp_allowed_dir):
+    """Test replace_lines mode requires content, start_line, and end_line."""
+    test_file = tmp_allowed_dir / "test.txt"
+    test_file.write_text("Line 1\nLine 2\n")
+    
+    # Missing content
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "start_line": 1,
+        "end_line": 2
+    })
+    
+    assert result["status"] == "error"
+    assert "content" in result["error"].lower()
+    
+    # Missing start_line
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "content": "New content",
+        "end_line": 2
+    })
+    
+    assert result["status"] == "error"
+    assert "start_line" in result["error"].lower()
+    
+    # Missing end_line
+    result = await file_ops_server.edit_file({
+        "file_path": str(test_file),
+        "mode": "replace_lines",
+        "content": "New content",
+        "start_line": 1
+    })
+    
+    assert result["status"] == "error"
+    assert "end_line" in result["error"].lower()
+
+
