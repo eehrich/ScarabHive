@@ -247,7 +247,7 @@ llm_system:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks."
       max_steps: 100
-     chat-nostream:
+    chat-nostream:
       model_ref: deepseek-chat-nostream
       description: "Cheap and fast none thinking model, for medium complex tasks."
       max_steps: 100     
