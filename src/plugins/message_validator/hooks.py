@@ -426,26 +426,25 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
             modified_context = replace(context, messages=result.repaired_messages)
 
             # Detect if messages were actually modified
-            # Check if validator returned the same list reference (no issues found)
-            # vs. a new list (issues found and repaired)
-            if result.repaired_messages is chat_messages:
-                # Same reference = no repairs were made
-                modified = False
-            elif len(result.repaired_messages) != len(chat_messages):
+            # Note: We can't use identity comparison (is) because hooks receive deep-copied contexts,
+            # so we need to compare content/structure instead
+
+            if len(result.repaired_messages) != len(chat_messages):
                 # Different lengths = definitely modified
                 modified = True
             else:
-                # Same length but possibly different content - compare objects
-                # This catches cases where tool_calls were stripped from messages
-                modified = result.repaired_messages != chat_messages
-
-            # Fallback: if we have error-level issues, something should have been repaired
-            if not modified and any(issue.severity == "error" for issue in result.issues):
-                logger.warning(
-                    f"Validator reported {len(result.issues)} error-level issues "
-                    "but returned same message list - this indicates a validator bug"
-                )
-                modified = True
+                # Same length - compare message content and structure
+                # Deep comparison of all message fields
+                modified = False
+                for orig_msg, repaired_msg in zip(chat_messages, result.repaired_messages):
+                    # Compare all relevant fields
+                    if (orig_msg.role != repaired_msg.role or
+                        orig_msg.content != repaired_msg.content or
+                        orig_msg.tool_calls != repaired_msg.tool_calls or
+                        orig_msg.tool_call_id != repaired_msg.tool_call_id or
+                        orig_msg.name != repaired_msg.name):
+                        modified = True
+                        break
 
             # Log when messages were repaired
             if modified and result.issues:
@@ -454,16 +453,21 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
                     f"{result.repair_summary}"
                 )
 
+            # CRITICAL: We must set modified=True if validator made ANY repairs,
+            # otherwise the hook registry will ignore our repaired messages!
+            # The validator always returns repaired messages (even if identical),
+            # so we need to explicitly signal when repairs were made.
+            actually_modified = modified or bool(result.issues)
+
             return HookResult(
                 success=True,
-                modified=modified,
+                modified=actually_modified,
                 context=modified_context,
                 metadata={
                     'validation_result': result.repair_summary,
                     'issues_count': len(result.issues)
                 }
             )
-
         except Exception as e:
             logger.exception(f"Error in message validation: {e}")
             return HookResult(success=False, modified=False, context=context, error=str(e))

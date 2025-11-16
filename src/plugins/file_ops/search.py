@@ -69,6 +69,7 @@ class FileSearchEngine:
             return
 
         try:
+            logger.info("FILE_OPS: Initializing ChromaDB...")
             import chromadb
             from chromadb.config import Settings
             from chromadb.utils import embedding_functions
@@ -79,7 +80,9 @@ class FileSearchEngine:
                 "data/cache/file_ops_chromadb"
             ))
             chroma_path.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"FILE_OPS: ChromaDB path: {chroma_path}")
 
+            logger.debug("FILE_OPS: Creating ChromaDB client...")
             self.chroma_client = chromadb.PersistentClient(
                 path=str(chroma_path),
                 settings=Settings(
@@ -87,38 +90,49 @@ class FileSearchEngine:
                     allow_reset=True
                 )
             )
+            logger.debug("FILE_OPS: ChromaDB client created")
 
             # Create embedding function with auto-detection of available providers
-            # Don't specify preferred_providers to let ONNX auto-detect what's available
-            # This prevents errors when CUDA or other specific providers aren't installed
+            logger.debug("FILE_OPS: Creating embedding function...")
             embedding_fn = embedding_functions.ONNXMiniLM_L6_V2()
+            logger.debug("FILE_OPS: Embedding function created")
 
-            # Robust collection initialization with error handling
-            # Always recreate collection to ensure embedding function compatibility
-            # This prevents issues with persisted collections that have incompatible provider settings
+            # Get or create collection (don't delete existing unless force_recreate is set)
             collection_name = "file_ops_semantic_index"
+            force_recreate = self.config.get("force_recreate_chroma_collection", False)
 
-            try:
-                # Delete existing collection if it exists (to avoid provider mismatch issues)
-                self.chroma_client.delete_collection(collection_name)
-                logger.info(f"Deleted existing ChromaDB collection '{collection_name}'")
-            except Exception as delete_error:
-                logger.debug(f"No existing collection to delete: {delete_error}")
+            if force_recreate:
+                logger.info(f"FILE_OPS: Force recreating ChromaDB collection '{collection_name}'")
+                try:
+                    self.chroma_client.delete_collection(collection_name)
+                    logger.debug(f"FILE_OPS: Deleted existing collection")
+                except Exception as delete_error:
+                    logger.debug(f"FILE_OPS: No existing collection to delete: {delete_error}")
 
-            # Create new collection with current embedding function
+            # Try to get existing collection first
             try:
-                self.chroma_collection = self.chroma_client.create_collection(
+                logger.debug(f"FILE_OPS: Attempting to get existing collection '{collection_name}'...")
+                self.chroma_collection = self.chroma_client.get_collection(
                     name=collection_name,
-                    metadata={"description": "Semantic index for file content"},
                     embedding_function=embedding_fn
                 )
-                logger.info(f"Created new ChromaDB collection '{collection_name}'")
-            except Exception as create_error:
-                logger.error(f"Failed to create ChromaDB collection: {create_error}")
-                raise ChromaDBError(f"Collection creation failed: {create_error}")
+                logger.info(f"FILE_OPS: Using existing ChromaDB collection '{collection_name}'")
+            except Exception:
+                # Collection doesn't exist, create it
+                logger.debug(f"FILE_OPS: Creating new collection '{collection_name}'...")
+                try:
+                    self.chroma_collection = self.chroma_client.create_collection(
+                        name=collection_name,
+                        metadata={"description": "Semantic index for file content"},
+                        embedding_function=embedding_fn
+                    )
+                    logger.info(f"FILE_OPS: Created new ChromaDB collection '{collection_name}'")
+                except Exception as create_error:
+                    logger.error(f"FILE_OPS: Failed to create ChromaDB collection: {create_error}")
+                    raise ChromaDBError(f"Collection creation failed: {create_error}")
 
             self._chroma_initialized = True
-            logger.info(f"ChromaDB initialized at {chroma_path}")
+            logger.info(f"FILE_OPS: ChromaDB initialized successfully at {chroma_path}")
 
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB: {e}", exc_info=True)
@@ -495,6 +509,7 @@ class FileSearchEngine:
             Dict with status, files, total_found, truncated
         """
         try:
+            logger.debug(f"FILE_OPS: search_files called with pattern='{pattern}', max_results={max_results}")
             self._ensure_indexing_started()  # Start indexing if not already started
             await self._ensure_index_fresh()  # Quick incremental update if needed
 
@@ -503,22 +518,28 @@ class FileSearchEngine:
 
             # Determine if pattern contains path separators
             has_path_sep = "/" in pattern or "\\" in pattern
+            logger.debug(f"FILE_OPS: Pattern has path separator: {has_path_sep}")
 
             # Use index for filename-only search
             if not has_path_sep:
+                logger.debug(f"FILE_OPS: Searching in filename index...")
                 async with self._index_lock:
                     for filename, paths in self.file_name_index.items():
                         if fnmatch.fnmatch(filename, pattern_lower):
                             results.update(paths)
                             if len(results) >= max_results:
                                 break
+                logger.debug(f"FILE_OPS: Found {len(results)} results in filename index")
 
             # If not enough results, try path-based glob on allowed dirs
             if len(results) < max_results:
+                logger.debug(f"FILE_OPS: Searching with rglob in {len(self.allowed_dirs)} directories...")
                 for base_dir in self.allowed_dirs:
                     if not base_dir.exists():
+                        logger.debug(f"FILE_OPS: Skipping non-existent directory: {base_dir}")
                         continue
 
+                    logger.debug(f"FILE_OPS: Searching in {base_dir}...")
                     # For patterns with path components, try to match relative to base_dir
                     # If pattern starts with a subdir of base_dir, make it relative
                     search_pattern = pattern
@@ -546,13 +567,21 @@ class FileSearchEngine:
                             # If path manipulation fails, use original pattern
                             pass
 
+                    logger.debug(f"FILE_OPS: Using search pattern '{search_pattern}' in {base_dir}")
+                    file_count = 0
                     for path in base_dir.rglob(search_pattern):
+                        file_count += 1
+                        if file_count % 100 == 0:
+                            logger.debug(f"FILE_OPS: Processed {file_count} files so far...")
                         if path.is_file() and not self._is_excluded(path):
                             results.add(path)
                             if len(results) >= max_results:
+                                logger.debug(f"FILE_OPS: Reached max_results ({max_results}), stopping search")
                                 break
+                    logger.debug(f"FILE_OPS: Processed {file_count} files in {base_dir}, found {len(results)} matches")
 
             files_list = sorted([str(p) for p in results])[:max_results]
+            logger.debug(f"FILE_OPS: Returning {len(files_list)} files")
 
             return {
                 "status": "success",
