@@ -135,7 +135,7 @@ class FileOperations:
             temp_path = path.with_suffix(path.suffix + ".tmp")
 
             try:
-                async with aiofiles.open(temp_path, 'w', encoding=encoding) as f:
+                async with aiofiles.open(temp_path, 'w', encoding=encoding, newline='') as f:
                     await f.write(content)
 
                 # Atomic rename
@@ -453,7 +453,7 @@ class FileOperations:
             temp_path = path.with_suffix(path.suffix + ".tmp")
 
             try:
-                async with aiofiles.open(temp_path, 'w', encoding=encoding) as f:
+                async with aiofiles.open(temp_path, 'w', encoding=encoding, newline='') as f:
                     await f.write(new_content)
 
                 # Atomic rename
