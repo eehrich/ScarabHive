@@ -560,6 +560,10 @@ class SafeExecutor:
             
         elif isinstance(node, ast.While):
             # While loop with timeout protection
+            # Check for infinite 'while True:' loops
+            if isinstance(node.test, ast.Constant) and node.test.value is True:
+                raise RuntimeError("Infinite 'while True' loops are not allowed")
+            
             loop_start_time = time.time()
             result = None
             iteration_count = 0
@@ -610,6 +614,10 @@ class SafeExecutor:
             else:
                 raise FunctionReturn(None)
                 
+        elif isinstance(node, ast.Pass):
+            # Pass statement - do nothing
+            return None
+            
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             # Import statements are not allowed
             if isinstance(node, ast.Import):
