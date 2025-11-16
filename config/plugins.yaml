@@ -1,5 +1,5 @@
 # ================================
-# Plugin Configuration  
+# Plugin Configuration
 # ================================
 # Configuration for local MCP plugins (servers)
 
@@ -8,40 +8,39 @@ plugins:
   plugin_dirs:
     - src/plugins
     - src/plugins_writer
-  
+
   # Default configuration for all plugins
   default_config:
     type: basic_agent
     enabled: false
-    
+
     agent_config:
       llm_profile: normal
       max_steps: 20
       system_template: "config/prompts/system_prompt.yaml"
-      
-      hooks:        
-        enabled: true 
+
+      hooks:
+        enabled: true
         overrides:  # by default disable html formatting of markdown
           markdown_formatter.format_markdown_output:
-             enabled: false     
+             enabled: false
 
       tools:
         allowed: []
         blocked: []
-  
+
   # Plugin server configurations
   servers:
     example:
       type: example
       enabled: true
-    
+
     basic_agent:
       type: basic_agent
       enabled: true
       agent_config:
         tools:
-          allowed:
-            - "*"
+          allowed: []
         hooks:
           enabled: true
           overrides:
@@ -51,18 +50,18 @@ plugins:
               enabled: true
             sequential_thinking.inject_active_sessions:
               enabled: true
-      
+
       metadata:
         visibility: "both"  # Make available as tool for meta_agent
-    
 
-    
+
+
     basic_operations:
       type: basic_operations
       enabled: true
       max_wait_seconds: 3600
       default_update_interval: 5.0
-    
+
     sequential_thinking:
       type: sequential_thinking
       enabled: true
@@ -71,16 +70,16 @@ plugins:
       enable_branching: true
       enable_revisions: true
       max_summary_thoughts: 10
-      
+
       # Hook config for inject_active_sessions
       max_thoughts_in_prompt: 5
       show_branch_info: true
       format: markdown
-    
+
     todo:
       type: todo
       enabled: true
-    
+
     memory:
       type: memory
       enabled: true
@@ -95,27 +94,27 @@ plugins:
       enabled: false
       host: 127.0.0.1
       port: 9000
-    
+
     yahoo_finance:
       type: yahoo_finance
       enabled: false
-    
+
     twitter_search:
       type: twitter_search
       enabled: false
-    
+
     weather:
       type: weather
       enabled: true
-    
+
     datetime:
       type: datetime
       enabled: true
-    
+
     llm_router:
       type: llm_router
       enabled: true
-    
+
     log_viewer:
       type: log_viewer
       enabled: true
@@ -129,7 +128,7 @@ plugins:
     script_interpreter:
       type: script_interpreter
       enabled: true
-    
+
     file_ops:
       type: file_ops
       enabled: true
@@ -140,7 +139,7 @@ plugins:
         enable_indexing: true
         index_on_startup: true
         enable_semantic_search: true
-        auto_reindex_interval: 3600 
+        auto_reindex_interval: 3600
         exclude_patterns:
           - "**/.git/**"
           - "**/__pycache__/**"
@@ -148,7 +147,7 @@ plugins:
           - "**/.venv/**"
           - "**/*.min.js"
           - "**/*.min.css"
-          - "**/*.map"        
+          - "**/*.map"
 
     workspace_file_ops:
       type: file_ops
@@ -177,18 +176,18 @@ plugins:
           - "**/*.map"
 
 
-  
-    
+
+
     #sqlite_query:
     #  type: sqlite_query
     #  enabled: true
     #  database: "data/writer/books.db"
     #  query_timeout: 30
-    
+
     sub_agent_manager:
       type: sub_agent_manager
       enabled: true
-      max_nesting_depth: 5      
+      max_nesting_depth: 5
       allowed_agents:
         - basic_agent
         - web_research_agent
@@ -203,44 +202,44 @@ plugins:
           enabled: true
           max_sub_agents_shown: 5
           format: "markdown"
-    
+
     user_management:
       type: user_management
       enabled: true
-    
+
     context_summarizer:
       type: context_summarizer
       enabled: true
       config:
         max_message_preview_length: 5000
-    
+
     context_optimizer:
       type: context_optimizer
       enabled: true
-    
+
     context_usage_tracker:
       type: context_usage_tracker
       enabled: true
-    
+
     request_logger:
       type: request_logger
       enabled: true
-    
+
     message_validator:
       type: message_validator
       enabled: true
       config:
         log_level: warning
         strict_mode: false
-    
+
     markdown_formatter:
       type: markdown_formatter
       enabled: true
-    
+
     message_debugger:
       type: message_debugger
       enabled: true
-    
+
     writer_content:
       type: writer_content
       enabled: true
@@ -249,7 +248,7 @@ plugins:
         auto_linking: true
         auto_versioning: true
         max_versions: 10
-    
+
     writer_state:
       type: writer_state
       enabled: true
@@ -260,11 +259,11 @@ plugins:
         max_health_drop: 50
         max_location_distance: 1000
         max_time_jump_hours: 24
-    
+
     terminal:
       type: terminal
       enabled: true
-      
+
       # Security settings
       security:
         # Whitelist: If set, only these patterns are allowed
@@ -276,24 +275,24 @@ plugins:
         #   - "^ls .*"
         #   - "^cat .*"
         #   - "^grep .*"
-        
+
         # Blacklist: Always blocked patterns
         blacklist:
           - "rm -rf /"
           - "dd if="
           - "mkfs"
           - "chmod 777"
-        
+
         # Allow chained commands (&&, ||, ;)
         allow_command_chains: true
-      
+
       # Resource limits
       limits:
         max_output_size_kb: 60  # Like GitHub Copilot
         default_timeout_seconds: 300
         max_timeout_seconds: 3600
         max_concurrent_background: 10
-      
+
       # Platform settings
       platform:
         bash_path: "auto"  # Auto-detect or specify path
@@ -307,7 +306,7 @@ hooks:
   # Global hook settings
   enabled: true  # Master switch for all hooks
   default_timeout: 30.0  # Default timeout in seconds
-  
+
   # Per-hook configuration overrides
   # Format: hook_name or plugin_name.hook_name
   overrides:
@@ -315,7 +314,7 @@ hooks:
     # request_logger.log_pre_llm:
     #   enabled: true
     #   timeout: 5.0
-    
+
     # Example: Configure hook ordering
     # context_optimizer:
     #   enabled: true
