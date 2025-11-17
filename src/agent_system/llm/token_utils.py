@@ -7,10 +7,10 @@ from .models import ChatMessage
 
 def estimate_token_count(messages: List[ChatMessage]) -> int:
     """Enhanced token count estimation with improved accuracy for different content types.
-    
+
     Args:
         messages: List of chat messages to estimate tokens for
-        
+
     Returns:
         Estimated total token count
     """
@@ -59,10 +59,10 @@ def estimate_token_count(messages: List[ChatMessage]) -> int:
 
 def estimate_content_tokens(content: str) -> int:
     """Estimate tokens for message content using word-based ratios.
-    
+
     Args:
         content: Text content to estimate
-        
+
     Returns:
         Estimated token count
     """
@@ -73,26 +73,27 @@ def estimate_content_tokens(content: str) -> int:
     words = len(content.split())
 
     # Detect content type for better estimation
+    # Ratios calibrated for OpenAI cl100k_base tokenizer (GPT-4/5)
     if is_code_content(content):
         # Code: higher token density due to symbols, operators, keywords
-        # Ratio: ~1.2 tokens per word
-        return int(words * 1.2)
+        # Ratio: ~1.5 tokens per word (empirically measured)
+        return int(words * 1.5)
     elif is_structured_data(content):
         # JSON/XML: compact structure, many punctuation tokens
-        # Ratio: ~1.1 tokens per word
-        return int(words * 1.1)
+        # Ratio: ~1.8 tokens per word (empirically measured)
+        return int(words * 1.8)
     else:
         # Natural language: standard ratio
-        # Ratio: ~0.75 tokens per word (standard for English)
-        return int(words * 0.75)
+        # Ratio: ~1.3 tokens per word for cl100k_base (was 0.75, too low)
+        return int(words * 1.3)
 
 
 def estimate_json_tokens(json_str: str) -> int:
     """Estimate tokens for JSON content using word and structure analysis.
-    
+
     Args:
         json_str: JSON string to estimate
-        
+
     Returns:
         Estimated token count
     """
@@ -110,15 +111,16 @@ def estimate_json_tokens(json_str: str) -> int:
                       json_str.count(',')
 
     # JSON tokens = structural tokens + content words * ratio
-    return structural_chars + int(words * 0.8)
+    # Increased ratio from 0.8 to 1.3 for cl100k_base accuracy
+    return structural_chars + int(words * 1.3)
 
 
 def estimate_tool_result_tokens(content: str) -> int:
     """Estimate tokens for tool results using content-aware word counting.
-    
+
     Args:
         content: Tool result content to estimate
-        
+
     Returns:
         Estimated token count
     """
@@ -132,23 +134,23 @@ def estimate_tool_result_tokens(content: str) -> int:
     elif '<' in content and '>' in content:
         # Likely HTML/XML - high token density due to tags
         words = len(content.split())
-        return int(words * 1.4)  # HTML has many tag tokens
+        return int(words * 1.7)  # HTML has many tag tokens (increased from 1.4)
     elif is_code_content(content):
         # Code output
         words = len(content.split())
-        return int(words * 1.2)
+        return int(words * 1.5)  # Increased from 1.2
     else:
         # Plain text tool results
         words = len(content.split())
-        return int(words * 0.75)
+        return int(words * 1.3)  # Increased from 0.75 for cl100k_base
 
 
 def is_code_content(content: str) -> bool:
     """Detect if content is likely code.
-    
+
     Args:
         content: Text content to check
-        
+
     Returns:
         True if content appears to be code
     """
@@ -170,10 +172,10 @@ def is_code_content(content: str) -> bool:
 
 def is_structured_data(content: str) -> bool:
     """Detect if content is structured data like JSON, XML, YAML.
-    
+
     Args:
         content: Text content to check
-        
+
     Returns:
         True if content appears to be structured data
     """

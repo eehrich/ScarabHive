@@ -96,7 +96,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # Get LLM context window size
             context_window = self._get_context_window(context)
             if not context_window:
-                logger.warning("[ContextSummarizer] No LLM context window available, skipping summarization")
+                logger.warning(
+                    f"[ContextSummarizer] No LLM context window available for session {context.session_id}. "
+                    f"Skipping summarization. context.llm={context.llm}, "
+                    f"has_context_window={hasattr(context.llm, 'context_window') if context.llm else False}"
+                )
                 return HookResult(
                     success=True,
                     modified=False,
@@ -107,10 +111,16 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # Calculate trigger threshold from percentage
             trigger_tokens = int(context_window * self.trigger_percentage)
 
-            # Estimate token count (rough: 1 token ≈ 4 chars)
-            total_tokens = self._estimate_tokens(messages_as_dicts)
+            # Try to get actual prompt tokens from context_usage_tracker (more accurate)
+            # If not available, fall back to estimation
+            total_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts)
 
             if total_tokens < trigger_tokens:
+                logger.info(
+                    f"[ContextSummarizer] Session {context.session_id}: Below threshold - "
+                    f"total_tokens={total_tokens}, trigger_tokens={trigger_tokens} "
+                    f"({self.trigger_percentage:.0%} of context_window={context_window})"
+                )
                 return HookResult(
                     success=True,
                     modified=False,
@@ -140,6 +150,10 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             if len(old_msgs) < 2:
                 # Not enough old messages to summarize
+                logger.info(
+                    f"[ContextSummarizer] Session {context.session_id}: Insufficient old messages - "
+                    f"old_msgs={len(old_msgs)}, recent_msgs={len(recent_msgs)}, system_msgs={len(system_msgs)}"
+                )
                 return HookResult(
                     success=True,
                     modified=False,
@@ -160,7 +174,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             ) as scope:
                 # Small sleep to allow START message to be delivered
                 await asyncio.sleep(0.01)
-                
+
                 # Summarize old messages in chunks
                 summarized_msgs, summary_stats = await self._summarize_messages(
                     old_msgs,
@@ -310,6 +324,60 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         logger.warning("[ContextSummarizer] Could not determine context window size")
         return None
 
+    def _get_actual_or_estimated_tokens(self, context: HookContext, messages: List[Dict]) -> int:
+        """Get actual token count from last LLM response or estimate from messages.
+
+        Uses the MAXIMUM of:
+        1. Actual prompt_tokens from last LLM response (via context_usage_tracker)
+        2. Estimated tokens from current messages
+
+        This ensures we trigger summarization if either metric exceeds threshold,
+        preventing context overflow.
+
+        Args:
+            context: Hook context with session_id
+            messages: Current message list
+
+        Returns:
+            Maximum of actual or estimated token count
+        """
+        estimated_tokens = self._estimate_tokens(messages)
+        actual_tokens = 0
+
+        # Try to get actual tokens from context_usage_tracker's latest snapshot
+        try:
+            # Access the plugin registry via agent's system_config
+            if context.agent and hasattr(context.agent, 'system_config'):
+                system_config = context.agent.system_config
+                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
+                    registry = system_config.mcp_registry
+
+                    # Get context_usage_tracker plugin
+                    usage_tracker_plugin = registry.get_server('context_usage_tracker')
+                    if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
+                        tracker = usage_tracker_plugin.tracker
+
+                        # Get latest snapshot for this session
+                        if tracker._latest_snapshot and tracker._latest_snapshot.session_id == context.session_id:
+                            actual_tokens = tracker._latest_snapshot.prompt_tokens
+                            logger.debug(
+                                f"[ContextSummarizer] Got actual tokens from usage_tracker: {actual_tokens} "
+                                f"(estimated: {estimated_tokens})"
+                            )
+        except Exception as e:
+            logger.debug(f"[ContextSummarizer] Could not get actual tokens from usage_tracker: {e}")
+
+        # Return the MAXIMUM to ensure we trigger on either metric
+        max_tokens = max(actual_tokens, estimated_tokens)
+
+        if actual_tokens > 0 and estimated_tokens > 0:
+            logger.info(
+                f"[ContextSummarizer] Session {context.session_id}: Using max tokens - "
+                f"actual={actual_tokens}, estimated={estimated_tokens}, using={max_tokens}"
+            )
+
+        return max_tokens
+
     def _estimate_tokens(self, messages: List[Dict]) -> int:
         """Estimate token count for messages using agent system's token estimation.
 
@@ -336,7 +404,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         messages: List[Dict]
     ) -> tuple[List[Dict], List[Dict], List[Dict]]:
         """Categorize messages into system, recent, and old.
-        
+
         Ensures tool_calls/tool response pairs stay together to prevent
         orphaned tool responses after summarization.
 
@@ -370,23 +438,23 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 for tc in msg.get('tool_calls', []):
                     if isinstance(tc, dict) and 'id' in tc:
                         tool_call_map[tc['id']] = i
-        
+
         # Find tool responses and ensure they're in the same category as their tool_calls
         indices_to_move_to_old: set[int] = set()
         indices_to_move_to_recent: set[int] = set()
-        
+
         for i, msg in enumerate(messages):
             if msg.get('role') == 'tool':
                 tool_call_id = msg.get('tool_call_id')
                 if tool_call_id and tool_call_id in tool_call_map:
                     assistant_idx = tool_call_map[tool_call_id]
-                    
+
                     # Check where assistant and tool are categorized
                     assistant_in_old = any(idx == assistant_idx for idx, _ in old_msgs)
                     assistant_in_recent = any(idx == assistant_idx for idx, _ in recent_msgs)
                     tool_in_old = any(idx == i for idx, _ in old_msgs)
                     tool_in_recent = any(idx == i for idx, _ in recent_msgs)
-                    
+
                     # If assistant is old but tool is recent, move tool to old
                     if assistant_in_old and tool_in_recent:
                         indices_to_move_to_old.add(i)
@@ -394,23 +462,23 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     elif assistant_in_recent and tool_in_old:
                         indices_to_move_to_recent.add(i)
                         indices_to_move_to_recent.add(assistant_idx)
-        
+
         # Apply moves
         if indices_to_move_to_old or indices_to_move_to_recent:
             # Rebuild categories with moves applied
             recent_msgs_filtered = [(i, m) for i, m in recent_msgs if i not in indices_to_move_to_old]
             old_msgs_filtered = [(i, m) for i, m in old_msgs if i not in indices_to_move_to_recent]
-            
+
             # Add moved messages
             for i in indices_to_move_to_old:
                 msg = messages[i]
                 old_msgs_filtered.append((i, msg))
-            
+
             for i in indices_to_move_to_recent:
                 msg = messages[i]
                 if not any(idx == i for idx, _ in recent_msgs_filtered):
                     recent_msgs_filtered.append((i, msg))
-            
+
             # Sort by original index to maintain order
             recent_msgs = sorted(recent_msgs_filtered, key=lambda x: x[0])
             old_msgs = sorted(old_msgs_filtered, key=lambda x: x[0])
@@ -479,12 +547,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 return summarized, stats
 
             chunk_num = chunk_idx // self.chunk_size + 1
-            
+
             # Send progress update via the StatusScope
             await scope.progress(
                 f"Summarizing chunk {chunk_num}/{total_chunks} ({len(chunk)} messages)..."
             )
-            
+
             # Small sleep to allow progress message to be sent
             await asyncio.sleep(0.01)
 
