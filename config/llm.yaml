@@ -65,7 +65,7 @@ llm_system:
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
         image_detail_control: true
-        
+
     gpt-5.1:
       provider: openai_httpx
       model: gpt-5.1
@@ -104,7 +104,7 @@ llm_system:
         default_api_type: chat_completions
         max_image_size: 20971520  # 20MB
         supported_image_formats: [jpeg, png, gif, webp]
-        image_detail_control: true      
+        image_detail_control: true
 
     gpt-5.1-codex-mini:
       provider: openai_httpx
@@ -242,7 +242,7 @@ llm_system:
     big:
       model_ref: gpt-4.1
       description: "Expensive model with big context window, legacy and medium powerful."
-      max_steps: 100      
+      max_steps: 100
     chat:
       model_ref: deepseek-chat
       description: "Cheap and fast none thinking model, for medium complex tasks."
@@ -250,26 +250,26 @@ llm_system:
     chat-nostream:
       model_ref: deepseek-chat-nostream
       description: "Cheap and fast none thinking model, for medium complex tasks."
-      max_steps: 100     
+      max_steps: 100
     code:
       model_ref: gpt-5.1-codex
-      description: "Special LLM for Codeing tasks and code understanding, for complex reasoning tasks."
-      max_steps: 100     
+      description: "Special LLM for complex reasoning Codeing tasks."
+      max_steps: 100
     code-mini:
       model_ref: gpt-5.1-codex-mini
-      description: "Special LLM for Codeing tasks and code understanding, for medium reasoning tasks."
-      max_steps: 100          
+      description: "Special LLM for medium reasoning Codeing tasks."
+      max_steps: 100
     realtime:
       model_ref: gpt-realtime-mini
       description: "Realtime answers, for medium complex tasks"
-      max_steps: 100      
+      max_steps: 100
     small:
       model_ref: deepseek-chat-small
       description: "Cheap and fast none thinking model, for medium complex tasks"
-      max_steps: 100      
+      max_steps: 100
     local:
       model_ref: ollama-gpt-oss-20b
-      description: "Local hosted model for privacy and offline usage, powerful but slow."
+      description: "Model for privacy and offline usage, powerful but slow."
       max_steps: 100
 
   default_profile: normal
