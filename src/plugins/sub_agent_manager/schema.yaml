@@ -129,6 +129,11 @@ web_ui:
       handler: "delete_sub_agent"
       response_type: "json"
       description: "Delete/archive sub-agent instance"
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Get statistics for current session (total, active, archived)"
 
 # Hook configuration
 hooks:
