@@ -6,32 +6,46 @@
 class AuthManager {
     constructor() {
         this.token = null;
+        this.refreshToken = null;
         this.user = null;
         this.tokenKey = 'auth_token';
+        this.refreshTokenKey = 'refresh_token';
         this.usernameKey = 'auth_username';
+        this.refreshInterval = null;
         this.init();
     }
-    
+
     init() {
-        // Load token from storage
+        // Load tokens from storage
         this.token = localStorage.getItem(this.tokenKey) || sessionStorage.getItem(this.tokenKey);
-        
+        this.refreshToken = localStorage.getItem(this.refreshTokenKey) || sessionStorage.getItem(this.refreshTokenKey);
+
         if (this.token) {
             // Verify token is still valid
-            this.verifyToken().catch(() => this.clearAuth());
+            this.verifyToken().catch(() => {
+                // Try to refresh if we have a refresh token
+                if (this.refreshToken) {
+                    this.performRefresh().catch(() => this.clearAuth());
+                } else {
+                    this.clearAuth();
+                }
+            });
+
+            // Start auto-refresh (refresh every 25 minutes if access token is 30 min)
+            this.startAutoRefresh();
         }
     }
-    
+
     async verifyToken() {
         if (!this.token) return false;
-        
+
         try {
             const response = await fetch('/auth/me', {
                 headers: {
                     'Authorization': `Bearer ${this.token}`
                 }
             });
-            
+
             if (response.ok) {
                 this.user = await response.json();
                 return true;
@@ -44,28 +58,28 @@ class AuthManager {
             return false;
         }
     }
-    
+
     isAuthenticated() {
         return !!this.token;
     }
-    
+
     getToken() {
         return this.token;
     }
-    
+
     getUser() {
         return this.user;
     }
-    
+
     getUsername() {
         if (this.user) {
             return this.user.username;
         }
-        return localStorage.getItem(this.usernameKey) || 
-               sessionStorage.getItem(this.usernameKey) || 
+        return localStorage.getItem(this.usernameKey) ||
+               sessionStorage.getItem(this.usernameKey) ||
                'Guest';
     }
-    
+
     async login(username, password, rememberMe = false) {
         try {
             const response = await fetch('/auth/login', {
@@ -75,19 +89,26 @@ class AuthManager {
                 },
                 body: JSON.stringify({ username, password })
             });
-            
+
             if (response.ok) {
                 const data = await response.json();
                 this.token = data.access_token;
-                
-                // Store token
+                this.refreshToken = data.refresh_token;
+
+                // Store tokens
                 const storage = rememberMe ? localStorage : sessionStorage;
                 storage.setItem(this.tokenKey, this.token);
+                if (this.refreshToken) {
+                    storage.setItem(this.refreshTokenKey, this.refreshToken);
+                }
                 storage.setItem(this.usernameKey, username);
-                
+
                 // Fetch user info
                 await this.verifyToken();
-                
+
+                // Start auto-refresh
+                this.startAutoRefresh();
+
                 return { success: true, user: this.user };
             } else {
                 const error = await response.json();
@@ -98,8 +119,11 @@ class AuthManager {
             return { success: false, error: 'Network error' };
         }
     }
-    
+
     async logout() {
+        // Stop auto-refresh
+        this.stopAutoRefresh();
+
         try {
             // Call logout endpoint (for server-side cleanup if needed)
             if (this.token) {
@@ -116,16 +140,92 @@ class AuthManager {
             this.clearAuth();
         }
     }
-    
+
     clearAuth() {
         this.token = null;
+        this.refreshToken = null;
         this.user = null;
         localStorage.removeItem(this.tokenKey);
+        localStorage.removeItem(this.refreshTokenKey);
         localStorage.removeItem(this.usernameKey);
         sessionStorage.removeItem(this.tokenKey);
+        sessionStorage.removeItem(this.refreshTokenKey);
         sessionStorage.removeItem(this.usernameKey);
     }
-    
+
+    async performRefresh() {
+        if (!this.refreshToken) {
+            throw new Error('No refresh token available');
+        }
+
+        try {
+            const response = await fetch('/auth/refresh', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ refresh_token: this.refreshToken })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                this.token = data.access_token;
+
+                // Update refresh token if new one provided (token rotation)
+                if (data.refresh_token) {
+                    this.refreshToken = data.refresh_token;
+                }
+
+                // Update storage
+                const hasLocalStorage = localStorage.getItem(this.tokenKey);
+                const storage = hasLocalStorage ? localStorage : sessionStorage;
+                storage.setItem(this.tokenKey, this.token);
+                if (data.refresh_token) {
+                    storage.setItem(this.refreshTokenKey, this.refreshToken);
+                }
+
+                console.log('Token refreshed successfully');
+                return true;
+            } else {
+                console.error('Token refresh failed');
+                this.clearAuth();
+                return false;
+            }
+        } catch (error) {
+            console.error('Token refresh error:', error);
+            this.clearAuth();
+            return false;
+        }
+    }
+
+    startAutoRefresh() {
+        // Stop any existing interval
+        this.stopAutoRefresh();
+
+        // Refresh token every 25 minutes (5 min before expiry if token is 30 min)
+        const refreshInterval = 25 * 60 * 1000; // 25 minutes in ms
+
+        this.refreshInterval = setInterval(() => {
+            if (this.refreshToken) {
+                this.performRefresh().catch(error => {
+                    console.error('Auto-refresh failed:', error);
+                    this.clearAuth();
+                    this.redirectToLogin();
+                });
+            }
+        }, refreshInterval);
+
+        console.log('Auto-refresh started (every 25 minutes)');
+    }
+
+    stopAutoRefresh() {
+        if (this.refreshInterval) {
+            clearInterval(this.refreshInterval);
+            this.refreshInterval = null;
+            console.log('Auto-refresh stopped');
+        }
+    }
+
     // Helper to add auth header to fetch requests
     authFetch(url, options = {}) {
         if (this.token) {
@@ -134,13 +234,13 @@ class AuthManager {
         }
         return fetch(url, options);
     }
-    
+
     // Redirect to login page
     redirectToLogin(returnUrl = null) {
         const currentUrl = returnUrl || window.location.pathname + window.location.search;
         window.location.href = `/login?return=${encodeURIComponent(currentUrl)}`;
     }
-    
+
     // Check if user has admin role
     isAdmin() {
         return this.user && this.user.role === 'ADMIN';

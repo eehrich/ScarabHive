@@ -19,7 +19,7 @@ class HTTPXTimeoutConfig(BaseModel):
     """HTTPX timeout configuration"""
     connect: float = 10.0      # Connection establishment timeout
     read: float = 180.0        # Read timeout (waiting for response data)
-    write: float = 10.0        # Write timeout (sending request data)  
+    write: float = 10.0        # Write timeout (sending request data)
     pool: float = 5.0          # Pool timeout (getting connection from pool)
 
 
@@ -32,28 +32,28 @@ class ModelCapabilitiesConfig(BaseModel):
     video_input: bool = False
     streaming: bool = True
     json_mode: bool = False
-    
+
     # API type support (OpenAI specific)
     supported_api_types: Optional[List[str]] = None  # e.g. ['chat_completions', 'realtime']
     default_api_type: Optional[str] = None  # e.g. 'realtime'
-    
+
     # Image input limits
     max_image_size: Optional[int] = None  # bytes
     max_image_resolution: Optional[List[int]] = None  # [width, height]
     min_image_resolution: Optional[List[int]] = None  # [width, height]
     supported_image_formats: List[str] = Field(default_factory=list)
     image_detail_control: bool = False
-    
+
     # Audio input limits
     max_audio_size: Optional[int] = None  # bytes
     max_audio_duration: Optional[int] = None  # seconds
     supported_audio_formats: List[str] = Field(default_factory=list)
-    
+
     # Video input limits
     max_video_size: Optional[int] = None  # bytes
     max_video_duration: Optional[int] = None  # seconds
     supported_video_formats: List[str] = Field(default_factory=list)
-    
+
     # Provider-specific features
     supports_files_api: bool = False
     supports_file_uploads: bool = False
@@ -101,7 +101,7 @@ class ToolConfig(BaseModel):
     """Tool access control configuration"""
     allowed: Optional[List[str]] = Field(default_factory=list)  # list of allowed tools (use "*" to allow all tools)
     blocked: Optional[List[str]] = Field(default_factory=list)  # list of blocked tools
-    
+
     def __init__(self, **data):
         # Convert None values to empty lists
         if data.get("allowed") is None:
@@ -129,15 +129,15 @@ class AgentConfig(BaseModel):
 
 class AgentMetadata(BaseModel):
     """Metadata for agent configuration.
-    
-    Provides additional information about agents for discoverability, 
+
+    Provides additional information about agents for discoverability,
     categorization, and visibility control.
     """
     author: Optional[str] = None  # Author/creator of the agent
     version: Optional[str] = None  # Version string (e.g., "1.0.0")
     tags: Optional[List[str]] = None  # Tags for categorization/search
     category: Optional[str] = None  # Category (e.g., "financial", "research", "development")
-    
+
     # Visibility control: determines where the agent appears
     # Default: "private" - agents must explicitly opt-in to visibility
     visibility: Literal["ui", "tool", "both", "private"] = "private"
@@ -150,7 +150,7 @@ class AgentMetadata(BaseModel):
 class MCPConfig(BaseModel):
     """MCP configuration (matches type comment in mcp.yaml for default_config)"""
     model_config = {"extra": "allow"}  # Allow extra fields for plugin-specific config
-    
+
     type: str = "basic_agent"   # type of mcp-server/agent to use
     enabled: bool = False       # enable or disable this mcp-server/agent
     description: Optional[str] = None  # Human-readable description of this instance
@@ -180,7 +180,7 @@ class MCPAuthConfig(BaseModel):
     bearer_token: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
-    
+
     # Retry settings
     max_retries: int = 3
     retry_delay: float = 1.0
@@ -195,7 +195,7 @@ class RemoteMCPConfig(BaseModel):
     initialization_options: Optional[Dict[str, Any]] = None
     features: Optional[Dict[str, bool]] = None
     tools: Optional[ToolConfig] = None
-    
+
     # Authentication and security
     auth: Optional[MCPAuthConfig] = None
 
@@ -227,14 +227,14 @@ class MCPServerModeConfig(BaseModel):
     enabled: bool = False
     endpoint: str = "/mcp"  # Main JSON-RPC endpoint
     sse_endpoint: Optional[str] = "/mcp/sse"  # SSE stream endpoint (optional)
-    
+
     # Plugin exposure configuration
     expose_plugins: List[str] = Field(default_factory=lambda: ["*"])  # ['*'] = all, or list specific plugins
-    
+
     # Authentication and security
     authentication: MCPServerAuthConfig = Field(default_factory=MCPServerAuthConfig)
     rate_limit: MCPServerRateLimitConfig = Field(default_factory=MCPServerRateLimitConfig)
-    
+
     # Session configuration
     session_ttl: float = 3600.0  # Session timeout in seconds (1 hour)
     max_concurrent_sessions: int = 100  # Maximum concurrent MCP client sessions
@@ -309,25 +309,26 @@ class AuthConfig(BaseModel):
     secret_key: str = "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
-    
+    refresh_token_expire_days: int = 30  # Refresh token valid for 30 days
+
     # Database settings
     database_path: str = "data/users.db"
-    
+
     # Security settings
     rate_limit_enabled: bool = True
     requests_per_minute: int = 60
     security_headers_enabled: bool = True
-    
+
     # CORS settings
     cors_enabled: bool = True
     cors_origins: List[str] = Field(default_factory=lambda: ["*"])
     cors_credentials: bool = True
     cors_methods: List[str] = Field(default_factory=lambda: ["*"])
     cors_headers: List[str] = Field(default_factory=lambda: ["*"])
-    
+
     # Trusted hosts (optional)
     trusted_hosts: Optional[List[str]] = None
-    
+
     # Default admin user (created on first startup if no users exist)
     default_admin_username: str = "admin"
     default_admin_password: Optional[str] = None  # Generated randomly if not set
@@ -340,20 +341,20 @@ class AgentSystemConfig(BaseModel):
     name: str = "AgentSystem"
     version: str = "0.0.0"
     description: str = "Scarab Flexible AI Agent System using MCP"
-    
+
     # Include references (for documentation purposes)
     includes: Optional[List[str]] = None
-    
+
     # Core configurations
     context: ContextConfig = Field(default_factory=ContextConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
-    
+
     # Included configurations (will be populated from included files)
     llm_system: Optional[LLMSystemConfig] = None
-    
+
     # New structure (Epic 0044) - matches YAML keys
     plugins: Optional[PluginsConfig] = None  # From config/plugins.yaml -> plugins:
     external_servers: Optional[MCPServersConfig] = None  # From config/mcp_servers.yaml -> external_servers:

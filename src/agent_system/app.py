@@ -371,7 +371,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if server_adapter and hasattr(server_adapter, 'plugin_server'):
                 registry.register(server_name, server_adapter.plugin_server)
         logging.getLogger(__name__).debug(f"Populated local registry with {len(registry.list())} servers from plugin_registry")
-        
+
         # Inject session_service into local registry agents
         from .services.agent_injection import inject_session_service_into_agents
         inject_session_service_into_agents(registry, _session_service)
@@ -543,7 +543,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         set_jwt_config(
             secret_key=config.auth.secret_key,
             algorithm=config.auth.algorithm,
-            expire_minutes=config.auth.access_token_expire_minutes
+            expire_minutes=config.auth.access_token_expire_minutes,
+            refresh_expire_days=config.auth.refresh_token_expire_days
         )
 
         # Setup database
