@@ -47,9 +47,7 @@ export class SessionManager {
   async checkAuth() {
     try {
       const response = await fetch('/auth/me', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        credentials: 'include'
       });
       this.isAuthenticated = response.ok;
     } catch (e) {
@@ -292,9 +290,7 @@ export class SessionManager {
     
     try {
       const response = await fetch('/api/sessions', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        credentials: 'include'
       });
       
       if (!response.ok) {
@@ -432,9 +428,7 @@ export class SessionManager {
   async loadSession(sessionId) {
     try {
       const response = await fetch(`/api/sessions/${sessionId}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        credentials: 'include'
       });
       
       if (!response.ok) {
@@ -468,10 +462,10 @@ export class SessionManager {
       const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'PATCH',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
+          'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ title: newTitle }),
+        credentials: 'include',
+        body: JSON.stringify({ title: newTitle })
       });
       
       if (!response.ok) {
@@ -490,9 +484,7 @@ export class SessionManager {
     try {
       const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        credentials: 'include'
       });
       
       if (!response.ok) {

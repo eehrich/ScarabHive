@@ -40,10 +40,7 @@ window.AgentSystem.DropdownMenu = {
         headers: {}
       };
       
-      // Add Authorization header if authManager is available
-      if (window.authManager && window.authManager.token) {
-        fetchOptions.headers['Authorization'] = `Bearer ${window.authManager.token}`;
-      }
+      // No need for Authorization header - cookie is sent automatically
 
       const [defsResponse, itemsResponse] = await Promise.all([
         fetch('/api/menu-definitions', fetchOptions),
