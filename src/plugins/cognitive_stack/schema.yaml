@@ -37,8 +37,20 @@ tools:
 
 # Hook Configuration
 hooks:
-  pre_llm_call:
-    enabled: true
-    priority: 50  # Run after session (100) but before other context tools
-    method: "on_pre_llm_call"
+  - name: inject_stack_context
+    type: pre_llm_call
+    enabled: false  # default is disabled, agents enable it explicitly
+    timeout: 5.0
     description: "Inject active cognitive stack into system prompt to provide working memory context"
+    category: "prompt_injection"
+    order:
+      after: ["context_optimization"]
+      before: ["message_validation"]
+
+config:
+  max_frames_in_prompt:
+    type: integer
+    default: 3
+    description: "Number of top frames to show in prompt injection"
+    minimum: 1
+    maximum: 10

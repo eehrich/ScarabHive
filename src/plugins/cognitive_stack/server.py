@@ -181,6 +181,7 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         Tool name: {{ name }}_push → e.g., 'cognitive_stack_push'
         """
+        status = params.get("_status")
         try:
             # Cleanup old stacks first
             self._cleanup_old_stacks()
@@ -189,23 +190,26 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             context = params["context"]
             data = params.get("data", {})
             stack_id = params.get("stack_id")
-            status = params["_status"]
             agent_session_id = params.get("_session_id")
 
             # Validation
             if not context or not context.strip():
-                await status.error("context cannot be empty")
-                return {"status": "error", "error": "context cannot be empty"}
+                error_msg = "context cannot be empty"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
 
             # Get or create stack
             stack = self._get_or_create_stack(stack_id, agent_session_id)
 
             # Check depth limit
             if len(stack.frames) >= stack.max_depth:
-                await status.error(f"Maximum stack depth ({stack.max_depth}) reached")
+                error_msg = f"Maximum stack depth ({stack.max_depth}) reached"
+                if status:
+                    await status.error(error_msg)
                 return {
                     "status": "error",
-                    "error": f"Maximum stack depth ({stack.max_depth}) reached",
+                    "error": error_msg,
                     "hint": "Pop some frames before pushing more, or use clear() to reset"
                 }
 
@@ -219,9 +223,10 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
             stack.frames.append(frame)
 
-            await status.end(
-                f"Pushed frame #{len(stack.frames)} (depth: {len(stack.frames)}/{stack.max_depth})"
-            )
+            if status:
+                await status.end(
+                    f"Pushed frame #{len(stack.frames)} (depth: {len(stack.frames)}/{stack.max_depth})"
+                )
 
             return {
                 "status": "success",
@@ -234,7 +239,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         except Exception as e:
             logger.exception(f"Error in push: {e}")
-            await status.error(f"Failed to push frame: {str(e)}")
+            if status:
+                await status.error(f"Failed to push frame: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     async def pop(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -243,29 +249,39 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         Tool name: {{ name }}_pop → e.g., 'cognitive_stack_pop'
         """
+        status = params.get("_status")
         try:
-            stack_id = params["stack_id"]
-            status = params["_status"]
+            stack_id = params.get("stack_id")
+            if not stack_id:
+                error_msg = "stack_id is required for pop operation"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
 
             if stack_id not in self._stacks:
-                await status.error(f"Stack {stack_id} not found")
-                return {"status": "error", "error": f"Stack {stack_id} not found"}
+                error_msg = f"Stack {stack_id} not found"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
 
             stack = self._stacks[stack_id]
             stack.last_accessed = datetime.now()
 
             if not stack.frames:
-                await status.error("Stack is empty")
+                error_msg = "Stack is empty"
+                if status:
+                    await status.error(error_msg)
                 return {
                     "status": "error",
-                    "error": "Stack is empty",
+                    "error": error_msg,
                     "hint": "Use push() to add frames to the stack"
                 }
 
             # Pop top frame
             frame = stack.frames.pop()
 
-            await status.end(f"Popped frame (depth: {len(stack.frames)})")
+            if status:
+                await status.end(f"Popped frame (depth: {len(stack.frames)})")
 
             return {
                 "status": "success",
@@ -282,7 +298,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         except Exception as e:
             logger.exception(f"Error in pop: {e}")
-            await status.error(f"Failed to pop frame: {str(e)}")
+            if status:
+                await status.error(f"Failed to pop frame: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     async def peek(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -291,20 +308,29 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         Tool name: {{ name }}_peek → e.g., 'cognitive_stack_peek'
         """
+        status = params.get("_status")
         try:
-            stack_id = params["stack_id"]
+            stack_id = params.get("stack_id")
+            if not stack_id:
+                error_msg = "stack_id is required for peek operation"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
             depth = params.get("depth", 1)  # How many frames to peek (default: top 1)
-            status = params["_status"]
 
             if stack_id not in self._stacks:
-                await status.error(f"Stack {stack_id} not found")
-                return {"status": "error", "error": f"Stack {stack_id} not found"}
+                error_msg = f"Stack {stack_id} not found"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
 
             stack = self._stacks[stack_id]
             stack.last_accessed = datetime.now()
 
             if not stack.frames:
-                await status.end("Stack is empty")
+                if status:
+                    await status.end("Stack is empty")
                 return {
                     "status": "success",
                     "stack_id": stack.stack_id,
@@ -316,7 +342,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             # Get top N frames
             frames_to_show = stack.frames[-depth:] if depth > 0 else stack.frames
 
-            await status.end(f"Peeked top {len(frames_to_show)} frame(s)")
+            if status:
+                await status.end(f"Peeked top {len(frames_to_show)} frame(s)")
 
             return {
                 "status": "success",
@@ -336,7 +363,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         except Exception as e:
             logger.exception(f"Error in peek: {e}")
-            await status.error(f"Failed to peek frame: {str(e)}")
+            if status:
+                await status.error(f"Failed to peek frame: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     async def list_frames(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -345,18 +373,26 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         Tool name: {{ name }}_list → e.g., 'cognitive_stack_list'
         """
+        status = params.get("_status")
         try:
-            stack_id = params["stack_id"]
-            status = params["_status"]
+            stack_id = params.get("stack_id")
+            if not stack_id:
+                error_msg = "stack_id is required for list operation"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
 
             if stack_id not in self._stacks:
-                await status.error(f"Stack {stack_id} not found")
-                return {"status": "error", "error": f"Stack {stack_id} not found"}
+                error_msg = f"Stack {stack_id} not found"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
 
             stack = self._stacks[stack_id]
             stack.last_accessed = datetime.now()
 
-            await status.end(f"Listed {len(stack.frames)} frame(s)")
+            if status:
+                await status.end(f"Listed {len(stack.frames)} frame(s)")
 
             return {
                 "status": "success",
@@ -378,7 +414,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         except Exception as e:
             logger.exception(f"Error in list_frames: {e}")
-            await status.error(f"Failed to list frames: {str(e)}")
+            if status:
+                await status.error(f"Failed to list frames: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     async def clear(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -387,21 +424,24 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         Tool name: {{ name }}_clear → e.g., 'cognitive_stack_clear'
         """
+        status = params.get("_status")
         try:
             stack_id = params.get("stack_id")
-            status = params["_status"]
 
             if stack_id:
                 # Clear specific stack
                 if stack_id not in self._stacks:
-                    await status.error(f"Stack {stack_id} not found")
-                    return {"status": "error", "error": f"Stack {stack_id} not found"}
+                    error_msg = f"Stack {stack_id} not found"
+                    if status:
+                        await status.error(error_msg)
+                    return {"status": "error", "error": error_msg}
 
                 stack = self._stacks[stack_id]
                 frame_count = len(stack.frames)
                 stack.frames.clear()
 
-                await status.end(f"Cleared {frame_count} frame(s)")
+                if status:
+                    await status.end(f"Cleared {frame_count} frame(s)")
 
                 return {
                     "status": "success",
@@ -417,7 +457,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                 self._stacks.clear()
                 self._agent_session_mapping.clear()
 
-                await status.end(f"Cleared {stack_count} stack(s) with {total_frames} frame(s)")
+                if status:
+                    await status.end(f"Cleared {stack_count} stack(s) with {total_frames} frame(s)")
 
                 return {
                     "status": "success",
@@ -428,7 +469,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         except Exception as e:
             logger.exception(f"Error in clear: {e}")
-            await status.error(f"Failed to clear stack: {str(e)}")
+            if status:
+                await status.error(f"Failed to clear stack: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     # =========================================================================
