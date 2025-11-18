@@ -605,6 +605,70 @@ async def test_hook_removes_old_injection(server, mock_status):
 
 
 @pytest.mark.asyncio
+async def test_hook_prevents_duplicate_injections_across_multiple_calls(server, mock_status):
+    """Test that multiple sequential hook calls don't accumulate duplicate injections."""
+    # Create stack with some frames
+    result = await server.push({
+        "context": "Initial task",
+        "_status": mock_status,
+        "_session_id": "test_session_dup"
+    })
+    stack_id = result["stack_id"]
+    
+    await server.push({
+        "context": "Subtask 1",
+        "stack_id": stack_id,
+        "_status": mock_status,
+        "_session_id": "test_session_dup"
+    })
+    
+    # Create context - simulate real multi-turn conversation
+    context = HookContext(
+        hook_type="pre_llm_call",
+        request_id="test_req_001",
+        messages=[
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content="First question")
+        ],
+        session_id="test_session_dup",
+        agent=MagicMock()
+    )
+    
+    # Simulate 5 consecutive LLM calls (like in a real conversation)
+    # Each call should inject stack info, but only ONE injection should exist at a time
+    for i in range(5):
+        result = await server.on_pre_llm_call(context)
+        assert result.success is True
+        assert result.modified is True
+        
+        # Count all stack-related injections
+        stack_injections = [
+            msg for msg in context.messages
+            if msg.role == "system" and (
+                "## Cognitive Stack" in msg.content or 
+                "## Active Cognitive Stack" in msg.content
+            )
+        ]
+        
+        # CRITICAL: Should have exactly ONE injection, not accumulating
+        assert len(stack_injections) == 1, (
+            f"After call {i+1}: Expected 1 stack injection, found {len(stack_injections)}. "
+            f"Messages: {[msg.content[:50] for msg in context.messages if msg.role == 'system']}"
+        )
+        
+        # Add user message for next iteration (simulate conversation flow)
+        context.messages.append(ChatMessage(role="assistant", content=f"Response {i}"))
+        context.messages.append(ChatMessage(role="user", content=f"Question {i+1}"))
+    
+    # Final verification: Should still have exactly one injection
+    final_stack_injections = [
+        msg for msg in context.messages
+        if msg.role == "system" and "Cognitive Stack" in msg.content
+    ]
+    assert len(final_stack_injections) == 1, "Should have exactly 1 injection after all calls"
+
+
+@pytest.mark.asyncio
 async def test_hook_no_session_id(server):
     """Test hook skips if no session ID."""
     context = HookContext(
