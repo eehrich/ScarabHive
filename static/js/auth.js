@@ -33,6 +33,9 @@ class AuthManager {
 
             // Start auto-refresh (refresh every 25 minutes if access token is 30 min)
             this.startAutoRefresh();
+
+            // Perform immediate refresh if token might be close to expiry
+            this.checkAndRefreshIfNeeded();
         }
     }
 
@@ -226,13 +229,53 @@ class AuthManager {
         }
     }
 
-    // Helper to add auth header to fetch requests
-    authFetch(url, options = {}) {
+    async checkAndRefreshIfNeeded() {
+        // Try to decode token to check expiry (simple check without validation)
+        if (!this.token || !this.refreshToken) return;
+
+        try {
+            const parts = this.token.split('.');
+            if (parts.length !== 3) return;
+
+            const payload = JSON.parse(atob(parts[1]));
+            const exp = payload.exp;
+            const now = Math.floor(Date.now() / 1000);
+
+            // If token expires in less than 5 minutes, refresh immediately
+            const timeUntilExpiry = exp - now;
+            if (timeUntilExpiry < 300) { // 5 minutes
+                console.log('Token close to expiry, refreshing immediately...');
+                await this.performRefresh();
+            }
+        } catch (error) {
+            // If we can't decode, ignore and let normal flow handle it
+            console.debug('Could not check token expiry:', error);
+        }
+    }
+
+    // Helper to add auth header to fetch requests with automatic token refresh on 401
+    async authFetch(url, options = {}) {
         if (this.token) {
             options.headers = options.headers || {};
             options.headers['Authorization'] = `Bearer ${this.token}`;
         }
-        return fetch(url, options);
+
+        let response = await fetch(url, options);
+
+        // If we get 401 and have a refresh token, try to refresh and retry
+        if (response.status === 401 && this.refreshToken && !options._isRetry) {
+            console.log('Received 401, attempting token refresh...');
+            const refreshed = await this.performRefresh();
+
+            if (refreshed) {
+                // Update auth header with new token and retry request
+                options.headers['Authorization'] = `Bearer ${this.token}`;
+                options._isRetry = true; // Prevent infinite retry loop
+                response = await fetch(url, options);
+            }
+        }
+
+        return response;
     }
 
     // Redirect to login page
