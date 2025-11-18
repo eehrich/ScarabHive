@@ -23,7 +23,7 @@ plugins:
           allowed:
             - "duckduckgo_search/*"
             - "web_scraper/*"
-      
+
       metadata:
         visibility: "both"  # Make available as tool for meta_web_research_agent
 
@@ -32,19 +32,19 @@ plugins:
         type: web_research_agent
         enabled: true
         description: "Meta Web Research Agent for advanced web scraping and research tasks"
-        
+
         # self_tool_descriptions for own tools (meta_web_research_agent_*)
         self_tool_descriptions:
           meta_web_research_agent_web_research: "Conduct multi-source web research with automatic scraping and synthesis - ideal for comprehensive topic analysis"
           meta_web_research_agent_fact_check: "Verify claims against authoritative sources with credibility assessment and detailed evidence"
           meta_web_research_agent_source_analysis: "Compare and analyze information across multiple sources, identify contradictions, and assess reliability"
           meta_web_research_agent_research_assistant: "AI-powered deep research with intelligent source selection and actionable insights synthesis"
-        
+
         agent_config:
           llm_profile: normal
           max_steps: 10
           system_template: "config/prompts/meta_web_research_agent.yaml"
-          
+
           hooks:
             enabled: true
             overrides:
@@ -56,7 +56,9 @@ plugins:
                 enabled: true
               sequential_thinking.inject_active_sessions:
                 enabled: true
-          
+              cognitive_stack.inject_stack_context:
+                enabled: true
+
           tools:
             allowed:
               - "web_research_agent/*"
@@ -66,6 +68,7 @@ plugins:
               - "datetime/*"
               - "basic_operations/*"
               - "sequential_thinking/*"
+              - "cognitive_stack/*"
               - "todo/*"
               - "memory/*"
 
@@ -75,4 +78,3 @@ plugins:
           tags: ["web", "research", "meta"]
           category: "search"
           visibility: "both"
-    

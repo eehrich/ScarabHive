@@ -1,0 +1,44 @@
+# Cognitive Stack MCP Server Schema
+# Jinja2 variables: {{ name }}, {{ max_depth }}, {{ session_ttl_seconds }}
+
+tools:
+  - name: "{{ name }}"
+    description: "Manage cognitive stack for nested problem-solving and working memory. Operations: push (add context), pop (return to previous), peek (view without removing), list (show all), clear (reset)."
+    inputSchema:
+      type: object
+      properties:
+        operation:
+          type: string
+          enum: ["push", "pop", "peek", "list", "clear"]
+          description: "Operation to perform: push (add frame), pop (remove & return top), peek (view top N), list (show all), clear (reset stack)"
+
+        # Push parameters
+        context:
+          type: string
+          description: "Required for 'push': Description of nested context you're entering"
+        data:
+          type: object
+          description: "Optional for 'push': Structured data for this frame (key-value pairs)"
+          default: {}
+
+        # Common parameters
+        stack_id:
+          type: string
+          description: "Stack ID. Required for pop/peek/list/clear. Optional for push (creates new stack if omitted on first use)"
+
+        # Peek parameter
+        depth:
+          type: integer
+          description: "For 'peek': Number of top frames to view (default: 1)"
+          default: 1
+          minimum: 1
+
+      required: ["operation"]
+
+# Hook Configuration
+hooks:
+  pre_llm_call:
+    enabled: true
+    priority: 50  # Run after session (100) but before other context tools
+    method: "on_pre_llm_call"
+    description: "Inject active cognitive stack into system prompt to provide working memory context"

@@ -76,6 +76,13 @@ plugins:
       show_branch_info: true
       format: markdown
 
+    cognitive_stack:
+      type: cognitive_stack
+      enabled: true
+      max_depth: 20
+      session_ttl_seconds: 3600
+      max_frames_in_prompt: 3
+
     todo:
       type: todo
       enabled: true

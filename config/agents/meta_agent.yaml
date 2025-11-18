@@ -4,13 +4,13 @@ plugins:
       type: basic_agent
       enabled: true
       description: "Meta Agent for orchestrating other agents and managing complex tasks"
-      
+
       agent_config:
         llm_profile: normal
         max_steps: 50
-        
+
         system_template: "config/prompts/meta_agent_prompt.yaml"
-        
+
         tools:
           allowed:
             - "sysadmin_agent/*"
@@ -22,11 +22,12 @@ plugins:
             - "basic_operations/*"
             - "datetime/*"
             - "sequential_thinking/*"
+            - "cognitive_stack/*"
             - "todo/*"
             - "memory/*"
             - "sub_agent_manager/*"
             - "file_ops/*"
-        
+
         hooks:
           enabled: true
           overrides:
@@ -38,7 +39,9 @@ plugins:
               enabled: true
             sequential_thinking.inject_active_sessions:
               enabled: true
-      
+            cognitive_stack.inject_stack_context:
+              enabled: true
+
       metadata:
         author: "AgentSystem"
         version: "1.0.0"
