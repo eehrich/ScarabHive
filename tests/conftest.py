@@ -10,6 +10,9 @@ from typing import List
 from pathlib import Path
 import tempfile
 
+# Disable WAL mode for writer plugins in tests (avoids Windows file locking issues)
+os.environ["WRITER_DISABLE_WAL"] = "true"
+
 # Set test session storage path BEFORE any imports of agent_system
 # This ensures all tests use a temporary directory for sessions
 _TEST_SESSION_DIR = Path(tempfile.mkdtemp(prefix="agent_test_sessions_"))
@@ -19,24 +22,24 @@ os.environ["AGENT_SESSION_STORAGE_PATH"] = str(_TEST_SESSION_DIR)
 # This must happen before agent_system is imported
 def _patch_session_manager():
     """Monkey-patch SessionManager.__init__ to use test storage path.
-    
+
     If a test explicitly provides storage_path, we use it (for unit tests).
     Otherwise, create a unique tmp directory (for integration tests).
     """
     try:
         from agent_system.services.session_manager import SessionManager
         _original_init = SessionManager.__init__
-        
+
         def _test_init(self, storage_path=None, *args, **kwargs):
             # If test explicitly provides a path, use it
             if storage_path is not None:
                 return _original_init(self, storage_path=storage_path, *args, **kwargs)
-            
+
             # Otherwise, create unique tmp directory for this instance
             import tempfile
             test_path = Path(tempfile.mkdtemp(prefix="agent_test_session_"))
             return _original_init(self, storage_path=str(test_path), *args, **kwargs)
-        
+
         SessionManager.__init__ = _test_init
         print("[conftest] Patched SessionManager to use unique tmp directories per instance")
     except Exception as e:
@@ -252,21 +255,21 @@ def _find_project_python_pids() -> List[int]:
         try:
             repo_lower = repo_root.lower().replace('\\', '\\\\')
             ps_script = f'''
-            Get-CimInstance Win32_Process | Where-Object {{ $_.Name -match "python(\\.exe|w\\.exe)?" }} | 
-            ForEach-Object {{ 
-                $cmd = $_.CommandLine; 
-                if ($cmd) {{ 
-                    $lc = $cmd.ToLower(); 
-                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.app*" -or $lc -like "*agent_system*") {{ 
-                        Write-Output $_.ProcessId 
-                    }} 
-                }} 
+            Get-CimInstance Win32_Process | Where-Object {{ $_.Name -match "python(\\.exe|w\\.exe)?" }} |
+            ForEach-Object {{
+                $cmd = $_.CommandLine;
+                if ($cmd) {{
+                    $lc = $cmd.ToLower();
+                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.app*" -or $lc -like "*agent_system*") {{
+                        Write-Output $_.ProcessId
+                    }}
+                }}
             }}
             '''
             out = subprocess.check_output([
                 "powershell", "-NoProfile", "-Command", ps_script
             ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
-            
+
             for line in out.strip().splitlines():
                 if line.strip():
                     try:
@@ -279,8 +282,8 @@ def _find_project_python_pids() -> List[int]:
                 # Get all python processes and their command lines
                 out = subprocess.check_output([
                     "powershell", "-NoProfile", "-Command",
-                    '''Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object { 
-                        try { 
+                    '''Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object {
+                        try {
                             $cmdline = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine;
                             if ($cmdline -and ($cmdline.ToLower() -like "*agent_system*" -or $cmdline.ToLower() -like "*interface_api*" -or $cmdline.ToLower() -like "*.venv\\*")) {
                                 Write-Output $_.Id
@@ -288,7 +291,7 @@ def _find_project_python_pids() -> List[int]:
                         } catch { }
                     }'''
                 ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
-                
+
                 for line in out.strip().splitlines():
                     if line.strip():
                         try:
@@ -324,14 +327,14 @@ def _kill_pids(pids: List[int]) -> None:
     """Kill processes with retry logic and proper waiting."""
     if not pids:
         return
-    
+
     print(f"[conftest] Attempting to kill PIDs: {pids}")
-    
+
     if _is_windows():
         for pid in pids:
             try:
                 # Use taskkill with force and tree kill options
-                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"], 
+                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
                              check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 pass
@@ -342,27 +345,27 @@ def _kill_pids(pids: List[int]) -> None:
                 os.kill(pid, signal.SIGTERM)
             except Exception:
                 pass
-        
+
         # Wait a bit for graceful shutdown
         time.sleep(1.0)
-        
+
         # Force kill any remaining processes
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGKILL)
             except Exception:
                 pass
-    
+
     # Wait for processes to actually terminate
     time.sleep(1.5)
-    
+
     # Verify cleanup worked and retry if needed
     remaining = []
     for pid in pids:
         try:
             if _is_windows():
                 # Check if process still exists on Windows
-                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], 
+                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
                                       capture_output=True, text=True)
                 if result.stdout and str(pid) in result.stdout:
                     remaining.append(pid)
@@ -373,14 +376,14 @@ def _kill_pids(pids: List[int]) -> None:
         except (OSError, subprocess.CalledProcessError):
             # Process doesn't exist anymore, good
             pass
-    
+
     if remaining:
         print(f"[conftest] Retrying cleanup for remaining PIDs: {remaining}")
         # One more aggressive attempt
         if _is_windows():
             for pid in remaining:
                 try:
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"], 
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
                                  check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
@@ -420,7 +423,7 @@ def ensure_test_servers_terminated():
         print(f"[conftest] Cleanup attempt {attempt + 1}: terminating leftover project python processes:", post)
         _kill_pids(post)
         time.sleep(1.0)
-    
+
     # Final check
     final = _find_project_python_pids()
     if final:
