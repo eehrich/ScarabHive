@@ -95,11 +95,12 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             "session_ttl_seconds": self.session_ttl_seconds
         }
 
-    async def handle_tool_call(self, tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def cognitive_stack(self, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Unified tool handler - dispatches to operation-specific methods.
+        Main tool entry point - dispatches to operation-specific methods.
 
-        Tool name: {{ name }} → e.g., 'cognitive_stack'
+        This method name must match the tool name in schema.yaml.
+        Tool name: {{ name }} → resolves to method name at runtime
         """
         operation = params.get("operation")
 
@@ -501,30 +502,16 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
     def _format_stack_reminder(self) -> str:
         """Format cognitive stack tool reminder when no active stack."""
-        return f"""## Cognitive Stack Tool Available
+        return f"""## Cognitive Stack Available
 
-Use `{self.name}` tool to manage nested contexts and interrupt-and-resume patterns.
+You have no active stack. Use `{self.name}(operation="push", context="...")` to start tracking nested contexts.
 
-**Start new stack:**
+**Example - diving into sub-problem:**
 ```
-{self.name}(
-    operation="push",
-    context="Analyzing requirements for feature X",
-    data={{"feature_id": "X", "step": "requirements"}}
-)
+{self.name}(operation="push", context="Debug authentication issue", data={{"bug_id": "123"}})
+# ... work on sub-problem ...
+{self.name}(operation="pop", stack_id="<returned_id>")  # Resume previous context
 ```
-
-**Operations:**
-- `operation="push"` + `context` + `data={{}}` - Push new context onto stack
-- `operation="pop"` + `stack_id` - Pop and return top context
-- `operation="peek"` + `stack_id` + `depth=1` - View top N frames without removing
-- `operation="list"` + `stack_id` - List all frames
-- `operation="clear"` + `stack_id` - Clear stack
-
-**Use cases:**
-- Interrupt current work to handle sub-problem
-- Track nested problem-solving hierarchies
-- Resume previous context after interruption
 """
 
     def _format_stack_for_prompt(self, stack: CognitiveStack) -> str:
