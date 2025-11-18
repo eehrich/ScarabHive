@@ -503,12 +503,14 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
             from agent_system.llm.models import ChatMessage
 
-            # Check if already injected and REMOVE old injection
-            for i, msg in enumerate(context.messages):
+            # Check if already injected and REMOVE old injection(s)
+            # Loop backwards to safely remove multiple occurrences
+            for i in range(len(context.messages) - 1, -1, -1):
+                msg = context.messages[i]
                 msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and ("## Cognitive Stack Tool" in msg_content or "## Active Cognitive Stack" in msg_content):
+                if msg_content and ("## Cognitive Stack" in msg_content):
                     context.messages.pop(i)
-                    break
+                    logger.debug(f"Removed old cognitive stack injection at index {i}")
 
             if stack_id and stack_id in self._stacks:
                 stack = self._stacks[stack_id]
