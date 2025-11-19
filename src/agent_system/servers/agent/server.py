@@ -245,6 +245,9 @@ class Agent(MCPServer):
 
         if not profile_name and hasattr(self, 'agent_config') and self.agent_config:
             profile_name = getattr(self.agent_config, 'llm_profile', None)
+            # If llm_profile is a list, use the first element (default profile)
+            if isinstance(profile_name, list):
+                profile_name = profile_name[0] if profile_name else None
 
         if not profile_name and config.llm_system and config.llm_system.profiles:
             # Check agent-specific assignment
