@@ -3,7 +3,7 @@
 
 tools:
   - name: "{{ name }}"
-    description: "Manage cognitive stack for nested problem-solving. Operations: push_batch (add contexts), pop_batch (return contexts), peek (view top), list (show all), clear (reset). Stack automatically tracked per session - no need to remember stack_id!"
+    description: "Manage cognitive stack for nested problem-solving. Operations: push_batch (add items), pop_batch (return items), peek (view top), list (show all), clear (reset). Stack automatically tracked per session - no need to remember stack_id!"
     inputSchema:
       type: object
       properties:
