@@ -102,7 +102,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         This method name must match the tool name in schema.yaml.
         Tool name: {{ name }} → resolves to method name at runtime
         """
-        operation = params.get("operation")
+        # Support both 'operation' and 'op' (some LLMs abbreviate)
+        operation = params.get("operation") or params.get("op")
 
         if operation == "push":
             return await self.push(params)

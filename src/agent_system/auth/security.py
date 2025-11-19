@@ -23,7 +23,7 @@ from agent_system.auth.models import TokenData, UserRole
 # Use environment variable or generate secure random key
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or secrets.token_urlsafe(64)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 10080  # 7 days (7 * 24 * 60)
 REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 
