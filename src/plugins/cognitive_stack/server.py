@@ -251,7 +251,11 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         try:
             stack_id = params.get("stack_id")
             if not stack_id:
-                error_msg = "stack_id is required for list operation"
+                error_msg = (
+                    "stack_id is required for list operation. "
+                    "CORRECT USAGE: {operation: 'list', stack_id: '<id_from_push_batch_response>'}. "
+                    "After push_batch, use the returned stack_id for subsequent operations."
+                )
                 if status:
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
@@ -367,7 +371,11 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
             # Validation
             if not items:
-                error_msg = "items array cannot be empty for push_batch"
+                error_msg = (
+                    "items array cannot be empty for push_batch. "
+                    "CORRECT USAGE: {operation: 'push_batch', items: [{context: 'Task 1'}, {context: 'Task 2'}]}. "
+                    "Each item must be an OBJECT with 'context' key, not just a string!"
+                )
                 if status:
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
@@ -396,7 +404,11 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             pushed_frames = []
             for item in items:
                 if not isinstance(item, dict):
-                    error_msg = f"Each item must be an object with 'context' key, got: {type(item)}"
+                    error_msg = (
+                        f"Each item must be an OBJECT with 'context' key, got: {type(item).__name__}. "
+                        f"WRONG: items: ['Task 1', 'Task 2']. "
+                        f"CORRECT: items: [{{context: 'Task 1'}}, {{context: 'Task 2'}}]"
+                    )
                     if status:
                         await status.error(error_msg)
                     return {"status": "error", "error": error_msg}

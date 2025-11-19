@@ -15,7 +15,7 @@ tools:
         # push_batch parameters
         items:
           type: array
-          description: "Required for 'push_batch': Array of frame objects to push onto stack. Each item MUST be an object with 'context' (string, required) and optional 'data' (object). Example: [{context: 'Task 1', data: {priority: 'high'}}, {context: 'Task 2'}]"
+          description: "Required for 'push_batch': Array of frame objects to push onto stack. Each item MUST be an object with 'context' (string, required) and optional 'data' (object). Example: [{\"context\": \"Task 1\", \"data\": {\"priority\": \"high\"}}, {\"context\": \"Task 2\"}]"
           items:
             type: object
             properties:
@@ -36,7 +36,7 @@ tools:
         # Common parameters
         stack_id:
           type: string
-          description: "Stack ID. Required for pop_batch/peek/list/clear operations. Optional for push_batch (auto-creates new stack if omitted)"
+          description: "Stack ID. Required for pop_batch/peek/list/clear operations. Optional for push_batch (auto-creates new stack if omitted). After first push_batch, use the returned stack_id for subsequent operations."
 
         # peek parameters
         depth:
