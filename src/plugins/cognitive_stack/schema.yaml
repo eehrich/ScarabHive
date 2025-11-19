@@ -3,14 +3,14 @@
 
 tools:
   - name: "{{ name }}"
-    description: "Manage cognitive stack for nested problem-solving and working memory. Operations: push (add context), pop (return to previous), peek (view without removing), list (show all), clear (reset)."
+    description: "Manage cognitive stack for nested problem-solving and working memory. Operations: push_batch (add contexts), pop_batch (return previous contexts), peek (view without removing), list (show all), clear (reset)."
     inputSchema:
       type: object
       properties:
         operation:
           type: string
-          enum: ["push", "pop", "peek", "list", "clear"]
-          description: "Operation to perform: push (add frame), pop (remove & return top), peek (view top N), list (show all), clear (reset stack)"
+          enum: ["push_batch", "pop_batch", "peek", "list", "clear"]
+          description: "Operation to perform: push_batch (add one or more frames), pop_batch (remove one or more frames), peek (view top N), list (show all), clear (reset stack)"
 
         # Push parameters
         context:
@@ -20,6 +20,23 @@ tools:
           type: object
           description: "Optional for 'push': Structured data for this frame (key-value pairs)"
           default: {}
+
+        # Batch parameters
+        items:
+          type: array
+          description: "Required for 'push_batch': Array of items to push onto stack. Each item: {context: string, data?: object}"
+          items:
+            type: object
+            properties:
+              context:
+                type: string
+              data:
+                type: object
+            required: ["context"]
+        count:
+          type: integer
+          description: "Required for 'pop_batch': Number of frames to pop from stack"
+          minimum: 1
 
         # Common parameters
         stack_id:

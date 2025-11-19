@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -85,56 +84,66 @@ def test_cognitive_stack_creation():
 
 
 @pytest.mark.asyncio
-async def test_push_first_frame(server, mock_status):
+async def test_push_batch_first_frame(server, mock_status):
     """Test pushing first frame creates new stack."""
     params = {
-        "operation": "push",
-        "context": "Analyzing user requirements",
-        "data": {"task": "requirements", "priority": "high"},
+        "operation": "push_batch",
+        "items": [
+            {
+                "context": "Analyzing user requirements",
+                "data": {"task": "requirements", "priority": "high"}
+            }
+        ],
         "_status": mock_status
     }
 
-    result = await server.cognitive_stack( params)
+    result = await server.cognitive_stack(params)
 
     assert result["status"] == "success"
     assert "stack_id" in result
     assert result["depth"] == 1
     assert result["max_depth"] == 10
-    assert "frame_id" in result
+    assert result["pushed_count"] == 1
 
     # Check status was called
     mock_status.end.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_push_multiple_frames(server, mock_status):
-    """Test pushing multiple frames onto same stack."""
+async def test_push_batch_multiple_frames(server, mock_status):
+    """Test pushing multiple frames at once."""
     # First push
-    result1 = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Main task: Feature X",
+    result1 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "Main task: Feature X"}],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
 
-    # Second push
-    result2 = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Sub-task: Analyze dependencies",
+    # Batch push
+    result2 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [
+            {"context": "Sub-task 1: Analyze dependencies"},
+            {"context": "Sub-task 2: Design API"},
+            {"context": "Sub-task 3: Write tests"}
+        ],
         "stack_id": stack_id,
         "_status": mock_status
     })
 
-    assert result2["depth"] == 2
+    assert result2["status"] == "success"
+    assert result2["pushed_count"] == 3
+    assert result2["depth"] == 4
     assert result2["stack_id"] == stack_id
 
 
 @pytest.mark.asyncio
-async def test_push_validates_empty_context(server, mock_status):
-    """Test push rejects empty context."""
-    result = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "   ",  # Empty/whitespace
+async def test_push_batch_validates_empty_items(server, mock_status):
+    """Test push_batch rejects empty items array."""
+    result = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [],
         "_status": mock_status
     })
 
@@ -144,92 +153,156 @@ async def test_push_validates_empty_context(server, mock_status):
 
 
 @pytest.mark.asyncio
-async def test_push_enforces_max_depth(server, mock_status):
-    """Test push enforces max depth limit."""
-    # Fill stack to max depth
-    result1 = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 1",
+async def test_push_batch_validates_empty_context(server, mock_status):
+    """Test push_batch rejects empty context."""
+    result = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "   "}],  # Empty/whitespace
         "_status": mock_status
     })
+
+    assert result["status"] == "error"
+    assert "empty" in result["error"].lower()
+    mock_status.error.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_push_batch_enforces_max_depth(server, mock_status):
+    """Test push_batch enforces max depth limit."""
+    # Fill stack to max depth
+    result1 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": f"Frame {i}"} for i in range(1, 11)],  # 10 frames
+        "_status": mock_status
+    })
+
+    assert result1["status"] == "success"
+    assert result1["depth"] == 10
     stack_id = result1["stack_id"]
 
-    for i in range(2, 11):  # Push 9 more (total 10)
-        await server.cognitive_stack( {
-            "operation": "push",
-            "context": f"Frame {i}",
-            "stack_id": stack_id,
-            "_status": mock_status
-        })
-
     # Try pushing 11th frame (should fail)
-    result_fail = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 11",
+    result_fail = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "Frame 11"}],
         "stack_id": stack_id,
         "_status": mock_status
     })
 
     assert result_fail["status"] == "error"
-    assert "Maximum stack depth" in result_fail["error"]
+    assert "exceed" in result_fail["error"].lower()
 
 
 # =============================================================================
-# Pop Operation
+# Pop Batch Operation
 # =============================================================================
 
 
 @pytest.mark.asyncio
-async def test_pop_frame(server, mock_status):
-    """Test popping frame from stack."""
+async def test_pop_batch_single_frame(server, mock_status):
+    """Test popping single frame from stack."""
     # Push two frames
-    result1 = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 1",
-        "data": {"id": 1},
+    result1 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [
+            {"context": "Frame 1", "data": {"id": 1}},
+            {"context": "Frame 2", "data": {"id": 2}}
+        ],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
 
-    await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 2",
-        "data": {"id": 2},
+    # Pop top frame (count=1)
+    result = await server.cognitive_stack({
+        "operation": "pop_batch",
         "stack_id": stack_id,
-        "_status": mock_status
-    })
-
-    # Pop top frame
-    result = await server.cognitive_stack( {
-        "operation": "pop",
-        "stack_id": stack_id,
+        "count": 1,
         "_status": mock_status
     })
 
     assert result["status"] == "success"
-    assert result["frame"]["context"] == "Frame 2"
-    assert result["frame"]["data"]["id"] == 2
+    assert result["popped_count"] == 1
+    assert result["frames"][0]["context"] == "Frame 2"
+    assert result["frames"][0]["data"]["id"] == 2
     assert result["remaining_depth"] == 1
 
 
 @pytest.mark.asyncio
-async def test_pop_empty_stack(server, mock_status):
+async def test_pop_batch_multiple_frames(server, mock_status):
+    """Test popping multiple frames at once."""
+    # Push 5 frames
+    result1 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": f"Frame {i}"} for i in range(1, 6)],
+        "_status": mock_status
+    })
+    stack_id = result1["stack_id"]
+
+    # Pop 3 frames
+    result = await server.cognitive_stack({
+        "operation": "pop_batch",
+        "stack_id": stack_id,
+        "count": 3,
+        "_status": mock_status
+    })
+
+    assert result["status"] == "success"
+    assert result["popped_count"] == 3
+    assert len(result["frames"]) == 3
+    # Frames are returned top-to-bottom
+    assert result["frames"][0]["context"] == "Frame 5"
+    assert result["frames"][1]["context"] == "Frame 4"
+    assert result["frames"][2]["context"] == "Frame 3"
+    assert result["remaining_depth"] == 2
+
+
+@pytest.mark.asyncio
+async def test_pop_batch_more_than_available(server, mock_status):
+    """Test popping more frames than available returns all available."""
+    # Push 2 frames
+    result1 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "Frame 1"}, {"context": "Frame 2"}],
+        "_status": mock_status
+    })
+    stack_id = result1["stack_id"]
+
+    # Try to pop 5 (should get 2)
+    result = await server.cognitive_stack({
+        "operation": "pop_batch",
+        "stack_id": stack_id,
+        "count": 5,
+        "_status": mock_status
+    })
+
+    assert result["status"] == "success"
+    assert result["popped_count"] == 2
+    assert result["remaining_depth"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pop_batch_empty_stack(server, mock_status):
     """Test popping from empty stack returns error."""
     # Create empty stack
-    result1 = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 1",
+    result1 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "Frame 1"}],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
 
     # Pop the only frame
-    await server.cognitive_stack( {"operation": "pop", "stack_id": stack_id, "_status": mock_status})
+    await server.cognitive_stack({
+        "operation": "pop_batch",
+        "stack_id": stack_id,
+        "count": 1,
+        "_status": mock_status
+    })
 
     # Try popping again (empty)
-    result = await server.cognitive_stack( {
-        "operation": "pop",
+    result = await server.cognitive_stack({
+        "operation": "pop_batch",
         "stack_id": stack_id,
+        "count": 1,
         "_status": mock_status
     })
 
@@ -238,11 +311,12 @@ async def test_pop_empty_stack(server, mock_status):
 
 
 @pytest.mark.asyncio
-async def test_pop_nonexistent_stack(server, mock_status):
+async def test_pop_batch_nonexistent_stack(server, mock_status):
     """Test popping from non-existent stack."""
-    result = await server.cognitive_stack( {
-        "operation": "pop",
+    result = await server.cognitive_stack({
+        "operation": "pop_batch",
         "stack_id": "nonexistent",
+        "count": 1,
         "_status": mock_status
     })
 
@@ -259,22 +333,15 @@ async def test_pop_nonexistent_stack(server, mock_status):
 async def test_peek_top_frame(server, mock_status):
     """Test peeking at top frame without removing."""
     # Push frames
-    result1 = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 1",
+    result1 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "Frame 1"}, {"context": "Frame 2"}],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
 
-    await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 2",
-        "stack_id": stack_id,
-        "_status": mock_status
-    })
-
     # Peek
-    result = await server.cognitive_stack( {
+    result = await server.cognitive_stack({
         "operation": "peek",
         "stack_id": stack_id,
         "_status": mock_status
@@ -290,22 +357,15 @@ async def test_peek_top_frame(server, mock_status):
 async def test_peek_multiple_frames(server, mock_status):
     """Test peeking at multiple frames."""
     # Push 3 frames
-    result1 = await server.push({
-        "context": "Frame 1",
+    result1 = await server.push_batch({
+        "items": [
+            {"context": "Frame 1"},
+            {"context": "Frame 2"},
+            {"context": "Frame 3"}
+        ],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
-
-    await server.push({
-        "context": "Frame 2",
-        "stack_id": stack_id,
-        "_status": mock_status
-    })
-    await server.push({
-        "context": "Frame 3",
-        "stack_id": stack_id,
-        "_status": mock_status
-    })
 
     # Peek top 2
     result = await server.peek({
@@ -323,14 +383,14 @@ async def test_peek_multiple_frames(server, mock_status):
 @pytest.mark.asyncio
 async def test_peek_empty_stack(server, mock_status):
     """Test peeking at empty stack."""
-    result1 = await server.push({
-        "context": "Frame 1",
+    result1 = await server.push_batch({
+        "items": [{"context": "Frame 1"}],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
 
     # Pop to empty
-    await server.pop({"stack_id": stack_id, "_status": mock_status})
+    await server.pop_batch({"stack_id": stack_id, "count": 1, "_status": mock_status})
 
     # Peek
     result = await server.peek({
@@ -352,22 +412,15 @@ async def test_peek_empty_stack(server, mock_status):
 async def test_list_all_frames(server, mock_status):
     """Test listing all frames in stack."""
     # Push 3 frames
-    result1 = await server.push({
-        "context": "Frame 1",
+    result1 = await server.push_batch({
+        "items": [
+            {"context": "Frame 1"},
+            {"context": "Frame 2"},
+            {"context": "Frame 3"}
+        ],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
-
-    await server.push({
-        "context": "Frame 2",
-        "stack_id": stack_id,
-        "_status": mock_status
-    })
-    await server.push({
-        "context": "Frame 3",
-        "stack_id": stack_id,
-        "_status": mock_status
-    })
 
     # List
     result = await server.list_frames({
@@ -391,17 +444,11 @@ async def test_list_all_frames(server, mock_status):
 async def test_clear_specific_stack(server, mock_status):
     """Test clearing specific stack."""
     # Push frames
-    result1 = await server.push({
-        "context": "Frame 1",
+    result1 = await server.push_batch({
+        "items": [{"context": "Frame 1"}, {"context": "Frame 2"}],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
-
-    await server.push({
-        "context": "Frame 2",
-        "stack_id": stack_id,
-        "_status": mock_status
-    })
 
     # Clear
     result = await server.clear({
@@ -424,13 +471,13 @@ async def test_clear_specific_stack(server, mock_status):
 async def test_clear_all_stacks(server, mock_status):
     """Test clearing all stacks."""
     # Create 2 stacks
-    await server.push({
-        "context": "Stack 1 Frame 1",
+    await server.push_batch({
+        "items": [{"context": "Stack 1 Frame 1"}],
         "_status": mock_status
     })
 
-    await server.push({
-        "context": "Stack 2 Frame 1",
+    await server.push_batch({
+        "items": [{"context": "Stack 2 Frame 1"}],
         "_status": mock_status
     })
 
@@ -453,9 +500,9 @@ async def test_clear_all_stacks(server, mock_status):
 async def test_agent_session_mapping(server, mock_status):
     """Test agent session ID mapping to stack ID."""
     # Push with agent session ID
-    result = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 1",
+    result = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "Frame 1"}],
         "_status": mock_status,
         "_session_id": "agent_session_123"
     })
@@ -465,9 +512,9 @@ async def test_agent_session_mapping(server, mock_status):
     assert server._agent_session_mapping["agent_session_123"] == stack_id
 
     # Push again with same agent session (should reuse stack)
-    result2 = await server.cognitive_stack( {
-        "operation": "push",
-        "context": "Frame 2",
+    result2 = await server.cognitive_stack({
+        "operation": "push_batch",
+        "items": [{"context": "Frame 2"}],
         "stack_id": stack_id,  # Explicitly provide stack_id
         "_status": mock_status,
         "_session_id": "agent_session_123"
@@ -528,7 +575,7 @@ async def test_hook_no_active_stack(server):
     assert result.modified
 
     # Should have injected reminder
-    injected = [m for m in result.context.messages if "Cognitive Stack Tool Available" in m.content]
+    injected = [m for m in result.context.messages if "Cognitive Stack Available" in m.content]
     assert len(injected) == 1
 
 
@@ -536,17 +583,11 @@ async def test_hook_no_active_stack(server):
 async def test_hook_with_active_stack(server, mock_status):
     """Test hook injects active stack info."""
     # Create stack
-    result = await server.push({
-        "context": "Main task: Feature X",
-        "data": {"feature": "X"},
-        "_status": mock_status,
-        "_session_id": "test_session"
-    })
-    stack_id = result["stack_id"]
-
-    await server.push({
-        "context": "Sub-task: Analyze dependencies",
-        "stack_id": stack_id,
+    result = await server.push_batch({
+        "items": [
+            {"context": "Main task: Feature X", "data": {"feature": "X"}},
+            {"context": "Sub-task: Analyze dependencies"}
+        ],
         "_status": mock_status,
         "_session_id": "test_session"
     })
@@ -578,8 +619,8 @@ async def test_hook_with_active_stack(server, mock_status):
 async def test_hook_removes_old_injection(server, mock_status):
     """Test hook removes previous injection before adding new one."""
     # Create stack
-    result = await server.push({
-        "context": "Task 1",
+    result = await server.push_batch({
+        "items": [{"context": "Task 1"}],
         "_status": mock_status,
         "_session_id": "test_session"
     })
@@ -608,20 +649,15 @@ async def test_hook_removes_old_injection(server, mock_status):
 async def test_hook_prevents_duplicate_injections_across_multiple_calls(server, mock_status):
     """Test that multiple sequential hook calls don't accumulate duplicate injections."""
     # Create stack with some frames
-    result = await server.push({
-        "context": "Initial task",
+    result = await server.push_batch({
+        "items": [
+            {"context": "Initial task"},
+            {"context": "Subtask 1"}
+        ],
         "_status": mock_status,
         "_session_id": "test_session_dup"
     })
-    stack_id = result["stack_id"]
-    
-    await server.push({
-        "context": "Subtask 1",
-        "stack_id": stack_id,
-        "_status": mock_status,
-        "_session_id": "test_session_dup"
-    })
-    
+
     # Create context - simulate real multi-turn conversation
     context = HookContext(
         hook_type="pre_llm_call",
@@ -633,33 +669,33 @@ async def test_hook_prevents_duplicate_injections_across_multiple_calls(server, 
         session_id="test_session_dup",
         agent=MagicMock()
     )
-    
+
     # Simulate 5 consecutive LLM calls (like in a real conversation)
     # Each call should inject stack info, but only ONE injection should exist at a time
     for i in range(5):
         result = await server.on_pre_llm_call(context)
         assert result.success is True
         assert result.modified is True
-        
+
         # Count all stack-related injections
         stack_injections = [
             msg for msg in context.messages
             if msg.role == "system" and (
-                "## Cognitive Stack" in msg.content or 
+                "## Cognitive Stack" in msg.content or
                 "## Active Cognitive Stack" in msg.content
             )
         ]
-        
+
         # CRITICAL: Should have exactly ONE injection, not accumulating
         assert len(stack_injections) == 1, (
             f"After call {i+1}: Expected 1 stack injection, found {len(stack_injections)}. "
             f"Messages: {[msg.content[:50] for msg in context.messages if msg.role == 'system']}"
         )
-        
+
         # Add user message for next iteration (simulate conversation flow)
         context.messages.append(ChatMessage(role="assistant", content=f"Response {i}"))
         context.messages.append(ChatMessage(role="user", content=f"Question {i+1}"))
-    
+
     # Final verification: Should still have exactly one injection
     final_stack_injections = [
         msg for msg in context.messages
@@ -693,16 +729,16 @@ async def test_hook_no_session_id(server):
 @pytest.mark.asyncio
 async def test_concurrent_push_same_stack(server, mock_status):
     """Test concurrent pushes to same stack."""
-    result1 = await server.push({
-        "context": "Frame 1",
+    result1 = await server.push_batch({
+        "items": [{"context": "Frame 1"}],
         "_status": mock_status
     })
     stack_id = result1["stack_id"]
 
-    # Concurrent pushes
+    # Concurrent batch pushes
     tasks = [
-        server.push({
-            "context": f"Frame {i}",
+        server.push_batch({
+            "items": [{"context": f"Frame {i}"}],
             "stack_id": stack_id,
             "_status": mock_status
         })
@@ -723,9 +759,11 @@ async def test_concurrent_push_same_stack(server, mock_status):
 @pytest.mark.asyncio
 async def test_data_persistence_across_operations(server, mock_status):
     """Test that frame data persists through peek/list operations."""
-    result = await server.push({
-        "context": "Task with data",
-        "data": {"key": "value", "nested": {"a": 1}},
+    result = await server.push_batch({
+        "items": [{
+            "context": "Task with data",
+            "data": {"key": "value", "nested": {"a": 1}}
+        }],
         "_status": mock_status
     })
     stack_id = result["stack_id"]
@@ -745,8 +783,9 @@ async def test_data_persistence_across_operations(server, mock_status):
     assert list_result["frames"][0]["data"]["nested"]["a"] == 1
 
     # Pop should return data
-    pop_result = await server.pop({
+    pop_result = await server.pop_batch({
         "stack_id": stack_id,
+        "count": 1,
         "_status": mock_status
     })
-    assert pop_result["frame"]["data"]["key"] == "value"
+    assert pop_result["frames"][0]["data"]["key"] == "value"

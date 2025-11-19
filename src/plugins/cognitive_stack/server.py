@@ -105,10 +105,10 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         # Support both 'operation' and 'op' (some LLMs abbreviate)
         operation = params.get("operation") or params.get("op")
 
-        if operation == "push":
-            return await self.push(params)
-        elif operation == "pop":
-            return await self.pop(params)
+        if operation == "push_batch":
+            return await self.push_batch(params)
+        elif operation == "pop_batch":
+            return await self.pop_batch(params)
         elif operation == "peek":
             return await self.peek(params)
         elif operation == "list":
@@ -121,7 +121,7 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                 await status.error(f"Unknown operation: {operation}")
             return {
                 "status": "error",
-                "error": f"Unknown operation: {operation}. Valid: push, pop, peek, list, clear"
+                "error": f"Unknown operation: {operation}. Valid: push_batch, pop_batch, peek, list, clear"
             }
 
     def _get_or_create_stack(self, stack_id: str | None, agent_session_id: str | None = None) -> CognitiveStack:
@@ -175,133 +175,6 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                     del self._agent_session_mapping[agent_sid]
 
             logger.info(f"Cleaned up expired cognitive stack: {sid}")
-
-    async def push(self, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        Push new context onto cognitive stack.
-
-        Tool name: {{ name }}_push → e.g., 'cognitive_stack_push'
-        """
-        status = params.get("_status")
-        try:
-            # Cleanup old stacks first
-            self._cleanup_old_stacks()
-
-            # Extract parameters
-            context = params["context"]
-            data = params.get("data", {})
-            stack_id = params.get("stack_id")
-            agent_session_id = params.get("_session_id")
-
-            # Validation
-            if not context or not context.strip():
-                error_msg = "context cannot be empty"
-                if status:
-                    await status.error(error_msg)
-                return {"status": "error", "error": error_msg}
-
-            # Get or create stack
-            stack = self._get_or_create_stack(stack_id, agent_session_id)
-
-            # Check depth limit
-            if len(stack.frames) >= stack.max_depth:
-                error_msg = f"Maximum stack depth ({stack.max_depth}) reached"
-                if status:
-                    await status.error(error_msg)
-                return {
-                    "status": "error",
-                    "error": error_msg,
-                    "hint": "Pop some frames before pushing more, or use clear() to reset"
-                }
-
-            # Create frame
-            frame = StackFrame(
-                frame_id=short_id(),
-                context=context,
-                timestamp=datetime.now(),
-                data=data
-            )
-
-            stack.frames.append(frame)
-
-            if status:
-                await status.end(
-                    f"Pushed frame #{len(stack.frames)} (depth: {len(stack.frames)}/{stack.max_depth})"
-                )
-
-            return {
-                "status": "success",
-                "stack_id": stack.stack_id,
-                "frame_id": frame.frame_id,
-                "depth": len(stack.frames),
-                "max_depth": stack.max_depth,
-                "message": f"Pushed context onto stack (depth: {len(stack.frames)})"
-            }
-
-        except Exception as e:
-            logger.exception(f"Error in push: {e}")
-            if status:
-                await status.error(f"Failed to push frame: {str(e)}")
-            return {"status": "error", "error": str(e)}
-
-    async def pop(self, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        Pop and return top frame from cognitive stack.
-
-        Tool name: {{ name }}_pop → e.g., 'cognitive_stack_pop'
-        """
-        status = params.get("_status")
-        try:
-            stack_id = params.get("stack_id")
-            if not stack_id:
-                error_msg = "stack_id is required for pop operation"
-                if status:
-                    await status.error(error_msg)
-                return {"status": "error", "error": error_msg}
-
-            if stack_id not in self._stacks:
-                error_msg = f"Stack {stack_id} not found"
-                if status:
-                    await status.error(error_msg)
-                return {"status": "error", "error": error_msg}
-
-            stack = self._stacks[stack_id]
-            stack.last_accessed = datetime.now()
-
-            if not stack.frames:
-                error_msg = "Stack is empty"
-                if status:
-                    await status.error(error_msg)
-                return {
-                    "status": "error",
-                    "error": error_msg,
-                    "hint": "Use push() to add frames to the stack"
-                }
-
-            # Pop top frame
-            frame = stack.frames.pop()
-
-            if status:
-                await status.end(f"Popped frame (depth: {len(stack.frames)})")
-
-            return {
-                "status": "success",
-                "stack_id": stack.stack_id,
-                "frame": {
-                    "frame_id": frame.frame_id,
-                    "context": frame.context,
-                    "data": frame.data,
-                    "timestamp": frame.timestamp.isoformat()
-                },
-                "remaining_depth": len(stack.frames),
-                "message": f"Popped frame from stack (depth now: {len(stack.frames)})"
-            }
-
-        except Exception as e:
-            logger.exception(f"Error in pop: {e}")
-            if status:
-                await status.error(f"Failed to pop frame: {str(e)}")
-            return {"status": "error", "error": str(e)}
 
     async def peek(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -474,6 +347,180 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                 await status.error(f"Failed to clear stack: {str(e)}")
             return {"status": "error", "error": str(e)}
 
+    async def push_batch(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Push multiple contexts onto stack in one operation.
+
+        Useful for loading a list of tasks/problems to work through systematically.
+
+        Tool name: {{ name }}_push_batch → e.g., 'cognitive_stack_push_batch'
+        """
+        status = params.get("_status")
+        try:
+            # Cleanup old stacks first
+            self._cleanup_old_stacks()
+
+            # Extract parameters
+            items = params.get("items", [])
+            stack_id = params.get("stack_id")
+            agent_session_id = params.get("_session_id")
+
+            # Validation
+            if not items:
+                error_msg = "items array cannot be empty for push_batch"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            if not isinstance(items, list):
+                error_msg = "items must be an array"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            # Get or create stack
+            stack = self._get_or_create_stack(stack_id, agent_session_id)
+
+            # Check if batch would exceed depth limit
+            if len(stack.frames) + len(items) > stack.max_depth:
+                error_msg = f"Batch would exceed max depth ({stack.max_depth}). Current: {len(stack.frames)}, trying to add: {len(items)}"
+                if status:
+                    await status.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "hint": "Reduce batch size or clear some frames first"
+                }
+
+            # Push all items
+            pushed_frames = []
+            for item in items:
+                if not isinstance(item, dict):
+                    error_msg = f"Each item must be an object with 'context' key, got: {type(item)}"
+                    if status:
+                        await status.error(error_msg)
+                    return {"status": "error", "error": error_msg}
+
+                context = item.get("context")
+                if not context or not context.strip():
+                    error_msg = "Each item must have non-empty 'context'"
+                    if status:
+                        await status.error(error_msg)
+                    return {"status": "error", "error": error_msg}
+
+                data = item.get("data", {})
+
+                # Create frame
+                frame = StackFrame(
+                    frame_id=short_id(),
+                    context=context,
+                    timestamp=datetime.now(),
+                    data=data
+                )
+
+                stack.frames.append(frame)
+                pushed_frames.append({
+                    "frame_id": frame.frame_id,
+                    "context": context
+                })
+
+            if status:
+                await status.end(
+                    f"Pushed {len(items)} frames (depth: {len(stack.frames)}/{stack.max_depth})"
+                )
+
+            return {
+                "status": "success",
+                "stack_id": stack.stack_id,
+                "pushed_count": len(items),
+                "frames": pushed_frames,
+                "depth": len(stack.frames),
+                "max_depth": stack.max_depth,
+                "message": f"Pushed {len(items)} frames onto stack (depth: {len(stack.frames)})"
+            }
+
+        except Exception as e:
+            logger.exception(f"Error in push_batch: {e}")
+            if status:
+                await status.error(f"Failed to push batch: {str(e)}")
+            return {"status": "error", "error": str(e)}
+
+    async def pop_batch(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        Pop multiple frames from stack in one operation.
+
+        Returns all popped frames in order (top to bottom).
+
+        Tool name: {{ name }}_pop_batch → e.g., 'cognitive_stack_pop_batch'
+        """
+        status = params.get("_status")
+        try:
+            stack_id = params.get("stack_id")
+            count = params.get("count", 1)
+
+            # Validation
+            if not stack_id:
+                error_msg = "stack_id is required for pop_batch operation"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            if count < 1:
+                error_msg = "count must be at least 1"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            if stack_id not in self._stacks:
+                error_msg = f"Stack {stack_id} not found"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            stack = self._stacks[stack_id]
+            stack.last_accessed = datetime.now()
+
+            if not stack.frames:
+                error_msg = "Stack is empty"
+                if status:
+                    await status.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "hint": "Use push() or push_batch() to add frames to the stack"
+                }
+
+            # Pop up to count frames (or all available)
+            actual_count = min(count, len(stack.frames))
+            popped_frames = []
+
+            for _ in range(actual_count):
+                frame = stack.frames.pop()
+                popped_frames.append({
+                    "frame_id": frame.frame_id,
+                    "context": frame.context,
+                    "data": frame.data,
+                    "timestamp": frame.timestamp.isoformat()
+                })
+
+            if status:
+                await status.end(f"Popped {actual_count} frame(s) (depth: {len(stack.frames)})")
+
+            return {
+                "status": "success",
+                "stack_id": stack.stack_id,
+                "popped_count": actual_count,
+                "frames": popped_frames,
+                "remaining_depth": len(stack.frames),
+                "message": f"Popped {actual_count} frames from stack (depth now: {len(stack.frames)})"
+            }
+
+        except Exception as e:
+            logger.exception(f"Error in pop_batch: {e}")
+            if status:
+                await status.error(f"Failed to pop batch: {str(e)}")
+            return {"status": "error", "error": str(e)}
+
     # =========================================================================
     # Hook Implementation: System Prompt Injection
     # =========================================================================
@@ -509,7 +556,7 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             for i in range(len(context.messages) - 1, -1, -1):
                 msg = context.messages[i]
                 msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and ("## Cognitive Stack" in msg_content):
+                if msg_content and ("Cognitive Stack" in msg_content and msg_content.startswith("##")):
                     context.messages.pop(i)
                     logger.debug(f"Removed old cognitive stack injection at index {i}")
 
@@ -549,13 +596,21 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         """Format cognitive stack tool reminder when no active stack."""
         return f"""## Cognitive Stack Available
 
-You have no active stack. Use `{self.name}(operation="push", context="...")` to start tracking nested contexts.
+You have no active stack. Use `{self.name}(operation="push_batch", items=[...])` to start tracking contexts.
 
-**Example - diving into sub-problem:**
+**Example - single context:**
 ```
-{self.name}(operation="push", context="Debug authentication issue", data={{"bug_id": "123"}})
+{self.name}(operation="push_batch", items=[{{"context": "Debug authentication issue", "data": {{"bug_id": "123"}}}}])
 # ... work on sub-problem ...
-{self.name}(operation="pop", stack_id="<returned_id>")  # Resume previous context
+{self.name}(operation="pop_batch", stack_id="<returned_id>", count=1)  # Resume previous context
+```
+
+**Example - multiple problems to solve:**
+```
+{self.name}(operation="push_batch", items=[
+  {{"context": "Problem 1: Fix login", "data": {{"priority": "high"}}}},
+  {{"context": "Problem 2: Update UI", "data": {{"priority": "low"}}}}
+])
 ```
 """
 
@@ -586,9 +641,9 @@ You have no active stack. Use `{self.name}(operation="push", context="...")` to 
 
                 lines.append(f"- **Frame #{position}**{data_info}: {context}")
 
-        lines.append(f"\n**Operations** (use `stack_id='{stack.stack_id}'):")
-        lines.append(f"- `{self.name}(operation='pop', stack_id='{stack.stack_id}')` - Return to previous context")
-        lines.append(f"- `{self.name}(operation='push', context='...', data={{}})` - Push new nested context")
+        lines.append(f"\n**Operations** (use `stack_id='{stack.stack_id}'):\n")
+        lines.append(f"- `{self.name}(operation='pop_batch', stack_id='{stack.stack_id}', count=1)` - Pop single frame")
+        lines.append(f"- `{self.name}(operation='push_batch', items=[{{...}}])` - Push new context(s)")
         lines.append(f"- `{self.name}(operation='peek', stack_id='{stack.stack_id}', depth=3)` - View more frames")
 
         return "\n".join(lines)
