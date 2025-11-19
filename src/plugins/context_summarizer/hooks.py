@@ -115,7 +115,10 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # If not available, fall back to estimation
             total_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts)
 
-            if total_tokens < trigger_tokens:
+            # Skip threshold check if this is a manual trigger
+            is_manual_trigger = context.metadata.get('manual_trigger', False) if context.metadata else False
+
+            if not is_manual_trigger and total_tokens < trigger_tokens:
                 logger.info(
                     f"[ContextSummarizer] Session {context.session_id}: Below threshold - "
                     f"total_tokens={total_tokens}, trigger_tokens={trigger_tokens} "
@@ -135,7 +138,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 )
 
             logger.info(
-                f"[ContextSummarizer] Context exceeds threshold: {total_tokens} > {trigger_tokens} tokens "
+                f"[ContextSummarizer] Context {'(manual trigger) ' if is_manual_trigger else ''}exceeds threshold: {total_tokens} {'forced' if is_manual_trigger else '> ' + str(trigger_tokens)} tokens "
                 f"({self.trigger_percentage:.0%} of {context_window}). Starting summarization for session {context.session_id}"
             )
 

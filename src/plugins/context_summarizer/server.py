@@ -292,8 +292,28 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                     "recommendation": "ok"
                 }
 
-            # Calculate tokens
-            total_tokens = estimate_token_count(messages)
+            # Calculate tokens - try to get actual tokens from context_usage_tracker first
+            estimated_tokens = estimate_token_count(messages)
+            actual_tokens = 0
+
+            # Try to get actual tokens from context_usage_tracker (more accurate)
+            try:
+                if hasattr(agent, 'system_config') and hasattr(agent.system_config, 'mcp_registry'):
+                    registry = agent.system_config.mcp_registry
+                    usage_tracker = registry.get_server('context_usage_tracker')
+                    if usage_tracker and hasattr(usage_tracker, 'tracker'):
+                        tracker = usage_tracker.tracker
+                        if tracker._latest_snapshot and tracker._latest_snapshot.session_id == session_id:
+                            actual_tokens = tracker._latest_snapshot.prompt_tokens
+                            logger.debug(
+                                f"[check_stats] Got actual tokens from usage_tracker: {actual_tokens} "
+                                f"(estimated: {estimated_tokens})"
+                            )
+            except Exception as e:
+                logger.debug(f"[check_stats] Could not get actual tokens from usage_tracker: {e}")
+
+            # Use the MAXIMUM of actual vs estimated (ensures we don't underestimate)
+            total_tokens = max(actual_tokens, estimated_tokens)
 
             # Get context window
             context_window = 0
@@ -308,15 +328,18 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             recommendation = "summarize" if utilization >= trigger_threshold else "ok"
 
             if status:
-                await status.end(
-                    f"Context: {message_count} messages, ~{total_tokens} tokens "
-                    f"({utilization:.1f}% of {context_window})"
-                )
+                status_msg = f"Context: {message_count} messages, ~{total_tokens} tokens "
+                if actual_tokens > 0:
+                    status_msg += f"(actual: {actual_tokens}, estimated: {estimated_tokens}) "
+                status_msg += f"({utilization:.1f}% of {context_window})"
+                await status.end(status_msg)
 
             return {
                 "status": "success",
                 "message_count": message_count,
                 "total_tokens": total_tokens,
+                "estimated_tokens": estimated_tokens,
+                "actual_tokens": actual_tokens,
                 "context_window": context_window,
                 "utilization_percentage": round(utilization, 1),
                 "trigger_threshold": round(trigger_threshold, 1),
