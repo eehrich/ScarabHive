@@ -47,14 +47,14 @@ class CognitiveStackServer(SchemaBasedMCPServer):
     """Cognitive Stack MCP server for working memory management.
 
     This server provides:
-    - push: Push new context onto stack
-    - pop: Pop and return top context
-    - peek: View top context without removing
+    - push_batch: Push one or more contexts onto stack
+    - pop_batch: Pop one or more contexts and return them
+    - peek: View top context(s) without removing
     - list: List all frames in stack
     - clear: Clear entire stack
 
     Features:
-    - Nested context management (push/pop)
+    - Nested context management (push_batch/pop_batch)
     - Structured data storage per frame
     - Session management with TTL cleanup
     - Depth limit protection
@@ -487,7 +487,7 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                 return {
                     "status": "error",
                     "error": error_msg,
-                    "hint": "Use push() or push_batch() to add frames to the stack"
+                    "hint": "Use push_batch() to add frames to the stack first"
                 }
 
             # Pop up to count frames (or all available)

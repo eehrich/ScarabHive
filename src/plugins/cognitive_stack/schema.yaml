@@ -10,29 +10,24 @@ tools:
         operation:
           type: string
           enum: ["push_batch", "pop_batch", "peek", "list", "clear"]
-          description: "Operation to perform: push_batch (add one or more frames), pop_batch (remove one or more frames), peek (view top N), list (show all), clear (reset stack)"
+          description: "Operation to perform: push_batch (add frames), pop_batch (remove frames), peek (view top N), list (show all), clear (reset stack)"
 
-        # Push parameters
-        context:
-          type: string
-          description: "Required for 'push': Description of nested context you're entering"
-        data:
-          type: object
-          description: "Optional for 'push': Structured data for this frame (key-value pairs)"
-          default: {}
-
-        # Batch parameters
+        # push_batch parameters
         items:
           type: array
-          description: "Required for 'push_batch': Array of items to push onto stack. Each item: {context: string, data?: object}"
+          description: "Required for 'push_batch': Array of frame objects to push onto stack. Each item MUST be an object with 'context' (string, required) and optional 'data' (object). Example: [{context: 'Task 1', data: {priority: 'high'}}, {context: 'Task 2'}]"
           items:
             type: object
             properties:
               context:
                 type: string
+                description: "Description of the context/task for this frame"
               data:
                 type: object
+                description: "Optional structured data for this frame"
             required: ["context"]
+
+        # pop_batch parameters
         count:
           type: integer
           description: "Required for 'pop_batch': Number of frames to pop from stack"
@@ -41,9 +36,9 @@ tools:
         # Common parameters
         stack_id:
           type: string
-          description: "Stack ID. Required for pop/peek/list/clear. Optional for push (creates new stack if omitted on first use)"
+          description: "Stack ID. Required for pop_batch/peek/list/clear operations. Optional for push_batch (auto-creates new stack if omitted)"
 
-        # Peek parameter
+        # peek parameters
         depth:
           type: integer
           description: "For 'peek': Number of top frames to view (default: 1)"
