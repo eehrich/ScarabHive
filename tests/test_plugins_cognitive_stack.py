@@ -524,32 +524,6 @@ async def test_agent_session_mapping(server, mock_status):
     assert result2["depth"] == 2
 
 
-def test_cleanup_old_stacks(server):
-    """Test TTL-based stack cleanup."""
-    # Create old stack
-    old_stack = CognitiveStack(
-        stack_id="old_stack",
-        created_at=datetime.now() - timedelta(seconds=120),
-        last_accessed=datetime.now() - timedelta(seconds=120)
-    )
-    server._stacks["old_stack"] = old_stack
-
-    # Create recent stack
-    recent_stack = CognitiveStack(
-        stack_id="recent_stack",
-        created_at=datetime.now(),
-        last_accessed=datetime.now()
-    )
-    server._stacks["recent_stack"] = recent_stack
-
-    # Cleanup
-    server._cleanup_old_stacks()
-
-    # Old should be gone, recent should remain
-    assert "old_stack" not in server._stacks
-    assert "recent_stack" in server._stacks
-
-
 # =============================================================================
 # Hook: Pre-LLM Call Injection
 # =============================================================================

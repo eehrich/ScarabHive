@@ -1,9 +1,9 @@
 # Cognitive Stack MCP Server Schema
-# Jinja2 variables: {{ name }}, {{ max_depth }}, {{ session_ttl_seconds }}
+# Jinja2 variables: {{ name }}, {{ max_depth }}
 
 tools:
   - name: "{{ name }}"
-    description: "Manage cognitive stack for nested problem-solving and working memory. Operations: push_batch (add contexts), pop_batch (return previous contexts), peek (view without removing), list (show all), clear (reset)."
+    description: "Manage cognitive stack for nested problem-solving. Operations: push_batch (add contexts), pop_batch (return contexts), peek (view top), list (show all), clear (reset). Stack automatically tracked per session - no need to remember stack_id!"
     inputSchema:
       type: object
       properties:
@@ -36,7 +36,7 @@ tools:
         # Common parameters
         stack_id:
           type: string
-          description: "Stack ID. Required for pop_batch/peek/list/clear operations. Optional for push_batch (auto-creates new stack if omitted). After first push_batch, use the returned stack_id for subsequent operations."
+          description: "Stack ID (optional - automatically resolved from your session). Only needed if managing multiple stacks explicitly."
 
         # peek parameters
         depth:
@@ -60,9 +60,16 @@ hooks:
       before: ["message_validation"]
 
 config:
+  max_depth:
+    type: integer
+    default: 20
+    description: "Maximum number of frames allowed on a single stack (prevents infinite recursion)"
+    minimum: 5
+    maximum: 100
+
   max_frames_in_prompt:
     type: integer
     default: 3
-    description: "Number of top frames to show in prompt injection"
+    description: "Number of top frames to show in hook prompt injection"
     minimum: 1
     maximum: 10

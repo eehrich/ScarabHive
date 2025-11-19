@@ -102,11 +102,11 @@ web_ui:
         icon: "🤖"
         requires_admin: false
         order: 100
-        tooltip: "Sub-Agent-Manager"
+        tooltip: "Sub-Agent-Manager - {{ name }}"
 
   panel:
     enabled: true
-    title: "Sub-Agent Manager"
+    title: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
     type: "iframe"
     width: "1000px"

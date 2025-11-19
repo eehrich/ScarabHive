@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
@@ -73,7 +73,6 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
         # Configuration
         self.max_depth = int(getattr(mcp_config, 'max_depth', 20))
-        self.session_ttl_seconds = int(getattr(mcp_config, 'session_ttl_seconds', 3600))
         self.max_frames_in_prompt = int(getattr(mcp_config, 'max_frames_in_prompt', 3))
 
         # Session storage (in-memory)
@@ -82,17 +81,13 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         # Mapping: agent_session_id → cognitive_stack_id
         self._agent_session_mapping: dict[str, str] = {}
 
-        logger.info(
-            f"Cognitive Stack server '{name}' initialized - "
-            f"max_depth={self.max_depth}, ttl={self.session_ttl_seconds}s"
-        )
+        logger.info(f"Cognitive Stack server '{name}' initialized - max_depth={self.max_depth}")
 
     def get_template_vars(self) -> dict[str, Any]:
         """Provide custom template variables for schema rendering."""
         return {
             "name": self.name,
-            "max_depth": self.max_depth,
-            "session_ttl_seconds": self.session_ttl_seconds
+            "max_depth": self.max_depth
         }
 
     async def cognitive_stack(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -159,22 +154,34 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         logger.info(f"Created new cognitive stack: {new_id}")
         return stack
 
-    def _cleanup_old_stacks(self) -> None:
-        """Remove expired stacks based on TTL."""
-        now = datetime.now()
-        expired = [
-            sid for sid, stack in self._stacks.items()
-            if (now - stack.last_accessed) > timedelta(seconds=self.session_ttl_seconds)
-        ]
-        for sid in expired:
-            del self._stacks[sid]
-
-            # Clean up agent session mapping
-            for agent_sid, stack_id in list(self._agent_session_mapping.items()):
-                if stack_id == sid:
-                    del self._agent_session_mapping[agent_sid]
-
-            logger.info(f"Cleaned up expired cognitive stack: {sid}")
+    def _resolve_stack_id(self, params: dict[str, Any]) -> str | None:
+        """Resolve stack_id from params or _session_id mapping.
+        
+        Priority:
+        1. Explicit stack_id in params
+        2. Look up via _session_id mapping
+        3. Return None (will create new stack or error)
+        
+        Args:
+            params: Tool call parameters
+            
+        Returns:
+            Resolved stack_id or None
+        """
+        # Explicit stack_id has priority
+        stack_id = params.get("stack_id")
+        if stack_id:
+            return stack_id
+        
+        # Try to resolve via session mapping
+        agent_session_id = params.get("_session_id")
+        if agent_session_id:
+            mapped_stack_id = self._agent_session_mapping.get(agent_session_id)
+            if mapped_stack_id:
+                logger.debug(f"Resolved stack_id {mapped_stack_id} from session {agent_session_id}")
+                return mapped_stack_id
+        
+        return None
 
     async def peek(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -184,9 +191,9 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         """
         status = params.get("_status")
         try:
-            stack_id = params.get("stack_id")
+            stack_id = self._resolve_stack_id(params)
             if not stack_id:
-                error_msg = "stack_id is required for peek operation"
+                error_msg = "No active cognitive stack found. Use push_batch first to create a stack."
                 if status:
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
@@ -249,13 +256,9 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         """
         status = params.get("_status")
         try:
-            stack_id = params.get("stack_id")
+            stack_id = self._resolve_stack_id(params)
             if not stack_id:
-                error_msg = (
-                    "stack_id is required for list operation. "
-                    "CORRECT USAGE: {operation: 'list', stack_id: '<id_from_push_batch_response>'}. "
-                    "After push_batch, use the returned stack_id for subsequent operations."
-                )
+                error_msg = "No active cognitive stack found. Use push_batch first to create a stack."
                 if status:
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
@@ -304,7 +307,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         """
         status = params.get("_status")
         try:
-            stack_id = params.get("stack_id")
+            # Try to resolve stack_id (explicit or via session)
+            stack_id = self._resolve_stack_id(params)
 
             if stack_id:
                 # Clear specific stack
@@ -361,9 +365,6 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         """
         status = params.get("_status")
         try:
-            # Cleanup old stacks first
-            self._cleanup_old_stacks()
-
             # Extract parameters
             items = params.get("items", [])
             stack_id = params.get("stack_id")
@@ -467,12 +468,12 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         """
         status = params.get("_status")
         try:
-            stack_id = params.get("stack_id")
+            stack_id = self._resolve_stack_id(params)
             count = params.get("count", 1)
 
             # Validation
             if not stack_id:
-                error_msg = "stack_id is required for pop_batch operation"
+                error_msg = "No active cognitive stack found. Use push_batch first to create a stack."
                 if status:
                     await status.error(error_msg)
                 return {"status": "error", "error": error_msg}
@@ -610,19 +611,14 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
 You have no active stack. Use `{self.name}(operation="push_batch", items=[...])` to start tracking contexts.
 
-**Example - single context:**
-```
-{self.name}(operation="push_batch", items=[{{"context": "Debug authentication issue", "data": {{"bug_id": "123"}}}}])
-# ... work on sub-problem ...
-{self.name}(operation="pop_batch", stack_id="<returned_id>", count=1)  # Resume previous context
-```
-
-**Example - multiple problems to solve:**
+**Example - multiple tasks to solve systematically:**
 ```
 {self.name}(operation="push_batch", items=[
-  {{"context": "Problem 1: Fix login", "data": {{"priority": "high"}}}},
-  {{"context": "Problem 2: Update UI", "data": {{"priority": "low"}}}}
+  {{"context": "Task 1: Fix login bug", "data": {{"priority": "high"}}}},
+  {{"context": "Task 2: Update UI styling", "data": {{"priority": "low"}}}}
 ])
+{self.name}(operation="list")
+{self.name}(operation="pop_batch", count=1)
 ```
 """
 
@@ -630,7 +626,6 @@ You have no active stack. Use `{self.name}(operation="push_batch", items=[...])`
         """Format active stack for injection into prompt."""
         lines = []
         lines.append("## Active Cognitive Stack\n")
-        lines.append(f"**Stack ID**: `{stack.stack_id}`")
         lines.append(f"**Depth**: {len(stack.frames)}/{stack.max_depth}\n")
 
         # Show recent frames (top N)
@@ -652,11 +647,6 @@ You have no active stack. Use `{self.name}(operation="push_batch", items=[...])`
                     data_info = f" [data: {data_keys}]"
 
                 lines.append(f"- **Frame #{position}**{data_info}: {context}")
-
-        lines.append(f"\n**Operations** (use `stack_id='{stack.stack_id}'):\n")
-        lines.append(f"- `{self.name}(operation='pop_batch', stack_id='{stack.stack_id}', count=1)` - Pop single frame")
-        lines.append(f"- `{self.name}(operation='push_batch', items=[{{...}}])` - Push new context(s)")
-        lines.append(f"- `{self.name}(operation='peek', stack_id='{stack.stack_id}', depth=3)` - View more frames")
 
         return "\n".join(lines)
 

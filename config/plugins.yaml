@@ -80,8 +80,7 @@ plugins:
     cognitive_stack:
       type: cognitive_stack
       enabled: true
-      max_depth: 20
-      session_ttl_seconds: 3600
+      max_depth: 50
       max_frames_in_prompt: 3
 
     todo:

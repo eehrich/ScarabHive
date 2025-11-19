@@ -137,17 +137,32 @@ config:
 web_ui:
   # Header button configuration
   button:
-    enabled: true
-    text: "Context Summary"
+    enabled: false
+    text: "{{ name }}"
     icon: "📝"
     tooltip: "View context summarization history and statistics"
+
+  # Dropdown menu integration
+  menu:
+    enabled: true
+    items:
+      - id: "context_summarizer"
+        menu_id: "user"
+        section: "Context Summarizer"
+        label: "{{ name }}"
+        action: "openPanel"
+        panel_id: "{{ name }}"
+        icon: "🤖"
+        requires_admin: false
+        order: 100
+        tooltip: "Context Summarizer - {{ name }}"
 
   # Panel configuration
   panel:
     enabled: true
-    title: "Context Summarizer"
-    panel_id: "context_summarizer"
-    endpoint: "/plugins/context_summarizer/panel"
+    title: "{{name}}"
+    panel_id: "{{name}}"
+    endpoint: "/plugins/{{name}}/"
     type: "iframe"
     description: "View summarization events with before/after message counts and token savings"
 
@@ -162,7 +177,7 @@ web_ui:
       handler: "get_stats"
       response_type: "json"
       description: "Get aggregated summarization statistics"
-    - path: "/panel"
+    - path: "/"
       method: "GET"
       handler: "render_panel"
       response_type: "html"

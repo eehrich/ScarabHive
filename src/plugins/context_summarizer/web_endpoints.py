@@ -49,15 +49,18 @@ class ContextSummarizerWebFactory:
             handler_class=self
         )
 
-    async def get_history(self, limit: int = 100) -> Dict[str, Any]:
+    async def get_history(self, request: Request) -> Dict[str, Any]:
         """Get recent summarization events.
 
         Args:
-            limit: Maximum number of events to return
+            request: FastAPI request object
 
         Returns:
             Dict with summarization history
         """
+        # Get limit from query parameter
+        limit = int(request.query_params.get('limit', 100))
+        
         try:
             # Return most recent events first
             recent_events = list(reversed(self.summarization_history[-limit:]))
@@ -75,8 +78,11 @@ class ContextSummarizerWebFactory:
                 'events': []
             }
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self, request: Request) -> Dict[str, Any]:
         """Get summarization statistics.
+
+        Args:
+            request: FastAPI request object
 
         Returns:
             Dict with aggregate statistics
