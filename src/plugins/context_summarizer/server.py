@@ -148,7 +148,7 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                 return {"status": "error", "error": error_msg}
 
             # Get current messages from agent's session
-            messages = agent._session_tracker.get_messages(session_id)
+            messages = agent._session_tracker.get_session_messages(session_id)
             if not messages:
                 if status:
                     await status.end("No messages to summarize")
@@ -208,7 +208,7 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             # Update agent's session with summarized messages
             if result.modified and result.context and result.context.messages:
-                agent._session_tracker.set_messages(session_id, result.context.messages)
+                agent._session_tracker.set_session_messages(session_id, result.context.messages)
 
             summarized_count = len(result.context.messages) if result.context else original_count
 
@@ -277,7 +277,7 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                 return {"status": "error", "error": error_msg}
 
             # Get current messages
-            messages = agent._session_tracker.get_messages(session_id)
+            messages = agent._session_tracker.get_session_messages(session_id)
             message_count = len(messages) if messages else 0
 
             if message_count == 0:
@@ -298,7 +298,7 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             # Get context window
             context_window = 0
             if hasattr(agent, 'llm') and agent.llm:
-                context_window = getattr(agent.llm.model_config, 'context_window', 0)
+                context_window = getattr(agent.llm, 'context_window', 0)
 
             # Calculate utilization
             utilization = (total_tokens / context_window * 100) if context_window > 0 else 0
