@@ -555,8 +555,9 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             
             # END status
             complete_msg = "✓ Complete" if not next_thought_needed else "Continue reasoning..."
+            # Show actual thought count, not thought number (which can be same for revisions)
             await status.end(
-                f"Thought #{server_thought_number} added ({session.actual_thoughts}/{effective_total}). "
+                f"Thought #{session.actual_thoughts} added ({session.actual_thoughts}/{effective_total}). "
                 f"{complete_msg}"
             )
             
