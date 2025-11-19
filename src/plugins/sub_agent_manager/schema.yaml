@@ -52,6 +52,14 @@ tools:
               Optional custom label for readability (create only).
               Auto-generated if omitted. Format: alphanumeric, underscore, hyphen.
 
+          use_advanced_model:
+            type: boolean
+            description: |
+              Use more capable and expensive LLM for complex reasoning (create/continue, default: false).
+              Useful for switching between standard and advanced reasoning mid-conversation.
+              For standard tasks do not use, to save time and money.
+            default: false
+
           # Parameters for 'continue', 'info', 'delete' operations
           instance_id:
             type: string

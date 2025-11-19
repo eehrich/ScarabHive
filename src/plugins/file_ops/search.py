@@ -105,7 +105,7 @@ class FileSearchEngine:
                 logger.info(f"FILE_OPS: Force recreating ChromaDB collection '{collection_name}'")
                 try:
                     self.chroma_client.delete_collection(collection_name)
-                    logger.debug(f"FILE_OPS: Deleted existing collection")
+                    logger.debug("FILE_OPS: Deleted existing collection")
                 except Exception as delete_error:
                     logger.debug(f"FILE_OPS: No existing collection to delete: {delete_error}")
 
@@ -522,7 +522,7 @@ class FileSearchEngine:
 
             # Use index for filename-only search
             if not has_path_sep:
-                logger.debug(f"FILE_OPS: Searching in filename index...")
+                logger.debug("FILE_OPS: Searching in filename index...")
                 async with self._index_lock:
                     for filename, paths in self.file_name_index.items():
                         if fnmatch.fnmatch(filename, pattern_lower):

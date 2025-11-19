@@ -30,8 +30,8 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     if not config.llm_system:
         raise ValueError("LLM system configuration is missing from AgentSystemConfig")
 
-    # Get the profile name from agent config
-    profile_name = agent_config.llm_profile
+    # Get the default profile name from agent config
+    profile_name = agent_config.default_llm_profile
 
     # Resolve profile to model config
     if profile_name not in config.llm_system.profiles:

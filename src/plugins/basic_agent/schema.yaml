@@ -9,6 +9,19 @@ tools:
           task:
             type: string
             description: "The task or question to execute"
+          {% if llm_profiles and llm_profiles|length > 1 %}llm_profile:
+            type: string
+            description: "Optional LLM profile to use. If not specified, uses the agent's default profile."
+            enum: {{ llm_profiles | tojson }}
+          use_advanced_model:
+            type: boolean
+            description: "Use most capable LLM profile (alternative to llm_profile parameter). If both are set, llm_profile takes precedence."
+            default: false
+          {% else %}use_advanced_model:
+            type: boolean
+            description: "Use most capable LLM profile. Note: This agent has only one profile configured, so this has no effect."
+            default: false
+          {% endif %}
         required: ["task"]
         additionalProperties: false
 

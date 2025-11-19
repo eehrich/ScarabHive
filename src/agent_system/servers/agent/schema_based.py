@@ -28,16 +28,16 @@ logger = logging.getLogger(__name__)
 
 class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
     """Agent that automatically loads tools from schema.yaml.
-    
+
     This class eliminates the need for agent plugins to implement
     get_tools() and call() methods. Instead:
     1. Tools are defined in schema.yaml
     2. Methods matching tool names are automatically routed
-    
+
     For agent tools, the agent name prefix is automatically stripped:
     - Tool: "basic_agent_execute_task"
     - Method: execute_task(params)
-    
+
     Example schema.yaml:
         tools:
           - function:
@@ -50,16 +50,16 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
                     type: string
                     description: "The task to execute"
                 required: ["task"]
-    
+
     Example implementation:
         class MyAgent(SchemaBasedAgent):
             async def execute_task(self, params: dict) -> dict:
                 task = params["task"]
                 # Execute task...
                 return {"status": "success", "result": "..."}
-    
+
     The {{name}} template variable is automatically replaced with the agent's name.
-    
+
     Note: This class uses SchemaBasedToolMixin's call() dispatcher for tool routing,
     which differs from Agent's simplified call() interface that only handles
     "run", "execute", and "ask" actions.
@@ -67,27 +67,39 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
 
     def __init__(self, *args, **kwargs):
         """Initialize SchemaBasedAgent.
-        
+
         Accepts the same arguments as Agent. Initializes schema caching.
         """
         super().__init__(*args, **kwargs)
         # Initialize schema mixin
         self._init_schema_mixin()
 
+    def get_template_vars(self) -> dict:
+        """Override to provide llm_profiles for schema rendering."""
+        vars = super().get_template_vars()
+
+        # Add available LLM profiles if agent_config exists
+        if hasattr(self, 'agent_config') and self.agent_config:
+            vars['llm_profiles'] = self.agent_config.available_llm_profiles
+        else:
+            vars['llm_profiles'] = []
+
+        return vars
+
     async def list_tools(self) -> list:
         """Return tools defined in schema.yaml (MCPServer interface).
-        
+
         Override base Agent.list_tools() to return multiple tools from schema.yaml
         instead of just a single agent tool.
-        
+
         Returns:
             List[MCPTool] - Tools defined in this agent's schema.yaml
         """
         from agent_system.mcp.core import MCPTool
-        
+
         # Get tools from schema.yaml
         tools_defs = self.get_tools()
-        
+
         # Convert to MCPTool format
         mcp_tools = []
         for tool_def in tools_defs:
@@ -98,6 +110,6 @@ class SchemaBasedAgent(SchemaBasedToolMixin, Agent):
                 input_schema=func.get("parameters", {})
             )
             mcp_tools.append(tool)
-        
+
         return mcp_tools
 

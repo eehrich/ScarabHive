@@ -587,7 +587,8 @@ class Agent(MCPServer):
         request_id: Optional[str] = None,
         session_id: Optional[str] = None,
         llm_override: Optional[object] = None,
-        llm_profile_info_override: Optional[str] = None
+        llm_profile_info_override: Optional[str] = None,
+        use_advanced_model: bool = False
     ):
         """Run the agent and yield structured events for UI streaming.
 
@@ -597,6 +598,7 @@ class Agent(MCPServer):
             session_id: Optional session ID for conversation history
             llm_override: Optional LLM client to use instead of self.llm (for per-request profile overrides)
             llm_profile_info_override: Optional profile info string for status display (e.g., "turbo:openai_httpx/gpt-5-nano")
+            use_advanced_model: If True and llm_override not set, use best available LLM profile
         """
 
         # Generate request ID if not provided
@@ -631,6 +633,51 @@ class Agent(MCPServer):
         # to ensure monotonic, global numbering across components.
         coordinator_request_id = await self.next_internal_tool_request_id(request_id) if request_id else None
         worker_request_id = await self.next_internal_tool_request_id(request_id) if request_id else None
+
+        # Handle use_advanced_model if no llm_override provided
+        if use_advanced_model and not llm_override:
+            from agent_system.config.models import AgentConfig
+            from agent_system.llm.factory import resolve_llm_config_for_agent
+            from agent_system.llm.clients import make_llm
+
+            available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
+            if available_profiles and len(available_profiles) > 1:
+                # Use last profile (most capable)
+                advanced_profile = available_profiles[-1]
+
+                try:
+                    # Create temporary agent config with advanced profile
+                    temp_agent_config = AgentConfig(llm_profile=advanced_profile)
+                    llm_kwargs = resolve_llm_config_for_agent(self.system_config, temp_agent_config)
+
+                    # Get SSL verify setting
+                    ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
+
+                    # Create LLM client override
+                    llm_override = make_llm(
+                        llm_kwargs["provider"],
+                        llm_kwargs["model"],
+                        llm_kwargs["openai_api_key"],
+                        llm_kwargs["ollama_url"],
+                        llm_kwargs["context_window"],
+                        llm_kwargs["ollama_mode"],
+                        llm_kwargs["request_timeout"],
+                        ssl_verify=ssl_verify,
+                        httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
+                        capabilities=llm_kwargs.get("capabilities"),
+                    )
+
+                    # Create profile info for logging
+                    profile = self.system_config.llm_system.profiles[advanced_profile]
+                    model_ref = profile.model_ref
+                    model_config = self.system_config.llm_system.models[model_ref]
+                    llm_profile_info_override = f"{advanced_profile}:{model_config.provider}/{model_config.model}"
+
+                    logger.info(f"use_advanced_model=True mapped to profile: {llm_profile_info_override}")
+
+                except Exception as e:
+                    logger.error(f"Failed to create LLM override for use_advanced_model: {e}")
+                    # Continue with default LLM
 
         try:
             async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
@@ -1102,20 +1149,20 @@ class Agent(MCPServer):
                         cancellation_token=main_token
                     )
                 )
-                
+
                 # Stream status events while hook is running
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event
                     await asyncio.sleep(0.1)  # Poll every 100ms
-                
+
                 # Get hook result
                 modified_messages = await hook_task
-                
+
                 # Yield any final status events
                 for status_event in yield_pending_status_events():
                     yield status_event
-                
+
                 if modified_messages is not None:
                     messages = modified_messages
                     # Also update context.messages so changes persist to session!
@@ -1212,20 +1259,20 @@ class Agent(MCPServer):
                         llm=active_llm
                     )
                 )
-                
+
                 # Stream status events while hook is running
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event
                     await asyncio.sleep(0.1)  # Poll every 100ms
-                
+
                 # Get hook result
                 modified_response, hook_metadata = await hook_task
-                
+
                 # Yield any final status events
                 for status_event in yield_pending_status_events():
                     yield status_event
-                
+
                 if modified_response is not None:
                     # Extract assistant data from modified response
                     modified_assistant = modified_response.get("assistant", {})

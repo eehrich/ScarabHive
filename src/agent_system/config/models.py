@@ -119,12 +119,26 @@ class HooksConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
-    llm_profile: str = "normal"  # LLM profile to use
+    llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, first is default, others are available options
     max_steps: int = 20  # maximum steps for agents that support multi-step reasoning
     tools: ToolConfig = Field(default_factory=ToolConfig)
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
+
+    @property
+    def default_llm_profile(self) -> str:
+        """Get the default LLM profile (first in list if list, otherwise the string)."""
+        if isinstance(self.llm_profile, list):
+            return self.llm_profile[0] if self.llm_profile else "normal"
+        return self.llm_profile
+
+    @property
+    def available_llm_profiles(self) -> List[str]:
+        """Get all available LLM profiles."""
+        if isinstance(self.llm_profile, list):
+            return self.llm_profile
+        return [self.llm_profile]
 
 
 class AgentMetadata(BaseModel):

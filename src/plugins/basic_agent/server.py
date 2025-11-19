@@ -2,23 +2,25 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
 from agent_system.mcp.base import MCPRegistry
+from agent_system.llm.factory import resolve_llm_config_for_agent
+from agent_system.llm.clients import make_llm
 
 logger = logging.getLogger(__name__)
 
 
 class BasicAgent(SchemaBasedAgent):
     """Agent for basic requests.
-    
+
     This agent uses SchemaBasedAgent's automatic method routing.
     Tools defined in schema.yaml are automatically routed to methods:
     - Tool: "basic_agent_execute_task" → Method: execute_task(params)
     - Tool: "basic_agent_list_available_tools" → Method: list_available_tools(params)
-    
+
     Note: The MCP standard method list_tools() is inherited from Agent base class.
     """
 
@@ -29,41 +31,119 @@ class BasicAgent(SchemaBasedAgent):
 
     async def execute_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a task using the basic agent.
-        
+
         This method is automatically called for the "basic_agent_execute_task" tool.
+        Supports optional llm_profile parameter to override the agent's default LLM.
         """
         # Extract parameters
         task = params.get("task")
         if not task:
             return {"status": "error", "error": "Missing required parameter 'task'"}
-        
+
         request_id = params.get("request_id") or params.get("requestId")
         status = params.get("_status")
-        
+        llm_profile_name = params.get("llm_profile")
+        use_advanced_model = params.get("use_advanced_model", False)
+
+        # Prepare LLM override if profile specified
+        llm_override: Optional[object] = None
+        llm_profile_info: Optional[str] = None
+
+        # Determine profile to use
+        # Priority: llm_profile > use_advanced_model > default
+        if not llm_profile_name and use_advanced_model:
+            # Map use_advanced_model to best available profile
+            available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
+            if available_profiles:
+                # Use last profile in list (assumed to be most capable)
+                llm_profile_name = available_profiles[-1]
+                logger.debug(f"use_advanced_model=True mapped to profile '{llm_profile_name}'")
+
+        if llm_profile_name:
+            # Validate profile exists in agent's available profiles
+            available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
+            if available_profiles and llm_profile_name not in available_profiles:
+                return {
+                    "status": "error",
+                    "error": f"LLM profile '{llm_profile_name}' not available for this agent. Available profiles: {available_profiles}"
+                }
+
+            # Validate profile exists in system config
+            if llm_profile_name not in self.system_config.llm_system.profiles:
+                return {
+                    "status": "error",
+                    "error": f"LLM profile '{llm_profile_name}' not found in system configuration. Available system profiles: {list(self.system_config.llm_system.profiles.keys())}"
+                }
+
+            try:
+                # Create temporary agent config with the requested profile
+                temp_agent_config = AgentConfig(llm_profile=llm_profile_name)
+                llm_kwargs = resolve_llm_config_for_agent(self.system_config, temp_agent_config)
+
+                # Get SSL verify setting
+                ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
+
+                # Create LLM client with the profile
+                llm_override = make_llm(
+                    llm_kwargs["provider"],
+                    llm_kwargs["model"],
+                    llm_kwargs["openai_api_key"],
+                    llm_kwargs["ollama_url"],
+                    llm_kwargs["context_window"],
+                    llm_kwargs["ollama_mode"],
+                    llm_kwargs["request_timeout"],
+                    ssl_verify=ssl_verify,
+                    httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
+                    capabilities=llm_kwargs.get("capabilities"),
+                )
+
+                # Create profile info for logging
+                profile = self.system_config.llm_system.profiles[llm_profile_name]
+                model_ref = profile.model_ref
+                model_config = self.system_config.llm_system.models[model_ref]
+                llm_profile_info = f"{llm_profile_name}:{model_config.provider}/{model_config.model}"
+
+                logger.info(f"Using LLM profile override: {llm_profile_info}")
+
+                if status:
+                    await status.progress(f"Using LLM profile: {llm_profile_info}")
+
+            except Exception as e:
+                logger.error(f"Failed to create LLM override for profile '{llm_profile_name}': {e}")
+                return {
+                    "status": "error",
+                    "error": f"Failed to initialize LLM profile '{llm_profile_name}': {str(e)}"
+                }
+
         try:
             if status:
                 await status.progress(f"Starting basic agent task: {task[:100]}...")
-            
+
             # Execute the task and collect results
             result_text = ""
             step_count = 0
             tool_calls = []
-            
-            async for event in self.run_events(task, request_id=request_id):
+
+            async for event in self.run_events(
+                task,
+                request_id=request_id,
+                llm_override=llm_override,
+                llm_profile_info_override=llm_profile_info
+            ):
                 event_type = event.get("type")
-                
+
                 if event_type == "start":
                     step_count += 1
                     if status:
                         await status.progress("Starting analysis...")
-                        
+
                 elif event_type == "mcp_call":
                     step_count += 1
                     tool_name = event.get("server", "unknown")
                     action = event.get("action", "unknown")
                     if status:
                         await status.progress(f"Step {step_count} - Using {tool_name} ({action})")
-                    
+
                     # Store tool calls for result summary
                     filtered_params = {k: v for k, v in event.get("params", {}).items() if not k.startswith('_')}
                     tool_calls.append({
@@ -71,18 +151,18 @@ class BasicAgent(SchemaBasedAgent):
                         "action": action,
                         "params": filtered_params
                     })
-                        
+
                 elif event_type == "mcp_result":
                     tool_name = event.get("server", "unknown")
                     if status:
                         await status.progress(f"Processing results from {tool_name}...")
-                        
+
                 elif event_type == "final":
                     # This is where the actual result is!
                     result_text = event.get("summary", "") or event.get("message", "")
                     if status:
                         await status.progress("Finalizing results...")
-                        
+
                 elif event_type == "error":
                     error_msg = event.get("message", "Unknown error")
                     if status:
@@ -92,10 +172,10 @@ class BasicAgent(SchemaBasedAgent):
                         "error": error_msg,
                         "request_id": request_id
                     }
-            
+
             if status:
                 await status.progress("Task completed successfully")
-            
+
             # Return the actual result from the final event
             return {
                 "status": "success",
@@ -104,7 +184,7 @@ class BasicAgent(SchemaBasedAgent):
                 "steps": step_count,
                 "request_id": request_id
             }
-            
+
         except Exception as e:
             if status:
                 await status.error(f"Task execution failed: {str(e)}")
@@ -114,10 +194,10 @@ class BasicAgent(SchemaBasedAgent):
                 "error": str(e),
                 "request_id": request_id
             }
-    
+
     async def list_available_tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """List all available tools for this agent.
-        
+
         This method is automatically called for the "basic_agent_list_available_tools" tool.
         """
         return await self._list_usable_tools_with_details(params)
