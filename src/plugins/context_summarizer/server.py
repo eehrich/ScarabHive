@@ -1,0 +1,330 @@
+"""Context Summarizer MCP Server - Manual context summarization tool with hook support.
+
+Unified implementation combining MCP tools and hook functionality.
+Allows LLMs to manually trigger context summarization and automatically
+summarizes when context exceeds configured thresholds.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Any, TYPE_CHECKING, Dict, List
+
+from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.llm.token_utils import estimate_token_count
+from agent_system.llm.models import ChatMessage
+from agent_system.mcp.status import status_bus, StatusScope
+
+if TYPE_CHECKING:
+    from agent_system.config import AgentSystemConfig, MCPConfig
+
+logger = logging.getLogger(__name__)
+
+
+class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
+    """Unified MCP server and hook for context summarization.
+
+    Provides MCP tools:
+    - summarize: Manually trigger summarization of current conversation
+    - check_stats: Check current context statistics (token count, message count)
+
+    Implements pre_llm_call hook for automatic summarization when context
+    exceeds configured thresholds.
+    """
+
+    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+        """Initialize ContextSummarizerServer.
+
+        Args:
+            name: Plugin instance name
+            system_config: System-wide configuration
+            mcp_config: Plugin-specific configuration
+        """
+        # Initialize MCP server
+        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+
+        # Initialize hook
+        hook_config = getattr(mcp_config, 'hook_config', {})
+        PluginHook.__init__(self, name, config=hook_config)
+
+        # Load configuration
+        config_dict = mcp_config.config if hasattr(mcp_config, 'config') else {}
+        self.trigger_percentage = float(config_dict.get('summarization_trigger_percentage', 0.60))
+        self.chunk_size = int(config_dict.get('summarization_chunk_size', 10))
+        self.preserve_recent = int(config_dict.get('preserve_recent_count', 10))
+        self.preserve_system = bool(config_dict.get('preserve_system_messages', True))
+        self.llm_profile = str(config_dict.get('llm_profile', 'fast'))
+        self.prompt_template = str(config_dict.get('summary_prompt_template', ''))
+        self.min_reduction = float(config_dict.get('min_summary_reduction', 0.3))
+        self.store_metadata = bool(config_dict.get('store_original_metadata', True))
+        self.marker_format = str(config_dict.get('summary_marker_format',
+                                        '[Summary of {count} messages from {start_time} to {end_time}]'))
+        self.max_preview_length = int(config_dict.get('max_message_preview_length', 5000))
+
+        # Web UI history tracking
+        self.summarization_history: List[Dict[str, Any]] = []
+
+        # Import and instantiate the actual hook implementation
+        from pathlib import Path
+        from plugins.context_summarizer.hooks import ContextSummarizerPlugin
+
+        plugin_dir = Path(__file__).parent
+        self._hooks_impl = ContextSummarizerPlugin(
+            plugin_dir,
+            summarization_history=self.summarization_history
+        )
+
+        logger.info(
+            f"ContextSummarizerServer initialized: trigger={self.trigger_percentage:.0%} of context window, "
+            f"chunk_size={self.chunk_size}, preserve_recent={self.preserve_recent}, "
+            f"llm_profile={self.llm_profile}"
+        )
+
+    # =========================================================================
+    # MCP Tools Interface
+    # =========================================================================
+
+    async def list_tools(self) -> list:
+        """List available MCP tools from schema.
+
+        Returns tools defined in schema.yaml for this plugin.
+        """
+        return await super().list_tools()
+
+    # =========================================================================
+    # Hook Interface - delegate to hooks implementation
+    # =========================================================================
+
+    async def on_pre_llm_call(self, context: HookContext) -> HookResult:
+        """Hook for automatic context summarization before LLM calls.
+
+        Delegates to ContextSummarizerPlugin for actual implementation.
+        This allows the server to implement both MCP and Hook interfaces
+        while keeping the complex hook logic in a separate file.
+
+        Args:
+            context: Hook context with messages and metadata
+
+        Returns:
+            HookResult with summarized messages or original context
+        """
+        return await self._hooks_impl.summarize_context(context)
+
+    async def summarize(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Manually trigger context summarization.
+
+        Tool name: {{ name }}_summarize → e.g., 'context_summarizer_summarize'
+
+        Args:
+            params: {
+                "reason": Optional reason for summarization (for logging),
+                "chunk_size": Optional override for chunk size,
+                "preserve_recent": Optional override for recent message count
+            }
+
+        Returns:
+            {
+                "status": "success" | "error",
+                "original_count": int,
+                "summarized_count": int,
+                "tokens_saved": int,
+                "summary_preview": str
+            }
+        """
+        status = params.get("_status")
+
+        try:
+            # Get session info from params (injected by ToolExecutionManager)
+            session_id = params.get("_session_id")
+            agent = params.get("_agent")
+
+            if not session_id or not agent:
+                error_msg = "Session context not available (session_id or agent missing)"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            # Get current messages from agent's session
+            messages = agent._session_tracker.get_messages(session_id)
+            if not messages:
+                if status:
+                    await status.end("No messages to summarize")
+                return {
+                    "status": "success",
+                    "original_count": 0,
+                    "summarized_count": 0,
+                    "tokens_saved": 0,
+                    "message": "No messages in conversation"
+                }
+
+            original_count = len(messages)
+            reason = params.get("reason", "manual_trigger")
+
+            if status:
+                await status.progress(f"Summarizing {original_count} messages...")
+
+            # Create hook context
+            from agent_system.hooks import HookContext, HookType
+
+            # Apply optional overrides
+            old_chunk = None
+            old_preserve = None
+
+            if "chunk_size" in params:
+                old_chunk = self._hooks_impl.chunk_size
+                self._hooks_impl.chunk_size = int(params["chunk_size"])
+
+            if "preserve_recent" in params:
+                old_preserve = self._hooks_impl.preserve_recent
+                self._hooks_impl.preserve_recent = int(params["preserve_recent"])
+
+            hook_context = HookContext(
+                hook_type=HookType.PRE_LLM_CALL,
+                request_id=session_id,
+                session_id=session_id,
+                messages=messages,
+                agent=agent,
+                llm=agent.llm if hasattr(agent, 'llm') else None,
+                metadata={"manual_trigger": True, "reason": reason}
+            )
+
+            # Execute summarization via hook implementation
+            result = await self._hooks_impl.summarize_context(hook_context)
+
+            # Restore overrides
+            if old_chunk is not None:
+                self._hooks_impl.chunk_size = old_chunk
+            if old_preserve is not None:
+                self._hooks_impl.preserve_recent = old_preserve
+
+            if not result.success:
+                error_msg = f"Summarization failed: {result.metadata.get('error', 'unknown')}"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            # Update agent's session with summarized messages
+            if result.modified and result.context and result.context.messages:
+                agent._session_tracker.set_messages(session_id, result.context.messages)
+
+            summarized_count = len(result.context.messages) if result.context else original_count
+
+            # Calculate token savings
+            original_tokens = estimate_token_count(messages)
+            new_tokens = estimate_token_count(result.context.messages) if result.context else original_tokens
+            tokens_saved = original_tokens - new_tokens
+
+            # Get summary preview (first summary message)
+            summary_preview = ""
+            if result.context and result.context.messages:
+                for msg in result.context.messages:
+                    msg_dict = msg.model_dump() if hasattr(msg, 'model_dump') else msg
+                    if msg_dict.get("role") == "user" and "[Summary of" in str(msg_dict.get("content", "")):
+                        summary_preview = str(msg_dict.get("content", ""))[:200]
+                        break
+
+            if status:
+                await status.end(
+                    f"Summarized {original_count} → {summarized_count} messages "
+                    f"(saved ~{tokens_saved} tokens)"
+                )
+
+            return {
+                "status": "success",
+                "original_count": original_count,
+                "summarized_count": summarized_count,
+                "tokens_saved": tokens_saved,
+                "summary_preview": summary_preview,
+                "reason": reason,
+                "modified": result.modified
+            }
+
+        except Exception as e:
+            logger.exception(f"Error in manual summarization: {e}")
+            if status:
+                await status.error(f"Summarization error: {str(e)}")
+            return {"status": "error", "error": str(e)}
+
+    async def check_stats(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Check current conversation context statistics.
+
+        Tool name: {{ name }}_check_stats → e.g., 'context_summarizer_check_stats'
+
+        Returns:
+            {
+                "status": "success",
+                "message_count": int,
+                "total_tokens": int,
+                "context_window": int,
+                "utilization_percentage": float,
+                "recommendation": "summarize" | "ok"
+            }
+        """
+        status = params.get("_status")
+
+        try:
+            # Get session info
+            session_id = params.get("_session_id")
+            agent = params.get("_agent")
+
+            if not session_id or not agent:
+                error_msg = "Session context not available"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
+
+            # Get current messages
+            messages = agent._session_tracker.get_messages(session_id)
+            message_count = len(messages) if messages else 0
+
+            if message_count == 0:
+                if status:
+                    await status.end("No messages in conversation")
+                return {
+                    "status": "success",
+                    "message_count": 0,
+                    "total_tokens": 0,
+                    "context_window": 0,
+                    "utilization_percentage": 0.0,
+                    "recommendation": "ok"
+                }
+
+            # Calculate tokens
+            total_tokens = estimate_token_count(messages)
+
+            # Get context window
+            context_window = 0
+            if hasattr(agent, 'llm') and agent.llm:
+                context_window = getattr(agent.llm.model_config, 'context_window', 0)
+
+            # Calculate utilization
+            utilization = (total_tokens / context_window * 100) if context_window > 0 else 0
+
+            # Recommendation based on trigger threshold
+            trigger_threshold = self.trigger_percentage * 100
+            recommendation = "summarize" if utilization >= trigger_threshold else "ok"
+
+            if status:
+                await status.end(
+                    f"Context: {message_count} messages, ~{total_tokens} tokens "
+                    f"({utilization:.1f}% of {context_window})"
+                )
+
+            return {
+                "status": "success",
+                "message_count": message_count,
+                "total_tokens": total_tokens,
+                "context_window": context_window,
+                "utilization_percentage": round(utilization, 1),
+                "trigger_threshold": round(trigger_threshold, 1),
+                "recommendation": recommendation
+            }
+
+        except Exception as e:
+            logger.exception(f"Error checking context stats: {e}")
+            if status:
+                await status.error(f"Stats error: {str(e)}")
+            return {"status": "error", "error": str(e)}

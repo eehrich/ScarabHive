@@ -1,83 +1,99 @@
-"""Context Summarizer Plugin - Factory and exports.
+"""Context Summarizer Plugin Factory.
 
-Hybrid plugin: Schema-based hooks + Web UI for viewing summarization history.
-Hook implementations are in hooks.py, web endpoints in web_endpoints.py.
+Hybrid MCP+Hook+Web plugin:
+- MCP tools via ContextSummarizerServer
+- Hooks via ContextSummarizerServer.on_pre_llm_call
+- Web UI via ContextSummarizerWebFactory
+
+This module provides the PLUGIN_FACTORY function required by the plugin system.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
-from typing import List, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
-from .hooks import ContextSummarizerPlugin
-from .web_endpoints import ContextSummarizerWebFactory
+from fastapi import APIRouter
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.hooks import HookContext, HookResult
+
+from plugins.context_summarizer.server import ContextSummarizerServer
+from plugins.context_summarizer.web_endpoints import ContextSummarizerWebFactory
 
 
-class ContextSummarizerHybridPlugin(SchemaBasedPluginWebInterface):
-    """Hybrid plugin that provides both hooks and web capabilities."""
-    
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
-        """Initialize with standard hybrid plugin signature."""
-        # Initialize base class (loads schema automatically)
-        super().__init__(name, system_config, mcp_config)
-        
-        plugin_dir = Path(__file__).parent
-        
-        # Shared history list for both hooks and web UI
-        self._summarization_history: List[Dict[str, Any]] = []
-        
-        # Create hooks plugin with history tracking
-        self.hooks_plugin = ContextSummarizerPlugin(plugin_dir, summarization_history=self._summarization_history)
-        
-        # Create web UI factory with plugin name for dynamic routing
+class ContextSummarizerHybridPlugin:
+    """
+    Hybrid plugin combining MCP tools, hooks, and web interface.
+
+    - Delegates MCP tools to ContextSummarizerServer
+    - Delegates hooks to server.on_pre_llm_call
+    - Provides web router via ContextSummarizerWebFactory
+    """
+
+    def __init__(
+        self,
+        name: str,
+        system_config: "AgentSystemConfig",
+        mcp_config: "MCPConfig"
+    ):
+        self.name = name
+        self.system_config = system_config
+        self.mcp_config = mcp_config
+
+        # Create MCP server instance (provides tools + hooks)
+        self.server = ContextSummarizerServer(name, system_config, mcp_config)
+
+        # Create web factory (provides REST API + HTML)
         self.web_factory = ContextSummarizerWebFactory(
-            self._summarization_history,
-            name=name,
-            plugin=self
+            self.server,
+            self.server.summarization_history
         )
-    
-    # Hook interface - delegate to hooks plugin
-    def get_hooks(self):
-        """Return hooks from the hooks plugin."""
-        return self.hooks_plugin.get_hooks()
-    
-    async def execute_hook(self, hook_type, context):
-        """Execute hook - delegate to hooks plugin."""
-        return await self.hooks_plugin.execute_hook(hook_type, context)
-    
-    # Web interface - delegate to web factory
-    def get_web_router(self):
-        """Return FastAPI router for web UI."""
+
+    # =========================================================================
+    # MCP Interface (delegate to server)
+    # =========================================================================
+
+    async def call(self, tool: str | None = None, params: dict | None = None, *args, **kwargs) -> Any:
+        """Legacy MCP call interface (delegate to server)."""
+        return await self.server.call(tool, params, *args, **kwargs)
+
+    async def call_with_status(self, tool: str, params: dict[str, Any]) -> Any:
+        """Call with status context (delegate to server)."""
+        return await self.server.call_with_status(tool, params)
+
+    async def list_tools(self) -> list[dict]:
+        """List available tools (delegate to server)."""
+        return await self.server.list_tools()
+
+    def get_schema_data(self) -> dict[str, Any]:
+        """Get schema data (delegate to server)."""
+        return self.server.get_schema_data()    # =========================================================================
+    # Hook Interface (delegate to server)
+    # =========================================================================
+
+    async def on_pre_llm_call(self, context: "HookContext") -> "HookResult":
+        """Pre-LLM hook for automatic context summarization (delegate to server)."""
+        return await self.server.on_pre_llm_call(context)
+
+    # =========================================================================
+    # Web Interface (delegate to web_factory)
+    # =========================================================================
+
+    def get_web_router(self) -> APIRouter | None:
+        """Get FastAPI router for web endpoints."""
         return self.web_factory.get_web_router()
 
-    def get_static_assets(self):
-        """Context summarizer does not expose static assets."""
-        return None
 
-    def get_panels(self):
-        """Return panel configuration derived from schema."""
-        schema = self.get_schema_data()
-        web_ui = schema.get("web_ui", {}) if schema else {}
-        panel = web_ui.get("panel", {})
+def PLUGIN_FACTORY(name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig") -> ContextSummarizerHybridPlugin:
+    """Factory function for creating ContextSummarizerHybridPlugin instances.
 
-        if not panel.get("enabled", False):
-            return []
+    Args:
+        name: Plugin instance name
+        system_config: System-wide configuration
+        mcp_config: Plugin-specific MCP configuration
 
-        panel_id = panel.get("panel_id", f"{self.name}_panel")
-        endpoint = panel.get("endpoint", f"/plugins/{self.name}/panel")
-
-        return [
-            {
-                "id": panel_id,
-                "title": panel.get("title", "Context Summarizer"),
-                "url": endpoint,
-                "icon": panel.get("icon", "📝"),
-                "category": panel.get("category", "monitoring"),
-            }
-        ]
-    
-
-PLUGIN_FACTORY = ContextSummarizerHybridPlugin
+    Returns:
+        ContextSummarizerHybridPlugin: Configured hybrid plugin instance
+    """
+    return ContextSummarizerHybridPlugin(name, system_config, mcp_config)
