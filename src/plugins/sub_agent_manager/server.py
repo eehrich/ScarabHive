@@ -304,7 +304,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 agent._session_tracker.set_session_metadata(sub_session_id, {
                     "user_id": user_id,
                     "agent_name": agent_name,
-                    "llm_profile": getattr(agent.agent_config, 'llm_profile', 'normal')
+                    "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
                 })
                 logger.debug(f"Set session metadata for sub-agent {sub_session_id}: user_id={user_id}")
 
@@ -338,7 +338,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Save session with messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
                 # Get actual LLM profile from agent configuration
-                llm_profile = agent.agent_config.llm_profile
+                llm_profile = agent.agent_config.default_llm_profile
                 await session_service.save_session(
                     agent=agent,
                     user_id=user_id,
@@ -441,7 +441,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 agent._session_tracker.set_session_metadata(instance_id, {
                     "user_id": user_id,
                     "agent_name": agent_type,
-                    "llm_profile": getattr(agent.agent_config, 'llm_profile', 'normal')
+                    "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
                 })
                 logger.debug(f"Set session metadata for continued sub-agent {instance_id}: user_id={user_id}")
 
@@ -471,7 +471,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Save session with updated messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
                 # Get actual LLM profile from agent configuration
-                llm_profile = agent.agent_config.llm_profile
+                llm_profile = agent.agent_config.default_llm_profile
                 await session_service.save_session(
                     agent=agent,
                     user_id=user_id,

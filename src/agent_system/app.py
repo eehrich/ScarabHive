@@ -960,7 +960,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # CRITICAL: Always set/update session metadata (even for existing sessions)
         # This ensures user_id is available for tool execution AND respects llm_profile overrides
         if session_id:
-            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
             selected_agent._session_tracker.set_session_metadata(session_id, {
                 "user_id": user_id,
                 "agent_name": selected_agent.name,
@@ -1000,7 +1000,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 # Save session after execution (if session_id was provided or created)
                 if session_id and _session_service:
-                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                    effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                     was_new_session = not session_exists
                     await _session_service.save_session(
                         selected_agent,
@@ -1079,7 +1079,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # This ensures user_id is available for tool execution (e.g., sub-agent manager)
                         if was_new_session:
                             # Use override llm_profile if provided, otherwise agent's default
-                            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                             selected_agent._session_tracker.set_session_metadata(actual_session_id, {
                                 "user_id": user_id,
                                 "agent_name": selected_agent.name,
@@ -1106,7 +1106,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # Save session after completion
                     if _session_service and actual_session_id:
                         # Use actual agent name and effective llm_profile (respecting overrides)
-                        effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                         await _session_service.save_session(
                             selected_agent,
                             user_id,
@@ -1199,7 +1199,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # load_and_restore_session sets metadata from disk, but we need to override with current request's llm_profile
         if session_id:
             # Use override llm_profile if provided, otherwise agent's default
-            effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
             selected_agent._session_tracker.set_session_metadata(session_id, {
                 "user_id": user_id,
                 "agent_name": selected_agent.name,
@@ -1295,7 +1295,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
                 if actual_session_id and _session_service:
                     # Use actual agent name and effective llm_profile (respecting overrides)
-                    effective_llm_profile = llm_profile or selected_agent.agent_config.llm_profile
+                    effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                     await _session_service.save_session(
                         selected_agent,
                         user_id,

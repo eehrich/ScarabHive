@@ -54,7 +54,7 @@ async def initialize_system(config):
     """Initialize the MCP registry and load plugins using InitializationService."""
     # Use centralized initialization service
     from .services.initialization_service import InitializationService
-    
+
     try:
         init_service = InitializationService(config)
         registry, session_service = init_service.initialize_for_cli()
@@ -136,7 +136,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
             storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
             session_manager = SessionManager(storage_path=str(storage_path))
-            
+
             sessions = await session_manager.list_sessions(session_user)
 
             if not sessions:
@@ -254,7 +254,7 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
         # Set session metadata for tool execution context (AFTER LLM override logic)
         # This ensures user_id is available when tools are called
-        effective_llm_profile = llm_profile or agent.agent_config.llm_profile
+        effective_llm_profile = llm_profile or agent.agent_config.default_llm_profile
         agent._session_tracker.set_session_metadata(actual_session_id, {
             "user_id": session_user,
             "agent_name": agent.name,

@@ -57,10 +57,10 @@ async def create_session(
 ):
     """Create a new conversation session (authenticated or anonymous)."""
     # session_manager injected via dependency
-    
+
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
-    
+
     try:
         session = await session_manager.create_session(
             user_id=user_id,
@@ -69,9 +69,9 @@ async def create_session(
             llm_profile=request.llm_profile,
             session_id=request.session_id
         )
-        
+
         return {"session_id": session["session_id"], "status": "created"}
-    
+
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except Exception as e:
@@ -86,13 +86,13 @@ async def list_sessions(
 ):
     """List all sessions for the current user (or anonymous if not authenticated)."""
     # session_manager injected via dependency
-    
+
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
-    
+
     try:
         sessions = await session_manager.list_sessions(user_id)
-        
+
         # Transform to response models
         return [
             SessionResponse(
@@ -100,7 +100,7 @@ async def list_sessions(
                 user_id=s["user_id"],
                 title=s["title"],
                 agent_name=s["agent_name"],
-                llm_profile=s["llm_profile"],
+                llm_profile=s["llm_profile"][0] if isinstance(s["llm_profile"], list) else s["llm_profile"],
                 created_at=s["created_at"],
                 updated_at=s["updated_at"],
                 message_count=s.get("message_count", 0),
@@ -109,7 +109,7 @@ async def list_sessions(
             )
             for s in sessions
         ]
-    
+
     except Exception as e:
         logger.exception("Failed to list sessions: %s", e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -126,18 +126,18 @@ async def get_session(
     """Get session with messages (authenticated or anonymous)."""
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
-    
+
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-        
+
         session = await session_manager.load_session(user_id, session_id)
-        
+
         # Format assistant messages to HTML for frontend display
         if session.get("messages"):
             # Get the agent that was used in this session
             session_agent_name = session.get("agent_name")
             formatting_agent = None
-            
+
             # Try to get the specific agent from the session
             if session_agent_name and mcp_registry:
                 try:
@@ -151,11 +151,11 @@ async def get_session(
                     logger.warning(f"Session agent '{session_agent_name}' not found in registry, using default")
                 except Exception as e:
                     logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, using default")
-            
+
             # Fallback to default agent if session agent not available
             if not formatting_agent:
                 formatting_agent = default_agent
-            
+
             # Format messages using the correct agent's hooks
             if formatting_agent:
                 try:
@@ -163,7 +163,7 @@ async def get_session(
                     # The session dict is loaded from storage and modifications would persist on next load
                     import copy
                     formatted_messages = copy.deepcopy(session["messages"])
-                    
+
                     # Format each assistant message using agent's hooks
                     for msg in formatted_messages:
                         if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
@@ -182,16 +182,16 @@ async def get_session(
                                     logger.warning(f"Failed to format message in session {session_id}: {format_error}")
                                     # Keep original content if formatting fails
                                     msg["content_format"] = "text"
-                    
+
                     # Replace session messages with formatted copy (only affects this HTTP response)
                     session["messages"] = formatted_messages
-                    
+
                 except Exception as hook_error:
                     logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
                     # Return session without formatting if hook access fails
-        
+
         return session
-    
+
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
     except SessionPermissionError:
@@ -211,18 +211,18 @@ async def get_session_messages(
 ):
     """Get messages from a session (authenticated only)."""
     # session_manager, default_agent, mcp_registry injected via dependency
-    
+
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-        
+
         session = await session_manager.load_session(current_user.username, session_id)
-        
+
         # Format assistant messages to HTML for frontend display using the CORRECT agent from session
         if session.get("messages"):
             # Get the agent that was used in this session
             session_agent_name = session.get("agent_name")
             formatting_agent = None
-            
+
             # Try to get the specific agent from the session
             if session_agent_name and mcp_registry:
                 try:
@@ -236,11 +236,11 @@ async def get_session_messages(
                     logger.warning(f"Session agent '{session_agent_name}' not found in registry, using default")
                 except Exception as e:
                     logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, using default")
-            
+
             # Fallback to default agent if session agent not available
             if not formatting_agent:
                 formatting_agent = default_agent
-            
+
             # Format messages using the correct agent's hooks
             if formatting_agent:
                 try:
@@ -248,7 +248,7 @@ async def get_session_messages(
                     # The session dict is loaded from storage and modifications would persist on next load
                     import copy
                     formatted_messages = copy.deepcopy(session["messages"])
-                    
+
                     # Format each assistant message using agent's hooks
                     for msg in formatted_messages:
                         if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
@@ -267,16 +267,16 @@ async def get_session_messages(
                                     logger.warning(f"Failed to format message in session {session_id}: {format_error}")
                                     # Keep original content if formatting fails
                                     msg["content_format"] = "text"
-                    
+
                     # Replace session messages with formatted copy (only affects this HTTP response)
                     session["messages"] = formatted_messages
-                    
+
                 except Exception as hook_error:
                     logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
                     # Return session without formatting if hook access fails
-        
+
         return session
-    
+
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
     except SessionPermissionError:
@@ -295,13 +295,13 @@ async def update_session(
 ):
     """Update session metadata (title, agent, LLM profile, or tags)."""
     # session_manager injected via dependency
-    
+
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
-    
+
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-        
+
         # Update title if provided
         if request.title is not None:
             await session_manager.rename_session(
@@ -309,23 +309,23 @@ async def update_session(
                 session_id,
                 request.title
             )
-        
+
         # Update other metadata if provided
         metadata_updates = {}
         if request.tags is not None:
             metadata_updates["tags"] = request.tags
         if request.metadata is not None:
             metadata_updates.update(request.metadata)
-        
+
         if metadata_updates:
             await session_manager.update_session_metadata(
                 user_id,
                 session_id,
                 metadata_updates
             )
-        
+
         return {"status": "updated", "session_id": session_id}
-    
+
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
     except SessionPermissionError:
@@ -344,21 +344,21 @@ async def delete_session(
 ):
     """Delete a session (with optional backup) - works for authenticated and anonymous users."""
     # session_manager injected via dependency
-    
+
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
-    
+
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-        
+
         await session_manager.delete_session(
             user_id,
             session_id,
             create_backup=create_backup
         )
-        
+
         return {"status": "deleted", "session_id": session_id}
-    
+
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
     except SessionPermissionError:
@@ -376,12 +376,12 @@ async def restore_session(
 ):
     """Restore a session to the agent for continuation."""
     # session_manager injected via dependency
-    
+
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
-        
+
         session = await session_manager.load_session(current_user.username, session_id)
-        
+
         # Return session data for frontend to use in /events call
         return {
             "status": "ready",
@@ -389,7 +389,7 @@ async def restore_session(
             "message_count": len(session.get("messages", [])),
             "title": session.get("title")
         }
-    
+
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
     except SessionPermissionError:

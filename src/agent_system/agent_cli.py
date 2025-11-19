@@ -1211,15 +1211,15 @@ def main() -> None:
     registry = MCPRegistry()
     vprint("[cli] bootstrapping servers...")
     logger.info("Bootstrapping servers")
-    
+
     # Use InitializationService for consistent bootstrap + injection
     from .services.initialization_service import InitializationService
     init_service = InitializationService(config)
     registry, session_service = init_service.initialize_for_cli()
-    
+
     # Keep references to session_manager for CLI use
     session_manager = init_service.session_manager
-    
+
     vprint(f"[cli] servers registered: {', '.join(registry.list())}")
     logger.info("Servers registered: %s", ", ".join(registry.list()))
 
@@ -1720,7 +1720,7 @@ def main() -> None:
     # Set session metadata for tool execution context (enables _user_id, _agent injection)
     if hasattr(agent, '_session_tracker'):
         # Determine effective LLM profile (override or agent default)
-        effective_llm_profile = llm_profile_override or agent.agent_config.llm_profile
+        effective_llm_profile = llm_profile_override or agent.agent_config.default_llm_profile
 
         agent._session_tracker.set_session_metadata(actual_session_id, {
             "user_id": session_user,
