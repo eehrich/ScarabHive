@@ -332,10 +332,10 @@ class TestTokenEstimationAccuracy:
         content = "This is a test message for consistency"
         msg1 = ChatMessage(role="user", content=content)
         msg2 = ChatMessage(role="assistant", content=content)
-        
+
         tokens1 = estimate_token_count([msg1])
         tokens2 = estimate_token_count([msg2])
-        
+
         # Should be identical since same content and overhead
         assert tokens1 == tokens2
 
@@ -344,11 +344,11 @@ class TestTokenEstimationAccuracy:
         short = ChatMessage(role="user", content="Hello")
         medium = ChatMessage(role="user", content="Hello world from the system")
         long = ChatMessage(role="user", content="Hello world from the system with many more words")
-        
+
         short_tokens = estimate_token_count([short])
         medium_tokens = estimate_token_count([medium])
         long_tokens = estimate_token_count([long])
-        
+
         assert short_tokens < medium_tokens < long_tokens
 
     def test_estimation_reasonable_ratios(self):
@@ -357,7 +357,7 @@ class TestTokenEstimationAccuracy:
         natural = "The quick brown fox jumps over the lazy dog"  # 9 words
         msg = ChatMessage(role="user", content=natural)
         tokens = estimate_token_count([msg])
-        
+
         # 9 words * 1.3 = 11.7 -> 11 + 4 overhead = 15
         assert tokens == 15
 
@@ -365,13 +365,13 @@ class TestTokenEstimationAccuracy:
         """Test that code is estimated higher than text."""
         text = "hello world test message here"  # 5 words
         code = "def function(): return value;"  # 4 words but code
-        
+
         text_msg = ChatMessage(role="user", content=text)
         code_msg = ChatMessage(role="user", content=code)
-        
+
         text_tokens = estimate_token_count([text_msg])
         code_tokens = estimate_token_count([code_msg])
-        
+
         # Code should have more tokens per word
         # text: 5 * 0.75 = 3.75 -> 3 + 4 = 7
         # code: 4 * 1.2 = 4.8 -> 4 + 4 = 8

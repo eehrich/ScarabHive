@@ -24,26 +24,26 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     tmp_repo.mkdir()
     # repo_root is now tests/cli, need to go up two levels to project root
     repo_root = Path(__file__).resolve().parents[2]
-    
+
     # Copy config files to temp directory
     tmp_config_dir = tmp_repo / "config"
     tmp_config_dir.mkdir()
-    
+
     # Copy agent config (main config file that CLI loads by default)
     agent_orig = repo_root / "config" / "config.yaml"
     agent_copy = tmp_config_dir / "config.yaml"
     agent_copy.write_text(agent_orig.read_text(encoding="utf-8"), encoding="utf-8")
-    
+
     # Copy LLM config (included by agent.yaml)
     llm_orig = repo_root / "config" / "llm.yaml"
     llm_copy = tmp_config_dir / "llm.yaml"
     llm_copy.write_text(llm_orig.read_text(encoding="utf-8"), encoding="utf-8")
-    
+
     # Copy MCP servers config (new structure - contains external servers configuration)
     mcp_servers_orig = repo_root / "config" / "mcp_servers.yaml"
     mcp_servers_copy = tmp_config_dir / "mcp_servers.yaml"
     mcp_servers_copy.write_text(mcp_servers_orig.read_text(encoding="utf-8"), encoding="utf-8")
-    
+
     # Copy MCP server mode config
     mcp_server_mode_orig = repo_root / "config" / "mcp_server_mode.yaml"
     mcp_server_mode_copy = tmp_config_dir / "mcp_server_mode.yaml"
@@ -104,7 +104,7 @@ def test_allow_block_updates(tmp_path, monkeypatch):
         # Add small delay to ensure file write completes (atomic_write might buffer)
         import time
         time.sleep(0.01)
-        
+
         data = _yaml.safe_load(target.read_text(encoding='utf-8'))
         servers_block = data.get('external_servers', {})
         remote = servers_block.get('remote_servers', {}) or {}
@@ -115,7 +115,7 @@ def test_allow_block_updates(tmp_path, monkeypatch):
 
         # Run block command and verify result
         asyncio.run(_block_server_tool(tool_service, 'localhost', 'hello'))
-        
+
         # Add small delay to ensure file write completes
         time.sleep(0.01)
 

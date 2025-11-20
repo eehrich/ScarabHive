@@ -6,17 +6,13 @@ summarizes when context exceeds configured thresholds.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Dict, List
 
 from agent_system.mcp.schema_based import SchemaBasedMCPServer
 from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
-from agent_system.llm.models import ChatMessage
-from agent_system.mcp.status import status_bus, StatusScope
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, MCPConfig
@@ -68,7 +64,6 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
         self.summarization_history: List[Dict[str, Any]] = []
 
         # Import and instantiate the actual hook implementation
-        from pathlib import Path
         from plugins.context_summarizer.hooks import ContextSummarizerPlugin
 
         plugin_dir = Path(__file__).parent
