@@ -71,6 +71,19 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             plugin_dir,
             summarization_history=self.summarization_history
         )
+        
+        # Override hook config with server config (from plugin_configs.yaml)
+        # This ensures both MCP tools and hooks use the same configuration
+        self._hooks_impl.trigger_percentage = self.trigger_percentage
+        self._hooks_impl.chunk_size = self.chunk_size
+        self._hooks_impl.preserve_recent = self.preserve_recent
+        self._hooks_impl.preserve_system = self.preserve_system
+        self._hooks_impl.llm_profile = self.llm_profile
+        self._hooks_impl.prompt_template = self.prompt_template
+        self._hooks_impl.min_reduction = self.min_reduction
+        self._hooks_impl.store_metadata = self.store_metadata
+        self._hooks_impl.marker_format = self.marker_format
+        self._hooks_impl.max_preview_length = self.max_preview_length
 
         logger.info(
             f"ContextSummarizerServer initialized: trigger={self.trigger_percentage:.0%} of context window, "
