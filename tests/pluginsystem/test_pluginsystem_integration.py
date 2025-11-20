@@ -40,7 +40,8 @@ def temp_workspace():
 
         # Copy our actual plugins for testing
         import shutil
-        source_plugins = Path(__file__).parent.parent / "src" / "plugins"
+        # After test reorganization: tests/pluginsystem/test_*.py -> need parent.parent.parent for project root
+        source_plugins = Path(__file__).parent.parent.parent / "src" / "plugins"
         if source_plugins.exists():
             for plugin_dir in source_plugins.iterdir():
                 if plugin_dir.is_dir():
@@ -200,15 +201,26 @@ class TestPluginDiscoveryIntegration:
             assert plugins[plugin_name] is not None, f"Plugin {plugin_name} factory is None"
 
     def test_plugin_metadata_loading(self, temp_workspace):
-        """Test that plugin metadata is loaded correctly."""
+        """Test that plugin metadata is loaded correctly for plugins that have plugin.yaml."""
         from agent_system.plugins import discover_all_plugins
 
         plugins = discover_all_plugins([temp_workspace / "plugins"])
 
-        # Check that metadata is attached
+        # Only check metadata for plugins that have plugin.yaml file
+        # Some plugins (e.g., MCP servers) may only have schema.yaml
+        plugins_with_metadata = {}
         for plugin_name, factory in plugins.items():
+            plugin_dir = temp_workspace / "plugins" / plugin_name
+            if (plugin_dir / "plugin.yaml").exists():
+                plugins_with_metadata[plugin_name] = factory
+
+        # Ensure at least some plugins have metadata
+        assert len(plugins_with_metadata) > 0, "No plugins with plugin.yaml found"
+
+        # Check that metadata is properly attached for plugins with plugin.yaml
+        for plugin_name, factory in plugins_with_metadata.items():
             metadata = getattr(factory, "_plugin_metadata", None)
-            assert metadata is not None, f"Plugin {plugin_name} missing metadata"
+            assert metadata is not None, f"Plugin {plugin_name} has plugin.yaml but metadata not loaded"
 
             # Check required metadata fields
             assert "name" in metadata, f"Plugin {plugin_name} missing name in metadata"
@@ -358,7 +370,7 @@ class TestIndividualPluginClis:
         assert result.returncode == 0, f"CLI help failed: {result.stderr}"
         assert "HTTP Server MCP Plugin" in result.stdout, "Help text not found"
 
-    
+
         def test_plugin_server_startup_shutdown(self, temp_workspace):
             """Sanity check that the llm_router plugin exposes a callable factory.
 
