@@ -290,7 +290,7 @@
                     if (sessionId) return sessionId;
                 }
             } catch (e) {
-                console.log('[Context Tracker] Cannot access parent sessionManager:', e.message);
+                console.error('[Context Tracker] Cannot access parent sessionManager:', e.message);
             }
 
             // Method 2: Try to get from parent window's chat module
@@ -300,7 +300,7 @@
                     if (sessionId) return sessionId;
                 }
             } catch (e) {
-                console.log('[Context Tracker] Cannot access parent chatModule:', e.message);
+                console.error('[Context Tracker] Cannot access parent chatModule:', e.message);
             }
 
             // Method 3: Parse from parent's DOM
@@ -312,7 +312,7 @@
                     }
                 }
             } catch (e) {
-                console.log('[Context Tracker] Cannot access parent DOM:', e.message);
+                console.error('[Context Tracker] Cannot access parent DOM:', e.message);
             }
 
             // Method 4: URL parameter
@@ -403,7 +403,6 @@
             try {
                 const currentSessionId = getCurrentSessionId();
                 const sessionId = currentSessionOnly ? currentSessionId : null;
-                console.log('[Context Tracker] Session ID:', currentSessionId, '| Filter:', currentSessionOnly ? 'Current Session' : 'All Sessions');
 
                 // Build URLs with session_id parameter if filtering
                 const usageUrl = `/plugins/context_usage_tracker/usage${sessionId ? '?session_id=' + sessionId : ''}`;

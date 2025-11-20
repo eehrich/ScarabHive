@@ -157,6 +157,30 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     f"[ContextSummarizer] Session {context.session_id}: Insufficient old messages - "
                     f"old_msgs={len(old_msgs)}, recent_msgs={len(recent_msgs)}, system_msgs={len(system_msgs)}"
                 )
+                
+                # Record in history even when not applied
+                if self.summarization_history is not None:
+                    event = {
+                        'timestamp': datetime.now().isoformat(),
+                        'session_id': context.session_id,
+                        'request_id': context.request_id,
+                        'strategy': 'summarize',
+                        'original_message_count': len(messages),
+                        'summarized_message_count': len(messages),
+                        'messages_summarized': 0,
+                        'summary_count': 0,
+                        'original_tokens': 0,
+                        'new_tokens': 0,
+                        'tokens_saved': 0,
+                        'reduction_ratio': 0,
+                        'status': 'skipped',
+                        'reason': 'insufficient_old_messages',
+                        'before_messages': [],
+                        'after_messages': [],
+                        'summary_stats': {'summary_count': 0}
+                    }
+                    self.summarization_history.append(event)
+                
                 return HookResult(
                     success=True,
                     modified=False,
@@ -199,6 +223,30 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         f"[ContextSummarizer] Summarization reduction ({reduction_ratio:.2%}) "
                         f"below minimum ({self.min_reduction:.2%}). Keeping original messages."
                     )
+                    
+                    # Record in history even when not applied
+                    if self.summarization_history is not None:
+                        event = {
+                            'timestamp': datetime.now().isoformat(),
+                            'session_id': context.session_id,
+                            'request_id': context.request_id,
+                            'strategy': 'summarize',
+                            'original_message_count': len(messages),
+                            'summarized_message_count': len(messages),  # No change
+                            'messages_summarized': len(old_msgs),
+                            'summary_count': 0,
+                            'original_tokens': original_tokens,
+                            'new_tokens': original_tokens,  # No change
+                            'tokens_saved': 0,
+                            'reduction_ratio': reduction_ratio,
+                            'status': 'rejected',
+                            'reason': 'insufficient_reduction',
+                            'before_messages': [],
+                            'after_messages': [],
+                            'summary_stats': {'summary_count': 0}
+                        }
+                        self.summarization_history.append(event)
+                    
                     return HookResult(
                         success=True,
                         modified=False,
@@ -256,6 +304,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'new_tokens': new_tokens,
                         'tokens_saved': original_tokens - new_tokens,
                         'reduction_ratio': reduction_ratio,
+                        'status': 'success',  # Mark successful summarizations
                         'before_messages': [self._serialize_message(m) for m in old_msgs],  # ALL messages that were removed (summarized)
                         'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
                         'summary_stats': summary_stats

@@ -177,6 +177,34 @@
             color: #9ad4f5;
         }
 
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge.success {
+            background: #1e4620;
+            color: #6ee56e;
+            border: 1px solid #2d6a2f;
+        }
+
+        .status-badge.rejected {
+            background: #4a3d1f;
+            color: #f5d76e;
+            border: 1px solid #6b5a2d;
+        }
+
+        .status-badge.skipped {
+            background: #3a3a3a;
+            color: #b0b0b0;
+            border: 1px solid #4a4a4a;
+        }
+
         /* Expandable Details */
         .item-details {
             display: none;
@@ -404,13 +432,25 @@
             container.innerHTML = currentEvents.map((event, index) => {
                 const timestamp = new Date(event.timestamp).toLocaleString();
                 const reduction = (event.reduction_ratio * 100).toFixed(1);
+                const status = event.status || 'success';  // Default to success for old events
+                const reason = event.reason || '';
+                
+                // Status badge HTML
+                const statusBadge = `<span class="status-badge ${status}">${status}</span>`;
+                
+                // Show reason if status is not success
+                const reasonText = (status !== 'success' && reason) 
+                    ? `<span class="item-session" style="color: #f5d76e;">Reason: ${reason}</span>` 
+                    : '';
                 
                 return `
                     <div class="history-item" onclick="toggleDetails(${index})">
                         <div class="item-header">
                             <div>
                                 <span class="item-timestamp">${timestamp}</span>
+                                ${statusBadge}
                                 <span class="item-session">Session: ${event.session_id.substring(0, 8)}...</span>
+                                ${reasonText}
                             </div>
                         </div>
                         <div class="item-stats">
@@ -438,11 +478,11 @@
                         <div class="item-details" id="details-${index}">
                             <div class="messages-comparison">
                                 <div class="message-column">
-                                    <div class="message-column-title">Before (Last 10 messages)</div>
+                                    <div class="message-column-title">Before (${event.before_messages.length} messages)</div>
                                     ${renderMessages(event.before_messages)}
                                 </div>
                                 <div class="message-column">
-                                    <div class="message-column-title">After (Last 10 messages)</div>
+                                    <div class="message-column-title">After (${event.after_messages.length} messages)</div>
                                     ${renderMessages(event.after_messages)}
                                 </div>
                             </div>
