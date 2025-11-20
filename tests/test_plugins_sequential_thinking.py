@@ -94,7 +94,7 @@ async def test_hook_replaces_reminder_with_active_session(server):
         "next_thought_needed": True,
         "_session_id": "test_agent_session"
     })
-    assert session_result["status"] == "recorded"
+    assert session_result["status"] == "success"
     
     # Second call - with active session, should replace reminder with session info
     result2 = await server.on_pre_llm_call(context)

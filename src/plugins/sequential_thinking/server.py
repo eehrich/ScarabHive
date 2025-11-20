@@ -139,25 +139,49 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         Args:
             session_id: Sequential thinking session ID (10-char hex)
             agent_session_id: Agent conversation session ID (for hook lookup)
+            
+        Returns:
+            SessionState: Existing or new session
+            
+        Behavior:
+            - If session_id provided → use that specific session
+            - If no session_id but agent_session_id → reuse most recent session for that agent
+            - If neither provided → create completely new session
         """
-        # If no explicit session_id but agent_session_id available, use agent_session_id as the thinking session
-        # This ensures continuity across multiple tool calls in the same conversation
-        effective_session_id = session_id or agent_session_id
+        # If explicit session_id provided, use/get that specific session
+        if session_id:
+            if session_id in self._sessions:
+                session = self._sessions[session_id]
+                session.last_accessed = datetime.now()
+                
+                # Update agent session mapping if provided
+                if agent_session_id and session_id not in self._agent_session_mapping.get(agent_session_id, []):
+                    if agent_session_id not in self._agent_session_mapping:
+                        self._agent_session_mapping[agent_session_id] = []
+                    self._agent_session_mapping[agent_session_id].append(session_id)
+                
+                return session
+            else:
+                # Requested session doesn't exist - treat as new session with this ID
+                pass
         
-        if effective_session_id and effective_session_id in self._sessions:
-            session = self._sessions[effective_session_id]
-            session.last_accessed = datetime.now()
-            
-            # Update agent session mapping if provided
-            if agent_session_id and effective_session_id not in self._agent_session_mapping.get(agent_session_id, []):
-                if agent_session_id not in self._agent_session_mapping:
-                    self._agent_session_mapping[agent_session_id] = []
-                self._agent_session_mapping[agent_session_id].append(effective_session_id)
-            
-            return session
+        # No explicit session_id - check for existing session via agent_session_id
+        if agent_session_id and agent_session_id in self._agent_session_mapping:
+            # Get most recent thinking session for this agent
+            thinking_session_ids = self._agent_session_mapping[agent_session_id]
+            valid_sessions = [
+                self._sessions[sid] for sid in thinking_session_ids
+                if sid in self._sessions
+            ]
+            if valid_sessions:
+                # Return most recently accessed session
+                session = max(valid_sessions, key=lambda s: s.last_accessed)
+                session.last_accessed = datetime.now()
+                logger.debug(f"Reusing thinking session {session.session_id} for agent session {agent_session_id}")
+                return session
         
-        # Create new session - prefer agent_session_id for continuity
-        new_id = effective_session_id or short_id(10)
+        # Create new session
+        new_id = session_id or short_id(10)
         session = SessionState(
             session_id=new_id,
             created_at=datetime.now(),
@@ -364,8 +388,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             needs_more_thoughts = params.get("needs_more_thoughts", False)
             idempotency_key = params.get("idempotency_key")
             
-            # Get status context
-            status = params["_status"]
+            # Get status context (optional for direct test calls)
+            status = params.get("_status")
+            
+            # Helper to safely call status methods when status is available
+            async def safe_status_call(method_name: str, *args, **kwargs):
+                if status:
+                    method = getattr(status, method_name)
+                    await method(*args, **kwargs)
             
             # Get agent session ID if available (for hook mapping)
             agent_session_id = params.get("_session_id")
@@ -373,7 +403,7 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Check idempotency: return cached result if key exists
             if idempotency_key and idempotency_key in self._idempotency_cache:
                 cached_event_id = self._idempotency_cache[idempotency_key]
-                await status.end(f"Idempotent request (key={idempotency_key[:8]}..., event_id={cached_event_id[:8]}...)")
+                await safe_status_call("end", f"Idempotent request (key={idempotency_key[:8]}..., event_id={cached_event_id[:8]}...)")
                 # Find the cached thought and return its response
                 for s in self._sessions.values():
                     for t in s.thoughts:
@@ -407,58 +437,59 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             
             # Validate parameters
             if thought_number < 1:
-                await status.error("thought_number must be >= 1")
+                await safe_status_call("error", "thought_number must be >= 1")
                 return {"status": "error", "error": "thought_number must be >= 1"}
             if total_thoughts < 1:
-                await status.error("total_thoughts must be >= 1")
+                await safe_status_call("error", "total_thoughts must be >= 1")
                 return {"status": "error", "error": "total_thoughts must be >= 1"}
             if not thought_content.strip():
-                await status.error("thought content cannot be empty")
+                await safe_status_call("error", "thought content cannot be empty")
                 return {"status": "error", "error": "thought content cannot be empty"}
             
             # Validate revision parameters
             if is_revision:
                 if revises_thought is None:
-                    await status.error("revises_thought is required when is_revision=true")
+                    await safe_status_call("error", "revises_thought is required when is_revision=true")
                     return {"status": "error", "error": "revises_thought is required when is_revision=true"}
                 if revises_thought < 1:
-                    await status.error("revises_thought must be >= 1")
+                    await safe_status_call("error", "revises_thought must be >= 1")
                     return {"status": "error", "error": "revises_thought must be >= 1"}
                 # Check if thought to revise exists
                 thought_exists = any(t.number == revises_thought for t in session.thoughts)
                 if not thought_exists:
-                    await status.error(f"Thought #{revises_thought} not found in session")
+                    await safe_status_call("error", f"Thought #{revises_thought} not found in session")
                     return {"status": "error", "error": f"Thought #{revises_thought} not found in session"}
             
             # Check feature flags
             if is_revision and not self.enable_revisions:
-                await status.error("Revisions are disabled")
+                await safe_status_call("error", "Revisions are disabled")
                 return {"status": "error", "error": "Revisions are disabled"}
             if branch_id and not self.enable_branching:
-                await status.error("Branching is disabled")
+                await safe_status_call("error", "Branching is disabled")
                 return {"status": "error", "error": "Branching is disabled"}
             
             # Handle branching
             if branch_from_thought is not None and branch_id:
                 # Creating new branch - must not exist
                 if branch_id in session.branches:
-                    await status.error(f"Branch '{branch_id}' already exists")
+                    await safe_status_call("error", f"Branch '{branch_id}' already exists")
                     return {"status": "error", "error": f"Branch '{branch_id}' already exists"}
                 
-                await status.progress(
+                await safe_status_call(
+                    "progress",
                     f"Creating branch '{branch_id}' from thought {branch_from_thought}"
                 )
                 self._create_branch(session, branch_id, branch_from_thought)
             elif branch_id:
                 # Switching to existing branch (no branch_from_thought specified)
                 if branch_id not in session.branches:
-                    await status.error(f"Branch '{branch_id}' not found")
+                    await safe_status_call("error", f"Branch '{branch_id}' not found")
                     return {"status": "error", "error": f"Branch '{branch_id}' not found"}
                 session.current_branch = branch_id
             
             # Handle revision
             if is_revision and revises_thought is not None:
-                await status.progress(f"Revising thought {revises_thought} with new insights")
+                await safe_status_call("progress", f"Revising thought {revises_thought} with new insights")
             
             # Add thought with server-assigned number (ensures no gaps)
             self._add_thought(
@@ -498,7 +529,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 session.total_thoughts_estimate = total_thoughts
                 
                 if needs_more_thoughts:
-                    await status.progress(
+                    await safe_status_call(
+                        "progress",
                         f"Adjusting complexity: {old_estimate} → {total_thoughts} thoughts"
                     )
             
@@ -512,7 +544,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                     f"Memory usage: {usage_pct:.0f}% "
                     f"({len(session.thoughts)}/{session.max_history_size})"
                 )
-                await status.progress(
+                await safe_status_call(
+                    "progress",
                     f"Memory usage: {len(session.thoughts)}/{session.max_history_size} "
                     f"thoughts ({usage_pct:.0f}%)",
                     level="warning"
@@ -561,7 +594,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # END status
             complete_msg = "✓ Complete" if not next_thought_needed else "Continue reasoning..."
             # Show actual thought count, not thought number (which can be same for revisions)
-            await status.end(
+            await safe_status_call(
+                "end",
                 f"Thought #{session.actual_thoughts} added ({session.actual_thoughts}/{effective_total}). "
                 f"{complete_msg}"
             )
@@ -570,7 +604,9 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             
         except Exception as e:
             logger.exception(f"Error in sequentialthinking: {e}")
-            await status.error(f"Failed to add thought: {str(e)}")
+            # Try to get status for error reporting, but don't fail if not available
+            if status:
+                await safe_status_call("error", f"Failed to add thought: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     async def clear_history(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -581,12 +617,18 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         """
         try:
             session_id = params.get("session_id")
-            status = params["_status"]
+            status = params.get("_status")
+            
+            # Helper to safely call status methods when status is available
+            async def safe_status_call(method_name: str, *args, **kwargs):
+                if status:
+                    method = getattr(status, method_name)
+                    await method(*args, **kwargs)
             
             if session_id:
                 # Clear specific session
                 if session_id not in self._sessions:
-                    await status.error(f"Session {session_id} not found")
+                    await safe_status_call("error", f"Session {session_id} not found")
                     return {
                         "status": "error",
                         "error": f"Session {session_id} not found"
@@ -595,13 +637,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 session = self._sessions[session_id]
                 thought_count = len(session.thoughts)
                 
-                await status.progress(
+                await safe_status_call(
+                    "progress",
                     f"Clearing session {session_id} ({thought_count} thoughts)"
                 )
                 
                 del self._sessions[session_id]
                 
-                await status.end("Cleared 1 session")
+                await safe_status_call("end", "Cleared 1 session")
                 
                 return {
                     "status": "success",
@@ -612,11 +655,11 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 # Clear all sessions
                 session_count = len(self._sessions)
                 
-                await status.progress(f"Clearing all sessions ({session_count} total)")
+                await safe_status_call("progress", f"Clearing all sessions ({session_count} total)")
                 
                 self._sessions.clear()
                 
-                await status.end(f"Cleared {session_count} session(s)")
+                await safe_status_call("end", f"Cleared {session_count} session(s)")
                 
                 return {
                     "status": "success",
@@ -626,7 +669,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 
         except Exception as e:
             logger.exception(f"Error in clear_history: {e}")
-            await status.error(f"Failed to clear history: {str(e)}")
+            if status:
+                await safe_status_call("error", f"Failed to clear history: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     async def get_summary(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -640,10 +684,16 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             session_id = params["session_id"]
             max_thoughts = params.get("max_thoughts", self.max_summary_thoughts)
             include_branches = params.get("include_branches", True)
-            status = params["_status"]
+            status = params.get("_status")
+            
+            # Helper to safely call status methods when status is available
+            async def safe_status_call(method_name: str, *args, **kwargs):
+                if status:
+                    method = getattr(status, method_name)
+                    await method(*args, **kwargs)
             
             if session_id not in self._sessions:
-                await status.error(f"Session {session_id} not found")
+                await safe_status_call("error", f"Session {session_id} not found")
                 return {
                     "status": "error",
                     "error": f"Session {session_id} not found"
@@ -651,7 +701,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             
             session = self._sessions[session_id]
             
-            await status.progress(
+            await safe_status_call(
+                "progress",
                 f"Generating summary for session {session_id} "
                 f"({len(session.thoughts)} thoughts, {len(session.branches)} branches)"
             )
@@ -682,7 +733,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 "last_accessed": session.last_accessed.isoformat()
             }
             
-            await status.end(
+            await safe_status_call(
+                "end",
                 f"Summary generated: {len(recent_thoughts)} thoughts, "
                 f"{len(session.branches)} branches"
             )
@@ -691,7 +743,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             
         except Exception as e:
             logger.exception(f"Error in get_thought_summary: {e}")
-            await status.error(f"Failed to generate summary: {str(e)}")
+            if status:
+                await safe_status_call("error", f"Failed to generate summary: {str(e)}")
             return {"status": "error", "error": str(e)}
 
     # =========================================================================
@@ -753,12 +806,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             from agent_system.llm.models import ChatMessage
             
             # Check if already injected and REMOVE old injection to replace it
-            for i, msg in enumerate(context.messages):
+            # Search backwards to avoid index shifting issues
+            for i in range(len(context.messages) - 1, -1, -1):
+                msg = context.messages[i]
                 msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
                 if msg_content and ("## Sequential Thinking Tool Available" in msg_content or "## Active Sequential Thinking Session" in msg_content):
                     # Remove old injection
                     context.messages.pop(i)
-                    break
+                    logger.debug(f"Removed old Sequential Thinking injection at position {i}")
             
             if active_sessions:
                 # Format active sessions (one or multiple)
