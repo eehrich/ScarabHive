@@ -484,7 +484,9 @@ class SessionManager:
                     "llm_profile": session_data["llm_profile"],
                     "message_count": session_data["metadata"].get("message_count", 0),
                     "last_agent_response": session_data["metadata"].get("last_agent_response", ""),
-                    "tags": session_data["metadata"].get("tags", [])  # Added for API compatibility
+                    "tags": session_data["metadata"].get("tags", []),  # Added for API compatibility
+                    "parent_session": session_data.get("parent_session"),  # For hierarchical display
+                    "depth": session_data.get("depth", 0)  # Sub-agent depth level
                 })
             except Exception as e:
                 logger.warning("Failed to load session %s: %s", session_file, e)

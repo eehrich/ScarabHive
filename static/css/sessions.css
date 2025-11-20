@@ -179,6 +179,64 @@
   font-weight: 500;
 }
 
+/* Hierarchical Session Styles */
+.session-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  padding: 0.25rem;
+  margin-right: 0.25rem;
+  border-radius: 3px;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  min-height: 20px;
+}
+
+.session-toggle-btn:hover {
+  background: var(--bg-hover, #444);
+  color: var(--text-primary, #e0e0e0);
+}
+
+.session-toggle-btn svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.2s;
+}
+
+.session-toggle-btn.expanded svg {
+  transform: rotate(90deg);
+}
+
+.session-children {
+  margin-top: 0.5rem;
+  padding-left: 0;
+  display: none;
+}
+
+.session-children.expanded {
+  display: block;
+}
+
+.session-item.child-session {
+  margin-left: 0;
+  margin-bottom: 0.25rem;
+  padding: 0.6rem;
+  font-size: 0.85rem;
+  border-left: 2px solid var(--primary-color, #007acc);
+}
+
+.session-item.child-session .session-item-title {
+  font-size: 0.85rem;
+}
+
+.session-item.child-session .session-item-meta {
+  font-size: 0.7rem;
+}
+
 .sessions-toggle-btn {
   position: fixed;
   left: 1rem;

@@ -115,6 +115,90 @@ async def list_sessions(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+@session_router.get("/hierarchy", response_model=Dict[str, Any])
+async def list_sessions_hierarchy(
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """List sessions in hierarchical structure based on parent_session field."""
+    user_id = current_user.username if current_user else "anonymous"
+
+    try:
+        sessions = await session_manager.list_sessions(user_id)
+        
+        # Build map: session_id -> session data
+        session_map = {s["session_id"]: s for s in sessions}
+        
+        # Build parent-child relationships from parent_session field
+        # parent_map: child_session_id -> parent_session_id
+        parent_map: Dict[str, str] = {}
+        children_map: Dict[str, List[str]] = {}  # parent_id -> [child_ids]
+        
+        for session in sessions:
+            session_id = session["session_id"]
+            parent_info = session.get("parent_session")
+            
+            if parent_info and isinstance(parent_info, dict):
+                parent_id = parent_info.get("session_id")
+                if parent_id:
+                    parent_map[session_id] = parent_id
+                    if parent_id not in children_map:
+                        children_map[parent_id] = []
+                    children_map[parent_id].append(session_id)
+        
+        # Build hierarchical structure: root sessions (no parent) with nested children
+        def build_session_node(session: Dict[str, Any]) -> Dict[str, Any]:
+            """Build session node with children recursively."""
+            session_id = session["session_id"]
+            
+            # Transform to response format
+            node = {
+                "session_id": session_id,
+                "user_id": session["user_id"],
+                "title": session["title"],
+                "agent_name": session["agent_name"],
+                "llm_profile": session["llm_profile"][0] if isinstance(session["llm_profile"], list) else session["llm_profile"],
+                "created_at": session["created_at"],
+                "updated_at": session["updated_at"],
+                "message_count": session.get("message_count", 0),
+                "last_agent_response": session.get("last_agent_response"),
+                "tags": session.get("tags", []),
+                "depth": session.get("depth", 0),
+                "children": []
+            }
+            
+            # Add children recursively
+            child_ids = children_map.get(session_id, [])
+            for child_id in child_ids:
+                if child_id in session_map:
+                    child_session = session_map[child_id]
+                    child_node = build_session_node(child_session)
+                    node["children"].append(child_node)
+            
+            return node
+        
+        # Find root sessions (sessions without a parent)
+        root_sessions = []
+        for session in sessions:
+            session_id = session["session_id"]
+            if session_id not in parent_map:
+                # This is a root session
+                root_sessions.append(build_session_node(session))
+        
+        # Sort root sessions by updated_at (most recent first)
+        root_sessions.sort(key=lambda s: s["updated_at"], reverse=True)
+        
+        return {
+            "sessions": root_sessions,
+            "total_count": len(sessions),
+            "root_count": len(root_sessions)
+        }
+
+    except Exception as e:
+        logger.exception("Failed to list sessions hierarchy: %s", e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
 @session_router.get("/{session_id}")
 async def get_session(
     session_id: str,

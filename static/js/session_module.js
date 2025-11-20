@@ -289,7 +289,7 @@ export class SessionManager {
     listEl.innerHTML = '<div class="sessions-loading">Loading...</div>';
     
     try {
-      const response = await fetch('/api/sessions', {
+      const response = await fetch('/api/sessions/hierarchy', {
         credentials: 'include'
       });
       
@@ -298,7 +298,8 @@ export class SessionManager {
         throw new Error('Failed to load sessions');
       }
       
-      this.sessions = await response.json();
+      const data = await response.json();
+      this.sessions = data.sessions; // Hierarchical structure
       this.renderSessions();
     } catch (error) {
       console.error('Error loading sessions:', error);
@@ -315,16 +316,24 @@ export class SessionManager {
       return;
     }
     
-    listEl.innerHTML = this.sessions.map(session => this.renderSessionItem(session)).join('');
+    listEl.innerHTML = this.sessions.map(session => this.renderSessionHierarchy(session, 0)).join('');
     
     // Attach event listeners to session items
     listEl.querySelectorAll('.session-item').forEach(item => {
       const sessionId = item.dataset.sessionId;
       
       item.addEventListener('click', (e) => {
-        // Don't trigger if clicking on action buttons
-        if (e.target.closest('.session-item-btn')) return;
+        // Don't trigger if clicking on action buttons or toggle
+        if (e.target.closest('.session-item-btn') || e.target.closest('.session-toggle-btn')) return;
         this.loadSession(sessionId);
+      });
+    });
+    
+    // Attach event listeners to toggle buttons
+    listEl.querySelectorAll('.session-toggle-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleSessionChildren(btn);
       });
     });
     
@@ -344,15 +353,51 @@ export class SessionManager {
       });
     });
   }
-
-  renderSessionItem(session) {
+  
+  toggleSessionChildren(toggleBtn) {
+    const sessionItem = toggleBtn.closest('.session-item');
+    const childrenContainer = sessionItem.querySelector('.session-children');
+    const isExpanded = sessionItem.classList.contains('expanded');
+    
+    if (isExpanded) {
+      sessionItem.classList.remove('expanded');
+      childrenContainer.style.display = 'none';
+      toggleBtn.innerHTML = `
+        <svg viewBox="0 0 12 12" fill="currentColor">
+          <path d="M4 3L8 6L4 9Z"/>
+        </svg>
+      `;
+    } else {
+      sessionItem.classList.add('expanded');
+      childrenContainer.style.display = 'block';
+      toggleBtn.innerHTML = `
+        <svg viewBox="0 0 12 12" fill="currentColor">
+          <path d="M3 4L6 8L9 4Z"/>
+        </svg>
+      `;
+    }
+  }
+  
+  renderSessionHierarchy(session, depth = 0) {
+    const hasChildren = session.children && session.children.length > 0;
     const isActive = session.session_id === this.currentSessionId;
     const date = new Date(session.updated_at);
     const dateStr = this.formatDate(date);
+    const indent = depth * 20; // pixels
     
-    return `
-      <div class="session-item ${isActive ? 'active' : ''}" data-session-id="${session.session_id}">
+    let html = `
+      <div class="session-item ${isActive ? 'active' : ''} ${hasChildren ? 'has-children' : ''}" 
+           data-session-id="${session.session_id}" 
+           data-depth="${depth}"
+           style="padding-left: ${indent + 12}px;">
         <div class="session-item-header">
+          ${hasChildren ? `
+            <button class="session-toggle-btn" title="Toggle sub-sessions">
+              <svg viewBox="0 0 12 12" fill="currentColor">
+                <path d="M4 3L8 6L4 9Z"/>
+              </svg>
+            </button>
+          ` : '<span class="session-toggle-spacer"></span>'}
           <div class="session-item-title" title="${this.escapeHtml(session.title)}">
             ${this.escapeHtml(session.title)}
           </div>
@@ -376,11 +421,19 @@ export class SessionManager {
           </div>
         </div>
         <div class="session-item-meta">
+          <span class="session-item-agent">${session.agent_name}</span>
           <span class="session-item-date">${dateStr}</span>
           <span class="session-item-count">${session.message_count} msgs</span>
         </div>
+        ${hasChildren ? `
+          <div class="session-children" style="display: none;">
+            ${session.children.map(child => this.renderSessionHierarchy(child, depth + 1)).join('')}
+          </div>
+        ` : ''}
       </div>
     `;
+    
+    return html;
   }
 
   formatDate(date) {
