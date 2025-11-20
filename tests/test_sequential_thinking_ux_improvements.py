@@ -205,12 +205,13 @@ async def test_hook_multiple_sessions_display(plugin_server):
     result1 = await plugin_server.sequential_thinking(params1)
     session1_id = result1["session_id"]
     
-    # Create second thinking session
+    # Create second thinking session - explicitly request new session with unique ID
     params2 = {
         "thought": "Second session thought",
         "thought_number": 1,
         "total_thoughts": 5,
         "next_thought_needed": True,
+        "session_id": "new_session_" + agent_session_id,  # Explicit new session ID
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
@@ -248,7 +249,7 @@ async def test_hook_limits_sessions_displayed(plugin_server):
     """Test that hook respects max_sessions_in_prompt limit."""
     agent_session_id = "test_agent_session"
     
-    # Create 3 thinking sessions
+    # Create 3 thinking sessions - each with explicit unique session_id
     session_ids = []
     for i in range(3):
         params = {
@@ -256,6 +257,7 @@ async def test_hook_limits_sessions_displayed(plugin_server):
             "thought_number": 1,
             "total_thoughts": 3,
             "next_thought_needed": True,
+            "session_id": f"session_{i}_" + agent_session_id,  # Explicit unique session ID
             "_status": AsyncMock(),
             "_session_id": agent_session_id
         }

@@ -162,8 +162,27 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 
                 return session
             else:
-                # Requested session doesn't exist - treat as new session with this ID
-                pass
+                # Requested session doesn't exist - create new session with this explicit ID
+                # Don't fall through to agent_session_id lookup
+                new_id = session_id
+                session = SessionState(
+                    session_id=new_id,
+                    created_at=datetime.now(),
+                    last_accessed=datetime.now(),
+                    max_history_size=self.max_history_size
+                )
+                self._sessions[new_id] = session
+                
+                # Add to agent session mapping if provided
+                if agent_session_id:
+                    if agent_session_id not in self._agent_session_mapping:
+                        self._agent_session_mapping[agent_session_id] = []
+                    if new_id not in self._agent_session_mapping[agent_session_id]:
+                        self._agent_session_mapping[agent_session_id].append(new_id)
+                    logger.debug(f"Mapped agent session {agent_session_id} → thinking session {new_id}")
+                
+                logger.info(f"Created new thinking session with explicit ID: {new_id}")
+                return session
         
         # No explicit session_id - check for existing session via agent_session_id
         if agent_session_id and agent_session_id in self._agent_session_mapping:
