@@ -37,8 +37,8 @@ auth: # type AuthConfig
   enabled: true  # Set to true to enable multi-user authentication
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
-  access_token_expire_minutes: 30  # Short-lived access token (30 min)
-  refresh_token_expire_days: 30    # Long-lived refresh token (30 days)
+  access_token_expire_minutes: 5256000  # ~10 years - essentially unlimited for dev
+  refresh_token_expire_days: 3650    # 10 years (not used when access token is this long)
 
   # Database settings
   database_path: "data/users.db"
