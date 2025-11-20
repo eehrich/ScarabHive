@@ -1252,14 +1252,18 @@
       }
       
       // Restore messages
-      session.messages.forEach(msg => {
+      // First pass: find the last assistant message to determine if we need a placeholder
+      let lastAssistantMsg = null;
+      for (let i = session.messages.length - 1; i >= 0; i--) {
+        if (session.messages[i].role === 'assistant') {
+          lastAssistantMsg = session.messages[i];
+          break;
+        }
+      }
+      
+      session.messages.forEach((msg, index) => {
         // Skip system messages and tool-related messages
         if (msg.role === 'system' || msg.role === 'tool') {
-          return;
-        }
-        
-        // Skip assistant messages with tool_calls (they're intermediate steps)
-        if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
           return;
         }
         
@@ -1274,6 +1278,14 @@
           msgDiv.appendChild(textSpan);
           row.appendChild(msgDiv);
           chatEl.appendChild(row);
+        } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+          // Only show placeholder for the LAST assistant message with tool_calls
+          if (msg === lastAssistantMsg && !msg.content) {
+            const blk = addAssistantBlock(chatEl);
+            showSection(blk.t);
+            blk.t.innerHTML = `<div class="response-text"><em style="color: #888;">⚙️ Tool calls in progress...</em></div>`;
+          }
+          // Skip all other tool-call-only messages (they're intermediate steps)
         } else if (msg.role === 'assistant' && msg.content) {
           const blk = addAssistantBlock(chatEl);
           showSection(blk.t);
