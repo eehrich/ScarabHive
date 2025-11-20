@@ -384,10 +384,11 @@
 
         async function refreshHistory() {
             try {
-                // Simple relative URLs work fine in iframe
+                // Use dynamic plugin name from template context
+                const pluginName = '{{ plugin_name }}';
                 const [historyResponse, statsResponse] = await Promise.all([
-                    fetch('/plugins/context_summarizer/history?limit=100'),
-                    fetch('/plugins/context_summarizer/stats')
+                    fetch(`/plugins/${pluginName}/history?limit=100`),
+                    fetch(`/plugins/${pluginName}/stats`)
                 ]);
 
                 const historyData = await historyResponse.json();
