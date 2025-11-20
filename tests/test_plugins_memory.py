@@ -25,14 +25,14 @@ def server(tmp_path):
 async def test_hook_injects_memories_once(server):
     """Test that memory list is injected only once."""
     # Create some memories first
-    await server.memory({
+    await server.execute({
         "operation": "store",
         "title": "Test Memory 1",
         "content": "Important information",
         "tags": ["test"],
         "_session_id": "test_session_123"
     })
-    await server.memory({
+    await server.execute({
         "operation": "store",
         "title": "Test Memory 2",
         "content": "More information",
@@ -81,7 +81,7 @@ async def test_hook_injects_memories_once(server):
 async def test_hook_prevents_multiple_injections_across_calls(server):
     """Test that multiple sequential hook calls don't accumulate memory injections."""
     # Create a memory
-    await server.memory({
+    await server.execute({
         "operation": "store",
         "title": "Persistent Memory",
         "content": "This should appear only once",
@@ -131,7 +131,7 @@ async def test_hook_updates_memory_list_when_changed(server):
     assert result1.modified is False  # No memories to inject
 
     # Create a memory
-    mem1_result = await server.memory({
+    mem1_result = await server.execute({
         "operation": "store",
         "title": "New Memory",
         "content": "Newly stored information",
@@ -154,7 +154,7 @@ async def test_hook_updates_memory_list_when_changed(server):
     assert "New Memory" in memory_content, "Should contain the new memory"
 
     # Create another memory
-    mem2_result = await server.memory({
+    mem2_result = await server.execute({
         "operation": "store",
         "title": "Second Memory",
         "content": "Another piece of information",
@@ -183,7 +183,7 @@ async def test_hook_updates_memory_list_when_changed(server):
 async def test_hook_insertion_position_after_system_prompt(server):
     """Test that memory injection is inserted after first system message."""
     # Create a memory
-    await server.memory({
+    await server.execute({
         "operation": "store",
         "title": "Position Test Memory",
         "content": "Testing injection position",
@@ -223,7 +223,7 @@ async def test_hook_insertion_position_after_system_prompt(server):
 async def test_hook_no_duplication_with_manual_injection(server):
     """Test that hook removes manually injected old memory lists."""
     # Create a memory
-    await server.memory({
+    await server.execute({
         "operation": "store",
         "title": "Test Memory",
         "content": "Content",

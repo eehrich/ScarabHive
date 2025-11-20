@@ -97,7 +97,7 @@ async def test_push_batch_first_frame(server, mock_status):
         "_status": mock_status
     }
 
-    result = await server.cognitive_stack(params)
+    result = await server.execute(params)
 
     assert result["status"] == "success"
     assert "stack_id" in result
@@ -113,7 +113,7 @@ async def test_push_batch_first_frame(server, mock_status):
 async def test_push_batch_multiple_frames(server, mock_status):
     """Test pushing multiple frames at once."""
     # First push
-    result1 = await server.cognitive_stack({
+    result1 = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "Main task: Feature X"}],
         "_status": mock_status
@@ -121,7 +121,7 @@ async def test_push_batch_multiple_frames(server, mock_status):
     stack_id = result1["stack_id"]
 
     # Batch push
-    result2 = await server.cognitive_stack({
+    result2 = await server.execute({
         "operation": "push_batch",
         "items": [
             {"context": "Sub-task 1: Analyze dependencies"},
@@ -141,7 +141,7 @@ async def test_push_batch_multiple_frames(server, mock_status):
 @pytest.mark.asyncio
 async def test_push_batch_validates_empty_items(server, mock_status):
     """Test push_batch rejects empty items array."""
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "push_batch",
         "items": [],
         "_status": mock_status
@@ -155,7 +155,7 @@ async def test_push_batch_validates_empty_items(server, mock_status):
 @pytest.mark.asyncio
 async def test_push_batch_validates_empty_context(server, mock_status):
     """Test push_batch rejects empty context."""
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "   "}],  # Empty/whitespace
         "_status": mock_status
@@ -170,7 +170,7 @@ async def test_push_batch_validates_empty_context(server, mock_status):
 async def test_push_batch_enforces_max_depth(server, mock_status):
     """Test push_batch enforces max depth limit."""
     # Fill stack to max depth
-    result1 = await server.cognitive_stack({
+    result1 = await server.execute({
         "operation": "push_batch",
         "items": [{"context": f"Frame {i}"} for i in range(1, 11)],  # 10 frames
         "_status": mock_status
@@ -181,7 +181,7 @@ async def test_push_batch_enforces_max_depth(server, mock_status):
     stack_id = result1["stack_id"]
 
     # Try pushing 11th frame (should fail)
-    result_fail = await server.cognitive_stack({
+    result_fail = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "Frame 11"}],
         "stack_id": stack_id,
@@ -201,7 +201,7 @@ async def test_push_batch_enforces_max_depth(server, mock_status):
 async def test_pop_batch_single_frame(server, mock_status):
     """Test popping single frame from stack."""
     # Push two frames
-    result1 = await server.cognitive_stack({
+    result1 = await server.execute({
         "operation": "push_batch",
         "items": [
             {"context": "Frame 1", "data": {"id": 1}},
@@ -212,7 +212,7 @@ async def test_pop_batch_single_frame(server, mock_status):
     stack_id = result1["stack_id"]
 
     # Pop top frame (count=1)
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "pop_batch",
         "stack_id": stack_id,
         "count": 1,
@@ -230,7 +230,7 @@ async def test_pop_batch_single_frame(server, mock_status):
 async def test_pop_batch_multiple_frames(server, mock_status):
     """Test popping multiple frames at once."""
     # Push 5 frames
-    result1 = await server.cognitive_stack({
+    result1 = await server.execute({
         "operation": "push_batch",
         "items": [{"context": f"Frame {i}"} for i in range(1, 6)],
         "_status": mock_status
@@ -238,7 +238,7 @@ async def test_pop_batch_multiple_frames(server, mock_status):
     stack_id = result1["stack_id"]
 
     # Pop 3 frames
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "pop_batch",
         "stack_id": stack_id,
         "count": 3,
@@ -259,7 +259,7 @@ async def test_pop_batch_multiple_frames(server, mock_status):
 async def test_pop_batch_more_than_available(server, mock_status):
     """Test popping more frames than available returns all available."""
     # Push 2 frames
-    result1 = await server.cognitive_stack({
+    result1 = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "Frame 1"}, {"context": "Frame 2"}],
         "_status": mock_status
@@ -267,7 +267,7 @@ async def test_pop_batch_more_than_available(server, mock_status):
     stack_id = result1["stack_id"]
 
     # Try to pop 5 (should get 2)
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "pop_batch",
         "stack_id": stack_id,
         "count": 5,
@@ -283,7 +283,7 @@ async def test_pop_batch_more_than_available(server, mock_status):
 async def test_pop_batch_empty_stack(server, mock_status):
     """Test popping from empty stack returns error."""
     # Create empty stack
-    result1 = await server.cognitive_stack({
+    result1 = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "Frame 1"}],
         "_status": mock_status
@@ -291,7 +291,7 @@ async def test_pop_batch_empty_stack(server, mock_status):
     stack_id = result1["stack_id"]
 
     # Pop the only frame
-    await server.cognitive_stack({
+    await server.execute({
         "operation": "pop_batch",
         "stack_id": stack_id,
         "count": 1,
@@ -299,7 +299,7 @@ async def test_pop_batch_empty_stack(server, mock_status):
     })
 
     # Try popping again (empty)
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "pop_batch",
         "stack_id": stack_id,
         "count": 1,
@@ -313,7 +313,7 @@ async def test_pop_batch_empty_stack(server, mock_status):
 @pytest.mark.asyncio
 async def test_pop_batch_nonexistent_stack(server, mock_status):
     """Test popping from non-existent stack."""
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "pop_batch",
         "stack_id": "nonexistent",
         "count": 1,
@@ -333,7 +333,7 @@ async def test_pop_batch_nonexistent_stack(server, mock_status):
 async def test_peek_top_frame(server, mock_status):
     """Test peeking at top frame without removing."""
     # Push frames
-    result1 = await server.cognitive_stack({
+    result1 = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "Frame 1"}, {"context": "Frame 2"}],
         "_status": mock_status
@@ -341,7 +341,7 @@ async def test_peek_top_frame(server, mock_status):
     stack_id = result1["stack_id"]
 
     # Peek
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "peek",
         "stack_id": stack_id,
         "_status": mock_status
@@ -500,7 +500,7 @@ async def test_clear_all_stacks(server, mock_status):
 async def test_agent_session_mapping(server, mock_status):
     """Test agent session ID mapping to stack ID."""
     # Push with agent session ID
-    result = await server.cognitive_stack({
+    result = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "Frame 1"}],
         "_status": mock_status,
@@ -512,7 +512,7 @@ async def test_agent_session_mapping(server, mock_status):
     assert server._agent_session_mapping["agent_session_123"] == stack_id
 
     # Push again with same agent session (should reuse stack)
-    result2 = await server.cognitive_stack({
+    result2 = await server.execute({
         "operation": "push_batch",
         "items": [{"context": "Frame 2"}],
         "stack_id": stack_id,  # Explicitly provide stack_id

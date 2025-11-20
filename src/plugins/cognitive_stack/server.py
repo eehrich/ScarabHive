@@ -90,12 +90,12 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             "max_depth": self.max_depth
         }
 
-    async def cognitive_stack(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """
         Main tool entry point - dispatches to operation-specific methods.
 
-        This method name must match the tool name in schema.yaml.
-        Tool name: {{ name }} → resolves to method name at runtime
+        This method is called when tool name exactly matches server name ({{name}}).
+        The SchemaBasedToolMixin automatically routes {{name}} → execute().
         """
         # Support both 'operation' and 'op' (some LLMs abbreviate)
         operation = params.get("operation") or params.get("op")
@@ -156,15 +156,15 @@ class CognitiveStackServer(SchemaBasedMCPServer):
 
     def _resolve_stack_id(self, params: dict[str, Any]) -> str | None:
         """Resolve stack_id from params or _session_id mapping.
-        
+
         Priority:
         1. Explicit stack_id in params
         2. Look up via _session_id mapping
         3. Return None (will create new stack or error)
-        
+
         Args:
             params: Tool call parameters
-            
+
         Returns:
             Resolved stack_id or None
         """
@@ -172,7 +172,7 @@ class CognitiveStackServer(SchemaBasedMCPServer):
         stack_id = params.get("stack_id")
         if stack_id:
             return stack_id
-        
+
         # Try to resolve via session mapping
         agent_session_id = params.get("_session_id")
         if agent_session_id:
@@ -180,7 +180,7 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             if mapped_stack_id:
                 logger.debug(f"Resolved stack_id {mapped_stack_id} from session {agent_session_id}")
                 return mapped_stack_id
-        
+
         return None
 
     async def peek(self, params: dict[str, Any]) -> dict[str, Any]:

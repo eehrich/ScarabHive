@@ -696,8 +696,10 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
     # MCP Tool Interface
     # =========================================================================
 
-    async def memory(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
+        Main tool entry point - called when tool name matches server name ({{name}}).
+
         Unified memory tool handler.
 
         Supports operations: store, recall, search, list, delete

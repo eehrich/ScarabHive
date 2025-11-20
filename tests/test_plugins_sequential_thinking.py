@@ -87,7 +87,7 @@ async def test_hook_replaces_reminder_with_active_session(server):
     assert reminder_found, "Should have reminder when no active session"
     
     # Create a thinking session
-    session_result = await server.sequential_thinking({
+    session_result = await server.execute({
         "thought": "First thought about the problem",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -178,7 +178,7 @@ async def test_hook_handles_both_reminder_markers(server):
     assert len(thinking_messages) == 1, "Should replace old injection"
     
     # Now test with active session marker
-    session_result = await server.sequential_thinking({
+    session_result = await server.execute({
         "thought": "Testing marker replacement",
         "thought_number": 1,
         "total_thoughts": 2,

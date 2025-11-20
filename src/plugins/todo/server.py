@@ -614,8 +614,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
     # Tool Implementations (Multi-Mode)
     # =========================================================================
 
-    async def todo(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
+        Main tool entry point - called when tool name matches server name ({{name}}).
+
         Multi-mode task management tool with explicit operation parameter.
 
         Operations:
