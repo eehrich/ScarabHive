@@ -628,9 +628,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 # Note: Messages typically don't have timestamps, so we just show count
                 marker = f"[Summary of {len(chunk)} older messages (chunk {chunk_num}/{total_chunks})]"
 
-                # Create summary message
+                # Create summary message as 'user' role so it gets persisted in sessions
+                # This ensures summaries are preserved across session reloads
                 summary_msg = {
-                    'role': 'system',
+                    'role': 'user',
+                    'name': '__context_summary__',  # Special marker for UI styling
                     'content': f"{marker}\n\n{summary_content}",
                     'metadata': {
                         'is_summary': True,
