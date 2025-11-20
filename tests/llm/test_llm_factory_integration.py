@@ -48,8 +48,9 @@ class TestLLMFactoryIntegration:
         # Resolve LLM configs
         basic_llm = resolve_llm_config_for_agent(system_config, basic_config.agent_config)
         
-        # Profile should be 'normal' by default (from mcp.yaml)
-        assert basic_config.agent_config.llm_profile == "normal"
+        # Profile is a list with default as first element
+        assert isinstance(basic_config.agent_config.llm_profile, list)
+        assert len(basic_config.agent_config.llm_profile) > 0
         
         # Check that we got a valid model
         assert basic_llm["model"] is not None

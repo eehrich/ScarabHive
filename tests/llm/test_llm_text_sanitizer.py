@@ -23,10 +23,10 @@ class TestBasicSanitization:
         assert result == "Hello, World!"
 
     def test_sanitize_text_with_whitespace(self):
-        """Test sanitization handles whitespace correctly."""
+        """Test sanitization preserves whitespace (important for code/YAML/structured data)."""
         text = "Hello   World"  # Multiple spaces
         result = sanitize_for_llm(text)
-        assert result == "Hello World"  # Single space
+        assert result == "Hello   World"  # Preserved
 
     def test_sanitize_text_with_tabs_and_newlines(self):
         """Test sanitization preserves tabs and newlines."""
@@ -180,22 +180,22 @@ class TestWhitespaceHandling:
     """Test whitespace handling."""
 
     def test_trim_leading_whitespace(self):
-        """Test trimming of leading whitespace."""
+        """Test that leading whitespace is preserved (important for indentation)."""
         text = "   Hello World"
         result = sanitize_for_llm(text)
-        assert result == "Hello World"
+        assert result == "   Hello World"
 
     def test_trim_trailing_whitespace(self):
-        """Test trimming of trailing whitespace."""
+        """Test that trailing whitespace is preserved."""
         text = "Hello World   "
         result = sanitize_for_llm(text)
-        assert result == "Hello World"
+        assert result == "Hello World   "
 
     def test_collapse_multiple_spaces(self):
-        """Test collapsing of multiple consecutive spaces."""
+        """Test that multiple consecutive spaces are preserved."""
         text = "Hello     World"
         result = sanitize_for_llm(text)
-        assert result == "Hello World"
+        assert result == "Hello     World"
 
     def test_preserve_single_newlines(self):
         """Test that single newlines are preserved."""
@@ -221,10 +221,10 @@ class TestEdgeCases:
         assert result == ""
 
     def test_text_with_only_whitespace(self):
-        """Test text containing only whitespace."""
+        """Test text containing only whitespace is preserved (spaces are safe chars)."""
         text = "     "
         result = sanitize_for_llm(text)
-        assert result == ""
+        assert result == "     "
 
     def test_mixed_valid_and_invalid_characters(self):
         """Test text with mix of valid and invalid characters."""

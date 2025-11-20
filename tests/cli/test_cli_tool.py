@@ -22,7 +22,8 @@ def test_allow_block_updates(tmp_path, monkeypatch):
     import uuid
     tmp_repo = tmp_path / f"test_{uuid.uuid4().hex[:8]}"
     tmp_repo.mkdir()
-    repo_root = Path(__file__).resolve().parents[1]
+    # repo_root is now tests/cli, need to go up two levels to project root
+    repo_root = Path(__file__).resolve().parents[2]
     
     # Copy config files to temp directory
     tmp_config_dir = tmp_repo / "config"

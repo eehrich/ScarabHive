@@ -8,7 +8,7 @@ from pathlib import Path
 from agent_system.hooks import HooksConfig
 from agent_system.hooks.registry import HookRegistry
 from agent_system.plugins.discovery import register_plugin_hooks
-from tests.test_plugin_hook_discovery import MockHookPlugin
+from tests.plugins.test_plugin_hook_discovery import MockHookPlugin
 
 
 @pytest.fixture

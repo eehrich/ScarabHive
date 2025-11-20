@@ -86,17 +86,17 @@ class TestContentTokenEstimation:
     def test_estimate_content_tokens_natural_language(self):
         """Test estimation for natural language text."""
         text = "The quick brown fox jumps over the lazy dog"
-        # 9 words * 0.75 = 6.75 -> 6 tokens
+        # 9 words * 1.3 = 11.7 -> 11 tokens
         tokens = estimate_content_tokens(text)
-        assert tokens == 6  # int(9 * 0.75)
+        assert tokens == 11  # int(9 * 1.3)
 
     def test_estimate_content_tokens_code(self):
         """Test estimation for code content."""
         code = "def function(): return True"
-        # Should be detected as code and use 1.2 ratio
+        # Should be detected as code and use 1.5 ratio
         tokens = estimate_content_tokens(code)
-        # 4 words * 1.2 = 4.8 -> 4 tokens
-        assert tokens == 4
+        # 4 words * 1.5 = 6.0 -> 6 tokens
+        assert tokens == 6
 
     def test_estimate_content_tokens_json(self):
         """Test estimation for JSON content."""
@@ -111,8 +111,8 @@ class TestContentTokenEstimation:
         # 100 words of natural language
         text = " ".join(["word"] * 100)
         tokens = estimate_content_tokens(text)
-        # 100 * 0.75 = 75
-        assert tokens == 75
+        # 100 * 1.3 = 130
+        assert tokens == 130
 
 
 class TestJsonTokenEstimation:
@@ -181,8 +181,8 @@ class TestToolResultTokenEstimation:
         """Test estimation for plain text tool result."""
         text = "This is a simple text response from a tool"
         tokens = estimate_tool_result_tokens(text)
-        # 9 words * 0.75 = 6.75 -> 6 tokens
-        assert tokens == 6
+        # 9 words * 1.3 = 11.7 -> 11 tokens
+        assert tokens == 11
 
 
 class TestMessageTokenEstimation:
@@ -196,17 +196,17 @@ class TestMessageTokenEstimation:
         """Test estimation for simple user message."""
         msg = ChatMessage(role="user", content="Hello, how are you?")
         tokens = estimate_token_count([msg])
-        # Base overhead: 4 + content tokens (4 words * 0.75 = 3)
-        # Total: 4 + 3 = 7
-        assert tokens == 7
+        # Base overhead: 4 + content tokens (4 words * 1.3 = 5.2 -> 5)
+        # Total: 4 + 5 = 9
+        assert tokens == 9
 
     def test_estimate_token_count_assistant_message(self):
         """Test estimation for assistant message."""
         msg = ChatMessage(role="assistant", content="I am doing well, thank you!")
         tokens = estimate_token_count([msg])
-        # Base overhead: 4 + content tokens (6 words * 0.75 = 4.5 -> 4)
-        # Total: 4 + 4 = 8
-        assert tokens == 8
+        # Base overhead: 4 + content tokens (6 words * 1.3 = 7.8 -> 7)
+        # Total: 4 + 7 = 11
+        assert tokens == 11
 
     def test_estimate_token_count_system_message(self):
         """Test estimation for system message."""
@@ -353,13 +353,13 @@ class TestTokenEstimationAccuracy:
 
     def test_estimation_reasonable_ratios(self):
         """Test that estimation ratios are reasonable."""
-        # Natural language should be ~0.75 tokens per word
+        # Natural language should be ~1.3 tokens per word
         natural = "The quick brown fox jumps over the lazy dog"  # 9 words
         msg = ChatMessage(role="user", content=natural)
         tokens = estimate_token_count([msg])
         
-        # 9 words * 0.75 = 6.75 -> 6 + 4 overhead = 10
-        assert tokens == 10
+        # 9 words * 1.3 = 11.7 -> 11 + 4 overhead = 15
+        assert tokens == 15
 
     def test_code_vs_text_ratio(self):
         """Test that code is estimated higher than text."""

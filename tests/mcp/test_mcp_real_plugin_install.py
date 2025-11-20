@@ -11,7 +11,8 @@ from agent_system.plugins import discovery as plugins
 
 logger = logging.getLogger(__name__)
 
-FIXTURE_DIR = Path(__file__).parent / 'fixtures' / 'real_plugin'
+# Updated path: fixtures is now at tests/fixtures, not tests/mcp/fixtures
+FIXTURE_DIR = Path(__file__).parent.parent / 'fixtures' / 'real_plugin'
 
 
 _HAS_PIP = shutil.which('pip') is not None

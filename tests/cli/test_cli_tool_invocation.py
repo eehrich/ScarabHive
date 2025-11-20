@@ -37,7 +37,8 @@ def test_cli_invokes_weather_tool(monkeypatch, tmp_path):
     transcript (stdout) for the tool call marker to ensure schema exposure + LLM tool_call path.
     """
     # Copy minimal required config files into temp workspace so CLI loads them.
-    repo_root = Path(__file__).resolve().parents[1]
+    # repo_root is now tests/cli, need to go up two levels to project root
+    repo_root = Path(__file__).resolve().parents[2]
     tmp_config = tmp_path / "config"
     tmp_config.mkdir()
 
