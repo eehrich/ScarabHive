@@ -18,7 +18,7 @@ def summarizer_plugin():
     mcp_config = MCPConfig()
     
     plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
-    return plugin.hooks_plugin
+    return plugin.server._hooks_impl  # Return hooks implementation from server
 
 
 @pytest.fixture

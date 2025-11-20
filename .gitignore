@@ -25,3 +25,4 @@ nul
 data/context_usage_tracker.json
 .coverage
 data/writer_books.db
+tests/data/

@@ -17,9 +17,9 @@ def summarizer_plugin():
     system_config = AgentSystemConfig()
     mcp_config = MCPConfig()
     
-    # PLUGIN_FACTORY is now a class
+    # PLUGIN_FACTORY returns ContextSummarizerHybridPlugin
     plugin = PLUGIN_FACTORY("context_summarizer", system_config, mcp_config)
-    return plugin.hooks_plugin  # Return the hooks component
+    return plugin.server._hooks_impl  # Return the hooks implementation from server
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ async def test_plugin_initialization(summarizer_plugin):
     assert summarizer_plugin.trigger_percentage == 0.60  # Changed from trigger_tokens
     assert summarizer_plugin.chunk_size == 10
     assert summarizer_plugin.preserve_recent == 10
-    assert summarizer_plugin.llm_profile == 'turbo'  # Default LLM profile
+    assert summarizer_plugin.llm_profile == 'fast'  # Default LLM profile from schema.yaml
 
 
 @pytest.mark.asyncio

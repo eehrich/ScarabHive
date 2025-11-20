@@ -29,17 +29,27 @@ async def session_service(temp_storage):
     return service
 
 
+class MockAgentConfig:
+    """Serializable mock for agent config."""
+    def __init__(self, llm_profile="normal"):
+        self.default_llm_profile = llm_profile
+        self.llm_profile = llm_profile
+
+
+class MockAgent:
+    """Serializable mock for agent."""
+    def __init__(self, name, llm_profile="normal"):
+        self.name = name
+        self.agent_config = MockAgentConfig(llm_profile)
+
+
 @pytest.fixture
 def mock_registry():
     """Create mock registry with multiple agent types."""
     registry = MagicMock(spec=MCPRegistry)
 
     def create_mock_agent(name, llm_profile="normal"):
-        agent = MagicMock()
-        agent.name = name
-        agent.agent_config = MagicMock()
-        agent.agent_config.llm_profile = llm_profile
-        return agent
+        return MockAgent(name, llm_profile)
 
     # Register multiple agent types
     agents = {
@@ -85,7 +95,7 @@ async def test_e2e_create_and_continue_sub_agent(sub_agent_manager, session_serv
         llm_profile="normal"
     )
 
-    parent_agent = MagicMock(name="meta_agent", agent_config=MagicMock(llm_profile="normal"))
+    parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
     # Stage 1: Create research sub-agent
@@ -151,7 +161,7 @@ async def test_e2e_multiple_sub_agents(sub_agent_manager, session_service):
         llm_profile="normal"
     )
 
-    parent_agent = MagicMock(name="meta_agent", agent_config=MagicMock(llm_profile="normal"))
+    parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
     # Create 3 parallel sub-agents
@@ -210,7 +220,7 @@ async def test_e2e_nested_sub_agents(sub_agent_manager, session_service):
         llm_profile="normal"
     )
 
-    parent_agent = MagicMock(name="meta_agent", agent_config=MagicMock(llm_profile="normal"))
+    parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
     # Level 2: Meta creates project_manager
@@ -280,10 +290,10 @@ async def test_e2e_max_nesting_depth_enforcement(sub_agent_manager, session_serv
         llm_profile="normal"
     )
 
-    parent_agent = MagicMock(name="meta_agent", agent_config=MagicMock(llm_profile="normal"))
+    parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
-    # Create nested chain up to max depth - 1
+    # Create nested chain up to max_depth - 1
     current_parent = root_session_id
     for depth in range(1, sub_agent_manager.max_nesting_depth):
         sub_id = await sub_agent_manager.create_sub_session(
@@ -331,7 +341,7 @@ async def test_e2e_session_file_structure(sub_agent_manager, session_service, te
         llm_profile="normal"
     )
 
-    parent_agent = MagicMock(name="meta_agent", agent_config=MagicMock(llm_profile="normal"))
+    parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
     # Create sub-agent
@@ -400,7 +410,7 @@ async def test_e2e_list_filtering(sub_agent_manager, session_service):
         llm_profile="normal"
     )
 
-    parent_agent = MagicMock(name="meta_agent", agent_config=MagicMock(llm_profile="normal"))
+    parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
     # Create 3 sub-agents
@@ -476,10 +486,10 @@ async def test_e2e_concurrent_sub_agent_creation(sub_agent_manager, session_serv
         llm_profile="normal"
     )
 
-    parent_agent = MagicMock(name="meta_agent", agent_config=MagicMock(llm_profile="normal"))
+    parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
-    # Create 15 sub-agents concurrently
+    # Create 5 sub-agents concurrently
     tasks = [
         sub_agent_manager.create_sub_session(
             parent_session_id=parent_session_id,

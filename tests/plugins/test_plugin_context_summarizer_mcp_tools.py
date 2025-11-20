@@ -50,16 +50,14 @@ def mock_agent_with_session():
     # Mock get_context_window to return integer, not AsyncMock
     agent.get_context_window = Mock(return_value=100000)
 
-    # Mock LLM
+    # Mock LLM - keep as AsyncMock for generate method
     llm_mock = AsyncMock()
     llm_mock.generate = AsyncMock(return_value={
         'content': '[Summary] Planning discussion covered database choices, API design, and deployment strategy.'
     })
 
-    # Mock model config for context window
-    model_config_mock = Mock()
-    model_config_mock.context_window = 100000
-    llm_mock.model_config = model_config_mock
+    # Mock context_window directly on llm (server accesses agent.llm.context_window)
+    llm_mock.context_window = 100000
 
     agent.llm = llm_mock
 
@@ -76,8 +74,9 @@ def mock_agent_with_session():
         test_messages.append(msg)
 
     # Fix: Use get_session_messages instead of get_messages (actual method name)
-    session_tracker.get_session_messages = AsyncMock(return_value=test_messages)
-    session_tracker.set_session_messages = AsyncMock()
+    # get_session_messages is SYNCHRONOUS, not async
+    session_tracker.get_session_messages = Mock(return_value=test_messages)
+    session_tracker.set_session_messages = Mock()
 
     agent._session_tracker = session_tracker
 
@@ -189,7 +188,7 @@ async def test_summarize_tool_basic(plugin, mock_agent_with_session):
     assert result['tokens_saved'] > 0
 
     # Session tracker should have been updated
-    mock_agent_with_session._session_tracker.set_messages.assert_called_once()
+    mock_agent_with_session._session_tracker.set_session_messages.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -217,7 +216,7 @@ async def test_summarize_with_custom_params(plugin, mock_agent_with_session):
 async def test_summarize_empty_conversation(plugin, mock_agent_with_session):
     """Test summarization on empty conversation."""
     # Mock empty messages
-    mock_agent_with_session._session_tracker.get_messages = Mock(return_value=[])
+    mock_agent_with_session._session_tracker.get_session_messages = Mock(return_value=[])
 
     params = {
         '_session_id': 'test-session-123',
@@ -272,7 +271,7 @@ async def test_summarize_preserves_system_messages(plugin, mock_agent_with_sessi
             content=f'Message {i}: ' + 'test content ' * 100
         ))
 
-    mock_agent_with_session._session_tracker.get_messages = Mock(return_value=messages)
+    mock_agent_with_session._session_tracker.get_session_messages = Mock(return_value=messages)
 
     params = {
         '_session_id': 'test-session-123',
@@ -283,11 +282,11 @@ async def test_summarize_preserves_system_messages(plugin, mock_agent_with_sessi
 
     assert result['status'] == 'success'
 
-    # Check that set_messages was called
-    assert mock_agent_with_session._session_tracker.set_messages.called
+    # Check that set_session_messages was called
+    assert mock_agent_with_session._session_tracker.set_session_messages.called
 
     # Get the updated messages
-    updated_messages = mock_agent_with_session._session_tracker.set_messages.call_args[0][1]
+    updated_messages = mock_agent_with_session._session_tracker.set_session_messages.call_args[0][1]
 
     # First message should still be system message
     first_msg = updated_messages[0]
@@ -415,7 +414,7 @@ async def test_multiple_summarizations_in_sequence(plugin, mock_agent_with_sessi
         ChatMessage(role='user' if i % 2 == 0 else 'assistant', content=f'Recent {i}')
         for i in range(15)
     ]
-    mock_agent_with_session._session_tracker.get_messages = Mock(return_value=reduced_messages)
+    mock_agent_with_session._session_tracker.get_session_messages = Mock(return_value=reduced_messages)
 
     # Second summarization (should work on reduced set)
     result2 = await plugin.call('context_summarizer_summarize', params)
