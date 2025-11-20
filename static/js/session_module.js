@@ -34,7 +34,7 @@ export class SessionManager {
     // Delay slightly to ensure chat_module event listeners are registered
     setTimeout(async () => {
       const lastSessionId = localStorage.getItem('lastSessionId');
-      if (lastSessionId && this.sessions.find(s => s.session_id === lastSessionId)) {
+      if (lastSessionId && this.findSessionInHierarchy(lastSessionId)) {
         // Load the session messages into the chat
         await this.loadSession(lastSessionId);
       }
@@ -42,6 +42,23 @@ export class SessionManager {
     
     // Set up event listeners
     this.setupEventListeners();
+  }
+  
+  findSessionInHierarchy(sessionId) {
+    // Recursively search for session in hierarchical structure
+    const search = (sessions) => {
+      for (const session of sessions) {
+        if (session.session_id === sessionId) {
+          return session;
+        }
+        if (session.children && session.children.length > 0) {
+          const found = search(session.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return search(this.sessions);
   }
 
   async checkAuth() {
@@ -325,6 +342,10 @@ export class SessionManager {
       item.addEventListener('click', (e) => {
         // Don't trigger if clicking on action buttons or toggle
         if (e.target.closest('.session-item-btn') || e.target.closest('.session-toggle-btn')) return;
+        
+        // Stop propagation to prevent parent session items from also firing
+        e.stopPropagation();
+        
         this.loadSession(sessionId);
       });
     });

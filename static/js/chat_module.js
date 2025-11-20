@@ -1333,8 +1333,9 @@
     `;
     
     const chatEl = document.getElementById('chat');
-    if (chatEl && chatEl.parentElement) {
-      chatEl.parentElement.insertBefore(banner, chatEl);
+    if (chatEl) {
+      // Insert as first child of chat element (not before it)
+      chatEl.insertBefore(banner, chatEl.firstChild);
     }
   }
   

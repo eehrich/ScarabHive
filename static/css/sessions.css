@@ -192,8 +192,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
-  min-height: 20px;
+  min-width: 24px;
+  min-height: 24px;
 }
 
 .session-toggle-btn:hover {
@@ -202,8 +202,8 @@
 }
 
 .session-toggle-btn svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   transition: transform 0.2s;
 }
 
