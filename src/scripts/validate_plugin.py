@@ -251,46 +251,91 @@ class PluginValidator:
                 self.errors.append(f"Tool at index {idx} must be an object")
                 continue
 
-            # Check required fields
-            if "type" not in tool:
-                self.errors.append(f"Tool at index {idx} missing 'type' field")
-                continue
+            # Check which format the tool is in (OpenAI or MCP)
+            has_openai_format = "type" in tool and tool["type"] == "function" and "function" in tool
+            has_mcp_format = "name" in tool and "inputSchema" in tool
+            has_partial_openai = "function" in tool and "type" not in tool
 
-            if tool["type"] != "function":
+            if not has_openai_format and not has_mcp_format and not has_partial_openai:
                 self.errors.append(
-                    f"Tool at index {idx} has invalid type: {tool['type']} (expected 'function')"
+                    f"Tool at index {idx} must be in OpenAI format (type=function, function={{...}}) "
+                    f"or MCP format (name, inputSchema). Found keys: {list(tool.keys())}"
                 )
                 continue
 
-            if "function" not in tool:
-                self.errors.append(f"Tool at index {idx} missing 'function' field")
-                continue
-
-            function = tool["function"]
-
-            # Validate function object
-            if "name" not in function:
-                self.errors.append(f"Tool at index {idx} missing 'name' in function")
-                continue
-
-            tool_name = function["name"]
+            # Extract tool name for duplicate checking
+            if has_openai_format or has_partial_openai:
+                tool_name = tool.get("function", {}).get("name")
+            elif has_mcp_format:
+                tool_name = tool.get("name")
+            else:
+                tool_name = None
 
             # Check for duplicate tool names
-            if tool_name in seen_tool_names and "{{" not in tool_name:
+            if tool_name and tool_name in seen_tool_names and "{{" not in tool_name:
                 self.errors.append(f"Duplicate tool name: {tool_name}")
-            seen_tool_names.add(tool_name)
+            if tool_name:
+                seen_tool_names.add(tool_name)
 
-            if "description" not in function:
-                self.warnings.append(
-                    f"Tool '{tool_name}' missing description - highly recommended"
-                )
+            # Validate based on format
+            if has_openai_format:
+                self._validate_openai_tool(idx, tool)
+            elif has_mcp_format:
+                self._validate_mcp_tool(idx, tool)
+            elif has_partial_openai:
+                # Missing type field
+                self.errors.append(f"Tool at index {idx} missing 'type' field (should be 'function')")
+                self._validate_openai_tool(idx, tool, skip_type_check=True)
 
-            if "parameters" not in function:
-                self.warnings.append(
-                    f"Tool '{tool_name}' missing parameters - tools should define parameters"
-                )
-            else:
-                self._validate_tool_parameters(tool_name, function["parameters"])
+    def _validate_openai_tool(self, idx: int, tool: dict, skip_type_check: bool = False) -> None:
+        """Validate tool in OpenAI format."""
+        if not skip_type_check and tool.get("type") != "function":
+            self.errors.append(
+                f"Tool at index {idx} has invalid type: {tool['type']} (expected 'function')"
+            )
+            return
+
+        if "function" not in tool:
+            self.errors.append(f"Tool at index {idx} missing 'function' field")
+            return
+
+        function = tool["function"]
+
+        # Validate function object
+        if "name" not in function:
+            self.errors.append(f"Tool at index {idx} missing 'name' in function")
+            return
+
+        tool_name = function["name"]
+
+        if "description" not in function:
+            self.warnings.append(
+                f"Tool '{tool_name}' missing description - highly recommended"
+            )
+
+        if "parameters" not in function:
+            self.warnings.append(
+                f"Tool '{tool_name}' missing parameters - tools should define parameters"
+            )
+        else:
+            self._validate_tool_parameters(tool_name, function["parameters"])
+
+    def _validate_mcp_tool(self, idx: int, tool: dict) -> None:
+        """Validate tool in MCP format (name + inputSchema)."""
+        tool_name = tool["name"]
+
+        if "description" not in tool:
+            self.warnings.append(
+                f"MCP tool '{tool_name}' missing description - highly recommended"
+            )
+
+        if "inputSchema" not in tool:
+            self.warnings.append(
+                f"MCP tool '{tool_name}' missing inputSchema - tools should define parameters"
+            )
+        else:
+            # Validate inputSchema as parameters
+            self._validate_tool_parameters(tool_name, tool["inputSchema"])
 
     def _validate_tool_parameters(self, tool_name: str, parameters: dict[str, Any]) -> None:
         """Validate tool parameter schema."""
