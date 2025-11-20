@@ -381,12 +381,13 @@ export class SessionManager {
   renderSessionHierarchy(session, depth = 0) {
     const hasChildren = session.children && session.children.length > 0;
     const isActive = session.session_id === this.currentSessionId;
+    const isSubAgent = depth > 0; // Sub-agents are at depth > 0
     const date = new Date(session.updated_at);
     const dateStr = this.formatDate(date);
     const indent = depth * 20; // pixels
     
     let html = `
-      <div class="session-item ${isActive ? 'active' : ''} ${hasChildren ? 'has-children' : ''}" 
+      <div class="session-item ${isActive ? 'active' : ''} ${hasChildren ? 'has-children' : ''} ${isSubAgent ? 'sub-agent-session' : ''}" 
            data-session-id="${session.session_id}" 
            data-depth="${depth}"
            style="padding-left: ${indent + 12}px;">
@@ -399,6 +400,7 @@ export class SessionManager {
             </button>
           ` : '<span class="session-toggle-spacer"></span>'}
           <div class="session-item-title" title="${this.escapeHtml(session.title)}">
+            ${isSubAgent ? '<span class="sub-agent-indicator" title="Sub-agent session (may be read-only)">🔹</span>' : ''}
             ${this.escapeHtml(session.title)}
           </div>
           <div class="session-item-actions">
@@ -498,9 +500,19 @@ export class SessionManager {
       this.updateSessionDisplay(sessionId);
       this.renderSessions(); // Re-render to update active state
       
+      // Check if this is a sub-agent session with unavailable agent
+      const isSubAgent = session.depth && session.depth > 0;
+      const agentSelect = document.getElementById('agentSelector');
+      const agentAvailable = agentSelect && Array.from(agentSelect.options).some(opt => opt.value === session.agent_name);
+      const isReadOnly = isSubAgent && !agentAvailable;
+      
       // Dispatch event for chat module to restore messages
       window.dispatchEvent(new CustomEvent('session:loaded', {
-        detail: { session }
+        detail: { 
+          session,
+          readOnly: isReadOnly,
+          reason: isReadOnly ? `Sub-agent "${session.agent_name}" is not available in the agent selector` : null
+        }
       }));
       
       this.closeSidebar();

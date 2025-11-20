@@ -1242,7 +1242,8 @@
   
   // Listen for session load events
   window.addEventListener('session:loaded', (event) => {
-    const { session } = event.detail;
+    const { session, readOnly, reason } = event.detail;
+    
     if (session && session.messages) {
       // Clear current chat
       const chatEl = document.getElementById('chat');
@@ -1303,7 +1304,94 @@
         updateHeaderSessionId(session.session_id);
       }
     }
+    
+    // Handle read-only mode AFTER rendering messages
+    if (readOnly) {
+      showReadOnlyBanner(reason);
+      disableInput();
+    } else {
+      removeReadOnlyBanner();
+      enableInput();
+    }
   });
+  
+  // Helper functions for read-only mode
+  function showReadOnlyBanner(reason) {
+    removeReadOnlyBanner(); // Remove existing banner if any
+    
+    const banner = document.createElement('div');
+    banner.id = 'readOnlyBanner';
+    banner.className = 'read-only-banner';
+    banner.innerHTML = `
+      <div class="banner-content">
+        <span class="banner-icon">🔒</span>
+        <div class="banner-text">
+          <strong>Read-Only Session</strong>
+          <p>${reason || 'This session cannot be edited.'}</p>
+        </div>
+      </div>
+    `;
+    
+    const chatEl = document.getElementById('chat');
+    if (chatEl && chatEl.parentElement) {
+      chatEl.parentElement.insertBefore(banner, chatEl);
+    }
+  }
+  
+  function removeReadOnlyBanner() {
+    const banner = document.getElementById('readOnlyBanner');
+    if (banner) {
+      banner.remove();
+    }
+  }
+  
+  function disableInput() {
+    const taskInput = document.getElementById('task');
+    const runBtn = document.getElementById('runBtn');
+    const fileInput = document.getElementById('fileInput');
+    const fileUploadBtn = document.querySelector('.file-upload-btn');
+    
+    if (taskInput) {
+      taskInput.disabled = true;
+      taskInput.placeholder = 'This session is read-only';
+      taskInput.style.opacity = '0.5';
+    }
+    if (runBtn) {
+      runBtn.disabled = true;
+      runBtn.style.opacity = '0.5';
+    }
+    if (fileInput) {
+      fileInput.disabled = true;
+    }
+    if (fileUploadBtn) {
+      fileUploadBtn.style.opacity = '0.5';
+      fileUploadBtn.style.pointerEvents = 'none';
+    }
+  }
+  
+  function enableInput() {
+    const taskInput = document.getElementById('task');
+    const runBtn = document.getElementById('runBtn');
+    const fileInput = document.getElementById('fileInput');
+    const fileUploadBtn = document.querySelector('.file-upload-btn');
+    
+    if (taskInput) {
+      taskInput.disabled = false;
+      taskInput.placeholder = 'Ask the agent…';
+      taskInput.style.opacity = '1';
+    }
+    if (runBtn) {
+      runBtn.disabled = false;
+      runBtn.style.opacity = '1';
+    }
+    if (fileInput) {
+      fileInput.disabled = false;
+    }
+    if (fileUploadBtn) {
+      fileUploadBtn.style.opacity = '1';
+      fileUploadBtn.style.pointerEvents = 'auto';
+    }
+  }
 
 })(window);
 
