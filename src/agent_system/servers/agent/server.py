@@ -1325,6 +1325,14 @@ class Agent(MCPServer):
             if content and not tool_calls:
                 yield {"type": "thinking", "content": content}
 
+            # Persist session after each LLM response to preserve progress on cancellation
+            try:
+                conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
+                logger.debug(f"Persisted session {session_id} after LLM response (step {step}) with {len(conversation_msgs)} messages")
+            except Exception as e:
+                logger.warning(f"Failed to persist session {session_id} after LLM response: {e}", exc_info=True)
+
             # Yield pending status events after LLM response
             for status_event in yield_pending_status_events():
                 yield status_event
@@ -1418,6 +1426,14 @@ class Agent(MCPServer):
 
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
+
+                # Persist session after each tool execution to preserve progress on cancellation
+                try:
+                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
+                    self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
+                    logger.debug(f"Persisted session {session_id} after tool execution (step {step}) with {len(conversation_msgs)} messages")
+                except Exception as e:
+                    logger.warning(f"Failed to persist session {session_id} after tool execution: {e}", exc_info=True)
 
                 # Yield pending status events after tool execution
                 for status_event in yield_pending_status_events():
