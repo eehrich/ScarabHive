@@ -234,6 +234,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
     async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'create' operation - create and execute new sub-agent."""
+        # Get status context early (before try block) so it's available in except
+        status = params.get("_status")
+        
         try:
             # Extract parameters
             agent_name = params["agent_type"]  # This is actually the agent instance name
@@ -255,9 +258,6 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
                 raise ValueError("No session context available - this tool must be called from an agent")
-
-            # Get status context
-            status = params.get("_status")
             if status:
                 await status.progress(f"Creating sub-agent: {agent_name}")
 
@@ -382,6 +382,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
     async def _handle_continue(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'continue' operation - continue existing sub-agent."""
+        # Get status context early (before try block) so it's available in except
+        status = params.get("_status")
+        
         try:
             # Extract parameters
             instance_id = params["instance_id"]
@@ -392,9 +395,6 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
                 raise ValueError("No session context available")
-
-            # Get status context
-            status = params.get("_status")
 
             # Get manager with injected dependencies
             registry = self._extract_registry(params)
