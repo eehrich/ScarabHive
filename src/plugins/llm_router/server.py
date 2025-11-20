@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
 from agent_system.llm.models import ChatMessage
@@ -150,7 +151,7 @@ class LLMRouterServer(SchemaBasedMCPServer):
                 if msg.content:
                     msg.content = sanitize_for_llm(msg.content)
         elif "message" in params:
-            messages = [ChatMessage(role="user", content=sanitize_for_llm(params["message"]))]
+            messages = [ChatMessage(role="user", content=sanitize_for_llm(params["message"]), timestamp=datetime.now(timezone.utc))]
         else:
             return {"error": "No message or messages provided"}
 

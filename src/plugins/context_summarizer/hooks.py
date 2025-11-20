@@ -618,7 +618,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 # Call LLM for summarization using chat() method with cancellation support
                 from agent_system.llm.models import ChatMessage
                 summary_response = await context.llm.chat(
-                    messages=[ChatMessage(role='user', content=prompt)],
+                    messages=[ChatMessage(role='user', content=prompt, timestamp=datetime.now())],
                     cancellation_token=cancellation_token
                 )
 

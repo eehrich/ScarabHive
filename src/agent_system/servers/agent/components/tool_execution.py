@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator
 
 if TYPE_CHECKING:
@@ -198,7 +199,8 @@ class ToolExecutionManager:
                     role="tool",
                     tool_call_id=tool_call_id,
                     name=openai_tool_name or "unknown",
-                    content=json.dumps({"error": f"Tool '{tool_name}' is not available."})
+                    content=json.dumps({"error": f"Tool '{tool_name}' is not available."}),
+                    timestamp=datetime.now(timezone.utc)
                 ))
                 continue
 
@@ -348,7 +350,8 @@ class ToolExecutionManager:
                         role="tool",
                         tool_call_id=tool_call_id,
                         name=sanitize_for_llm(openai_tool_name),
-                        content=sanitize_json_content(error_content)
+                        content=sanitize_json_content(error_content),
+                        timestamp=datetime.now(timezone.utc)
                     )
                     return message, [{"type": "tool_error", "tool": tool_name, "error": str(e), "request_id": request_id}], []
 
@@ -362,7 +365,7 @@ class ToolExecutionManager:
         """Create a cancelled tool response."""
         tool_call_id = tc.get("id") or f"cancelled-call-{int(time.time()*1000)}"
         cancel_type = "force-cancelled" if forced else "cancelled"
-        error_content = json.dumps({
+        cancel_content = json.dumps({
             "error": f"Tool '{tool_name}' was {cancel_type}.",
             "cancelled": True,
             "forced": forced
@@ -372,7 +375,8 @@ class ToolExecutionManager:
             role="tool",
             tool_call_id=tool_call_id,
             name=sanitize_for_llm(openai_tool_name),
-            content=sanitize_json_content(error_content)
+            content=sanitize_json_content(cancel_content),
+            timestamp=datetime.now(timezone.utc)
         )
 
         event_type = "tool_force_cancelled" if forced else "tool_cancelled"
@@ -425,7 +429,8 @@ class ToolExecutionManager:
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
-                content=tool_msg_content
+                content=tool_msg_content,
+                timestamp=datetime.now(timezone.utc)
             )
             return message, events, results
         except (Exception, GeneratorExit) as e:
@@ -444,7 +449,8 @@ class ToolExecutionManager:
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
-                content=sanitize_json_content(error_content)
+                content=sanitize_json_content(error_content),
+                timestamp=datetime.now(timezone.utc)
             )
             return message, events, results
 
@@ -550,7 +556,8 @@ class ToolExecutionManager:
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=openai_tool_name,
-                content=tool_msg_content
+                content=tool_msg_content,
+                timestamp=datetime.now(timezone.utc)
             )
             return message, events, results
 
@@ -568,6 +575,7 @@ class ToolExecutionManager:
                 role="tool",
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
-                content=sanitize_json_content(error_content)
+                content=sanitize_json_content(error_content),
+                timestamp=datetime.now(timezone.utc)
             )
             return message, events, results
