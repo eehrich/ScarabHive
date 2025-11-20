@@ -140,20 +140,24 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             session_id: Sequential thinking session ID (10-char hex)
             agent_session_id: Agent conversation session ID (for hook lookup)
         """
-        if session_id and session_id in self._sessions:
-            session = self._sessions[session_id]
+        # If no explicit session_id but agent_session_id available, use agent_session_id as the thinking session
+        # This ensures continuity across multiple tool calls in the same conversation
+        effective_session_id = session_id or agent_session_id
+        
+        if effective_session_id and effective_session_id in self._sessions:
+            session = self._sessions[effective_session_id]
             session.last_accessed = datetime.now()
             
             # Update agent session mapping if provided
-            if agent_session_id and session_id not in self._agent_session_mapping.get(agent_session_id, []):
+            if agent_session_id and effective_session_id not in self._agent_session_mapping.get(agent_session_id, []):
                 if agent_session_id not in self._agent_session_mapping:
                     self._agent_session_mapping[agent_session_id] = []
-                self._agent_session_mapping[agent_session_id].append(session_id)
+                self._agent_session_mapping[agent_session_id].append(effective_session_id)
             
             return session
         
-        # Create new session with short ID (10 chars like agent sessions)
-        new_id = session_id or short_id(10)
+        # Create new session - prefer agent_session_id for continuity
+        new_id = effective_session_id or short_id(10)
         session = SessionState(
             session_id=new_id,
             created_at=datetime.now(),
@@ -166,10 +170,11 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         if agent_session_id:
             if agent_session_id not in self._agent_session_mapping:
                 self._agent_session_mapping[agent_session_id] = []
-            self._agent_session_mapping[agent_session_id].append(new_id)
+            if new_id not in self._agent_session_mapping[agent_session_id]:
+                self._agent_session_mapping[agent_session_id].append(new_id)
             logger.debug(f"Mapped agent session {agent_session_id} → thinking session {new_id}")
         
-        logger.info(f"Created new session: {new_id}")
+        logger.info(f"Created new thinking session: {new_id}")
         return session
 
     def _cleanup_old_sessions(self) -> None:
