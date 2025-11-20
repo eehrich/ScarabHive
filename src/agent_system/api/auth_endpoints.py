@@ -158,13 +158,16 @@ async def login(
     db.update_last_login(user.id)
 
     # Set secure cookie for browser clients
+    # Use both max_age and expires for maximum browser compatibility
+    cookie_max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60  # 7 days in seconds
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,  # Secure: JavaScript cannot access
         secure=False,   # Allow HTTP for local development (set True in production)
         samesite="lax",  # CSRF protection
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # 7 days
+        max_age=cookie_max_age,  # 7 days (in seconds)
+        expires=cookie_max_age,  # 7 days (also set expires for older browsers)
     )
 
     logger.info(f"User logged in: {user.username}")
