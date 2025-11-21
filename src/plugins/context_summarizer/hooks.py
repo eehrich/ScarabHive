@@ -142,6 +142,10 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 f"({self.trigger_percentage:.0%} of {context_window}). Starting summarization for session {context.session_id}"
             )
 
+            # Clean up orphaned tool_calls BEFORE categorization
+            # This prevents tool_calls without responses from causing issues during summarization
+            messages_as_dicts = self._remove_orphaned_tool_calls(messages_as_dicts)
+
             # Generate unique request_id for summarizer status messages (like tool calls)
             # This must be done BEFORE creating StatusScope so all messages use the same unique ID
             summarizer_request_id = context.request_id
@@ -541,6 +545,69 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             [msg for _, msg in recent_msgs],
             [msg for _, msg in old_msgs]
         )
+
+    def _remove_orphaned_tool_calls(self, messages: List[Dict]) -> List[Dict]:
+        """Remove tool_calls that have no corresponding tool responses.
+        
+        This prevents orphaned tool_calls from causing validation issues
+        after summarization (e.g., after cancellation or context_summarizer runs).
+        
+        Args:
+            messages: List of messages
+            
+        Returns:
+            Cleaned list with orphaned tool_calls removed
+        """
+        # Build set of tool_call_ids that have responses
+        responded_tool_call_ids: set[str] = set()
+        for msg in messages:
+            if msg.get('role') == 'tool' and msg.get('tool_call_id'):
+                responded_tool_call_ids.add(msg['tool_call_id'])
+        
+        # Clean assistant messages: remove tool_calls without responses
+        cleaned_messages = []
+        for msg in messages:
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                # Filter tool_calls to only those with responses
+                original_tool_calls = msg.get('tool_calls', [])
+                kept_tool_calls = []
+                removed_count = 0
+                
+                for tc in original_tool_calls:
+                    if isinstance(tc, dict) and tc.get('id'):
+                        if tc['id'] in responded_tool_call_ids:
+                            kept_tool_calls.append(tc)
+                        else:
+                            removed_count += 1
+                            logger.debug(
+                                f"[ContextSummarizer] Removing orphaned tool_call: {tc.get('id')} "
+                                f"(function: {tc.get('function', {}).get('name', 'unknown')})"
+                            )
+                
+                # Create cleaned message
+                if removed_count > 0:
+                    cleaned_msg = msg.copy()
+                    if kept_tool_calls:
+                        cleaned_msg['tool_calls'] = kept_tool_calls
+                    else:
+                        # No tool_calls left, remove the field entirely
+                        cleaned_msg.pop('tool_calls', None)
+                    cleaned_messages.append(cleaned_msg)
+                    
+                    if removed_count > 0:
+                        logger.info(
+                            f"[ContextSummarizer] Cleaned assistant message: "
+                            f"removed {removed_count} orphaned tool_call(s), "
+                            f"kept {len(kept_tool_calls)} with responses"
+                        )
+                else:
+                    # No changes needed
+                    cleaned_messages.append(msg)
+            else:
+                # Non-assistant or no tool_calls, keep as-is
+                cleaned_messages.append(msg)
+        
+        return cleaned_messages
 
     def _create_smart_chunks(self, messages: List[dict], chunk_size: int) -> List[List[dict]]:
         """Create chunks that keep tool_calls and tool responses together.
