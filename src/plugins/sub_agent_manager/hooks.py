@@ -79,6 +79,9 @@ class SubAgentContextInjector:
                 logger.debug(f"[SubAgentContext] No sub-agents for session {context.session_id}")
                 return HookResult(success=True, modified=False, context=context)
 
+            # Sort by last_used (most recent first) - ensure consistent ordering
+            sub_agents.sort(key=lambda x: x.get("last_used", ""), reverse=True)
+
             # Limit number shown
             if len(sub_agents) > self.max_sub_agents_shown:
                 sub_agents = sub_agents[:self.max_sub_agents_shown]

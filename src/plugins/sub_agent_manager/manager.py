@@ -245,6 +245,9 @@ class SubAgentManager:
                 continue
             result.append(metadata)
 
+        # Sort by last_used (most recent first)
+        result.sort(key=lambda x: x.get("last_used", ""), reverse=True)
+
         logger.debug(f"Listed {len(result)} sub-sessions for parent {parent_session_id}")
 
         return result
