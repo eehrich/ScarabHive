@@ -371,6 +371,7 @@ async def get_session_messages(
 
 
 @session_router.put("/{session_id}")
+@session_router.patch("/{session_id}")
 async def update_session(
     session_id: str,
     request: UpdateSessionRequest,

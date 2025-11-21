@@ -1431,7 +1431,30 @@ class Agent(MCPServer):
                 try:
                     conversation_msgs = [msg for msg in messages if msg.role != "system"]
                     self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
-                    logger.debug(f"Persisted session {session_id} after tool execution (step {step}) with {len(conversation_msgs)} messages")
+                    logger.debug(f"Persisted session {session_id} to in-memory tracker after tool execution (step {step}) with {len(conversation_msgs)} messages")
+                    
+                    # CRITICAL: Also save to disk via SessionService after each tool execution
+                    # This ensures progress is preserved even if the request is cancelled or server crashes
+                    if self._session_service:
+                        session_meta = self._session_tracker.get_session_metadata(session_id)
+                        if session_meta:
+                            save_user_id = session_meta.get("user_id", "anonymous")
+                            save_agent_name = session_meta.get("agent_name", self.name)
+                            save_llm_profile = session_meta.get("llm_profile", self.agent_config.default_llm_profile)
+                            
+                            await self._session_service.save_session(
+                                agent=self,
+                                user_id=save_user_id,
+                                session_id=session_id,
+                                agent_name=save_agent_name,
+                                llm_profile=save_llm_profile,
+                                was_new_session=False  # Always update for intermediate saves
+                            )
+                            logger.debug(f"Saved session {session_id} to disk after tool execution")
+                        else:
+                            logger.warning(f"No session metadata found for {session_id}, skipping disk save")
+                    else:
+                        logger.debug("No session_service available, skipping disk save")
                 except Exception as e:
                     logger.warning(f"Failed to persist session {session_id} after tool execution: {e}", exc_info=True)
 

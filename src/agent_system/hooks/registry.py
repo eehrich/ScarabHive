@@ -616,8 +616,8 @@ class HookRegistry:
         if original_context.metadata != modified_context.metadata:
             audit_entry["modifications"]["metadata"] = True
 
-        # Log at INFO level for audit trail
-        logger.info(
+        # Log at DEBUG level for audit trail (only visible when debugging)
+        logger.debug(
             f"Hook modification audit: {hook_name}",
             extra={
                 "audit_type": "hook_modification",

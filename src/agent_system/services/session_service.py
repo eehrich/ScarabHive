@@ -168,9 +168,14 @@ class SessionService:
                 logger.debug(f"[SESSION] Updating existing session {session_id} (owner: {actual_user_id})")
                 # Load existing session with correct owner
                 session_data = await self.session_manager.load_session(actual_user_id, session_id)
-                # Update messages, title, and llm_profile
+                # Update messages
                 session_data["messages"] = messages_dicts
-                session_data["title"] = title
+                # Only update title if it's still the default auto-generated title
+                # This preserves user-renamed session titles
+                extracted_title = self._extract_session_title(messages_dicts)
+                if session_data.get("title") == extracted_title or not session_data.get("title"):
+                    session_data["title"] = extracted_title
+                # Update llm_profile
                 session_data["llm_profile"] = llm_profile
                 # Save back
                 await self.session_manager.save_session(session_data)
