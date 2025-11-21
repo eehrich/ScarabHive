@@ -517,8 +517,9 @@ export class SessionManager {
       // Save to localStorage for page reload restoration
       localStorage.setItem('lastSessionId', sessionId);
       
-      // Update UI
-      this.updateSessionDisplay(sessionId);
+      // Update UI - use session.title or session.name
+      const sessionName = session.title || session.name;
+      this.updateSessionDisplay(sessionId, sessionName);
       this.renderSessions(); // Re-render to update active state
       
       // Check if this is a sub-agent session with unavailable agent
@@ -607,10 +608,19 @@ export class SessionManager {
     }
   }
 
-  updateSessionDisplay(sessionId = null) {
+  updateSessionDisplay(sessionId = null, sessionName = null) {
     const headerEl = document.getElementById('headerSessionId');
     if (headerEl) {
       headerEl.textContent = sessionId ? sessionId.substring(0, 8) : '--';
+    }
+    
+    // Update browser tab title
+    if (sessionName) {
+      document.title = `${sessionName} - Agent System`;
+    } else if (sessionId) {
+      document.title = `${sessionId.substring(0, 8)} - Agent System`;
+    } else {
+      document.title = 'Agent System (MCP)';
     }
   }
 
