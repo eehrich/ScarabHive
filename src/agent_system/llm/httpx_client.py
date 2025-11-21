@@ -491,16 +491,16 @@ class HTTPXOpenAIClient(LLMClient):
                     logger.error(f"HTTP error (streaming): {error_msg}")
                     raise Exception(error_msg) from e
 
-            except (httpx.NetworkError, httpx.ConnectError) as e:
+            except (httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
                 last_exception = e
                 if attempt < self.max_retries:
                     backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Network error, retrying in {backoff_time}s: {e}")
+                    logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")
                     await asyncio.sleep(backoff_time)
                     continue
                 else:
-                    logger.error(f"Network error after {self.max_retries + 1} attempts: {e}")
-                    raise Exception(f"Network error: {e}") from e
+                    logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
+                    raise Exception(f"Network/protocol error: {e}") from e
 
         # Should never reach here, but just in case
         raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception

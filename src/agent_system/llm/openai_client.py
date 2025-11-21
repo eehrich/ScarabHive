@@ -639,107 +639,134 @@ class OpenAIAsyncClient(LLMClient):
 
         tools = normalized_tools
 
-        try:
-            opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
-            if tools:
-                opts["tools"] = tools
-                opts["tool_choice"] = "auto"
-            opts.update(self._default_extra)
+        # Retry logic for stream interruptions
+        max_retries = 3
+        retry_backoff = 1.0
+        last_exception = None
 
-            # Accumulated state
-            accumulated_content = []
-            accumulated_tool_calls = {}
-            accumulated_usage = None  # usage information from final chunk
+        for attempt in range(max_retries + 1):
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise Exception("Request cancelled by user")
 
-            client_any = cast(Any, self._client)
+            try:
+                opts = {"model": self.model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
+                if tools:
+                    opts["tools"] = tools
+                    opts["tool_choice"] = "auto"
+                opts.update(self._default_extra)
 
-            # OpenAI SDK's create() is async and returns AsyncStream when awaited
-            stream = await client_any.chat.completions.create(**opts)
+                # Accumulated state
+                accumulated_content = []
+                accumulated_tool_calls = {}
+                accumulated_usage = None  # usage information from final chunk
 
-            # Process stream chunks
-            async for chunk in stream:
-                if cancellation_token and cancellation_token.is_cancelled:
-                    raise Exception("Request cancelled by user")
+                client_any = cast(Any, self._client)
 
-                # Extract usage if available (appears in final chunk when stream_options={'include_usage': True})
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    accumulated_usage = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens
-                    }
+                # OpenAI SDK's create() is async and returns AsyncStream when awaited
+                stream = await client_any.chat.completions.create(**opts)
 
-                choices = chunk.choices if hasattr(chunk, 'choices') else []
-                if not choices:
-                    continue
+                # Process stream chunks
+                async for chunk in stream:
+                    if cancellation_token and cancellation_token.is_cancelled:
+                        raise Exception("Request cancelled by user")
 
-                delta = choices[0].delta if hasattr(choices[0], 'delta') else None
-                if not delta:
-                    continue
-
-                # Handle content delta
-                if hasattr(delta, 'content') and delta.content:
-                    accumulated_content.append(delta.content)
-                    yield {
-                        "type": "content_delta",
-                        "delta": delta.content,
-                        "accumulated": "".join(accumulated_content)
-                    }
-
-                # Handle tool call deltas
-                if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        index = tc_delta.index if hasattr(tc_delta, 'index') else 0
-
-                        if index not in accumulated_tool_calls:
-                            accumulated_tool_calls[index] = {
-                                "id": getattr(tc_delta, "id", None) or f"call_{short_id()}",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""}
-                            }
-
-                        # Accumulate function name
-                        if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'name') and tc_delta.function.name:
-                            accumulated_tool_calls[index]["function"]["name"] += tc_delta.function.name
-
-                        # Accumulate arguments
-                        if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
-                            accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
-
-                        # Update ID if provided
-                        if hasattr(tc_delta, 'id') and tc_delta.id:
-                            accumulated_tool_calls[index]["id"] = tc_delta.id
-
-                        yield {
-                            "type": "tool_call_delta",
-                            "index": index,
-                            "delta": {
-                                "id": getattr(tc_delta, "id", None),
-                                "function": {
-                                    "name": getattr(getattr(tc_delta, "function", None), "name", None),
-                                    "arguments": getattr(getattr(tc_delta, "function", None), "arguments", None)
-                                }
-                            },
-                            "accumulated": accumulated_tool_calls[index]
+                    # Extract usage if available (appears in final chunk when stream_options={'include_usage': True})
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        accumulated_usage = {
+                            "prompt_tokens": chunk.usage.prompt_tokens,
+                            "completion_tokens": chunk.usage.completion_tokens,
+                            "total_tokens": chunk.usage.total_tokens
                         }
 
-            # Build final message
-            assistant = {"role": "assistant", "content": "".join(accumulated_content) if accumulated_content else None}
+                    choices = chunk.choices if hasattr(chunk, 'choices') else []
+                    if not choices:
+                        continue
 
-            if accumulated_tool_calls:
-                tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
-                assistant["tool_calls"] = tool_calls_list
+                    delta = choices[0].delta if hasattr(choices[0], 'delta') else None
+                    if not delta:
+                        continue
 
-            # Build final result with usage
-            final_result = {"assistant": assistant}
-            if accumulated_usage:
-                final_result["usage"] = accumulated_usage
+                    # Handle content delta
+                    if hasattr(delta, 'content') and delta.content:
+                        accumulated_content.append(delta.content)
+                        yield {
+                            "type": "content_delta",
+                            "delta": delta.content,
+                            "accumulated": "".join(accumulated_content)
+                        }
 
-            yield {"type": "final", **final_result}
+                    # Handle tool call deltas
+                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            index = tc_delta.index if hasattr(tc_delta, 'index') else 0
 
-        except Exception as e:
-            logger.exception("OpenAI streaming failed: %s", e)
-            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+                            if index not in accumulated_tool_calls:
+                                accumulated_tool_calls[index] = {
+                                    "id": getattr(tc_delta, "id", None) or f"call_{short_id()}",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""}
+                                }
+
+                            # Accumulate function name
+                            if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'name') and tc_delta.function.name:
+                                accumulated_tool_calls[index]["function"]["name"] += tc_delta.function.name
+
+                            # Accumulate arguments
+                            if hasattr(tc_delta, 'function') and hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
+                                accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
+
+                            # Update ID if provided
+                            if hasattr(tc_delta, 'id') and tc_delta.id:
+                                accumulated_tool_calls[index]["id"] = tc_delta.id
+
+                            yield {
+                                "type": "tool_call_delta",
+                                "index": index,
+                                "delta": {
+                                    "id": getattr(tc_delta, "id", None),
+                                    "function": {
+                                        "name": getattr(getattr(tc_delta, "function", None), "name", None),
+                                        "arguments": getattr(getattr(tc_delta, "function", None), "arguments", None)
+                                    }
+                                },
+                                "accumulated": accumulated_tool_calls[index]
+                            }
+
+                # Build final message
+                assistant = {"role": "assistant", "content": "".join(accumulated_content) if accumulated_content else None}
+
+                if accumulated_tool_calls:
+                    tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
+                    assistant["tool_calls"] = tool_calls_list
+
+                # Build final result with usage
+                final_result = {"assistant": assistant}
+                if accumulated_usage:
+                    final_result["usage"] = accumulated_usage
+
+                yield {"type": "final", **final_result}
+                return  # Success - exit retry loop
+
+            except (httpx.RemoteProtocolError, httpx.NetworkError, httpx.ConnectError) as e:
+                last_exception = e
+                if attempt < max_retries:
+                    backoff_time = retry_backoff * (2 ** attempt)
+                    logger.warning(f"OpenAI stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
+                    await asyncio.sleep(backoff_time)
+                    # Reset accumulated state for retry
+                    accumulated_content = []
+                    accumulated_tool_calls = {}
+                    accumulated_usage = None
+                    continue
+                else:
+                    logger.error(f"OpenAI streaming failed after {max_retries + 1} attempts: {e}")
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    return
+
+            except Exception as e:
+                logger.exception("OpenAI streaming failed: %s", e)
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+                return
 
     async def _chat_tools_streaming_realtime(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None):
         """Realtime API streaming implementation.

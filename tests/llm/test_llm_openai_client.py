@@ -1,6 +1,7 @@
 """Unit tests for OpenAIAsyncClient."""
 
 import pytest
+import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 from agent_system.llm.openai_client import OpenAIAsyncClient
 from agent_system.llm.models import ChatMessage
@@ -178,6 +179,107 @@ class TestOpenAIClientRetry:
         # Should succeed after retry
         result = await client.chat(messages)
         assert result == "Success after retry"
+        assert mock_chat.completions.create.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_streaming_remote_protocol_error_retry(self, openai_client):
+        """Test retry logic for RemoteProtocolError during streaming."""
+        client, mock_instance = openai_client
+        
+        # Create mock chunks for successful response
+        def create_success_chunks():
+            chunk1 = MagicMock()
+            chunk1.choices = [MagicMock()]
+            chunk1.choices[0].delta = MagicMock()
+            chunk1.choices[0].delta.content = "Hello"
+            chunk1.choices[0].delta.tool_calls = None
+            chunk1.usage = None
+            
+            chunk2 = MagicMock()
+            chunk2.choices = [MagicMock()]
+            chunk2.choices[0].delta = MagicMock()
+            chunk2.choices[0].delta.content = " World"
+            chunk2.choices[0].delta.tool_calls = None
+            chunk2.usage = MagicMock()
+            chunk2.usage.prompt_tokens = 10
+            chunk2.usage.completion_tokens = 5
+            chunk2.usage.total_tokens = 15
+            
+            return [chunk1, chunk2]
+        
+        # First stream: raises RemoteProtocolError mid-stream
+        async def failing_stream():
+            chunk = MagicMock()
+            chunk.choices = [MagicMock()]
+            chunk.choices[0].delta = MagicMock()
+            chunk.choices[0].delta.content = "Hel"
+            chunk.choices[0].delta.tool_calls = None
+            chunk.usage = None
+            yield chunk
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+        
+        # Second stream: succeeds
+        async def success_stream():
+            for chunk in create_success_chunks():
+                yield chunk
+        
+        mock_chat = MagicMock()
+        mock_chat.completions = MagicMock()
+        mock_chat.completions.create = AsyncMock(side_effect=[failing_stream(), success_stream()])
+        mock_instance.chat = mock_chat
+        
+        messages = [ChatMessage(role="user", content="Test")]
+        result = []
+        
+        async for chunk in client.chat_tools_streaming(messages, []):
+            result.append(chunk)
+        
+        # Should have final result after retry
+        assert any(c.get("type") == "final" for c in result)
+        final = next(c for c in result if c.get("type") == "final")
+        assert "Hello World" in final["assistant"]["content"]
+        assert mock_chat.completions.create.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_streaming_network_error_retry(self, openai_client):
+        """Test retry logic for NetworkError during streaming."""
+        client, mock_instance = openai_client
+        
+        # Success chunks
+        def create_chunks():
+            chunk = MagicMock()
+            chunk.choices = [MagicMock()]
+            chunk.choices[0].delta = MagicMock()
+            chunk.choices[0].delta.content = "Recovered"
+            chunk.choices[0].delta.tool_calls = None
+            chunk.usage = None
+            return [chunk]
+        
+        async def success_stream():
+            for chunk in create_chunks():
+                yield chunk
+        
+        mock_chat = MagicMock()
+        mock_chat.completions = MagicMock()
+        # First: NetworkError, Second: success
+        mock_chat.completions.create = AsyncMock(
+            side_effect=[
+                httpx.NetworkError("Connection reset by peer"),
+                success_stream()
+            ]
+        )
+        mock_instance.chat = mock_chat
+        
+        messages = [ChatMessage(role="user", content="Test")]
+        result = []
+        
+        async for chunk in client.chat_tools_streaming(messages, []):
+            result.append(chunk)
+        
+        # Should succeed after retry
+        assert any(c.get("type") == "final" for c in result)
+        final = next(c for c in result if c.get("type") == "final")
+        assert "Recovered" in final["assistant"]["content"]
         assert mock_chat.completions.create.call_count == 2
 
 

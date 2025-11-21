@@ -236,104 +236,128 @@ class OllamaNativeAsyncClient(LLMClient):
         if cancellation_token and cancellation_token.is_cancelled:
             raise Exception("Request cancelled by user")
 
-        accumulated_content = []
-        accumulated_tool_calls = {}
-        accumulated_usage = None  # usage information from final chunk (done=true)
+        # Retry logic for stream interruptions
+        max_retries = 3
+        retry_backoff = 1.0
 
-        try:
-            async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
-                async with client.stream("POST", url, json=body) as response:
-                    response.raise_for_status()
+        for attempt in range(max_retries + 1):
+            if cancellation_token and cancellation_token.is_cancelled:
+                raise Exception("Request cancelled by user")
 
-                    async for line in response.aiter_lines():
-                        if cancellation_token and cancellation_token.is_cancelled:
-                            raise Exception("Request cancelled by user")
+            # Initialize/reset accumulated state for each attempt
+            accumulated_content = []
+            accumulated_tool_calls = {}
+            accumulated_usage = None  # usage information from final chunk (done=true)
 
-                        if not line.strip():
-                            continue
+            try:
+                async with self._httpx.AsyncClient(timeout=self._timeout, verify=self._verify_arg) as client:
+                    async with client.stream("POST", url, json=body) as response:
+                        response.raise_for_status()
 
-                        try:
-                            chunk_data = response.json() if hasattr(line, 'json') else self._httpx.json.loads(line)
-                        except Exception:
-                            import json
-                            try:
-                                chunk_data = json.loads(line)
-                            except Exception:
-                                continue
+                        async for line in response.aiter_lines():
+                            if cancellation_token and cancellation_token.is_cancelled:
+                                raise Exception("Request cancelled by user")
 
-                        # Check if stream is done - final chunk may contain usage info
-                        if chunk_data.get("done"):
-                            # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
-                            # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
-                            if "eval_count" in chunk_data or "prompt_eval_count" in chunk_data:
-                                accumulated_usage = {}
-                                if "prompt_eval_count" in chunk_data:
-                                    accumulated_usage["prompt_tokens"] = chunk_data["prompt_eval_count"]
-                                if "eval_count" in chunk_data:
-                                    accumulated_usage["completion_tokens"] = chunk_data["eval_count"]
-                                if "prompt_eval_count" in chunk_data and "eval_count" in chunk_data:
-                                    accumulated_usage["total_tokens"] = chunk_data["prompt_eval_count"] + chunk_data["eval_count"]
-                            break
+                                if not line.strip():
+                                    continue
 
-                        message = chunk_data.get("message", {})
+                                try:
+                                    chunk_data = response.json() if hasattr(line, 'json') else self._httpx.json.loads(line)
+                                except Exception:
+                                    import json
+                                    try:
+                                        chunk_data = json.loads(line)
+                                    except Exception:
+                                        continue
 
-                        # Handle content delta
-                        content = message.get("content")
-                        if content:
-                            accumulated_content.append(content)
-                            yield {
-                                "type": "content_delta",
-                                "delta": content,
-                                "accumulated": "".join(accumulated_content)
-                            }
+                                # Check if stream is done - final chunk may contain usage info
+                                if chunk_data.get("done"):
+                                    # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
+                                    # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
+                                    if "eval_count" in chunk_data or "prompt_eval_count" in chunk_data:
+                                        accumulated_usage = {}
+                                        if "prompt_eval_count" in chunk_data:
+                                            accumulated_usage["prompt_tokens"] = chunk_data["prompt_eval_count"]
+                                        if "eval_count" in chunk_data:
+                                            accumulated_usage["completion_tokens"] = chunk_data["eval_count"]
+                                        if "prompt_eval_count" in chunk_data and "eval_count" in chunk_data:
+                                            accumulated_usage["total_tokens"] = chunk_data["prompt_eval_count"] + chunk_data["eval_count"]
+                                    break
 
-                        # Handle tool call deltas
-                        tool_calls = message.get("tool_calls")
-                        if tool_calls:
-                            for tc in tool_calls:
-                                # Ollama sends complete tool calls, not deltas
-                                # Extract index if available, otherwise use name as key
-                                func = tc.get("function", {})
-                                tc_id = tc.get("id") or f"call_{short_id()}"
-                                name = func.get("name", "")
-                                index = len(accumulated_tool_calls)  # Assign next index
+                                message = chunk_data.get("message", {})
 
-                                if index not in accumulated_tool_calls:
-                                    accumulated_tool_calls[index] = {
-                                        "id": tc_id,
-                                        "type": "function",
-                                        "function": {"name": name, "arguments": func.get("arguments", {})}
+                                # Handle content delta
+                                content = message.get("content")
+                                if content:
+                                    accumulated_content.append(content)
+                                    yield {
+                                        "type": "content_delta",
+                                        "delta": content,
+                                        "accumulated": "".join(accumulated_content)
                                     }
 
-                                yield {
-                                    "type": "tool_call_delta",
-                                    "index": index,
-                                    "delta": tc,
-                                    "accumulated": accumulated_tool_calls[index]
-                                }
+                                # Handle tool call deltas
+                                tool_calls = message.get("tool_calls")
+                                if tool_calls:
+                                    for tc in tool_calls:
+                                        # Ollama sends complete tool calls, not deltas
+                                        # Extract index if available, otherwise use name as key
+                                        func = tc.get("function", {})
+                                        tc_id = tc.get("id") or f"call_{short_id()}"
+                                        name = func.get("name", "")
+                                        index = len(accumulated_tool_calls)  # Assign next index
 
-            # Build final assistant message
-            assistant = {
-                "role": "assistant",
-                "content": "".join(accumulated_content) if accumulated_content else None
-            }
+                                        if index not in accumulated_tool_calls:
+                                            accumulated_tool_calls[index] = {
+                                                "id": tc_id,
+                                                "type": "function",
+                                                "function": {"name": name, "arguments": func.get("arguments", {})}
+                                            }
 
-            if accumulated_tool_calls:
-                tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
-                assistant["tool_calls"] = tool_calls_list
+                                    yield {
+                                        "type": "tool_call_delta",
+                                        "index": index,
+                                        "delta": tc,
+                                        "accumulated": accumulated_tool_calls[index]
+                                    }                # Build final assistant message (after async with block)
+                assistant = {
+                    "role": "assistant",
+                    "content": "".join(accumulated_content) if accumulated_content else None
+                }
 
-            # Build final result with usage
-            final_result = {"assistant": assistant}
-            if accumulated_usage:
-                final_result["usage"] = accumulated_usage
+                if accumulated_tool_calls:
+                    tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
+                    assistant["tool_calls"] = tool_calls_list
 
-            yield {"type": "final", **final_result}
+                # Build final result with usage
+                final_result = {"assistant": assistant}
+                if accumulated_usage:
+                    final_result["usage"] = accumulated_usage
 
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.exception("Ollama streaming failed: %s", e)
-            yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+                yield {"type": "final", **final_result}
+                return  # Success - exit retry loop
+
+            except (self._httpx.RemoteProtocolError, self._httpx.NetworkError, self._httpx.ConnectError) as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                if attempt < max_retries:
+                    backoff_time = retry_backoff * (2 ** attempt)
+                    logger.warning(f"Ollama stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
+                    await asyncio.sleep(backoff_time)
+                    continue
+                else:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Ollama streaming failed after {max_retries + 1} attempts: {e}")
+                    yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": f"Stream failed after {max_retries + 1} attempts: {e}"}}}
+                    return
+
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.exception("Ollama streaming failed: %s", e)
+                yield {"type": "final", "assistant": {"role": "assistant", "content": "", "error": {"error": True, "message": str(e)}}}
+                return
 
     def supports_streaming(self) -> bool:
         """Check if this client supports streaming based on model capabilities."""

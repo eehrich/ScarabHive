@@ -564,6 +564,103 @@ class TestErrorHandling(TestHTTPXOpenAIClient):
             assert "timed out" in str(exc_info.value).lower() or "timeout" in str(exc_info.value).lower()
             # Should try max_retries + 1 times (2 + 1 = 3)
             assert mock_client.stream.call_count == 3
+    
+    @pytest.mark.asyncio
+    async def test_remote_protocol_error_retry(self, client, sample_messages):
+        """Test retry logic for RemoteProtocolError (peer closed connection)."""
+        call_count = [0]
+        
+        # Success response
+        sse_lines = [
+            'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}',
+            'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}',
+            'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+            'data: [DONE]'
+        ]
+        
+        with patch("httpx.AsyncClient") as mock_async_client:
+            def create_mock_stream(*args, **kwargs):
+                call_count[0] += 1
+                
+                if call_count[0] == 1:
+                    # First call: stream interruption
+                    async def mock_aiter_lines_with_error():
+                        yield 'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}'
+                        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+                    
+                    mock_error_response = AsyncMock()
+                    mock_error_response.status_code = 200
+                    mock_error_response.headers = {}
+                    mock_error_response.aiter_lines = mock_aiter_lines_with_error
+                    mock_error_response.__aenter__.return_value = mock_error_response
+                    mock_error_response.__aexit__.return_value = None
+                    return mock_error_response
+                else:
+                    # Second call: success
+                    async def mock_aiter_lines():
+                        for line in sse_lines:
+                            yield line
+                    
+                    mock_success_response = AsyncMock()
+                    mock_success_response.status_code = 200
+                    mock_success_response.headers = {}
+                    mock_success_response.aiter_lines = mock_aiter_lines
+                    mock_success_response.__aenter__.return_value = mock_success_response
+                    mock_success_response.__aexit__.return_value = None
+                    return mock_success_response
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.stream = Mock(side_effect=create_mock_stream)
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat(sample_messages)
+            
+            assert result == "Hello"
+            assert mock_client.stream.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_network_error_retry(self, client, sample_messages):
+        """Test retry logic for NetworkError."""
+        with patch("httpx.AsyncClient") as mock_async_client:
+            # First request: network error
+            network_error = httpx.NetworkError("Connection reset by peer")
+            
+            # Second response: success
+            sse_lines = [
+                'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}',
+                'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":"Recovered"},"finish_reason":null}]}',
+                'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                'data: [DONE]'
+            ]
+            
+            async def mock_aiter_lines():
+                for line in sse_lines:
+                    yield line
+            
+            mock_success_response = AsyncMock()
+            mock_success_response.status_code = 200
+            mock_success_response.headers = {}
+            mock_success_response.aiter_lines = mock_aiter_lines
+            mock_success_response.__aenter__.return_value = mock_success_response
+            mock_success_response.__aexit__.return_value = None
+            
+            def mock_stream_with_network_error(*args, **kwargs):
+                if mock_client.stream.call_count == 1:
+                    raise network_error
+                return mock_success_response
+            
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.stream = Mock(side_effect=mock_stream_with_network_error)
+            mock_async_client.return_value = mock_client
+            
+            result = await client.chat(sample_messages)
+            
+            assert result == "Recovered"
+            assert mock_client.stream.call_count == 2
 
 
 class TestTimeoutConfiguration(TestHTTPXOpenAIClient):
