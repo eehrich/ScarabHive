@@ -608,9 +608,24 @@ class Agent(MCPServer):
         if request_id is None:
             request_id = short_id()
 
+        # Track if this is a newly generated session
+        was_new_session = not session_id
+        
         # If no session_id provided, generate one and persist empty history
         if not session_id:
             session_id = short_id()
+
+        # CRITICAL: Set session metadata for newly generated sessions
+        # This ensures user_id is available for tool execution even in sub-agents
+        if was_new_session and self._session_tracker:
+            # Use agent's default llm_profile for metadata
+            effective_llm_profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
+            self._session_tracker.set_session_metadata(session_id, {
+                "user_id": "anonymous",  # Sub-agents don't have direct user context
+                "agent_name": self.name,
+                "llm_profile": effective_llm_profile
+            })
+            logger.debug(f"[SESSION] Set default metadata for new session {session_id} in agent {self.name}")
 
         # Handle Union[str, ChatMessage] input
         initial_message: Optional[ChatMessage] = None
