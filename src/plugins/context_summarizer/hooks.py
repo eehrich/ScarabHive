@@ -542,6 +542,78 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             [msg for _, msg in old_msgs]
         )
 
+    def _create_smart_chunks(self, messages: List[dict], chunk_size: int) -> List[List[dict]]:
+        """Create chunks that keep tool_calls and tool responses together.
+
+        This ensures that if an assistant message with tool_calls is in a chunk,
+        all its corresponding tool responses are also in the same chunk.
+
+        Args:
+            messages: Messages to chunk
+            chunk_size: Target chunk size (may be exceeded to keep pairs together)
+
+        Returns:
+            List of message chunks
+        """
+        if not messages:
+            return []
+
+        # Build mapping: tool_call_id -> assistant message index
+        tool_call_map: Dict[str, int] = {}
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                for tc in msg.get('tool_calls', []):
+                    if isinstance(tc, dict) and 'id' in tc:
+                        tool_call_map[tc['id']] = i
+
+        # Build groups: each group is a list of message indices that must stay together
+        # Start with each message in its own group
+        groups: List[set[int]] = [{i} for i in range(len(messages))]
+
+        # Merge groups: if a tool response belongs to an assistant, merge their groups
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'tool':
+                tool_call_id = msg.get('tool_call_id')
+                if tool_call_id and tool_call_id in tool_call_map:
+                    assistant_idx = tool_call_map[tool_call_id]
+                    # Merge groups: add tool response index to assistant's group
+                    groups[assistant_idx].add(i)
+                    groups[i] = groups[assistant_idx]  # Point to same group object
+
+        # Deduplicate groups (multiple indices may point to same set object)
+        unique_groups = []
+        seen = set()
+        for group in groups:
+            group_id = id(group)
+            if group_id not in seen:
+                seen.add(group_id)
+                unique_groups.append(sorted(list(group)))
+
+        # Now create chunks by greedily packing groups
+        chunks: List[List[dict]] = []
+        current_chunk: List[dict] = []
+        current_size = 0
+
+        for group_indices in unique_groups:
+            group_msgs = [messages[i] for i in group_indices]
+            group_size = len(group_msgs)
+
+            # If adding this group exceeds chunk_size and current_chunk is not empty, start new chunk
+            if current_size > 0 and current_size + group_size > chunk_size:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_size = 0
+
+            # Add group to current chunk
+            current_chunk.extend(group_msgs)
+            current_size += group_size
+
+        # Add final chunk if not empty
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
     async def _summarize_messages(
         self,
         messages: List[dict],
@@ -562,16 +634,18 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             logger.warning("[ContextSummarizer] No LLM available in context, skipping summarization")
             return messages, {'summary_count': 0, 'reason': 'no_llm'}
 
+        # CRITICAL: Create chunks that keep tool_calls/tool response pairs together
+        chunks = self._create_smart_chunks(messages, self.chunk_size)
+
         summarized = []
         summary_count = 0
-        total_chunks = (len(messages) + self.chunk_size - 1) // self.chunk_size
+        total_chunks = len(chunks)
 
         # Get cancellation token from context (if available)
         cancellation_token = getattr(context, 'cancellation_token', None)
 
         # Process messages in chunks
-        for chunk_idx in range(0, len(messages), self.chunk_size):
-            chunk = messages[chunk_idx:chunk_idx + self.chunk_size]
+        for chunk_idx, chunk in enumerate(chunks):
 
             if len(chunk) < 2:
                 # Too small to summarize, keep as-is
@@ -580,25 +654,26 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Check for cancellation before each chunk
             if cancellation_token and cancellation_token.is_cancelled:
-                logger.info(f"[ContextSummarizer] Cancellation requested, stopping at chunk {chunk_idx // self.chunk_size + 1}/{total_chunks}")
+                logger.info(f"[ContextSummarizer] Cancellation requested, stopping at chunk {chunk_idx + 1}/{total_chunks}")
                 # Send error message via scope before returning
                 await scope.error(
-                    f"cancelled at chunk {chunk_idx // self.chunk_size + 1}/{total_chunks}",
-                    meta={'cancelled_at_chunk': chunk_idx // self.chunk_size + 1}
+                    f"cancelled at chunk {chunk_idx + 1}/{total_chunks}",
+                    meta={'cancelled_at_chunk': chunk_idx + 1}
                 )
-                # Return what we have so far + remaining unsummarized messages
-                summarized.extend(messages[chunk_idx:])
+                # Return what we have so far + remaining unsummarized chunks
+                for remaining_chunk in chunks[chunk_idx:]:
+                    summarized.extend(remaining_chunk)
                 stats = {
                     'summary_count': summary_count,
                     'total_chunks': total_chunks,
                     'successful_chunks': summary_count,
                     'failed_chunks': total_chunks - summary_count,
                     'cancelled': True,
-                    'cancelled_at_chunk': chunk_idx // self.chunk_size + 1
+                    'cancelled_at_chunk': chunk_idx + 1
                 }
                 return summarized, stats
 
-            chunk_num = chunk_idx // self.chunk_size + 1
+            chunk_num = chunk_idx + 1
 
             # Send progress update via the StatusScope
             await scope.progress(
