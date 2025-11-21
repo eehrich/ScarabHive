@@ -1075,9 +1075,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             actual_session_id = event["session_id"]
                             logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
 
-                        # CRITICAL: Set session metadata for newly created sessions
-                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
-                        if was_new_session:
+                        # CRITICAL: Always set/update session metadata (even for existing sessions)
+                        # This ensures user_id is available for tool execution AND respects llm_profile overrides
+                        if was_new_session or event_type == "start":
                             # Use override llm_profile if provided, otherwise agent's default
                             effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                             selected_agent._session_tracker.set_session_metadata(actual_session_id, {
@@ -1221,15 +1221,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         actual_session_id = ev["session_id"]
                         logger.debug(f"[SESSION_SAVE] Session ID captured from start event: {old_session_id} -> {actual_session_id}")
 
-                        # CRITICAL: Set session metadata for newly created sessions
-                        # This ensures user_id is available for tool execution (e.g., sub-agent manager)
-                        if was_new_session:
-                            selected_agent._session_tracker.set_session_metadata(actual_session_id, {
-                                "user_id": user_id,
-                                "agent_name": agent_name or "default",
-                                "llm_profile": llm_profile or "normal"
-                            })
-                            logger.debug(f"[SESSION] Set metadata for new session {actual_session_id}: user_id={user_id}")
+                    # CRITICAL: Always set/update session metadata (even for existing sessions)
+                    # This ensures user_id is available for tool execution AND respects llm_profile overrides
+                    if was_new_session or ev.get("type") == "start":
+                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                        selected_agent._session_tracker.set_session_metadata(actual_session_id, {
+                            "user_id": user_id,
+                            "agent_name": agent_name or "default",
+                            "llm_profile": effective_llm_profile
+                        })
+                        logger.debug(f"[SESSION] Set metadata for session {actual_session_id}: user_id={user_id}")
 
                     if hasattr(ev, 'to_dict'):
                         payload = ev.to_dict()
