@@ -1465,6 +1465,9 @@ class Agent(MCPServer):
                 else:
                     logger.warning("[TOOL_EXEC] No _session_tracker available")
 
+                # CRITICAL: Inject per-request status_forwarder so tool execution can stream sub-agent status events
+                self._tool_execution_manager._status_forwarder = context.status_forwarder
+
                 async for item in self._tool_execution_manager.execute_tools_streaming(
                     tool_calls=tool_calls,
                     tool_name_mapping=tool_name_mapping,
