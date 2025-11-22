@@ -648,10 +648,36 @@
         stopBtn.disabled = true;
         stopBtn.classList.add('cancelling');
 
+        // Timeout: Nach 60 Sekunden automatisch zurücksetzen falls Backend nicht antwortet
+        const timeoutId = setTimeout(() => {
+          console.warn('Cancel request timeout after 60 seconds');
+          stopBtn.setAttribute('title', 'Timeout');
+          stopBtn.setAttribute('aria-label', 'Timeout');
+          stopBtn.classList.remove('cancelling');
+          stopBtn.classList.add('cancel-failed');
+          
+          // Nach weiteren 2 Sekunden komplett zurücksetzen und UI wiederherstellen
+          setTimeout(() => {
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+            
+            // UI zurücksetzen: Run-Button anzeigen, Stop-Button verstecken
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            currentRequestId = null;
+            currentEventSource = null;
+          }, 2000);
+        }, 60000); // 60 Sekunden
+
         try {
           const response = await fetch(`/cancel/${currentRequestId}`, { method: 'POST' });
           const result = await response.json();
           console.log('Cancel request result:', result);
+          
+          // Timeout abbrechen da Antwort erhalten
+          clearTimeout(timeoutId);
 
           // Kurze Verzögerung für besseres UX-Feedback
           setTimeout(() => {
@@ -670,6 +696,9 @@
 
         } catch (error) {
           console.error('Failed to cancel request:', error);
+          // Timeout abbrechen da Fehler erhalten
+          clearTimeout(timeoutId);
+          
           stopBtn.setAttribute('title', 'Failed');
           stopBtn.setAttribute('aria-label', 'Failed');
           stopBtn.classList.remove('cancelling');
@@ -1029,6 +1058,11 @@
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(errorMsg)}</div>`;
             runBtn.style.display = 'block';
             stopBtn.style.display = 'none';
+            // Reset stop button state
+            stopBtn.setAttribute('title', 'Stop');
+            stopBtn.setAttribute('aria-label', 'Stop');
+            stopBtn.disabled = false;
+            stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
             return;
           }
 
@@ -1087,6 +1121,11 @@
         } finally {
           runBtn.style.display = 'block';
           stopBtn.style.display = 'none';
+          // Reset stop button state
+          stopBtn.setAttribute('title', 'Stop');
+          stopBtn.setAttribute('aria-label', 'Stop');
+          stopBtn.disabled = false;
+          stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           currentRequestId = null;
           currentEventSource = null;
         }
