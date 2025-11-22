@@ -128,7 +128,7 @@ class StatusEventForwarder:
         
         # Check if we already have terminal events (.end or .error)
         has_terminal_event = any(
-            ev.get("status") in ("end", "error") 
+            ev.get("phase") in ("end", "error") 
             for ev in all_events
         )
         if has_terminal_event:
@@ -151,7 +151,7 @@ class StatusEventForwarder:
                     
                     # Exit early if we found .end or .error
                     for ev in new_events:
-                        if ev.get("status") in ("end", "error"):
+                        if ev.get("phase") in ("end", "error"):
                             return all_events
             
             if not had_events:
