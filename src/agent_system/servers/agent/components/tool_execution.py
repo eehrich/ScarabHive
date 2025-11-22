@@ -261,7 +261,15 @@ class ToolExecutionManager:
                     except Exception as e:
                         logger.exception("Error processing tool result: %s", e)
 
-            # Yield final status events after all tools complete
+            # Drain any remaining status events after all tools complete
+            # This ensures .end() events are not lost due to timing issues
+            if self._status_forwarder:
+                # Use drain to ensure all events are consumed
+                drained_events = await self._status_forwarder.drain_pending_events(max_wait_ms=100)
+                for status_event in drained_events:
+                    yield {"type": "status", "event": status_event}
+
+            # Final check for any remaining status events
             if self._status_forwarder:
                 status_events = self._status_forwarder.get_pending_events()
                 for status_event in status_events:

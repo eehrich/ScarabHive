@@ -92,6 +92,40 @@ class StatusEventForwarder:
         self.status_events_to_forward.clear()
         return events
 
+    async def drain_pending_events(self, max_wait_ms: float = 100) -> List[Dict[str, Any]]:
+        """Drain all pending events with timeout to ensure .end() events are not lost.
+        
+        This method polls the status queue for a short time to ensure all events
+        that were published before tools completed are actually forwarded.
+        
+        Args:
+            max_wait_ms: Maximum time to wait for events in milliseconds
+            
+        Returns:
+            List of all pending events
+        """
+        all_events = self.get_pending_events()
+        
+        # Poll the queue for any remaining events with timeout
+        deadline = asyncio.get_event_loop().time() + (max_wait_ms / 1000)
+        while asyncio.get_event_loop().time() < deadline:
+            # Check if there are events in the forwarding buffer
+            if self.status_events_to_forward:
+                all_events.extend(self.get_pending_events())
+            
+            # Give the forwarding task a chance to process
+            await asyncio.sleep(0.01)
+            
+            # Check again
+            if self.status_events_to_forward:
+                all_events.extend(self.get_pending_events())
+        
+        # Final check
+        if self.status_events_to_forward:
+            all_events.extend(self.get_pending_events())
+        
+        return all_events
+
     async def stop_forwarding(self) -> None:
         """Stop the status event forwarding task."""
         if self.forwarding_task and self.forwarding_done:

@@ -196,6 +196,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 )
 
             # Use StatusScope to ensure START/END pairing even on errors
+            result = None
             async with StatusScope(
                 status_bus,
                 "context_summarizer",
@@ -251,7 +252,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         }
                         self.summarization_history.append(event)
                     
-                    return HookResult(
+                    # Store result instead of returning directly
+                    result = HookResult(
                         success=True,
                         modified=False,
                         context=context,
@@ -261,70 +263,45 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'min_reduction': self.min_reduction
                         }
                     )
+                else:
+                    # Convert dicts back to ChatMessage objects
+                    new_messages = []
+                    for msg_dict in new_messages_dicts:
+                        if isinstance(msg_dict, dict):
+                            new_messages.append(ChatMessage(**msg_dict))
+                        else:
+                            new_messages.append(msg_dict)
 
-                # Convert dicts back to ChatMessage objects
-                new_messages = []
-                for msg_dict in new_messages_dicts:
-                    if isinstance(msg_dict, dict):
-                        new_messages.append(ChatMessage(**msg_dict))
-                    else:
-                        new_messages.append(msg_dict)
+                    # Create modified context
+                    modified_context = HookContext(
+                        hook_type=context.hook_type,
+                        request_id=context.request_id,
+                        session_id=context.session_id,
+                        agent=context.agent,
+                        agent_name=context.agent_name,
+                        messages=new_messages,
+                        llm_response=context.llm_response,
+                        tool_call=context.tool_call,
+                        tool_result=context.tool_result,
+                        output=context.output,
+                        metadata=context.metadata,
+                        step=context.step,
+                        llm=context.llm
+                    )
 
-                # Create modified context
-                modified_context = HookContext(
-                    hook_type=context.hook_type,
-                    request_id=context.request_id,
-                    session_id=context.session_id,
-                    agent=context.agent,
-                    agent_name=context.agent_name,
-                    messages=new_messages,
-                    llm_response=context.llm_response,
-                    tool_call=context.tool_call,
-                    tool_result=context.tool_result,
-                    output=context.output,
-                    metadata=context.metadata,
-                    step=context.step,
-                    llm=context.llm
-                )
+                    logger.info(
+                        f"[ContextSummarizer] Summarization complete: "
+                        f"{len(messages)} → {len(new_messages)} messages, "
+                        f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
+                    )
 
-                logger.info(
-                    f"[ContextSummarizer] Summarization complete: "
-                    f"{len(messages)} → {len(new_messages)} messages, "
-                    f"{original_tokens} → {new_tokens} tokens ({reduction_ratio:.1%} reduction)"
-                )
-
-                # Record summarization event in history
-                if self.summarization_history is not None:
-                    event = {
-                        'timestamp': datetime.now().isoformat(),
-                        'session_id': context.session_id,
-                        'request_id': context.request_id,
-                        'strategy': 'summarize',  # context_summarizer uses LLM summarization
-                        'original_message_count': len(messages),
-                        'summarized_message_count': len(new_messages),
-                        'messages_summarized': len(old_msgs),
-                        'summary_count': summary_stats['summary_count'],
-                        'original_tokens': original_tokens,
-                        'new_tokens': new_tokens,
-                        'tokens_saved': original_tokens - new_tokens,
-                        'reduction_ratio': reduction_ratio,
-                        'status': 'success',  # Mark successful summarizations
-                        'before_messages': [self._serialize_message(m) for m in old_msgs],  # ALL messages that were removed (summarized)
-                        'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
-                        'summary_stats': summary_stats
-                    }
-                    self.summarization_history.append(event)
-
-                    # Keep only last 1000 events
-                    if len(self.summarization_history) > 1000:
-                        self.summarization_history.pop(0)
-
-                return HookResult(
-                    success=True,
-                    modified=True,
-                    context=modified_context,
-                    metadata={
-                        'summarization': {
+                    # Record summarization event in history
+                    if self.summarization_history is not None:
+                        event = {
+                            'timestamp': datetime.now().isoformat(),
+                            'session_id': context.session_id,
+                            'request_id': context.request_id,
+                            'strategy': 'summarize',  # context_summarizer uses LLM summarization
                             'original_message_count': len(messages),
                             'summarized_message_count': len(new_messages),
                             'messages_summarized': len(old_msgs),
@@ -333,10 +310,39 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'new_tokens': new_tokens,
                             'tokens_saved': original_tokens - new_tokens,
                             'reduction_ratio': reduction_ratio,
-                            **summary_stats
+                            'status': 'success',  # Mark successful summarizations
+                            'before_messages': [self._serialize_message(m) for m in old_msgs],  # ALL messages that were removed (summarized)
+                            'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
+                            'summary_stats': summary_stats
                         }
-                    }
-                )
+                        self.summarization_history.append(event)
+
+                        # Keep only last 1000 events
+                        if len(self.summarization_history) > 1000:
+                            self.summarization_history.pop(0)
+
+                    # Store result instead of returning directly
+                    result = HookResult(
+                        success=True,
+                        modified=True,
+                        context=modified_context,
+                        metadata={
+                            'summarization': {
+                                'original_message_count': len(messages),
+                                'summarized_message_count': len(new_messages),
+                                'messages_summarized': len(old_msgs),
+                                'summary_count': summary_stats['summary_count'],
+                                'original_tokens': original_tokens,
+                                'new_tokens': new_tokens,
+                                'tokens_saved': original_tokens - new_tokens,
+                                'reduction_ratio': reduction_ratio,
+                                **summary_stats
+                            }
+                        }
+                    )
+            
+            # Return after StatusScope is properly closed
+            return result
 
         except Exception as e:
             logger.error(f"[ContextSummarizer] Error during summarization: {e}", exc_info=True)
