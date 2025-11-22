@@ -14,6 +14,7 @@ includes:
   - mcp_server_mode.yaml
   - agents/*.yaml
   - agents_writer/*.yaml
+  - agents_trading/*.yaml
   - agents_for_dev/*.yaml
 
 # Context information automatically added to prompts
@@ -26,6 +27,13 @@ context:
 status: # type StatusConfig
   queue_maxsize: 5000  # Max events per status queue (prevents memory exhaustion with parallel sessions)
   drop_oldest_when_full: true  # Drop oldest events when queue is full (protects against slow consumers)
+  sse_keepalive_interval: 15.0  # Interval for SSE keep-alive comments (seconds)
+  llm_heartbeat_interval: 5.0  # Interval for heartbeat events during LLM calls (seconds)
+
+# Vision/image processing configuration
+vision: # type VisionConfig
+  image_warn_size_mb: 10.0  # Warn when images exceed this size (MB)
+  image_max_size_mb: null  # Maximum allowed image size (MB), null = no limit
 
 # Network settings
 network:
@@ -33,6 +41,9 @@ network:
   host: 127.0.0.1
   port: 8000
   disable_cache: true
+  http_connection_limit: 10  # Total HTTP connections for MCP streamable transport
+  http_connection_limit_per_host: 5  # HTTP connections per host
+  cli_request_timeout: 5.0  # Timeout for CLI HTTP requests (seconds)
 
 
 # define the agent which will be startet by default if no other agent is specified
