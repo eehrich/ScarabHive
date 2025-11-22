@@ -40,27 +40,41 @@ class StatusEventForwarder:
         # Start the background task to forward events
         self.forwarding_task = asyncio.create_task(self._forward_status_events())
         
-        # Wait for the forwarding task to be ready and listening
-        await self.forwarding_ready.wait()
-        await self.first_get_started.wait()
-        # Give the forwarding task a moment to actually reach the status_queue.get() call
-        await asyncio.sleep(0.01)
-        logger.debug("Status forwarding task is ready and listening")
+        # Wait for the forwarding task to be ready and listening (with timeout to prevent deadlock)
+        try:
+            await asyncio.wait_for(self.forwarding_ready.wait(), timeout=2.0)
+            await asyncio.wait_for(self.first_get_started.wait(), timeout=2.0)
+            # Give the forwarding task a moment to actually reach the status_queue.get() call
+            await asyncio.sleep(0.01)
+            logger.debug("Status forwarding task is ready and listening")
+        except asyncio.TimeoutError:
+            logger.warning("Status forwarding task did not become ready in time (may have crashed)")
+            # Task may have crashed, check if it's still running
+            if self.forwarding_task and self.forwarding_task.done():
+                try:
+                    # This will re-raise the exception from the task
+                    await self.forwarding_task
+                except Exception as e:
+                    logger.error("Status forwarding task crashed during startup: %s", e, exc_info=True)
+            # Continue anyway - status events will just not be forwarded
 
     async def _forward_status_events(self) -> None:
         """Forward status events from status_bus to SSE stream."""
         try:
             logger.debug("Status forwarding task starting...")
+            
+            # Signal that we're ready FIRST (before the loop)
+            if not self.forwarding_ready.is_set():
+                self.forwarding_ready.set()
+                logger.debug("Status forwarding task ready")
+            
+            # Signal that the first get() call is about to start
+            if not self.first_get_started.is_set():
+                self.first_get_started.set()
+                logger.debug("Status forwarding task starting event loop")
+            
             while not self.forwarding_done.is_set():
                 try:
-                    # Signal that we're ready to receive events
-                    if not self.forwarding_ready.is_set():
-                        self.forwarding_ready.set()
-                        logger.debug("Status forwarding task ready, waiting for events...")
-
-                    # Signal that the first get() call is about to start
-                    if not self.first_get_started.is_set():
-                        self.first_get_started.set()
 
                     # Wait for status event (blocking, no CPU spin)
                     # This efficiently blocks until an event arrives or task is cancelled
@@ -82,9 +96,14 @@ class StatusEventForwarder:
                     }
                     self.status_events_to_forward.append(status_sse_event)
                 except asyncio.CancelledError:
+                    logger.debug("Status forwarding task cancelled")
                     break
         except Exception as e:
-            logger.debug("Error in status event forwarding: %s", e)
+            logger.error("Fatal error in status event forwarding: %s", e, exc_info=True)
+            # Set ready events to prevent deadlock in start_forwarding
+            self.forwarding_ready.set()
+            self.first_get_started.set()
+            raise
 
     def get_pending_events(self) -> List[Dict[str, Any]]:
         """Get any pending status events to forward."""

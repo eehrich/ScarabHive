@@ -1212,8 +1212,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
 
+            # Keep-alive mechanism: Send periodic heartbeat comments to prevent connection timeout
+            # Browser/proxy may drop connection if no data sent for 30-60 seconds during long LLM calls
+            keepalive_interval = 15.0  # Send heartbeat every 15 seconds
+            last_event_time = asyncio.get_event_loop().time()
+            
+            async def send_keepalive_if_needed():
+                """Send SSE comment to keep connection alive if no recent data"""
+                nonlocal last_event_time
+                now = asyncio.get_event_loop().time()
+                if now - last_event_time > keepalive_interval:
+                    last_event_time = now
+                    return ":keepalive\n\n"
+                return None
+
             try:
                 async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+                    # Send keepalive before processing event (in case event processing is slow)
+                    keepalive_msg = await send_keepalive_if_needed()
+                    if keepalive_msg:
+                        yield keepalive_msg
+                    
+                    # Update last event time since we're sending real data
+                    last_event_time = asyncio.get_event_loop().time()
+                    
                     logger.debug("SSE event: %s", ev.get("type"))
 
                     if ev.get("type") == "start" and ev.get("session_id"):

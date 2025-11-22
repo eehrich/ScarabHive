@@ -45,6 +45,7 @@ class ConversationContext:
     max_steps: int
     main_token: CancellationToken
     context_reset_token: Any  # Token for resetting contextvars
+    status_forwarder: 'StatusEventForwarder'  # Per-request forwarder instance
 
 
 class Agent(MCPServer):
@@ -129,6 +130,9 @@ class Agent(MCPServer):
         # Initialize LLM if not provided
         # Store LLM profile information for status display
         self.llm_profile_info = None
+        
+        # Store timeout configuration from agent_config
+        self.timeouts = self.agent_config.timeouts if self.agent_config else None
 
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
@@ -215,11 +219,11 @@ class Agent(MCPServer):
         # Session tracker shares the same _active_requests dict for coordination
         self._session_tracker = SessionTracker(self._request_manager._active_requests)
         self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
-        self._status_event_forwarder = StatusEventForwarder()
+        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
         self._tool_execution_manager = ToolExecutionManager(
             self.registry,
             self,
-            status_forwarder=self._status_event_forwarder
+            status_forwarder=None  # Will be set per-request
         )
 
         # Context management now handled by hook plugins via HookIntegrationManager
@@ -770,8 +774,9 @@ class Agent(MCPServer):
             logger.debug(f"Failed to set current_request_id context var: {e}")
             context_reset_token = None
 
-        # Start status event forwarding
-        await self._status_event_forwarder.start_forwarding(request_id)
+        # Create per-request status event forwarder (prevents race conditions with parallel requests)
+        status_forwarder = StatusEventForwarder()
+        await status_forwarder.start_forwarding(request_id)
 
         # If no LLM is configured, raise error
         if active_llm is None:
@@ -850,7 +855,8 @@ class Agent(MCPServer):
             tool_name_mapping=tool_name_mapping,
             max_steps=max_steps,
             main_token=main_token,
-            context_reset_token=context_reset_token
+            context_reset_token=context_reset_token,
+            status_forwarder=status_forwarder
         )
 
     async def _finalize_request(
@@ -905,8 +911,15 @@ class Agent(MCPServer):
         self._request_manager.unregister_active_request(request_id)
         logger.debug("Cleaned up request tracking for %s", request_id)
 
-        # Persist session messages and keep the request->session mapping for a while
+        # Release session lock BEFORE persisting (allows other requests to proceed)
+        # Note: unregister_request also releases the lock, but we do it explicitly here
+        # for clarity and to ensure it happens before session persistence
         sid = self._session_tracker.get_session_for_request(request_id)
+        if sid:
+            await self._session_tracker.release_session_lock(sid, request_id)
+            logger.debug("Released session lock for %s (request %s)", sid, request_id)
+
+        # Persist session messages and keep the request->session mapping for a while
         if sid and messages:
             try:
                 # CRITICAL: Check if session was already modified (e.g., by context_summarizer)
@@ -965,7 +978,8 @@ class Agent(MCPServer):
         await asyncio.sleep(0.01)
 
         # Clean up status forwarding task AFTER publishing final status
-        await self._status_event_forwarder.stop_forwarding()
+        if context and context.status_forwarder:
+            await context.status_forwarder.stop_forwarding()
 
     async def _call_llm_with_streaming(
         self,
@@ -1038,11 +1052,32 @@ class Agent(MCPServer):
             # Create task for LLM call
             llm_task = asyncio.create_task(llm.chat_tools(messages, tools_schema, cancellation_token=cancellation_token))
 
-            # Poll for status events while waiting
+            # Poll for status events while waiting (with safety limit)
+            # Send heartbeat events every 5 seconds to prevent SSE connection timeout
+            max_llm_iterations = self.timeouts.llm_task_max_iterations if self.timeouts else 6000
+            llm_iteration_count = 0
+            heartbeat_interval = 50  # Send heartbeat every 50 iterations * 100ms = 5 seconds
+            
             while not llm_task.done():
+                llm_iteration_count += 1
+                if llm_iteration_count > max_llm_iterations:
+                    logger.error("LLM task polling exceeded max iterations (%d), forcing exit", max_llm_iterations)
+                    llm_task.cancel()
+                    await asyncio.sleep(0.1)
+                    break
+
                 # Check for status events
                 for status_event in yield_pending_status_fn():
                     yield status_event
+
+                # Send heartbeat event periodically to prevent SSE connection timeout
+                # This keeps the connection alive during long LLM calls (30+ seconds)
+                if llm_iteration_count % heartbeat_interval == 0:
+                    yield {
+                        "type": "heartbeat",
+                        "step": step + 1,
+                        "timestamp": asyncio.get_event_loop().time()
+                    }
 
                 # Wait 100ms before next poll
                 try:
@@ -1115,9 +1150,9 @@ class Agent(MCPServer):
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
 
-        # Helper function to yield any pending status events
+        # Helper function to yield any pending status events from per-request forwarder
         def yield_pending_status_events():
-            for event in self._status_event_forwarder.get_pending_events():
+            for event in context.status_forwarder.get_pending_events():
                 yield event
 
         for step in range(max_steps):
@@ -1137,7 +1172,7 @@ class Agent(MCPServer):
                 # Give status events a moment to be captured by forwarder
                 await asyncio.sleep(0.01)
                 # Yield all pending status events before cancelled event
-                for status_event in self._status_event_forwarder.get_pending_events():
+                for status_event in context.status_forwarder.get_pending_events():
                     yield status_event
                 # Now yield the cancelled event
                 yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
@@ -1191,6 +1226,8 @@ class Agent(MCPServer):
                 )
 
                 # Stream status events while hook is running
+                # NOTE: No hard timeout - hooks can run as long as needed (e.g., context_summarizer may take 10+ minutes)
+                # Hooks are expected to implement their own timeouts if needed
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event
@@ -1199,7 +1236,7 @@ class Agent(MCPServer):
                 # Get hook result
                 modified_messages = await hook_task
 
-                # Yield any final status events
+                # Yield any final status events from hook execution
                 for status_event in yield_pending_status_events():
                     yield status_event
 
@@ -1301,6 +1338,8 @@ class Agent(MCPServer):
                 )
 
                 # Stream status events while hook is running
+                # NOTE: No hard timeout - hooks can run as long as needed
+                # Hooks are expected to implement their own timeouts if needed
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event
@@ -1660,6 +1699,20 @@ class Agent(MCPServer):
         self._request_manager.register_active_request(request_id, request_entry)
         self._session_tracker.register_request(request_id, session_id, request_entry)
 
+        # Try to acquire session lock to prevent parallel requests on same session
+        # This prevents race conditions when multiple browser tabs access the same session
+        session_lock_timeout = self.timeouts.session_lock_timeout if self.timeouts else 5.0
+        lock_acquired = await self._session_tracker.acquire_session_lock(session_id, request_id, timeout=session_lock_timeout)
+        if not lock_acquired:
+            # Another request is already processing this session
+            is_locked, owner = self._session_tracker.check_session_locked(session_id)
+            error_msg = f"Session {session_id} is currently locked by another request ({owner}). Please wait for that request to complete."
+            logger.warning("Request %s failed to acquire lock for session %s (owner: %s)", 
+                         request_id, session_id, owner)
+            yield {"type": "error", "message": error_msg, "request_id": request_id}
+            yield {"type": "end"}
+            return
+
         # Emit start event (even if initialization fails later)
         yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
 
@@ -1679,10 +1732,11 @@ class Agent(MCPServer):
                 yield {"type": "end"}
                 return
 
-            # Helper function to yield any pending status events
+            # Helper function to yield any pending status events from per-request forwarder
             def yield_pending_status_events():
-                for event in self._status_event_forwarder.get_pending_events():
-                    yield event
+                if context and context.status_forwarder:
+                    for event in context.status_forwarder.get_pending_events():
+                        yield event
 
             # Track messages from context for updates during loop
             messages = context.messages

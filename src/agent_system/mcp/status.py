@@ -115,7 +115,11 @@ class QueueStatusHandler(StatusHandler):
     async def process(self, event: StatusEvent) -> None:
         """Forward event to queue for subscriber"""
         try:
-            await self.queue.put(event)
+            # Use wait_for with timeout to prevent indefinite blocking if queue gets stuck
+            # This ensures we don't block other sessions if one consumer is slow
+            await asyncio.wait_for(self.queue.put(event), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Failed to forward status to queue (timeout after 5s) - consumer may be slow")
         except Exception as e:
             logger.error(f"Failed to forward status to queue: {e}")
 
@@ -140,7 +144,11 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
             return
         
         try:
-            await self.queue.put(event)
+            # Use wait_for with timeout to prevent indefinite blocking if queue gets stuck
+            # This ensures we don't block other sessions if one consumer is slow
+            await asyncio.wait_for(self.queue.put(event), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Failed to forward filtered status to queue (timeout after 5s) - consumer may be slow")
         except Exception as e:
             logger.error(f"Failed to forward filtered status to queue: {e}")
 
@@ -170,6 +178,7 @@ class StatusBus:
     
     async def publish(self, event: StatusEvent) -> None:
         """Publish a status event with guaranteed delivery to all handlers"""
+        # Prepare event metadata under lock (fast operations only)
         async with self._lock:
             # Track metrics
             self.publish_attempted += 1
@@ -188,13 +197,17 @@ class StatusBus:
                 event.child_count = len(node.children)
                 event.is_leaf = len(node.children) == 0
             
-            # Deliver to all handlers - guaranteed processing
-            for handler in self.handlers:
-                try:
-                    await handler.process(event)
+            # Copy handler list to avoid holding lock during I/O
+            handlers_snapshot = self.handlers.copy()
+        
+        # Deliver to all handlers OUTSIDE the lock (prevent cross-session blocking)
+        for handler in handlers_snapshot:
+            try:
+                await handler.process(event)
+                async with self._lock:
                     self.delivered += 1
-                except Exception as e:
-                    logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
+            except Exception as e:
+                logger.error(f"Handler {handler.__class__.__name__} failed: {e}")
     
     def get_status_metrics(self) -> dict:
         """Get status bus metrics"""

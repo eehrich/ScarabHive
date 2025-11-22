@@ -117,6 +117,18 @@ class HooksConfig(BaseModel):
     overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # Per-hook config (enabled, timeout, custom config, etc.)
 
 
+class TimeoutConfig(BaseModel):
+    """Timeout configuration for agent execution to prevent deadlocks."""
+    # Queue handler timeouts
+    status_queue_put_timeout: float = 5.0  # Timeout for status queue.put() operations (seconds)
+    
+    # LLM task polling timeout (only for truly stuck LLM calls, not normal long responses)
+    llm_task_max_iterations: int = 6000  # LLM task polling: 6000 * 0.1s = 10 minutes max
+    
+    # Session lock timeout
+    session_lock_timeout: float = 5.0  # Timeout for acquiring session lock (seconds)
+    
+
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
     llm_profile: str | List[str] = "normal"  # LLM profile(s) to use. If list, first is default, others are available options
@@ -125,6 +137,7 @@ class AgentConfig(BaseModel):
     hooks: Optional[HooksConfig] = None  # Hook system configuration (optional)
     system_template: Optional[str] = None  # Path to system prompt template file
     system_prompt: Optional[str] = None  # Inline system prompt (alternative to system_template)
+    timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)  # Timeout configuration for deadlock prevention
 
     @property
     def default_llm_profile(self) -> str:

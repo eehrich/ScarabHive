@@ -806,6 +806,12 @@
             // Update request ID display  
             updateRequestId();
             break;
+          case 'heartbeat':
+            // Keep-alive heartbeat during long LLM calls - ignore but log in debug mode
+            if (window.DEBUG_MODE) {
+              console.log('Heartbeat received (step', data.step, ')');
+            }
+            break;
           case 'cancelled':
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text cancelled">Request cancelled at step ${data.step}</div>`;

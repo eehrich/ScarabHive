@@ -25,6 +25,16 @@ plugins:
           markdown_formatter.format_markdown_output:
              enabled: false
 
+      timeouts:
+        # Queue handler timeouts (prevent cross-session blocking)
+        status_queue_put_timeout: 5.0  # seconds
+        
+        # LLM task timeout (only for truly stuck LLM calls)
+        llm_task_max_iterations: 6000  # 6000 * 0.1s = 10 minutes max
+        
+        # Session lock timeout (prevent same-session deadlock)
+        session_lock_timeout: 5.0  # seconds
+    
       tools:
         allowed: []
         blocked: []
@@ -40,6 +50,20 @@ plugins:
       enabled: true
       agent_config:
         llm_profile: ["think", "normal", "turbo", "chat"]  # First is default, rest are available options
+        
+        timeouts:
+          # Queue handler timeouts (prevent cross-session blocking)
+          status_queue_put_timeout: 5.0  # seconds
+          
+          # LLM task timeout (only for truly stuck LLM calls)
+          llm_task_max_iterations: 6000  # 6000 * 0.1s = 10 minutes max
+          
+          # Session lock timeout (prevent same-session deadlock)
+          session_lock_timeout: 5.0  # seconds
+          
+          # NOTE: Hooks and tools have NO hard timeouts - they can run as long as needed
+          # Examples: context_summarizer (10+ min), sub_agent_manager (hours)
+        
         tools:
           allowed: []
         hooks:

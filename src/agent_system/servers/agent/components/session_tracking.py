@@ -58,7 +58,14 @@ class SessionTracker:
         # Request-to-session mapping: request_id -> session_id
         self._request_to_session: Dict[str, str] = {}
 
-        # Lock for thread-safe access
+        # Session-level locks: session_id -> asyncio.Lock
+        # Prevents multiple parallel requests from modifying the same session simultaneously
+        self._session_locks: Dict[str, asyncio.Lock] = {}
+
+        # Track which request owns which session lock: session_id -> request_id
+        self._session_lock_owners: Dict[str, str] = {}
+
+        # Lock for thread-safe access to internal data structures
         self._lock = asyncio.Lock()
 
     async def append_user_message(self, request_id: str, content: str) -> bool:
@@ -96,6 +103,88 @@ class SessionTracker:
                         return False
         logger.debug("Request %s not found for append", request_id)
         return False
+
+    async def acquire_session_lock(self, session_id: str, request_id: str, timeout: float = 5.0) -> bool:
+        """Acquire exclusive lock for a session.
+        
+        Args:
+            session_id: The session ID to lock
+            request_id: The request ID acquiring the lock
+            timeout: Maximum time to wait for lock (seconds)
+            
+        Returns:
+            True if lock acquired, False if timeout or already locked by another request
+        """
+        async with self._lock:
+            # Check if session is already locked by a different request
+            if session_id in self._session_lock_owners:
+                owner = self._session_lock_owners[session_id]
+                if owner != request_id:
+                    logger.warning("Session %s is already locked by request %s (request %s waiting)",
+                                 session_id, owner, request_id)
+                    return False
+                else:
+                    # Same request already owns the lock (re-entrant)
+                    logger.debug("Request %s already owns lock for session %s", request_id, session_id)
+                    return True
+            
+            # Create lock if it doesn't exist
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = asyncio.Lock()
+        
+        # Try to acquire the lock with timeout
+        lock = self._session_locks[session_id]
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=timeout)
+            async with self._lock:
+                self._session_lock_owners[session_id] = request_id
+            logger.info("Request %s acquired lock for session %s", request_id, session_id)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning("Request %s timed out waiting for lock on session %s", request_id, session_id)
+            return False
+    
+    async def release_session_lock(self, session_id: str, request_id: str) -> None:
+        """Release exclusive lock for a session.
+        
+        Args:
+            session_id: The session ID to unlock
+            request_id: The request ID releasing the lock
+        """
+        async with self._lock:
+            if session_id not in self._session_lock_owners:
+                logger.debug("No lock owner for session %s (request %s trying to release)",
+                           session_id, request_id)
+                return
+            
+            owner = self._session_lock_owners[session_id]
+            if owner != request_id:
+                logger.warning("Request %s tried to release lock owned by %s for session %s",
+                             request_id, owner, session_id)
+                return
+            
+            # Remove ownership
+            del self._session_lock_owners[session_id]
+        
+        # Release the actual lock
+        if session_id in self._session_locks:
+            lock = self._session_locks[session_id]
+            if lock.locked():
+                lock.release()
+                logger.info("Request %s released lock for session %s", request_id, session_id)
+    
+    def check_session_locked(self, session_id: str) -> tuple[bool, Optional[str]]:
+        """Check if a session is currently locked.
+        
+        Args:
+            session_id: The session ID to check
+            
+        Returns:
+            Tuple of (is_locked, owner_request_id)
+        """
+        if session_id in self._session_lock_owners:
+            return True, self._session_lock_owners[session_id]
+        return False, None
 
     async def append_to_session(self, session_id: str, content: str) -> bool:
         """
@@ -177,12 +266,26 @@ class SessionTracker:
 
     def unregister_request(self, request_id: str) -> None:
         """
-        Unregister an active request.
+        Unregister an active request and release session lock if held.
 
         Args:
             request_id: The request ID to remove
         """
-        # Note: This is called during finalization, may need lock if concurrent
+        # Release session lock if this request owns it
+        session_id = self._request_to_session.get(request_id)
+        if session_id:
+            # Check if this request owns the lock and release it synchronously
+            # (called during cleanup, async not needed here)
+            if session_id in self._session_lock_owners and self._session_lock_owners[session_id] == request_id:
+                del self._session_lock_owners[session_id]
+                if session_id in self._session_locks:
+                    lock = self._session_locks[session_id]
+                    if lock.locked():
+                        lock.release()
+                        logger.info("Released session lock for %s during unregister of request %s", 
+                                  session_id, request_id)
+        
+        # Remove request tracking
         self._active_requests.pop(request_id, None)
         self._request_to_session.pop(request_id, None)
 

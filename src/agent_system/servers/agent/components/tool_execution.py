@@ -235,7 +235,11 @@ class ToolExecutionManager:
                 tasks.append(task)
 
             # Poll for completion while streaming status events
+            # NOTE: No hard iteration limit - tools can run as long as needed
+            # (e.g., sub_agent_manager may run for hours)
+            # Tools are cancelled via cancellation_token if request is cancelled by user
             pending = set(tasks)
+            
             while pending:
                 # Wait for any task completion or timeout (50ms polling interval)
                 done, pending = await asyncio.wait(pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED)
@@ -258,6 +262,9 @@ class ToolExecutionManager:
                             tool_messages.append(tool_message)
                             events_to_yield.extend(events)
                             results_to_add.extend(tool_results)
+                    except asyncio.CancelledError:
+                        logger.debug("Tool task was cancelled")
+                        # Task was cancelled, this is expected during request cancellation
                     except Exception as e:
                         logger.exception("Error processing tool result: %s", e)
 
