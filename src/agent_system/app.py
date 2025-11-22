@@ -150,9 +150,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Setup logging via ConfigService
     _config_service.setup_logging()
+    
+    # Get logger AFTER logging is configured
+    logger = logging.getLogger(__name__)
+
+    # Configure status bus with config values
+    from .mcp.status import status_bus
+    if hasattr(config, 'status') and config.status:
+        status_bus.default_queue_maxsize = config.status.queue_maxsize
+        logger.debug(f"Status bus configured: queue_maxsize={config.status.queue_maxsize}")
 
     # Log configuration status
-    logger = logging.getLogger(__name__)
     logger.info(f"Loading configuration from: {cfg_path}")
     if config.llm_system:
         logger.debug(f"LLM system loaded with {len(config.llm_system.profiles)} profiles")

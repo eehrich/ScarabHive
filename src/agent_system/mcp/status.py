@@ -115,11 +115,20 @@ class QueueStatusHandler(StatusHandler):
     async def process(self, event: StatusEvent) -> None:
         """Forward event to queue for subscriber"""
         try:
-            # Use wait_for with timeout to prevent indefinite blocking if queue gets stuck
-            # This ensures we don't block other sessions if one consumer is slow
-            await asyncio.wait_for(self.queue.put(event), timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.warning("Failed to forward status to queue (timeout after 5s) - consumer may be slow")
+            # Try non-blocking put first to avoid timeout overhead for normal case
+            self.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Queue is full - drop oldest event and add new one
+            # This prevents memory exhaustion with slow consumers
+            try:
+                dropped = self.queue.get_nowait()
+                logger.warning(
+                    f"Status queue full - dropping oldest event (server={dropped.server}, "
+                    f"phase={dropped.phase.value}) to make room for new event"
+                )
+                self.queue.put_nowait(event)
+            except Exception as e:
+                logger.error(f"Failed to drop-and-add status to queue: {e}")
         except Exception as e:
             logger.error(f"Failed to forward status to queue: {e}")
 
@@ -144,11 +153,20 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
             return
         
         try:
-            # Use wait_for with timeout to prevent indefinite blocking if queue gets stuck
-            # This ensures we don't block other sessions if one consumer is slow
-            await asyncio.wait_for(self.queue.put(event), timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.warning("Failed to forward filtered status to queue (timeout after 5s) - consumer may be slow")
+            # Try non-blocking put first to avoid timeout overhead for normal case
+            self.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Queue is full - drop oldest event and add new one
+            # This prevents memory exhaustion with slow consumers
+            try:
+                dropped = self.queue.get_nowait()
+                logger.warning(
+                    f"Filtered status queue full - dropping oldest event (server={dropped.server}, "
+                    f"phase={dropped.phase.value}, request_id={dropped.request_id}) to make room"
+                )
+                self.queue.put_nowait(event)
+            except Exception as e:
+                logger.error(f"Failed to drop-and-add filtered status to queue: {e}")
         except Exception as e:
             logger.error(f"Failed to forward filtered status to queue: {e}")
 
@@ -156,12 +174,15 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
 class StatusBus:
     """Central status event bus with guaranteed delivery"""
     
-    def __init__(self):
+    def __init__(self, default_queue_maxsize: int = 1000):
         self.handlers: List[StatusHandler] = []
         self.sequence_counter = 0
         self._lock = asyncio.Lock()
         # Track handlers by queue for unsubscribe support
         self._queue_handlers: Dict[asyncio.Queue, StatusHandler] = {}
+        
+        # Configuration
+        self.default_queue_maxsize = default_queue_maxsize
         
         # Metrics tracking
         self.publish_attempted = 0
@@ -221,17 +242,23 @@ class StatusBus:
         }
     
     async def subscribe(self, server: Optional[str] = None, 
-                  request_id: Optional[str] = None) -> asyncio.Queue:
+                  request_id: Optional[str] = None,
+                  maxsize: Optional[int] = None) -> asyncio.Queue:
         """Subscribe to status events with optional filtering
         
         Args:
             server: Only receive events from this server (optional)
             request_id: Only receive events with this request_id (optional)
+            maxsize: Maximum queue size. If None, uses default_queue_maxsize from config.
+                    Prevents memory exhaustion with slow consumers. When full, oldest events
+                    are dropped (see drop_oldest_when_full behavior in handlers).
             
         Returns:
             Queue that will receive filtered StatusEvent objects
         """
-        queue: asyncio.Queue = asyncio.Queue()
+        # Use provided maxsize or fall back to configured default
+        queue_maxsize = maxsize if maxsize is not None else self.default_queue_maxsize
+        queue: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
         handler = FilteredQueueStatusHandler(queue, server, request_id)
         self.add_handler(handler)
         # Track the handler for unsubscribe

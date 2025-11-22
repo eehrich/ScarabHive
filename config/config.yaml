@@ -4,7 +4,7 @@
 
 name: "AgentSystem"
 version: "0.4.0"
-description: "Scarab Flexible AI Agent System using MCP"
+description: "Scarab Flexible AI Agent System with plugin support"
 
 # all included configs
 includes:
@@ -22,7 +22,13 @@ context:
   timezone: "Europe/Berlin"
   location: "Germany"
 
-network: # type NetworkConfig
+# Status message system configuration
+status: # type StatusConfig
+  queue_maxsize: 5000  # Max events per status queue (prevents memory exhaustion with parallel sessions)
+  drop_oldest_when_full: true  # Drop oldest events when queue is full (protects against slow consumers)
+
+# Network settings
+network:
   ssl_verify: false
   host: 127.0.0.1
   port: 8000
@@ -33,7 +39,7 @@ network: # type NetworkConfig
 default_agent: meta_agent
 
 # Multi-user authentication and authorization (optional)
-auth: # type AuthConfig
+auth:
   enabled: true  # Set to true to enable multi-user authentication
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
@@ -69,11 +75,8 @@ auth: # type AuthConfig
   default_admin_password: "admin"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
   default_admin_email: "admin@localhost"
 
-
-
-
-
-logging: # type LoggingConfig
+# Logging configuration
+logging:
   enabled: true
   level: DEBUG
   file: logs/agent.log
@@ -84,8 +87,6 @@ logging: # type LoggingConfig
   cancellation: # type CancellationConfig
     cleanup_timeout: 10.0  # Seconds to wait for graceful cleanup before forcing termination
     monitor_interval: 1.0  # Seconds between timeout checks
-
-
 
 
 

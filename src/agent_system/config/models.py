@@ -330,6 +330,12 @@ class ContextConfig(BaseModel):
     location: str = "Germany"
 
 
+class StatusConfig(BaseModel):
+    """Status message system configuration"""
+    queue_maxsize: int = 1000  # Max events per queue (prevents memory exhaustion)
+    drop_oldest_when_full: bool = True  # Drop oldest events when queue is full
+
+
 class AuthConfig(BaseModel):
     """Authentication and authorization configuration"""
     enabled: bool = False  # Enable multi-user authentication
@@ -374,6 +380,7 @@ class AgentSystemConfig(BaseModel):
 
     # Core configurations
     context: ContextConfig = Field(default_factory=ContextConfig)
+    status: StatusConfig = Field(default_factory=StatusConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
