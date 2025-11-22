@@ -30,10 +30,10 @@ export class SessionManager {
     // Load sessions (works for both authenticated and anonymous users)
     await this.loadSessions();
     
-    // Restore last session from localStorage
+    // Restore last session from sessionStorage (tab-specific)
     // Delay slightly to ensure chat_module event listeners are registered
     setTimeout(async () => {
-      const lastSessionId = localStorage.getItem('lastSessionId');
+      const lastSessionId = sessionStorage.getItem('lastSessionId');
       if (lastSessionId && this.findSessionInHierarchy(lastSessionId)) {
         // Load the session messages into the chat
         await this.loadSession(lastSessionId);
@@ -483,7 +483,7 @@ export class SessionManager {
   newConversation() {
     // Clear current session
     this.currentSessionId = null;
-    localStorage.removeItem('lastSessionId');
+    sessionStorage.removeItem('lastSessionId');
     
     // Clear chat UI
     const chatEl = document.getElementById('chat');
@@ -514,8 +514,8 @@ export class SessionManager {
       const session = await response.json();
       this.currentSessionId = sessionId;
       
-      // Save to localStorage for page reload restoration
-      localStorage.setItem('lastSessionId', sessionId);
+      // Save to sessionStorage for page reload restoration (tab-specific)
+      sessionStorage.setItem('lastSessionId', sessionId);
       
       // Update UI - use session.title or session.name
       const sessionName = session.title || session.name;
@@ -595,11 +595,11 @@ export class SessionManager {
     this.currentSessionId = sessionId;
     this.updateSessionDisplay(sessionId);
     
-    // Persist to localStorage for page refresh
+    // Persist to sessionStorage for page refresh (tab-specific)
     if (sessionId) {
-      localStorage.setItem('lastSessionId', sessionId);
+      sessionStorage.setItem('lastSessionId', sessionId);
     } else {
-      localStorage.removeItem('lastSessionId');
+      sessionStorage.removeItem('lastSessionId');
     }
     
     // Update active state in list
