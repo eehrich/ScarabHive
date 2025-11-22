@@ -265,7 +265,8 @@ class ToolExecutionManager:
             # This ensures .end() events are not lost due to timing issues
             if self._status_forwarder:
                 # Use drain to ensure all events are consumed
-                drained_events = await self._status_forwarder.drain_pending_events(max_wait_ms=100)
+                # Reduced timeout for faster response
+                drained_events = await self._status_forwarder.drain_pending_events(max_wait_ms=30)
                 for status_event in drained_events:
                     yield {"type": "status", "event": status_event}
 

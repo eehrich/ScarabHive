@@ -97,6 +97,7 @@ class StatusEventForwarder:
         
         This method polls the status queue for a short time to ensure all events
         that were published before tools completed are actually forwarded.
+        Exits early if .end or .error events are found.
         
         Args:
             max_wait_ms: Maximum time to wait for events in milliseconds
@@ -106,23 +107,48 @@ class StatusEventForwarder:
         """
         all_events = self.get_pending_events()
         
+        # Check if we already have terminal events (.end or .error)
+        has_terminal_event = any(
+            ev.get("status") in ("end", "error") 
+            for ev in all_events
+        )
+        if has_terminal_event:
+            return all_events
+        
         # Poll the queue for any remaining events with timeout
         deadline = asyncio.get_event_loop().time() + (max_wait_ms / 1000)
+        idle_checks = 0
+        max_idle_checks = 3  # Exit early if no events for 3 consecutive checks
+        
         while asyncio.get_event_loop().time() < deadline:
             # Check if there are events in the forwarding buffer
+            had_events = False
             if self.status_events_to_forward:
-                all_events.extend(self.get_pending_events())
+                new_events = self.get_pending_events()
+                if new_events:
+                    all_events.extend(new_events)
+                    had_events = True
+                    idle_checks = 0
+                    
+                    # Exit early if we found .end or .error
+                    for ev in new_events:
+                        if ev.get("status") in ("end", "error"):
+                            return all_events
+            
+            if not had_events:
+                idle_checks += 1
+                if idle_checks >= max_idle_checks:
+                    # No events for several checks, exit early
+                    break
             
             # Give the forwarding task a chance to process
             await asyncio.sleep(0.01)
-            
-            # Check again
-            if self.status_events_to_forward:
-                all_events.extend(self.get_pending_events())
         
         # Final check
         if self.status_events_to_forward:
-            all_events.extend(self.get_pending_events())
+            final_events = self.get_pending_events()
+            if final_events:
+                all_events.extend(final_events)
         
         return all_events
 
