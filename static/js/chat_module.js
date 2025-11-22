@@ -679,6 +679,19 @@
           // Timeout abbrechen da Antwort erhalten
           clearTimeout(timeoutId);
 
+          // Wenn Request nicht gefunden wurde (z.B. nach Server-Neustart), State clearen
+          if (result.status === 'not_found') {
+            console.warn('Request not found - clearing stale state (possible server restart)');
+            currentRequestId = null;
+            currentEventSource = null;
+            // UI zurücksetzen
+            runBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            stopBtn.classList.remove('cancelling');
+            stopBtn.disabled = false;
+            return; // Frühzeitig beenden
+          }
+
           // Kurze Verzögerung für besseres UX-Feedback
           setTimeout(() => {
             if (result.status === 'cancelled') {
@@ -1212,8 +1225,8 @@
           // Keep currentRequestId and Request ID display visible
           currentEventSource = null;
           es.close();
-          if (statusEs) {
-            statusEs.close();
+          if (currentStatusEventSource) {
+            currentStatusEventSource.close();
             currentStatusEventSource = null;
           }
         }
@@ -1221,8 +1234,8 @@
 
       es.onerror = () => {
         es.close();
-        if (statusEs) {
-          statusEs.close();
+        if (currentStatusEventSource) {
+          currentStatusEventSource.close();
           currentStatusEventSource = null;
         }
         runBtn.style.display = 'block'; // Show run button
