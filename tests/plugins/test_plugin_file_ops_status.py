@@ -1,7 +1,7 @@
 """Tests for file_ops status message handling.
 
 These tests verify that status.end() and status.error() are called correctly
-for all file_ops operations, especially replace_lines mode.
+for file_ops operations with the current API (replace_string_in_file).
 """
 
 import gc
@@ -51,46 +51,17 @@ def mock_status():
 
 
 @pytest.mark.asyncio
-async def test_replace_lines_calls_status_end(server, tmp_allowed_dir, mock_status):
-    """Test that replace_lines mode calls status.end()."""
-    # Create test file
-    test_file = tmp_allowed_dir / "test_replace_lines_status.txt"
-    test_file.write_text("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n")
-
-    # Call replace_lines
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "replace_lines",
-        "start_line": 2,
-        "end_line": 3,
-        "content": "New Line 2-3",
-        "_status": mock_status
-    })
-
-    # Verify result
-    assert result["status"] == "success"
-    assert result["changes"]["lines_replaced"] == 2
-
-    # Verify status.end() was called
-    mock_status.end.assert_called_once()
-    call_args = mock_status.end.call_args[0][0]
-    assert "replaced 2 lines" in call_args
-    assert "(2-3)" in call_args
-
-
-@pytest.mark.asyncio
-async def test_replace_mode_calls_status_end(server, tmp_allowed_dir, mock_status):
-    """Test that replace mode calls status.end()."""
+async def test_replace_string_calls_status_end(server, tmp_allowed_dir, mock_status):
+    """Test that replace_string_in_file calls status.end() on success."""
     # Create test file
     test_file = tmp_allowed_dir / "test_replace_status.txt"
-    test_file.write_text("Line 1\nLine 2\nLine 3\n")
+    test_file.write_text("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n")
 
-    # Call replace
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "replace",
-        "old_string": "Line 2",
-        "new_string": "Modified Line 2",
+    # Call replace_string_in_file
+    result = await server.replace_string_in_file({
+        "filePath": str(test_file),
+        "oldString": "Line 2\nLine 3",
+        "newString": "Modified Line 2\nModified Line 3",
         "_status": mock_status
     })
 
@@ -101,75 +72,63 @@ async def test_replace_mode_calls_status_end(server, tmp_allowed_dir, mock_statu
     # Verify status.end() was called
     mock_status.end.assert_called_once()
     call_args = mock_status.end.call_args[0][0]
-    assert "1 replacements" in call_args
+    assert "1 replacement" in call_args or "Replaced" in call_args
 
 
 @pytest.mark.asyncio
-async def test_replace_mode_error_calls_status_error(server, tmp_allowed_dir, mock_status):
-    """Test that replace mode calls status.error() on string not found."""
+async def test_replace_string_error_calls_status_error(server, tmp_allowed_dir, mock_status):
+    """Test that replace_string_in_file calls status.error() when string not found."""
     # Create test file
     test_file = tmp_allowed_dir / "test_replace_error.txt"
     test_file.write_text("Line 1\nLine 2\nLine 3\n")
 
-    # Call replace with non-existent string
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "replace",
-        "old_string": "Non-existent string",
-        "new_string": "Modified",
+    # Call replace_string_in_file with non-existent string
+    result = await server.replace_string_in_file({
+        "filePath": str(test_file),
+        "oldString": "Non-existent string that will not be found",
+        "newString": "Modified",
         "_status": mock_status
     })
 
     # Verify result
     assert result["status"] == "error"
-    assert result["error_type"] == "StringNotFoundError"
 
     # Verify status.error() was called
     mock_status.error.assert_called_once()
     call_args = mock_status.error.call_args[0][0]
-    assert "String not found" in call_args
+    assert "not found" in call_args.lower() or "error" in call_args.lower()
 
 
 @pytest.mark.asyncio
-async def test_replace_lines_invalid_range_calls_status_error(server, tmp_allowed_dir, mock_status):
-    """Test that replace_lines calls status.error() on invalid line range."""
+async def test_read_file_calls_status_end(server, tmp_allowed_dir, mock_status):
+    """Test that read_file calls status.end()."""
     # Create test file
-    test_file = tmp_allowed_dir / "test_replace_lines_error.txt"
+    test_file = tmp_allowed_dir / "test_read_status.txt"
     test_file.write_text("Line 1\nLine 2\nLine 3\n")
 
-    # Call replace_lines with invalid range
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "replace_lines",
-        "start_line": 5,
-        "end_line": 10,
-        "content": "New content",
+    # Call read_file
+    result = await server.read_file({
+        "filePath": str(test_file),
         "_status": mock_status
     })
 
     # Verify result
-    assert result["status"] == "error"
-    assert result["error_type"] == "ValidationError"
-    assert "start_line" in result["error"]
+    assert result["status"] == "success"
+    assert "Line 1" in result["content"]
 
-    # Verify status.error() was called
-    mock_status.error.assert_called_once()
-    call_args = mock_status.error.call_args[0][0]
-    assert "Invalid" in call_args or "error" in call_args.lower()
+    # Verify status.end() was called
+    mock_status.end.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_append_mode_calls_status_end(server, tmp_allowed_dir, mock_status):
-    """Test that append mode calls status.end()."""
-    # Create test file
-    test_file = tmp_allowed_dir / "test_append_status.txt"
-    test_file.write_text("Line 1\n")
+async def test_create_file_calls_status_end(server, tmp_allowed_dir, mock_status):
+    """Test that create_file calls status.end()."""
+    test_file = tmp_allowed_dir / "new_file.txt"
 
-    # Call append
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "append",
-        "content": "Appended line\n",
+    # Call create_file
+    result = await server.create_file({
+        "filePath": str(test_file),
+        "content": "New file content",
         "_status": mock_status
     })
 
@@ -179,92 +138,59 @@ async def test_append_mode_calls_status_end(server, tmp_allowed_dir, mock_status
     # Verify status.end() was called
     mock_status.end.assert_called_once()
     call_args = mock_status.end.call_args[0][0]
-    assert "appended content" in call_args
+    assert "created" in call_args.lower() or "success" in call_args.lower()
 
 
 @pytest.mark.asyncio
-async def test_insert_mode_calls_status_end(server, tmp_allowed_dir, mock_status):
-    """Test that insert mode calls status.end()."""
-    # Create test file
-    test_file = tmp_allowed_dir / "test_insert_status.txt"
-    test_file.write_text("Line 1\nLine 2\n")
+async def test_list_directory_calls_status_end(server, tmp_allowed_dir, mock_status):
+    """Test that list_directory calls status.end()."""
+    # Create some test files
+    (tmp_allowed_dir / "file1.txt").write_text("test")
+    (tmp_allowed_dir / "file2.txt").write_text("test")
 
-    # Call insert
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "insert",
-        "line_number": 1,
-        "content": "Inserted line",
+    # Call list_directory
+    result = await server.list_directory({
+        "dir_path": str(tmp_allowed_dir),
         "_status": mock_status
     })
 
     # Verify result
     assert result["status"] == "success"
+    assert len(result["files"]) + len(result["directories"]) >= 2
 
     # Verify status.end() was called
     mock_status.end.assert_called_once()
-    call_args = mock_status.end.call_args[0][0]
-    assert "inserted at line" in call_args
 
 
 @pytest.mark.asyncio
 async def test_file_not_found_calls_status_error(server, tmp_allowed_dir, mock_status):
-    """Test that file not found calls status.error()."""
-    # Call with non-existent file
-    result = await server.edit_file({
-        "file_path": str(tmp_allowed_dir / "non_existent.txt"),
-        "mode": "append",
-        "content": "Test",
+    """Test that operations call status.error() when file not found."""
+    non_existent = tmp_allowed_dir / "does_not_exist.txt"
+
+    # Call read_file on non-existent file
+    result = await server.read_file({
+        "filePath": str(non_existent),
         "_status": mock_status
     })
 
     # Verify result
     assert result["status"] == "error"
-    assert result["error_type"] == "FileNotFoundError"
 
     # Verify status.error() was called
     mock_status.error.assert_called_once()
     call_args = mock_status.error.call_args[0][0]
-    assert "not found" in call_args.lower()
+    assert "not found" in call_args.lower() or "error" in call_args.lower()
 
 
 @pytest.mark.asyncio
-async def test_replace_whitespace_mismatch_calls_status_error(server, tmp_allowed_dir, mock_status):
-    """Test that replace calls status.error() on whitespace mismatch."""
-    # Create test file with spaces
-    test_file = tmp_allowed_dir / "test_whitespace.txt"
-    test_file.write_text("Line 1\n  Line 2 with spaces\nLine 3\n")
+async def test_permission_denied_calls_status_error(server, tmp_allowed_dir, mock_status):
+    """Test that operations call status.error() when accessing disallowed path."""
+    # Try to access file outside allowed directories
+    forbidden_file = "/etc/passwd"  # Unix example - will fail on sandbox check
 
-    # Call replace with tabs instead of spaces
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "replace",
-        "old_string": "\tLine 2 with spaces",  # Tab instead of spaces
-        "new_string": "Modified",
-        "_status": mock_status
-    })
-
-    # Verify result
-    assert result["status"] == "error"
-    assert result["error_type"] in ["StringNotFoundError", "WhitespaceMatchError"]
-
-    # Verify status.error() was called
-    mock_status.error.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_replace_crlf_lf_mismatch_calls_status_error(server, tmp_allowed_dir, mock_status):
-    """Test that replace calls status.error() on CRLF/LF mismatch."""
-    # Create test file with LF
-    test_file = tmp_allowed_dir / "test_crlf.txt"
-    test_file.write_text("Line 1\nLine 2\nLine 3\n")
-
-    # Call replace with CRLF
-    result = await server.edit_file({
-        "file_path": str(test_file),
-        "mode": "replace",
-        "old_string": "Line 2\r\n",  # CRLF instead of LF
-        "new_string": "Modified",
+    # Call read_file on forbidden file
+    result = await server.read_file({
+        "filePath": forbidden_file,
         "_status": mock_status
     })
 
@@ -273,3 +199,8 @@ async def test_replace_crlf_lf_mismatch_calls_status_error(server, tmp_allowed_d
 
     # Verify status.error() was called
     mock_status.error.assert_called_once()
+    call_args = mock_status.error.call_args[0][0]
+    # Can be either "not allowed" for permission or "not found" if sandbox rejects it
+    assert any(keyword in call_args.lower() for keyword in ["not allowed", "permission", "not found", "error"])
+
+

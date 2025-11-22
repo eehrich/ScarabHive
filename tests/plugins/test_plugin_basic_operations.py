@@ -261,7 +261,7 @@ class TestBasicOperationsPlugin:
     def test_plugin_discovery(self, mock_system_config, mock_mcp_config):
         """Test that plugin can be discovered from plugin directory."""
         # Check that the plugin files exist
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "basic_operations"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "basic_operations"
         assert plugin_dir.exists()
         assert (plugin_dir / "__init__.py").exists()
         assert (plugin_dir / "server.py").exists()

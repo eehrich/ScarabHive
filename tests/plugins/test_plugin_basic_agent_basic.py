@@ -248,14 +248,14 @@ class TestBasicAgentSchemaLoading:
 
     def test_schema_file_exists(self):
         """Test that schema.yaml exists in plugin directory."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "basic_agent" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "basic_agent" / "schema.yaml"
         assert schema_path.exists(), f"Schema file not found at {schema_path}"
 
     def test_schema_loading_with_template_vars(self):
         """Test schema loading with template variables."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
         
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "basic_agent"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "basic_agent"
         schema_data = load_schema_from_dir(plugin_dir, template_vars={"name": "test_agent"})
         
         assert schema_data is not None
@@ -273,7 +273,7 @@ class TestBasicAgentSchemaLoading:
         """Test schema loading without template variables."""
         from agent_system.plugins.schema_loader import load_schema_from_dir
         
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "basic_agent"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "basic_agent"
         
         # Should still work, but template variables won't be replaced
         schema_data = load_schema_from_dir(plugin_dir, template_vars={})

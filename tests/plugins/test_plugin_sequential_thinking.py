@@ -119,7 +119,7 @@ def test_init_custom_config(system_config):
 async def test_basic_thought_sequence(server, mock_status):
     """Test adding basic linear thought sequence."""
     # Thought 1
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First, analyze the problem requirements",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -136,7 +136,7 @@ async def test_basic_thought_sequence(server, mock_status):
     session_id = result1["session_id"]
     
     # Thought 2
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Next, design the solution architecture",
         "thought_number": 2,
@@ -150,7 +150,7 @@ async def test_basic_thought_sequence(server, mock_status):
     assert result2["current_thought_number"] == 2
     
     # Thought 3 (final)
-    result3 = await server.sequential_thinking({
+    result3 = await server.execute({
         "session_id": session_id,
         "thought": "Finally, implement and test the solution",
         "thought_number": 3,
@@ -171,7 +171,7 @@ async def test_basic_thought_sequence(server, mock_status):
 @pytest.mark.asyncio
 async def test_adaptive_complexity(server, mock_status):
     """Test adjusting total_thoughts estimate mid-reasoning."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Start with initial estimate of 3 thoughts",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -183,7 +183,7 @@ async def test_adaptive_complexity(server, mock_status):
     assert result1["total_thoughts_estimate"] == 3
     
     # Realize we need more thoughts
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Actually, this is more complex than expected",
         "thought_number": 2,
@@ -203,7 +203,7 @@ async def test_adaptive_complexity(server, mock_status):
 @pytest.mark.asyncio
 async def test_auto_session_creation(server, mock_status):
     """Test automatic session creation when session_id is omitted."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First thought without session_id",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -217,7 +217,7 @@ async def test_auto_session_creation(server, mock_status):
     session_id1 = result1["session_id"]
     
     # Another thought without session_id creates new session
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "thought": "Another first thought",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -237,7 +237,7 @@ async def test_auto_session_creation(server, mock_status):
 async def test_create_branch(server, mock_status):
     """Test creating branch to explore alternative."""
     # Create main branch thoughts
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Main approach: Use JWT for authentication",
         "thought_number": 1,
         "total_thoughts": 5,
@@ -247,7 +247,7 @@ async def test_create_branch(server, mock_status):
     
     session_id = result1["session_id"]
     
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Implement token generation service",
         "thought_number": 2,
@@ -257,7 +257,7 @@ async def test_create_branch(server, mock_status):
     })
     
     # Create branch from thought 1
-    result3 = await server.sequential_thinking({
+    result3 = await server.execute({
         "session_id": session_id,
         "thought": "Alternative: What if we use OAuth2 instead?",
         "thought_number": 3,
@@ -287,7 +287,7 @@ async def test_create_branch(server, mock_status):
 @pytest.mark.asyncio
 async def test_multiple_branches(server, mock_status):
     """Test creating multiple branches."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Root thought",
         "thought_number": 1,
         "total_thoughts": 5,
@@ -298,7 +298,7 @@ async def test_multiple_branches(server, mock_status):
     session_id = result["session_id"]
     
     # Branch 1
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "Branch 1: Approach A",
         "thought_number": 2,
@@ -310,7 +310,7 @@ async def test_multiple_branches(server, mock_status):
     })
     
     # Branch 2
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "Branch 2: Approach B",
         "thought_number": 3,
@@ -332,7 +332,7 @@ async def test_branching_disabled(system_config, mcp_config_no_branching, mock_s
     """Test branching is rejected when disabled."""
     server = SequentialThinkingServer("test", system_config, mcp_config_no_branching)
     
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "First thought",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -343,7 +343,7 @@ async def test_branching_disabled(system_config, mcp_config_no_branching, mock_s
     session_id = result["session_id"]
     
     # Attempt to branch
-    result_branch = await server.sequential_thinking({
+    result_branch = await server.execute({
         "session_id": session_id,
         "thought": "Branch attempt",
         "thought_number": 2,
@@ -363,7 +363,7 @@ async def test_branching_disabled(system_config, mcp_config_no_branching, mock_s
 @pytest.mark.asyncio
 async def test_revise_thought(server, mock_status):
     """Test revising previous thought."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Initial thought: Use PostgreSQL",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -373,7 +373,7 @@ async def test_revise_thought(server, mock_status):
     
     session_id = result1["session_id"]
     
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Continue with schema design",
         "thought_number": 2,
@@ -383,7 +383,7 @@ async def test_revise_thought(server, mock_status):
     })
     
     # Revise thought 1
-    result3 = await server.sequential_thinking({
+    result3 = await server.execute({
         "session_id": session_id,
         "thought": "Correction: MongoDB is better for this use case",
         "thought_number": 1,
@@ -410,7 +410,7 @@ async def test_revise_thought(server, mock_status):
 @pytest.mark.asyncio
 async def test_revision_history_tracking(server, mock_status):
     """Test revision history is properly tracked."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Original thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -421,7 +421,7 @@ async def test_revision_history_tracking(server, mock_status):
     session_id = result["session_id"]
     
     # First revision
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "First revision",
         "thought_number": 1,
@@ -433,7 +433,7 @@ async def test_revision_history_tracking(server, mock_status):
     })
     
     # Second revision
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "Second revision",
         "thought_number": 1,
@@ -456,7 +456,7 @@ async def test_revisions_disabled(system_config, mcp_config_no_revisions, mock_s
     """Test revisions are rejected when disabled."""
     server = SequentialThinkingServer("test", system_config, mcp_config_no_revisions)
     
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "First thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -467,7 +467,7 @@ async def test_revisions_disabled(system_config, mcp_config_no_revisions, mock_s
     session_id = result["session_id"]
     
     # Attempt to revise
-    result_revision = await server.sequential_thinking({
+    result_revision = await server.execute({
         "session_id": session_id,
         "thought": "Revision attempt",
         "thought_number": 1,
@@ -493,7 +493,7 @@ async def test_session_ttl_cleanup(system_config, mock_status):
     
     server = SequentialThinkingServer("test", system_config, config)
     
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -508,7 +508,7 @@ async def test_session_ttl_cleanup(system_config, mock_status):
     await asyncio.sleep(1.5)
     
     # Trigger cleanup by adding new thought
-    await server.sequential_thinking({
+    await server.execute({
         "thought": "New thought (triggers cleanup)",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -523,7 +523,7 @@ async def test_session_ttl_cleanup(system_config, mock_status):
 @pytest.mark.asyncio
 async def test_session_last_accessed_update(server, mock_status):
     """Test last_accessed timestamp is updated on access."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First thought",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -538,7 +538,7 @@ async def test_session_last_accessed_update(server, mock_status):
     await asyncio.sleep(0.1)
     
     # Access again
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "Second thought",
         "thought_number": 2,
@@ -555,7 +555,7 @@ async def test_session_last_accessed_update(server, mock_status):
 async def test_clear_specific_session(server, mock_status):
     """Test clearing specific session."""
     # Create 2 sessions
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Session 1",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -563,7 +563,7 @@ async def test_clear_specific_session(server, mock_status):
         "_status": mock_status
     })
     
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "thought": "Session 2",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -593,7 +593,7 @@ async def test_clear_all_sessions(server, mock_status):
     """Test clearing all sessions."""
     # Create 3 sessions
     for i in range(3):
-        await server.sequential_thinking({
+        await server.execute({
             "thought": f"Session {i}",
             "thought_number": 1,
             "total_thoughts": 1,
@@ -631,7 +631,7 @@ async def test_clear_nonexistent_session(server, mock_status):
 async def test_get_thought_summary(server, mock_status):
     """Test getting thought summary."""
     # Create session with thoughts
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "First thought",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -641,7 +641,7 @@ async def test_get_thought_summary(server, mock_status):
     
     session_id = result["session_id"]
     
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "Second thought",
         "thought_number": 2,
@@ -650,7 +650,7 @@ async def test_get_thought_summary(server, mock_status):
         "_status": mock_status
     })
     
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "Third thought",
         "thought_number": 3,
@@ -677,7 +677,7 @@ async def test_get_thought_summary(server, mock_status):
 async def test_summary_max_thoughts_limit(server, mock_status):
     """Test summary respects max_thoughts limit."""
     # Create session with 15 thoughts
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Thought 1",
         "thought_number": 1,
         "total_thoughts": 15,
@@ -688,7 +688,7 @@ async def test_summary_max_thoughts_limit(server, mock_status):
     session_id = result["session_id"]
     
     for i in range(2, 16):
-        await server.sequential_thinking({
+        await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,
@@ -714,7 +714,7 @@ async def test_summary_max_thoughts_limit(server, mock_status):
 @pytest.mark.asyncio
 async def test_summary_without_branches(server, mock_status):
     """Test summary can exclude branch info."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -758,7 +758,7 @@ async def test_memory_limit_enforcement(system_config, mock_status):
     server = SequentialThinkingServer("test", system_config, config)
     
     # Add 10 thoughts (exceeds limit of 5)
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Thought 1",
         "thought_number": 1,
         "total_thoughts": 10,
@@ -769,7 +769,7 @@ async def test_memory_limit_enforcement(system_config, mock_status):
     session_id = result["session_id"]
     
     for i in range(2, 11):
-        await server.sequential_thinking({
+        await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,
@@ -791,7 +791,7 @@ async def test_memory_limit_enforcement(system_config, mock_status):
 async def test_memory_warning_threshold(server, mock_status):
     """Test warning when approaching memory limit."""
     # Add thoughts up to 85% of limit
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Start",
         "thought_number": 1,
         "total_thoughts": 100,
@@ -803,7 +803,7 @@ async def test_memory_warning_threshold(server, mock_status):
     
     # Add 84 more thoughts (total 85, which is 85% of 100 limit)
     for i in range(2, 86):
-        result = await server.sequential_thinking({
+        result = await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,
@@ -826,7 +826,7 @@ async def test_memory_warning_threshold(server, mock_status):
 @pytest.mark.asyncio
 async def test_empty_thought_content(server, mock_status):
     """Test empty thought content is rejected."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -841,7 +841,7 @@ async def test_empty_thought_content(server, mock_status):
 @pytest.mark.asyncio
 async def test_invalid_thought_number(server, mock_status):
     """Test invalid thought number is rejected."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test",
         "thought_number": 0,  # Invalid (must be >= 1)
         "total_thoughts": 3,
@@ -856,7 +856,7 @@ async def test_invalid_thought_number(server, mock_status):
 @pytest.mark.asyncio
 async def test_invalid_total_thoughts(server, mock_status):
     """Test invalid total_thoughts is rejected."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test",
         "thought_number": 1,
         "total_thoughts": 0,  # Invalid
@@ -871,7 +871,7 @@ async def test_invalid_total_thoughts(server, mock_status):
 @pytest.mark.asyncio
 async def test_whitespace_only_thought(server, mock_status):
     """Test whitespace-only thought is rejected."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "   \n\t   ",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -886,7 +886,7 @@ async def test_whitespace_only_thought(server, mock_status):
 @pytest.mark.asyncio
 async def test_duplicate_branch_id(server, mock_status):
     """Test creating branch with duplicate ID fails."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Root",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -897,7 +897,7 @@ async def test_duplicate_branch_id(server, mock_status):
     session_id = result["session_id"]
     
     # Create first branch
-    await server.sequential_thinking({
+    await server.execute({
         "session_id": session_id,
         "thought": "Branch A",
         "thought_number": 2,
@@ -909,7 +909,7 @@ async def test_duplicate_branch_id(server, mock_status):
     })
     
     # Attempt to create duplicate branch
-    result_dup = await server.sequential_thinking({
+    result_dup = await server.execute({
         "session_id": session_id,
         "thought": "Duplicate branch",
         "thought_number": 3,
@@ -929,7 +929,7 @@ async def test_duplicate_branch_id(server, mock_status):
 @pytest.mark.asyncio
 async def test_status_messages_start_end(server, mock_status):
     """Test status messages are sent."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -947,7 +947,7 @@ async def test_status_messages_start_end(server, mock_status):
 @pytest.mark.asyncio
 async def test_status_error_message(server, mock_status):
     """Test ERROR status message on failure."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "",  # Invalid
         "thought_number": 1,
         "total_thoughts": 1,
@@ -981,7 +981,7 @@ async def test_template_vars(server):
 async def test_branch_parent_from_thought_branch(server, mock_status):
     """Test that branch parent is derived from branched_from_thought's branch, not current_branch."""
     # Create initial thoughts on main
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Main thought 1",
         "thought_number": 1,
         "total_thoughts": 5,
@@ -990,7 +990,7 @@ async def test_branch_parent_from_thought_branch(server, mock_status):
     })
     session_id = result1["session_id"]
     
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Main thought 2",
         "thought_number": 2,
@@ -1000,7 +1000,7 @@ async def test_branch_parent_from_thought_branch(server, mock_status):
     })
     
     # Create branch 'alternative' from thought 2
-    result3 = await server.sequential_thinking({
+    result3 = await server.execute({
         "session_id": session_id,
         "thought": "Alternative approach",
         "thought_number": 3,
@@ -1013,7 +1013,7 @@ async def test_branch_parent_from_thought_branch(server, mock_status):
     
     # Now create branch 'edge_cases' from thought 1 (which is on main, not alternative)
     # This is the critical test: we're on 'alternative' branch but branching from thought 1
-    result4 = await server.sequential_thinking({
+    result4 = await server.execute({
         "session_id": session_id,
         "thought": "Edge case exploration",
         "thought_number": 4,
@@ -1036,7 +1036,7 @@ async def test_branch_parent_from_thought_branch(server, mock_status):
 async def test_progress_auto_clamp(server, mock_status):
     """Test that total_thoughts_estimate is auto-clamped to >= actual_thoughts."""
     # Start with estimate of 10
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Start",
         "thought_number": 1,
         "total_thoughts": 10,
@@ -1047,7 +1047,7 @@ async def test_progress_auto_clamp(server, mock_status):
     
     # Add thoughts up to 12 (exceeding original estimate)
     for i in range(2, 13):
-        result = await server.sequential_thinking({
+        result = await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,
@@ -1057,7 +1057,7 @@ async def test_progress_auto_clamp(server, mock_status):
         })
     
     # Now try to set estimate to 8 (less than actual 12)
-    result_clamp = await server.sequential_thinking({
+    result_clamp = await server.execute({
         "session_id": session_id,
         "thought": "Thought 13",
         "thought_number": 13,
@@ -1077,7 +1077,7 @@ async def test_progress_auto_clamp(server, mock_status):
 @pytest.mark.asyncio
 async def test_progress_display_consistency(server, mock_status):
     """Test that progress display is always consistent (never X/Y with X > Y)."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Start",
         "thought_number": 1,
         "total_thoughts": 5,
@@ -1088,7 +1088,7 @@ async def test_progress_display_consistency(server, mock_status):
     
     # Add thoughts beyond estimate
     for i in range(2, 8):
-        result = await server.sequential_thinking({
+        result = await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,
@@ -1113,7 +1113,7 @@ async def test_progress_display_consistency(server, mock_status):
 @pytest.mark.asyncio
 async def test_warnings_array_on_inconsistent_params(server, mock_status):
     """Test that warnings array is populated on inconsistent parameters."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "Start",
         "thought_number": 1,
         "total_thoughts": 10,
@@ -1124,7 +1124,7 @@ async def test_warnings_array_on_inconsistent_params(server, mock_status):
     
     # Add thoughts to 5
     for i in range(2, 6):
-        await server.sequential_thinking({
+        await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,
@@ -1134,7 +1134,7 @@ async def test_warnings_array_on_inconsistent_params(server, mock_status):
         })
     
     # Now: needs_more_thoughts=true but estimate NOT increased
-    result_warning = await server.sequential_thinking({
+    result_warning = await server.execute({
         "session_id": session_id,
         "thought": "Need more but not increasing estimate",
         "thought_number": 6,
@@ -1152,7 +1152,7 @@ async def test_warnings_array_on_inconsistent_params(server, mock_status):
 @pytest.mark.asyncio
 async def test_recorded_thoughts_count_field(server, mock_status):
     """Test that recorded_thoughts_count field is present and correct."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -1164,7 +1164,7 @@ async def test_recorded_thoughts_count_field(server, mock_status):
     assert "recorded_thoughts_count" in result1
     assert result1["recorded_thoughts_count"] == 1
     
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Second",
         "thought_number": 2,
@@ -1176,7 +1176,7 @@ async def test_recorded_thoughts_count_field(server, mock_status):
     assert result2["recorded_thoughts_count"] == 2
     
     # Revise thought 1
-    result3 = await server.sequential_thinking({
+    result3 = await server.execute({
         "session_id": session_id,
         "thought": "First (revised)",
         "thought_number": 3,
@@ -1197,7 +1197,7 @@ async def test_memory_usage_warning_in_warnings_array(server, mock_status):
     # Set small limit
     server.max_history_size = 10
     
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Start",
         "thought_number": 1,
         "total_thoughts": 15,
@@ -1208,7 +1208,7 @@ async def test_memory_usage_warning_in_warnings_array(server, mock_status):
     
     # Add thoughts to 9 (90% of limit)
     for i in range(2, 10):
-        result = await server.sequential_thinking({
+        result = await server.execute({
             "session_id": session_id,
             "thought": f"Thought {i}",
             "thought_number": i,
@@ -1227,7 +1227,7 @@ async def test_memory_usage_warning_in_warnings_array(server, mock_status):
 @pytest.mark.asyncio
 async def test_event_id_present_in_response(server, mock_status):
     """Test that event_id is present in responses."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -1243,7 +1243,7 @@ async def test_event_id_present_in_response(server, mock_status):
 @pytest.mark.asyncio
 async def test_event_id_in_thought_history(server, mock_status):
     """Test that event_id appears in thought_history."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -1253,7 +1253,7 @@ async def test_event_id_in_thought_history(server, mock_status):
     
     session_id = result1["session_id"]
     
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Second",
         "thought_number": 2,
@@ -1272,7 +1272,7 @@ async def test_event_id_in_thought_history(server, mock_status):
 @pytest.mark.asyncio
 async def test_event_id_in_summary(server, mock_status):
     """Test that event_id appears in summary."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -1298,7 +1298,7 @@ async def test_idempotency_basic(server, mock_status):
     idempotency_key = "test-key-12345"
     
     # First call with idempotency_key
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First thought",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -1311,7 +1311,7 @@ async def test_idempotency_basic(server, mock_status):
     session_id = result1["session_id"]
     
     # Second call with same idempotency_key
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "thought": "Different thought (should be ignored)",
         "thought_number": 2,
         "total_thoughts": 2,
@@ -1336,7 +1336,7 @@ async def test_idempotency_basic(server, mock_status):
 @pytest.mark.asyncio
 async def test_idempotency_different_keys(server, mock_status):
     """Test that different idempotency_keys create different events."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -1348,7 +1348,7 @@ async def test_idempotency_different_keys(server, mock_status):
     session_id = result1["session_id"]
     event_id1 = result1["event_id"]
     
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Second",
         "thought_number": 2,
@@ -1376,7 +1376,7 @@ async def test_idempotency_different_keys(server, mock_status):
 @pytest.mark.asyncio
 async def test_revision_without_revises_thought_fails(server, mock_status):
     """Test that is_revision without revises_thought is rejected."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -1392,7 +1392,7 @@ async def test_revision_without_revises_thought_fails(server, mock_status):
 @pytest.mark.asyncio
 async def test_nonexistent_branch_switch_fails(server, mock_status):
     """Test that switching to nonexistent branch fails."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -1403,7 +1403,7 @@ async def test_nonexistent_branch_switch_fails(server, mock_status):
     session_id = result["session_id"]
     
     # Try to switch to non-existent branch
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Second",
         "thought_number": 2,
@@ -1420,7 +1420,7 @@ async def test_nonexistent_branch_switch_fails(server, mock_status):
 @pytest.mark.asyncio
 async def test_revise_nonexistent_thought_fails(server, mock_status):
     """Test that revising nonexistent thought fails."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 1,
@@ -1431,7 +1431,7 @@ async def test_revise_nonexistent_thought_fails(server, mock_status):
     session_id = result["session_id"]
     
     # Try to revise thought that doesn't exist
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Revise nonexistent",
         "thought_number": 2,
@@ -1449,7 +1449,7 @@ async def test_revise_nonexistent_thought_fails(server, mock_status):
 @pytest.mark.asyncio
 async def test_branch_id_already_exists_fails(server, mock_status):
     """Test that creating branch with existing ID fails."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -1460,7 +1460,7 @@ async def test_branch_id_already_exists_fails(server, mock_status):
     session_id = result["session_id"]
     
     # Create branch
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Branch",
         "thought_number": 2,
@@ -1474,7 +1474,7 @@ async def test_branch_id_already_exists_fails(server, mock_status):
     assert result2["status"] == "success"
     
     # Try to create same branch again
-    result3 = await server.sequential_thinking({
+    result3 = await server.execute({
         "session_id": session_id,
         "thought": "Another",
         "thought_number": 3,
@@ -1492,7 +1492,7 @@ async def test_branch_id_already_exists_fails(server, mock_status):
 @pytest.mark.asyncio
 async def test_invalid_thought_number_zero_fails(server, mock_status):
     """Test that thought_number=0 is rejected."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test",
         "thought_number": 0,  # Invalid!
         "total_thoughts": 1,
@@ -1507,7 +1507,7 @@ async def test_invalid_thought_number_zero_fails(server, mock_status):
 @pytest.mark.asyncio
 async def test_invalid_total_thoughts_zero_fails(server, mock_status):
     """Test that total_thoughts=0 is rejected."""
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Test",
         "thought_number": 1,
         "total_thoughts": 0,  # Invalid!
@@ -1526,7 +1526,7 @@ async def test_invalid_total_thoughts_zero_fails(server, mock_status):
 @pytest.mark.asyncio
 async def test_thought_history_has_consistent_fields(server, mock_status):
     """Test that thought_history always includes revises_thought and timestamp."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First thought",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -1545,7 +1545,7 @@ async def test_thought_history_has_consistent_fields(server, mock_status):
         assert "timestamp" in thought              # ✅ Always present (v1.0.2)
     
     # Add revision
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Revised first thought",
         "thought_number": 2,
@@ -1567,7 +1567,7 @@ async def test_thought_history_has_consistent_fields(server, mock_status):
 @pytest.mark.asyncio
 async def test_revision_without_revises_thought_error(server, mock_status):
     """Test clear error when is_revision=true but revises_thought missing."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -1577,7 +1577,7 @@ async def test_revision_without_revises_thought_error(server, mock_status):
     session_id = result1["session_id"]
     
     # Try revision without revises_thought
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Should fail",
         "thought_number": 2,
@@ -1595,7 +1595,7 @@ async def test_revision_without_revises_thought_error(server, mock_status):
 @pytest.mark.asyncio
 async def test_switch_to_nonexistent_branch_error(server, mock_status):
     """Test clear error when switching to non-existent branch."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First on main",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -1605,7 +1605,7 @@ async def test_switch_to_nonexistent_branch_error(server, mock_status):
     session_id = result1["session_id"]
     
     # Try to switch to non-existent branch
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Switch to nowhere",
         "thought_number": 2,
@@ -1622,7 +1622,7 @@ async def test_switch_to_nonexistent_branch_error(server, mock_status):
 @pytest.mark.asyncio
 async def test_revise_nonexistent_thought_error(server, mock_status):
     """Test clear error when revising thought that doesn't exist."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 2,
@@ -1632,7 +1632,7 @@ async def test_revise_nonexistent_thought_error(server, mock_status):
     session_id = result1["session_id"]
     
     # Try to revise thought #99 (doesn't exist)
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Revise non-existent",
         "thought_number": 2,
@@ -1650,7 +1650,7 @@ async def test_revise_nonexistent_thought_error(server, mock_status):
 @pytest.mark.asyncio
 async def test_create_branch_with_existing_id_error(server, mock_status):
     """Test error when trying to create branch with existing ID."""
-    result1 = await server.sequential_thinking({
+    result1 = await server.execute({
         "thought": "First",
         "thought_number": 1,
         "total_thoughts": 3,
@@ -1660,7 +1660,7 @@ async def test_create_branch_with_existing_id_error(server, mock_status):
     session_id = result1["session_id"]
     
     # Create branch
-    result2 = await server.sequential_thinking({
+    result2 = await server.execute({
         "session_id": session_id,
         "thought": "Create alternative",
         "thought_number": 2,
@@ -1673,7 +1673,7 @@ async def test_create_branch_with_existing_id_error(server, mock_status):
     assert result2["status"] == "success"
     
     # Try to create same branch again
-    result3 = await server.sequential_thinking({
+    result3 = await server.execute({
         "session_id": session_id,
         "thought": "Try to recreate alternative",
         "thought_number": 3,
@@ -1692,7 +1692,7 @@ async def test_create_branch_with_existing_id_error(server, mock_status):
 async def test_invalid_thought_number_error(server, mock_status):
     """Test error with invalid thought_number values."""
     # thought_number < 1
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Invalid",
         "thought_number": 0,                  # ❌ Invalid
         "total_thoughts": 1,
@@ -1707,7 +1707,7 @@ async def test_invalid_thought_number_error(server, mock_status):
 async def test_invalid_total_thoughts_error(server, mock_status):
     """Test error with invalid total_thoughts values."""
     # total_thoughts < 1
-    result = await server.sequential_thinking({
+    result = await server.execute({
         "thought": "Invalid",
         "thought_number": 1,
         "total_thoughts": 0,                  # ❌ Invalid
