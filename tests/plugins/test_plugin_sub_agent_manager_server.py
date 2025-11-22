@@ -209,3 +209,215 @@ class TestUnifiedHandler:
         
         assert result["status"] == "error"
         assert "Missing 'operation'" in result["error"]
+
+
+class TestConcurrentExecutionPrevention:
+    """Test that concurrent execution of same sub-agent is prevented."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_create_same_agent_blocked(self, server, mock_config):
+        """Test that creating same sub-agent twice concurrently is blocked."""
+        import asyncio
+        
+        # Mock the actual execution to take some time
+        async def slow_create(params):
+            instance_id = "sub_test_001"
+            # Add to running agents
+            async with server._running_lock:
+                if instance_id in server._running_agents:
+                    raise ValueError(f"Sub-agent '{instance_id}' is already running")
+                server._running_agents.add(instance_id)
+            
+            try:
+                await asyncio.sleep(0.1)  # Simulate work
+                return {
+                    "instance_id": instance_id,
+                    "status": "completed",
+                    "result": "Success"
+                }
+            finally:
+                async with server._running_lock:
+                    server._running_agents.discard(instance_id)
+        
+        server._handle_create = slow_create
+        
+        # Start first create
+        task1 = asyncio.create_task(server.manage_sub_agent({
+            "operation": "create",
+            "agent_type": "test_agent",
+            "task": "Test task"
+        }))
+        
+        # Give it time to acquire lock
+        await asyncio.sleep(0.01)
+        
+        # Try second create concurrently (should fail)
+        task2 = asyncio.create_task(server.manage_sub_agent({
+            "operation": "create",
+            "agent_type": "test_agent", 
+            "task": "Test task 2"
+        }))
+        
+        # Wait for both
+        result1, result2 = await asyncio.gather(task1, task2, return_exceptions=True)
+        
+        # One should succeed, one should fail with "already running"
+        success_count = sum(1 for r in [result1, result2] 
+                          if isinstance(r, dict) and r.get("status") == "completed")
+        error_count = sum(1 for r in [result1, result2]
+                         if isinstance(r, ValueError) or 
+                            (isinstance(r, dict) and r.get("status") == "error"))
+        
+        assert success_count == 1, "Exactly one create should succeed"
+        assert error_count == 1, "Exactly one create should fail"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_continue_same_instance_blocked(self, server):
+        """Test that continuing same sub-agent instance concurrently is blocked."""
+        import asyncio
+        
+        instance_id = "sub_test_instance"
+        
+        # Mock continue handler to simulate work
+        async def slow_continue(params):
+            inst_id = params.get("instance_id")
+            async with server._running_lock:
+                if inst_id in server._running_agents:
+                    raise ValueError(f"Sub-agent '{inst_id}' is already running")
+                server._running_agents.add(inst_id)
+            
+            try:
+                await asyncio.sleep(0.1)
+                return {
+                    "instance_id": inst_id,
+                    "status": "completed",
+                    "result": "Continued"
+                }
+            finally:
+                async with server._running_lock:
+                    server._running_agents.discard(inst_id)
+        
+        server._handle_continue = slow_continue
+        
+        # Start first continue
+        task1 = asyncio.create_task(server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": instance_id,
+            "message": "Message 1"
+        }))
+        
+        await asyncio.sleep(0.01)
+        
+        # Try second continue (should fail)
+        task2 = asyncio.create_task(server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": instance_id,
+            "message": "Message 2"
+        }))
+        
+        result1, result2 = await asyncio.gather(task1, task2, return_exceptions=True)
+        
+        # One should succeed, one should error
+        success = any(isinstance(r, dict) and r.get("status") == "completed" 
+                     for r in [result1, result2])
+        error = any(isinstance(r, ValueError) or 
+                   (isinstance(r, dict) and "already running" in str(r.get("error", "")))
+                   for r in [result1, result2])
+        
+        assert success, "One continue should succeed"
+        assert error, "One continue should be blocked with 'already running'"
+
+    @pytest.mark.asyncio
+    async def test_lock_released_on_exception(self, server):
+        """Test that running lock is released even when handler raises exception."""
+        import asyncio
+        
+        instance_id = "sub_exception_test"
+        
+        # Mock handler that raises exception after acquiring lock
+        async def failing_continue(params):
+            inst_id = params.get("instance_id")
+            async with server._running_lock:
+                if inst_id in server._running_agents:
+                    raise ValueError(f"Sub-agent '{inst_id}' is already running")
+                server._running_agents.add(inst_id)
+            
+            try:
+                raise RuntimeError("Simulated failure during execution")
+            finally:
+                async with server._running_lock:
+                    server._running_agents.discard(inst_id)
+        
+        server._handle_continue = failing_continue
+        
+        # First call should fail but release lock
+        result1 = await server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": instance_id,
+            "message": "Test"
+        })
+        
+        assert isinstance(result1, (dict, Exception)), "First call completed"
+        
+        # Verify lock was released
+        async with server._running_lock:
+            assert instance_id not in server._running_agents, \
+                "Lock should be released after exception"
+        
+        # Second call should succeed (not blocked)
+        result2 = await server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": instance_id,
+            "message": "Test 2"
+        })
+        
+        # Should not get "already running" error
+        if isinstance(result2, dict):
+            assert "already running" not in str(result2.get("error", "")), \
+                "Second call should not be blocked after first failed"
+
+    @pytest.mark.asyncio
+    async def test_different_instances_run_concurrently(self, server):
+        """Test that different sub-agent instances can run concurrently."""
+        import asyncio
+        
+        # Mock handler
+        async def slow_continue(params):
+            inst_id = params.get("instance_id")
+            async with server._running_lock:
+                if inst_id in server._running_agents:
+                    raise ValueError(f"Sub-agent '{inst_id}' is already running")
+                server._running_agents.add(inst_id)
+            
+            try:
+                await asyncio.sleep(0.05)
+                return {
+                    "instance_id": inst_id,
+                    "status": "completed"
+                }
+            finally:
+                async with server._running_lock:
+                    server._running_agents.discard(inst_id)
+        
+        server._handle_continue = slow_continue
+        
+        # Run two different instances concurrently
+        task1 = asyncio.create_task(server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": "sub_test_A",
+            "message": "Test A"
+        }))
+        
+        task2 = asyncio.create_task(server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": "sub_test_B",
+            "message": "Test B"
+        }))
+        
+        results = await asyncio.gather(task1, task2, return_exceptions=True)
+        
+        # Both should succeed
+        success_count = sum(1 for r in results 
+                          if isinstance(r, dict) and r.get("status") == "completed")
+        
+        assert success_count == 2, "Both different instances should run concurrently"

@@ -376,9 +376,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "agent_type": agent_name
                 }
             finally:
-                # ALWAYS release lock, even on error
+                # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
                     self._running_agents.discard(sub_session_id)
+                logger.debug(f"Released running lock for sub-agent {sub_session_id}")
 
         except Exception as e:
             logger.exception(f"Error in create_sub_agent: {e}")
@@ -429,6 +430,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 raise ValueError(f"Agent type '{agent_type}' not found")
 
             # Check if sub-agent is already running (prevent concurrent execution)
+            # CRITICAL: Use single try-finally to ensure _running_agents is ALWAYS cleaned up
             async with self._running_lock:
                 if instance_id in self._running_agents:
                     raise ValueError(
@@ -521,9 +523,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "agent_type": agent_type
                 }
             finally:
-                # ALWAYS release lock, even on error
+                # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
                     self._running_agents.discard(instance_id)
+                logger.debug(f"Released running lock for sub-agent {instance_id}")
 
         except Exception as e:
             logger.exception(f"Error in continue_sub_agent: {e}")
