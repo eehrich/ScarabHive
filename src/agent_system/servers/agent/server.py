@@ -1333,12 +1333,28 @@ class Agent(MCPServer):
             except Exception as e:
                 logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
 
+            # Format content for display (markdown -> HTML for web UI)
+            formatted_content = content
+            content_format = getattr(assistant_msg, 'content_format', 'text')  # Default to 'text' if not set by hooks
+            try:
+                if content and self._hook_manager:
+                    formatted_content, content_format = await self._hook_manager.execute_format_output_hooks(
+                        output=content,
+                        request_id=request_id or "unknown",
+                        session_id=session_id or "unknown",
+                        output_format='html'
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to format content for display: {e}", exc_info=True)
+                # Keep original content on error
+                formatted_content = content
+
             # Emit thinking event with LLM response (for UI to show assistant reasoning)
-            yield {"type": "thinking", "step": step + 1, "assistant": {"content": content, "tool_calls": tool_calls}}
+            yield {"type": "thinking", "step": step + 1, "assistant": {"content": formatted_content, "tool_calls": tool_calls, "content_format": content_format}}
 
             # Also emit simplified thinking event if we have content and no tool calls (final answer)
             if content and not tool_calls:
-                yield {"type": "thinking", "content": content}
+                yield {"type": "thinking", "content": formatted_content, "content_format": content_format}
 
             # Persist session after each LLM response to preserve progress on cancellation
             try:
@@ -1360,7 +1376,8 @@ class Agent(MCPServer):
                     # Treat final content as answer (assistant_msg already added above)
                     results["summary"] = content
                     self._current_messages = messages.copy()
-                    final_event = {"type": "final", "summary": content, "content_format": "markdown"}
+                    # Use the already formatted content from above
+                    final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
                     # Include usage data if available from last LLM call
                     if llm_out and "usage" in llm_out:
                         final_event["usage"] = llm_out["usage"]
@@ -1489,8 +1506,8 @@ class Agent(MCPServer):
                 # Update tracked messages with final response
                 self._current_messages = messages.copy()
 
-                # Return raw markdown - formatting happens in API/CLI layer
-                final_event = {"type": "final", "summary": content, "content_format": "markdown"}
+                # Use the already formatted content from above
+                final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
                 # Include usage data if available from last LLM call
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
@@ -1553,8 +1570,21 @@ class Agent(MCPServer):
                 # Update tracked messages and emit final event
                 self._current_messages = messages.copy()
 
-                # Return raw markdown - formatting happens in API/CLI layer
-                final_event = {"type": "final", "summary": final_content, "content_format": "markdown"}
+                # Format content for display
+                formatted_final = final_content
+                final_format = 'text'  # Default to 'text' if not set by hooks
+                try:
+                    if self._hook_manager:
+                        formatted_final, final_format = await self._hook_manager.execute_format_output_hooks(
+                            output=final_content,
+                            request_id=request_id or "unknown",
+                            session_id=session_id or "unknown",
+                            output_format='html'
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to format final content: {e}", exc_info=True)
+
+                final_event = {"type": "final", "summary": formatted_final, "content_format": final_format}
                 # Include usage data if available from final LLM call
                 if final_llm_out and "usage" in final_llm_out:
                     final_event["usage"] = final_llm_out["usage"]
