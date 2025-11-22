@@ -214,6 +214,8 @@ class MCPIntegration:
             if config.external_servers and config.external_servers.connection
             else 30.0
         )
+        connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
+        connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
         
         for server_name, server_config in remote_servers.items():
             if not server_config.enabled:
@@ -225,7 +227,9 @@ class MCPIntegration:
                     server_name, 
                     server_config, 
                     ssl_verify=ssl_verify, 
-                    timeout=timeout
+                    timeout=timeout,
+                    connection_limit=connection_limit,
+                    connection_limit_per_host=connection_limit_per_host
                 )
                 logger.info(f"Connected to external MCP server: {server_name}")
             except Exception as e:
@@ -263,8 +267,17 @@ class MCPIntegration:
                 self.config.external_servers and 
                 self.config.external_servers.connection
             ) else 30.0
+            connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
+            connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
             
-            await self.client_manager.add_client(server_name, server_config, ssl_verify=ssl_verify, timeout=timeout)
+            await self.client_manager.add_client(
+                server_name, 
+                server_config, 
+                ssl_verify=ssl_verify, 
+                timeout=timeout,
+                connection_limit=connection_limit,
+                connection_limit_per_host=connection_limit_per_host
+            )
             logger.info(f"Successfully reconnected to external MCP server: {server_name}")
             
             # Invalidate tools cache to pick up new tools
@@ -426,7 +439,17 @@ class MCPIntegration:
             self.config.external_servers and 
             self.config.external_servers.connection
         ) else 30.0
-        await self.client_manager.add_client(name, config, ssl_verify=ssl_verify, timeout=timeout)
+        connection_limit = self.config.network.http_connection_limit if self.config and self.config.network else 10
+        connection_limit_per_host = self.config.network.http_connection_limit_per_host if self.config and self.config.network else 5
+        
+        await self.client_manager.add_client(
+            name, 
+            config, 
+            ssl_verify=ssl_verify, 
+            timeout=timeout,
+            connection_limit=connection_limit,
+            connection_limit_per_host=connection_limit_per_host
+        )
         # Update local config storage
         self.configured_external_servers[name] = config
         # Invalidate tools cache

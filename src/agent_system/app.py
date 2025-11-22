@@ -1222,7 +1222,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             # Keep-alive mechanism: Send periodic heartbeat comments to prevent connection timeout
             # Browser/proxy may drop connection if no data sent for 30-60 seconds during long LLM calls
-            keepalive_interval = 15.0  # Send heartbeat every 15 seconds
+            keepalive_interval = config.status.sse_keepalive_interval
             last_event_time = asyncio.get_event_loop().time()
             
             async def send_keepalive_if_needed():
@@ -1784,6 +1784,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     logger.debug(f"Prompts not available: {e}")
 
                 # 3. Keep connection alive with periodic heartbeats
+                # Get heartbeat interval from server_mode config (default 30s if not configured)
+                heartbeat_interval = 30.0  # Default fallback
+                if config.server_mode and hasattr(config.server_mode, 'sse_heartbeat_interval'):
+                    heartbeat_interval = config.server_mode.sse_heartbeat_interval
+                
                 while True:
                     # Check if client disconnected
                     if await request.is_disconnected():
@@ -1800,8 +1805,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     }
                     yield f"event: message\ndata: {json.dumps(heartbeat_message, ensure_ascii=False)}\n\n"
 
-                    # Wait before next heartbeat (30 seconds)
-                    await asyncio.sleep(30)
+                    # Wait before next heartbeat
+                    await asyncio.sleep(heartbeat_interval)
 
             except asyncio.CancelledError:
                 logger.debug("MCP SSE stream cancelled")

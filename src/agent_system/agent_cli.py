@@ -443,7 +443,10 @@ async def _mcp_server_mode(config: Any, action: str, args: Any) -> None:
                 base_url = "http://127.0.0.1:8000"
                 url = f"{base_url}{endpoint_path}/server-info"
 
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                # Get CLI request timeout from config (default 5.0 seconds)
+                timeout = config.network.cli_request_timeout if config and config.network else 5.0
+                
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     try:
                         response = await client.get(url)
                         if response.status_code == 200:

@@ -323,8 +323,13 @@ class ToolExecutionManager:
         # Create tool-specific request ID for tool-level cancellation
         tool_request_id = f"{request_id}_{step:03d}"
 
+        # Get tool cleanup timeout from agent config (fallback to 30.0 for backward compatibility)
+        cleanup_timeout = 30.0
+        if self._agent and self._agent.agent_config and self._agent.agent_config.timeouts:
+            cleanup_timeout = self._agent.agent_config.timeouts.tool_cleanup_timeout
+
         # Create cancellation context with tool-specific ID
-        async with cancellable_operation(tool_request_id, cleanup_timeout=30.0) as tool_token:
+        async with cancellable_operation(tool_request_id, cleanup_timeout=cleanup_timeout) as tool_token:
             # If main request is cancelled during tool execution, cancel tool token too
             if main_token and main_token.is_cancelled and not tool_token.is_cancelled:
                 tool_token.cancel()

@@ -128,6 +128,9 @@ class TimeoutConfig(BaseModel):
     # Session lock timeout
     session_lock_timeout: float = 5.0  # Timeout for acquiring session lock (seconds)
     
+    # Tool cleanup timeout
+    tool_cleanup_timeout: float = 30.0  # Timeout for tool cleanup during cancellation (seconds)
+    
 
 class AgentConfig(BaseModel):
     """Configuration for individual agent instances (matches type comment in mcp.yaml)"""
@@ -265,6 +268,10 @@ class MCPServerModeConfig(BaseModel):
     # Session configuration
     session_ttl: float = 3600.0  # Session timeout in seconds (1 hour)
     max_concurrent_sessions: int = 100  # Maximum concurrent MCP client sessions
+    
+    # Timeout configuration
+    default_timeout: float = 30.0  # Default HTTP request timeout for MCP streamable transport (seconds)
+    sse_heartbeat_interval: float = 30.0  # Interval for SSE heartbeat messages (seconds)
 
 
 class PluginsConfig(BaseModel):
@@ -305,6 +312,13 @@ class NetworkConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8000
     disable_cache: bool = True
+    
+    # HTTP connection pooling settings
+    http_connection_limit: int = 10  # Total HTTP connections for MCP streamable transport
+    http_connection_limit_per_host: int = 5  # HTTP connections per host
+    
+    # CLI request timeout
+    cli_request_timeout: float = 5.0  # Timeout for CLI HTTP requests (seconds)
 
 
 class CancellationConfig(BaseModel):
@@ -334,6 +348,16 @@ class StatusConfig(BaseModel):
     """Status message system configuration"""
     queue_maxsize: int = 1000  # Max events per queue (prevents memory exhaustion)
     drop_oldest_when_full: bool = True  # Drop oldest events when queue is full
+    
+    # SSE connection keep-alive settings
+    sse_keepalive_interval: float = 15.0  # Interval for SSE keep-alive comments (seconds)
+    llm_heartbeat_interval: float = 5.0  # Interval for heartbeat events during LLM calls (seconds)
+
+
+class VisionConfig(BaseModel):
+    """Vision/image processing configuration"""
+    image_warn_size_mb: float = 10.0  # Warn when images exceed this size (MB)
+    image_max_size_mb: Optional[float] = None  # Maximum allowed image size (MB), None = no limit
 
 
 class AuthConfig(BaseModel):
@@ -381,6 +405,7 @@ class AgentSystemConfig(BaseModel):
     # Core configurations
     context: ContextConfig = Field(default_factory=ContextConfig)
     status: StatusConfig = Field(default_factory=StatusConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     default_agent: str = "basic_agent"
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

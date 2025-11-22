@@ -31,7 +31,9 @@ class TestMCPClientFactoryStreaming:
                 base_url="http://example.com",
                 timeout=30.0,
                 ssl_verify=True,
-                use_sse=True
+                use_sse=True,
+                connection_limit=10,
+                connection_limit_per_host=5
             )
 
             # Should create and connect client successfully

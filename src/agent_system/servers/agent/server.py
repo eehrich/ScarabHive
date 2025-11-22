@@ -1053,10 +1053,12 @@ class Agent(MCPServer):
             llm_task = asyncio.create_task(llm.chat_tools(messages, tools_schema, cancellation_token=cancellation_token))
 
             # Poll for status events while waiting (with safety limit)
-            # Send heartbeat events every 5 seconds to prevent SSE connection timeout
+            # Send heartbeat events to prevent SSE connection timeout
             max_llm_iterations = self.timeouts.llm_task_max_iterations if self.timeouts else 6000
             llm_iteration_count = 0
-            heartbeat_interval = 50  # Send heartbeat every 50 iterations * 100ms = 5 seconds
+            # Calculate heartbeat interval in iterations (config is in seconds, we poll every 0.1s)
+            heartbeat_interval_seconds = self.system_config.status.llm_heartbeat_interval
+            heartbeat_interval = int(heartbeat_interval_seconds / 0.1)  # Convert seconds to iterations
             
             while not llm_task.done():
                 llm_iteration_count += 1

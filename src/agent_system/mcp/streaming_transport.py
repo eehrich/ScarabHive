@@ -55,7 +55,8 @@ class HTTPStreamingTransport(MCPTransport):
     4. Optional: GET request opens standalone SSE stream for server messages
     """
 
-    def __init__(self, url: str = None, base_url: str = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True):
+    def __init__(self, url: str = None, base_url: str = None, timeout: float = 30.0, ssl_verify: bool = True, use_sse: bool = True,
+                 connection_limit: int = 10, connection_limit_per_host: int = 5):
         """
         Initialize Streamable HTTP transport.
         
@@ -65,6 +66,8 @@ class HTTPStreamingTransport(MCPTransport):
             timeout: Request timeout in seconds
             ssl_verify: Whether to verify SSL certificates
             use_sse: Ignored (kept for backward compatibility) - SSE mode is auto-detected per response
+            connection_limit: Total HTTP connection limit for connection pooling
+            connection_limit_per_host: HTTP connection limit per host
         """
         # Accept both url and base_url for backward compatibility
         if url is None and base_url is None:
@@ -72,6 +75,8 @@ class HTTPStreamingTransport(MCPTransport):
         self.url = url or base_url
         self.timeout = timeout
         self.ssl_verify = ssl_verify
+        self.connection_limit = connection_limit
+        self.connection_limit_per_host = connection_limit_per_host
         self.session_id: Optional[str] = None
         self._request_counter = 0
         self._standalone_sse_task: Optional[asyncio.Task] = None
@@ -117,7 +122,7 @@ class HTTPStreamingTransport(MCPTransport):
             raise Exception("Not connected - call connect() first")
         
         # Create fresh session for this notification
-        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=self.connection_limit, limit_per_host=self.connection_limit_per_host)
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -163,7 +168,7 @@ class HTTPStreamingTransport(MCPTransport):
             raise Exception("Not connected - call connect() first")
         
         # Create fresh session for this request to avoid connection pool issues
-        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=self.connection_limit, limit_per_host=self.connection_limit_per_host)
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -282,7 +287,7 @@ class HTTPStreamingTransport(MCPTransport):
             raise Exception("Not connected")
         
         # Create dedicated session for long-lived SSE stream
-        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=10, limit_per_host=5)
+        connector = aiohttp.TCPConnector(ssl=self.ssl_verify, limit=self.connection_limit, limit_per_host=self.connection_limit_per_host)
         timeout = aiohttp.ClientTimeout(total=None)  # No timeout for SSE stream
         
         try:

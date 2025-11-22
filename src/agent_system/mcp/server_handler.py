@@ -146,7 +146,10 @@ class MCPServerHandler:
         self.config = config
         self.registry = registry
         self._sessions: Dict[str, MCPServerSession] = {}
-        self._session_ttl = 3600.0  # 1 hour session timeout
+        # Get session TTL from server_mode config (default 3600.0 = 1 hour)
+        self._session_ttl = 3600.0
+        if config.server_mode and hasattr(config.server_mode, 'session_ttl'):
+            self._session_ttl = config.server_mode.session_ttl
         self._request_counter = 0
         
     async def handle_request(self, request: Request) -> Response:

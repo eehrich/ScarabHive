@@ -125,7 +125,7 @@ class TestQueueHandlerTimeout:
 
     @pytest.mark.asyncio
     async def test_queue_handler_timeout_on_full_queue(self):
-        """Test that queue.put() respects timeout."""
+        """Test that queue.put() drops oldest event when full (no blocking)."""
         # Create a bounded queue that will fill up
         queue = asyncio.Queue(maxsize=1)
         handler = QueueStatusHandler(queue)
@@ -135,22 +135,25 @@ class TestQueueHandlerTimeout:
         await queue.put(event1)
         assert queue.full()
         
-        # Try to add another event (should timeout, not hang)
+        # Try to add another event (should drop oldest, not timeout)
         event2 = StatusEvent(server="test", message="msg2", request_id="req_002", phase=StatusPhase.PROGRESS)
         
         start = asyncio.get_event_loop().time()
-        await handler.process(event2)  # Should timeout after 5s
+        await handler.process(event2)  # Should complete immediately (drop-oldest strategy)
         elapsed = asyncio.get_event_loop().time() - start
         
-        # Should timeout around 5s (not hang forever)
-        assert 4.5 < elapsed < 6.0, f"Expected ~5s timeout, got {elapsed}s"
+        # Should complete almost instantly (no blocking)
+        assert elapsed < 0.1, f"Expected instant completion (drop-oldest), got {elapsed}s"
         
-        # Queue should still only have original event
+        # Queue should still be full (old event dropped, new event added)
         assert queue.qsize() == 1
+        # Verify new event is in queue (oldest was dropped)
+        retrieved_event = await queue.get()
+        assert retrieved_event.message == "msg2", "Should have new event (oldest dropped)"
 
     @pytest.mark.asyncio
     async def test_filtered_queue_handler_timeout(self):
-        """Test that FilteredQueueStatusHandler also respects timeout."""
+        """Test that FilteredQueueStatusHandler also uses drop-oldest strategy."""
         # Create a bounded queue
         queue = asyncio.Queue(maxsize=1)
         handler = FilteredQueueStatusHandler(queue, server_filter="test")
@@ -160,15 +163,15 @@ class TestQueueHandlerTimeout:
         await queue.put(event1)
         assert queue.full()
         
-        # Try to add another matching event (should timeout)
+        # Try to add another matching event (should drop oldest)
         event2 = StatusEvent(server="test", message="msg2", request_id="req_002", phase=StatusPhase.PROGRESS)
         
         start = asyncio.get_event_loop().time()
         await handler.process(event2)
         elapsed = asyncio.get_event_loop().time() - start
         
-        # Should timeout around 5s
-        assert 4.5 < elapsed < 6.0, f"Expected ~5s timeout, got {elapsed}s"
+        # Should complete almost instantly (no blocking)
+        assert elapsed < 0.1, f"Expected instant completion (drop-oldest), got {elapsed}s"
 
     @pytest.mark.asyncio
     async def test_queue_handler_succeeds_with_available_queue(self):
