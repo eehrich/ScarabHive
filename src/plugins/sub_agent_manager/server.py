@@ -331,9 +331,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # Note: config_overrides would go here if Agent.run_events supported them
                     # For now, sub-agent uses its default configuration
                 ):
-                    # Collect final result (event type is "final" not "result")
-                    if event.get("type") == "final":
+                    event_type = event.get("type")
+                    # Collect final result (can be "final", "error", or "cancelled")
+                    if event_type == "final":
                         result_text = event.get("summary", "")
+                    elif event_type == "error":
+                        result_text = f"Error: {event.get('message', 'Unknown error')}"
+                        logger.warning(f"Sub-agent {sub_session_id} returned error: {result_text}")
+                        break  # Stop waiting for more events
+                    elif event_type == "cancelled":
+                        result_text = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
+                        logger.info(f"Sub-agent {sub_session_id} was cancelled: {result_text}")
+                        break  # Stop waiting for more events
 
                 # Save session with messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
@@ -464,9 +473,18 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     session_id=instance_id,  # Continue existing session
                     use_advanced_model=use_advanced_model
                 ):
-                    # Collect final result (event type is "final" not "result")
-                    if event.get("type") == "final":
+                    event_type = event.get("type")
+                    # Collect final result (can be "final", "error", or "cancelled")
+                    if event_type == "final":
                         result_text = event.get("summary", "")
+                    elif event_type == "error":
+                        result_text = f"Error: {event.get('message', 'Unknown error')}"
+                        logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
+                        break  # Stop waiting for more events
+                    elif event_type == "cancelled":
+                        result_text = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
+                        logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
+                        break  # Stop waiting for more events
 
                 # Save session with updated messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
