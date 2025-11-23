@@ -157,7 +157,7 @@ async def test_audit_logging_on_modification(registry, caplog):
         messages=[{"role": "user", "content": "original"}]
     )
     
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         result_context = await registry.execute_hooks(HookType.PRE_LLM_CALL, context)
     
     # Check modification was applied
@@ -169,7 +169,7 @@ async def test_audit_logging_on_modification(registry, caplog):
     assert len(audit_logs) > 0
     
     audit_log = audit_logs[0]
-    assert audit_log.levelname == "INFO"
+    assert audit_log.levelname == "DEBUG"  # Audit logs are at DEBUG level
     assert "modifying_hook" in audit_log.message
     assert hasattr(audit_log, "request_id")
     assert audit_log.request_id == "test_request"
@@ -251,7 +251,7 @@ async def test_multiple_modifications_audit(registry, caplog):
         messages=[{"role": "user", "content": "original"}]
     )
     
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):  # Audit logs are at DEBUG level
         result_context = await registry.execute_hooks(HookType.PRE_LLM_CALL, context)
     
     # Should have 3 messages total (original + 2 added)
