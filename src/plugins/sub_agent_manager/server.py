@@ -991,35 +991,44 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     return job
 
             # Not in async jobs - check if sub-agent exists in DB (may be completed or never ran async)
-            registry = self._extract_registry(params)
-            session_service = self._extract_session_service(params)
-            manager = self._get_manager(session_service, registry)
-            parent_session_id = params.get("_session_id")
-            
-            if not parent_session_id:
-                return {"status": "error", "error": "No session context available"}
+            # Only check DB if we have agent context (registry + session)
+            try:
+                registry = self._extract_registry(params)
+                session_service = self._extract_session_service(params)
+                manager = self._get_manager(session_service, registry)
+                parent_session_id = params.get("_session_id")
+                
+                if not parent_session_id:
+                    return {"status": "error", "error": "Instance not found in async tracking and no session context available"}
 
-            # Check if sub-agent exists
-            sub_agents = await manager.list_sub_sessions(parent_session_id, include_archived=False)
-            matching = [s for s in sub_agents if s.instance_id == instance_id]
-            
-            if matching:
-                # Sub-agent exists but not in async tracking - it's completed
-                sub_agent = matching[0]
-                return {
-                    "instance_id": instance_id,
-                    "status": "completed",
-                    "agent_type": sub_agent.agent_type,
-                    "started_at": sub_agent.created_at.isoformat() if sub_agent.created_at else None,
-                    "completed_at": sub_agent.last_used.isoformat() if sub_agent.last_used else None,
-                    "result": "Sub-agent execution completed (session persisted)",
-                    "message": "Use 'info' operation to see conversation history"
-                }
-            else:
-                return {"status": "error", "error": f"Instance '{instance_id}' not found"}
+                # Check if sub-agent exists
+                sub_agents = await manager.list_sub_sessions(parent_session_id, include_archived=False)
+                matching = [s for s in sub_agents if s.instance_id == instance_id]
+                
+                if matching:
+                    # Sub-agent exists but not in async tracking - it's completed
+                    sub_agent = matching[0]
+                    return {
+                        "instance_id": instance_id,
+                        "status": "completed",
+                        "agent_type": sub_agent.agent_type,
+                        "started_at": sub_agent.created_at.isoformat() if sub_agent.created_at else None,
+                        "completed_at": sub_agent.last_used.isoformat() if sub_agent.last_used else None,
+                        "result": "Sub-agent execution completed (session persisted)",
+                        "message": "Use 'info' operation to see conversation history"
+                    }
+                else:
+                    return {"status": "error", "error": f"Instance '{instance_id}' not found"}
+            except RuntimeError:
+                # No registry available - can only check async tracking (already done above)
+                return {"status": "error", "error": f"Instance '{instance_id}' not found in async tracking"}
 
+        except KeyError as e:
+            # Missing required parameter
+            logger.error(f"Missing parameter in poll: {e}")
+            return {"status": "error", "error": f"Missing required parameter: {e}"}
         except Exception as e:
-            logger.exception(f"Error in poll: {e}")
+            logger.exception(f"Unexpected error in poll: {e}")
             return {"status": "error", "error": str(e)}
 
     async def _handle_wait(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1113,7 +1122,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
             # Wait for all instances
             wait_tasks = [
-                self._handle_wait({"instance_id": iid, "timeout": timeout})
+                self._handle_wait({
+                    "instance_id": iid, 
+                    "timeout": timeout,
+                    "_registry": params.get("_registry"),
+                    "_agent": params.get("_agent"),
+                    "_session_id": params.get("_session_id"),
+                    "_session_service": params.get("_session_service")
+                })
                 for iid in instance_ids
             ]
 
