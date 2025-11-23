@@ -38,7 +38,7 @@ class TestMCPServerCLI:
     def test_yahoo_finance_cli_help(self):
         """Test Yahoo Finance server CLI help."""
         result = subprocess.run([
-            sys.executable, "-m", "plugins.yahoo_finance",
+            sys.executable, "-m", "plugins_trading.yahoo_finance",
             "--help"
     ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
@@ -126,11 +126,12 @@ class TestMCPServerCLI:
         # Note: google_search plugin not implemented yet
         
         for server in servers:
-            # All servers have been migrated to plugins
+            # All servers have been migrated to plugins (except yahoo_finance in plugins_trading)
+            module_name = f"plugins_trading.{server}" if server == "yahoo_finance" else f"plugins.{server}"
             py = (
                 "import importlib\n"
                 f"try:\n"
-                f"    import plugins.{server}.__main__\n"
+                f"    import {module_name}.__main__\n"
                 f"    print('OK')\n"
                 f"except Exception as e:\n"
                 f"    print(f'FAILED: {{e}}')\n"

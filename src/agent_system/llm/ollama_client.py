@@ -258,68 +258,70 @@ class OllamaNativeAsyncClient(LLMClient):
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise Exception("Request cancelled by user")
 
-                                if not line.strip():
+                            if not line.strip():
+                                continue
+
+                            try:
+                                chunk_data = response.json() if hasattr(line, 'json') else self._httpx.json.loads(line)
+                            except Exception:
+                                import json
+                                try:
+                                    chunk_data = json.loads(line)
+                                except Exception:
                                     continue
 
-                                try:
-                                    chunk_data = response.json() if hasattr(line, 'json') else self._httpx.json.loads(line)
-                                except Exception:
-                                    import json
-                                    try:
-                                        chunk_data = json.loads(line)
-                                    except Exception:
-                                        continue
+                            # Check if stream is done - final chunk may contain usage info
+                            if chunk_data.get("done"):
+                                # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
+                                # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
+                                if "eval_count" in chunk_data or "prompt_eval_count" in chunk_data:
+                                    accumulated_usage = {}
+                                    if "prompt_eval_count" in chunk_data:
+                                        accumulated_usage["prompt_tokens"] = chunk_data["prompt_eval_count"]
+                                    if "eval_count" in chunk_data:
+                                        accumulated_usage["completion_tokens"] = chunk_data["eval_count"]
+                                    if "prompt_eval_count" in chunk_data and "eval_count" in chunk_data:
+                                        accumulated_usage["total_tokens"] = chunk_data["prompt_eval_count"] + chunk_data["eval_count"]
+                                break
 
-                                # Check if stream is done - final chunk may contain usage info
-                                if chunk_data.get("done"):
-                                    # Extract usage metadata if available (prompt_eval_count, eval_count, etc.)
-                                    # Ollama provides: eval_count (completion tokens), prompt_eval_count (prompt tokens)
-                                    if "eval_count" in chunk_data or "prompt_eval_count" in chunk_data:
-                                        accumulated_usage = {}
-                                        if "prompt_eval_count" in chunk_data:
-                                            accumulated_usage["prompt_tokens"] = chunk_data["prompt_eval_count"]
-                                        if "eval_count" in chunk_data:
-                                            accumulated_usage["completion_tokens"] = chunk_data["eval_count"]
-                                        if "prompt_eval_count" in chunk_data and "eval_count" in chunk_data:
-                                            accumulated_usage["total_tokens"] = chunk_data["prompt_eval_count"] + chunk_data["eval_count"]
-                                    break
+                            message = chunk_data.get("message", {})
 
-                                message = chunk_data.get("message", {})
+                            # Handle content delta
+                            content = message.get("content")
+                            if content:
+                                accumulated_content.append(content)
+                                yield {
+                                    "type": "content_delta",
+                                    "delta": content,
+                                    "accumulated": "".join(accumulated_content)
+                                }
 
-                                # Handle content delta
-                                content = message.get("content")
-                                if content:
-                                    accumulated_content.append(content)
-                                    yield {
-                                        "type": "content_delta",
-                                        "delta": content,
-                                        "accumulated": "".join(accumulated_content)
+                            # Handle tool call deltas
+                            tool_calls = message.get("tool_calls")
+                            if tool_calls:
+                                for tc in tool_calls:
+                                    # Ollama sends complete tool calls, not deltas
+                                    # Extract index if available, otherwise use name as key
+                                    func = tc.get("function", {})
+                                    tc_id = tc.get("id") or f"call_{short_id()}"
+                                    name = func.get("name", "")
+                                    index = len(accumulated_tool_calls)  # Assign next index
+
+                                    if index not in accumulated_tool_calls:
+                                        accumulated_tool_calls[index] = {
+                                            "id": tc_id,
+                                            "type": "function",
+                                            "function": {"name": name, "arguments": func.get("arguments", {})}
                                     }
 
-                                # Handle tool call deltas
-                                tool_calls = message.get("tool_calls")
-                                if tool_calls:
-                                    for tc in tool_calls:
-                                        # Ollama sends complete tool calls, not deltas
-                                        # Extract index if available, otherwise use name as key
-                                        func = tc.get("function", {})
-                                        tc_id = tc.get("id") or f"call_{short_id()}"
-                                        name = func.get("name", "")
-                                        index = len(accumulated_tool_calls)  # Assign next index
+                                yield {
+                                    "type": "tool_call_delta",
+                                    "index": index,
+                                    "delta": tc,
+                                    "accumulated": accumulated_tool_calls[index]
+                                }
 
-                                        if index not in accumulated_tool_calls:
-                                            accumulated_tool_calls[index] = {
-                                                "id": tc_id,
-                                                "type": "function",
-                                                "function": {"name": name, "arguments": func.get("arguments", {})}
-                                            }
-
-                                    yield {
-                                        "type": "tool_call_delta",
-                                        "index": index,
-                                        "delta": tc,
-                                        "accumulated": accumulated_tool_calls[index]
-                                    }                # Build final assistant message (after async with block)
+                # Build final assistant message (after async with block)
                 assistant = {
                     "role": "assistant",
                     "content": "".join(accumulated_content) if accumulated_content else None
