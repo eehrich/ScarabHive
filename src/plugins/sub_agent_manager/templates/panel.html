@@ -309,6 +309,7 @@
         <div class="controls">
             <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
             <button onclick="loadAgents()">🔄 Refresh</button>
+            <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="background: #3c3c3c;">⏸️ Auto-Refresh: OFF</button>
             <label style="color: #858585; margin-left: auto; display: flex; align-items: center; gap: 5px;">
                 <input type="checkbox" id="includeArchived" onchange="loadAgents()">
                 Show Archived
@@ -410,18 +411,17 @@
                 
                 renderAgents(data.instances || []);
                 await loadStats();
-                
-                // Start auto-refresh if there are active agents with activity
-                const hasActiveAgents = (data.instances || []).some(a => a.status === 'active' && a.current_activity);
-                if (hasActiveAgents) {
-                    startAutoRefresh();
-                } else {
-                    stopAutoRefresh();
-                }
             } catch (error) {
                 console.error('Error loading agents:', error);
                 agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>Error: ${error.message}</div></div>`;
+            }
+        }
+        
+        function toggleAutoRefresh() {
+            if (autoRefreshInterval) {
                 stopAutoRefresh();
+            } else {
+                startAutoRefresh();
             }
         }
         
@@ -429,13 +429,23 @@
             if (autoRefreshInterval) return;
             autoRefreshInterval = setInterval(() => {
                 loadAgents();
-            }, 2000); // Refresh every 2 seconds when agents are active
+            }, 2000);
+            updateAutoRefreshButton(true);
         }
         
         function stopAutoRefresh() {
             if (autoRefreshInterval) {
                 clearInterval(autoRefreshInterval);
                 autoRefreshInterval = null;
+            }
+            updateAutoRefreshButton(false);
+        }
+        
+        function updateAutoRefreshButton(isActive) {
+            const btn = document.getElementById('autoRefreshBtn');
+            if (btn) {
+                btn.textContent = isActive ? '⏸️ Auto-Refresh: ON' : '▶️ Auto-Refresh: OFF';
+                btn.style.background = isActive ? '#0e639c' : '#3c3c3c';
             }
         }
         
