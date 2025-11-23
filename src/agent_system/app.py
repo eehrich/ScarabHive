@@ -1261,7 +1261,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         now = asyncio.get_event_loop().time()
                         # Check if batch has pending events and timeout elapsed
                         if status_batch and (now - last_batch_time) >= batch_interval:
-                            # Signal main loop to flush
+                            # Flush directly - we're in a separate task
+                            logger.debug(f"[BATCH] Timer triggered flush: {len(status_batch)} events")
                             await batch_flush_queue.put(True)
                 except asyncio.CancelledError:
                     pass
@@ -1271,6 +1272,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             try:
                 async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+                    # Check if background timer triggered flush FIRST (before processing event)
+                    try:
+                        while not batch_flush_queue.empty():
+                            await batch_flush_queue.get()
+                            if status_batch:
+                                async for batch_msg in flush_status_batch():
+                                    yield batch_msg
+                    except asyncio.QueueEmpty:
+                        pass
+                    
                     # Send keepalive before processing event (in case event processing is slow)
                     keepalive_msg = await send_keepalive_if_needed()
                     if keepalive_msg:
@@ -1333,21 +1344,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
 
                     try:
-                        # Check if background timer triggered flush
-                        if not batch_flush_queue.empty():
-                            await batch_flush_queue.get()
-                            if status_batch:
-                                async for batch_msg in flush_status_batch():
-                                    yield batch_msg
-                        
-                        # Batch status events for efficiency
+                        # Send status events immediately (no batching for status)
+                        # Batching caused delays during LLM calls when no events are generated
                         if payload.get("type") == "status":
-                            status_batch.append(payload)
-                            now = asyncio.get_event_loop().time()
-                            # Flush if batch is full or time elapsed
-                            if len(status_batch) >= max_batch_size or (now - last_batch_time) >= batch_interval:
-                                async for batch_msg in flush_status_batch():
-                                    yield batch_msg
+                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                         else:
                             # Send non-status events immediately (but flush status batch first)
                             if status_batch:
