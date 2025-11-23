@@ -205,9 +205,15 @@ class LogViewerWebEndpoints(PluginWebInterface):
                         parsed_line['has_multiline'] = len(entry['continuation_lines']) > 0
                         parsed_lines.append(parsed_line)
                 else:
-                    # Streaming mode - for now, just handle single lines (multiline support complex for streaming)
-                    # TODO: Add proper multiline support for streaming mode
-                    for line_num, line in enumerate(file_lines, 1):
+                    # Streaming mode - only check recent lines for efficiency
+                    # Get last N*3 lines to have enough buffer for filtering
+                    recent_lines = file_lines[-lines*3:] if len(file_lines) > lines*3 else file_lines
+                    
+                    # Calculate starting line number for recent_lines
+                    start_line_num = max(1, len(file_lines) - len(recent_lines) + 1)
+                    
+                    for idx, line in enumerate(recent_lines):
+                        line_num = start_line_num + idx
                         if line.strip():  # Skip empty lines
                             # Filter out log viewer requests to avoid recursion
                             if '/plugins/log_viewer' in line:
