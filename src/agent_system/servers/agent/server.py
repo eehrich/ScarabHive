@@ -1503,14 +1503,16 @@ class Agent(MCPServer):
                 # Update tracked messages after tool execution
                 self._current_messages = messages.copy()
 
-                # Persist session after each tool execution to preserve progress on cancellation
+                # Persist session after complete turn (tool calls + results processed)
+                # This avoids orphaned tool calls that would occur if we saved after each tool execution
                 try:
                     conversation_msgs = [msg for msg in messages if msg.role != "system"]
                     self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
-                    logger.debug(f"Persisted session {session_id} to in-memory tracker after tool execution (step {step}) with {len(conversation_msgs)} messages")
+                    logger.debug(f"Persisted session {session_id} to in-memory tracker after completing turn (step {step}) with {len(conversation_msgs)} messages")
                     
-                    # CRITICAL: Also save to disk via SessionService after each tool execution
-                    # This ensures progress is preserved even if the request is cancelled or server crashes
+                    # CRITICAL: Also save to disk via SessionService after complete turn
+                    # This ensures progress is preserved after all tools from one LLM request are processed
+                    # Avoids orphaned tool calls (assistant calls tool, but response not yet processed)
                     if self._session_service:
                         session_meta = self._session_tracker.get_session_metadata(session_id)
                         if session_meta:
@@ -1526,13 +1528,13 @@ class Agent(MCPServer):
                                 llm_profile=save_llm_profile,
                                 was_new_session=False  # Always update for intermediate saves
                             )
-                            logger.debug(f"Saved session {session_id} to disk after tool execution")
+                            logger.debug(f"Saved session {session_id} to disk after completing turn with all tool results")
                         else:
                             logger.warning(f"No session metadata found for {session_id}, skipping disk save")
                     else:
                         logger.debug("No session_service available, skipping disk save")
                 except Exception as e:
-                    logger.warning(f"Failed to persist session {session_id} after tool execution: {e}", exc_info=True)
+                    logger.warning(f"Failed to persist session {session_id} after completing turn: {e}", exc_info=True)
 
                 # Yield pending status events after tool execution
                 for status_event in yield_pending_status_events():
