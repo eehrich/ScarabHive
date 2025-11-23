@@ -141,6 +141,8 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
         super().__init__(queue)
         self.server_filter = server_filter
         self.request_id_filter = request_id_filter
+        self._drop_counter = 0  # Track drops for throttled logging
+        self._last_warning_time = 0.0
     
     async def process(self, event: StatusEvent) -> None:
         """Forward event to queue if it matches filters"""
@@ -160,10 +162,21 @@ class FilteredQueueStatusHandler(QueueStatusHandler):
             # This prevents memory exhaustion with slow consumers
             try:
                 dropped = self.queue.get_nowait()
-                logger.warning(
-                    f"Filtered status queue full - dropping oldest event (server={dropped.server}, "
-                    f"phase={dropped.phase.value}, request_id={dropped.request_id}) to make room"
-                )
+                self._drop_counter += 1
+                
+                # Throttle warnings: Only log every 50 drops or every 10 seconds
+                import time
+                current_time = time.time()
+                should_warn = (self._drop_counter % 50 == 1) or (current_time - self._last_warning_time > 10.0)
+                
+                if should_warn:
+                    logger.warning(
+                        f"Filtered status queue full - dropped {self._drop_counter} events so far "
+                        f"(latest: server={dropped.server}, phase={dropped.phase.value}, "
+                        f"request_id={dropped.request_id}). Client may be disconnected or slow."
+                    )
+                    self._last_warning_time = current_time
+                
                 self.queue.put_nowait(event)
             except Exception as e:
                 logger.error(f"Failed to drop-and-add filtered status to queue: {e}")

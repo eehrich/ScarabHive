@@ -149,6 +149,17 @@
             color: #fff;
         }
         
+        .status-running {
+            background: #ff9800;
+            color: #fff;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
         .status-archived {
             background: #6e6e6e;
             color: #d4d4d4;
@@ -308,12 +319,14 @@
         
         <div class="controls">
             <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
+            <select id="statusFilter" onchange="loadAgents()">
+                <option value="all">All Status</option>
+                <option value="running">Running Only</option>
+                <option value="active">Active Only</option>
+                <option value="archived">Archived Only</option>
+            </select>
             <button onclick="loadAgents()">🔄 Refresh</button>
             <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="background: #3c3c3c;">⏸️ Auto-Refresh: OFF</button>
-            <label style="color: #858585; margin-left: auto; display: flex; align-items: center; gap: 5px;">
-                <input type="checkbox" id="includeArchived" onchange="loadAgents()">
-                Show Archived
-            </label>
         </div>
         
         <div class="stats-grid" id="statsGrid">
@@ -397,7 +410,9 @@
                 return;
             }
             
-            const includeArchived = document.getElementById('includeArchived').checked;
+            const statusFilter = document.getElementById('statusFilter').value;
+            // Always load all agents, then filter client-side for running status
+            const includeArchived = (statusFilter === 'all' || statusFilter === 'archived');
             const agentsList = document.getElementById('agentsList');
             agentsList.innerHTML = '<div class="loading">Loading...</div>';
             
@@ -409,7 +424,7 @@
                     throw new Error(data.error);
                 }
                 
-                renderAgents(data.instances || []);
+                renderAgents(data.instances || [], statusFilter);
                 await loadStats();
             } catch (error) {
                 console.error('Error loading agents:', error);
@@ -464,15 +479,58 @@
             }
         }
         
-        function renderAgents(agents) {
+        function timeAgo(dateString) {
+            if (!dateString) return 'never';
+            const date = new Date(dateString);
+            const now = new Date();
+            const seconds = Math.floor((now - date) / 1000);
+            
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+            if (seconds < 2592000) return `${Math.floor(seconds / 86400)} days ago`;
+            return date.toLocaleDateString();
+        }
+        
+        function renderAgents(agents, statusFilter = 'all') {
             const agentsList = document.getElementById('agentsList');
             
-            if (!agents.length) {
+            // Apply status filter
+            let filteredAgents = agents;
+            if (statusFilter !== 'all') {
+                filteredAgents = agents.filter(agent => {
+                    const activityLower = (agent.current_activity || '').toLowerCase();
+                    const isRunning = agent.current_activity && 
+                                     agent.status === 'active' && 
+                                     !activityLower.includes('completed') &&
+                                     !activityLower.includes('cancelled') &&
+                                     !activityLower.includes('failed') &&
+                                     !activityLower.includes('error');
+                    
+                    if (statusFilter === 'running') return isRunning;
+                    if (statusFilter === 'active') return agent.status === 'active' && !isRunning;
+                    if (statusFilter === 'archived') return agent.status === 'archived';
+                    return true;
+                });
+            }
+            
+            if (!filteredAgents.length) {
                 agentsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div>No sub-agents found</div></div>';
                 return;
             }
             
-            agentsList.innerHTML = agents.map(agent => {
+            agentsList.innerHTML = filteredAgents.map(agent => {
+                // Agent is running only if it has activity AND it's not in a terminal state
+                const activityLower = (agent.current_activity || '').toLowerCase();
+                const isRunning = agent.current_activity && 
+                                 agent.status === 'active' && 
+                                 !activityLower.includes('completed') &&
+                                 !activityLower.includes('cancelled') &&
+                                 !activityLower.includes('failed') &&
+                                 !activityLower.includes('error');
+                const statusClass = isRunning ? 'running' : agent.status;
+                const statusText = isRunning ? '🔄 RUNNING' : agent.status.toUpperCase();
+                
                 const activityHtml = agent.current_activity 
                     ? `<div class="agent-activity">
                          <span class="spinner">⚙️</span>
@@ -480,16 +538,18 @@
                        </div>`
                     : '';
                 
+                const lastUsedAgo = timeAgo(agent.last_used);
+                
                 return `
                 <div class="agent-item">
                     <div class="agent-header">
                         <span class="agent-id">${agent.instance_id}</span>
-                        <span class="agent-status status-${agent.status}">${agent.status}</span>
+                        <span class="agent-status status-${statusClass}">${statusText}</span>
                     </div>
                     <div class="agent-meta">
                         <span class="agent-type">${agent.agent_type}</span>
-                        <span>Created: ${new Date(agent.created_at).toLocaleString()}</span>
-                        <span>Last used: ${new Date(agent.last_used).toLocaleString()}</span>
+                        <span>Messages: ${agent.message_count || 0}</span>
+                        <span>Last used: ${lastUsedAgo}</span>
                     </div>
                     <div class="agent-task">"${agent.task_summary || 'No task summary'}"</div>
                     ${activityHtml}

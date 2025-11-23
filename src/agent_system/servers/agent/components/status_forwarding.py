@@ -184,3 +184,13 @@ class StatusEventForwarder:
                 logger.debug("Cleaned up status forwarding task")
             except Exception as e:
                 logger.debug("Error cleaning up status forwarding task: %s", e)
+        
+        # CRITICAL: Unsubscribe from status bus to prevent queue buildup
+        if self.status_queue:
+            try:
+                status_bus.unsubscribe(self.status_queue)
+                logger.debug("Unsubscribed from status bus")
+            except Exception as e:
+                logger.warning("Error unsubscribing from status bus: %s", e)
+            finally:
+                self.status_queue = None
