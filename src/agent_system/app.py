@@ -1225,6 +1225,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             keepalive_interval = config.status.sse_keepalive_interval
             last_event_time = asyncio.get_event_loop().time()
             
+            # Event batching for status events (optimization to reduce overhead)
+            status_batch = []
+            last_batch_time = asyncio.get_event_loop().time()
+            batch_interval = 0.05  # Send batches every 50ms
+            max_batch_size = 10  # Or when we have 10 events
+            
             async def send_keepalive_if_needed():
                 """Send SSE comment to keep connection alive if no recent data"""
                 nonlocal last_event_time
@@ -1233,6 +1239,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     last_event_time = now
                     return ":keepalive\n\n"
                 return None
+            
+            async def flush_status_batch():
+                """Send accumulated status events as batch"""
+                nonlocal status_batch, last_batch_time, last_event_time
+                if status_batch:
+                    # Send batch as single SSE event with array
+                    batch_payload = {"type": "status_batch", "events": status_batch}
+                    yield f"data: {json.dumps(batch_payload, ensure_ascii=False)}\n\n"
+                    status_batch = []
+                    last_batch_time = asyncio.get_event_loop().time()
+                    last_event_time = last_batch_time
 
             try:
                 async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
@@ -1298,12 +1315,33 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
 
                     try:
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        # Batch status events for efficiency
+                        if payload.get("type") == "status":
+                            status_batch.append(payload)
+                            now = asyncio.get_event_loop().time()
+                            # Flush if batch is full or time elapsed
+                            if len(status_batch) >= max_batch_size or (now - last_batch_time) >= batch_interval:
+                                async for batch_msg in flush_status_batch():
+                                    yield batch_msg
+                        else:
+                            # Send non-status events immediately (but flush status batch first)
+                            if status_batch:
+                                async for batch_msg in flush_status_batch():
+                                    yield batch_msg
+                            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     except (TypeError, ValueError) as e:
                         logger.error("Failed to serialize event %s: %s", ev, e)
                         error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
+                # Flush any remaining status events before cancellation
+                if status_batch:
+                    try:
+                        async for batch_msg in flush_status_batch():
+                            yield batch_msg
+                    except Exception:
+                        pass
+                
                 # Stream was cancelled - send cancellation event to WebUI
                 logger.info(f"Stream cancelled for request {request_id}, sending cancellation event")
                 cancelled_payload = {"type": "cancelled", "request_id": request_id, "message": "Request cancelled by user"}

@@ -938,6 +938,20 @@
               // Otherwise silently ignore status from other requests/sessions
             }
             break;
+          case 'status_batch':
+            // Batched status events for efficiency (multiple events in one SSE message)
+            if (blk && blk.status && data.events && Array.isArray(data.events)) {
+              data.events.forEach(statusEvent => {
+                const eventRequestId = statusEvent.request_id || '';
+                const matches = eventRequestId === currentRequestId || 
+                    (eventRequestId && currentRequestId && eventRequestId.startsWith(currentRequestId + '_'));
+                
+                if (matches) {
+                  addStatusEvent(blk.status, statusEvent);
+                }
+              });
+            }
+            break;
           case 'final':
             // Only show final if content box is still empty (no streaming happened)
             // or if it's a different format
