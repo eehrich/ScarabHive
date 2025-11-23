@@ -429,7 +429,7 @@
             if (autoRefreshInterval) return;
             autoRefreshInterval = setInterval(() => {
                 loadAgents();
-            }, 2000);
+            }, 10000);
             updateAutoRefreshButton(true);
         }
         
