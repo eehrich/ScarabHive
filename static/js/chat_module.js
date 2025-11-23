@@ -553,6 +553,7 @@
   // Event source tracking (shared across init calls and cleanup)
   let currentEventSource = null;
   let currentStatusEventSource = null;
+  let closeEventSourceTimer = null; // Timer to delay closing EventSource after final/end
   
   // Streaming state tracking
   let currentStreamingContent = '';
@@ -663,6 +664,12 @@
             stopBtn.disabled = false;
             stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
             
+            // Clear any pending close timer
+            if (closeEventSourceTimer) {
+              clearTimeout(closeEventSourceTimer);
+              closeEventSourceTimer = null;
+            }
+            
             // UI zurücksetzen: Run-Button anzeigen, Stop-Button verstecken
             runBtn.style.display = 'block';
             stopBtn.style.display = 'none';
@@ -682,6 +689,11 @@
           // Wenn Request nicht gefunden wurde (z.B. nach Server-Neustart), State clearen
           if (result.status === 'not_found') {
             console.warn('Request not found - clearing stale state (possible server restart)');
+            // Clear any pending close timer
+            if (closeEventSourceTimer) {
+              clearTimeout(closeEventSourceTimer);
+              closeEventSourceTimer = null;
+            }
             currentRequestId = null;
             currentEventSource = null;
             // UI zurücksetzen
@@ -971,11 +983,18 @@
             // If streaming already filled the content, skip this (content already there)
             break;
           case 'end':
-            if (currentEventSource) {
-              currentEventSource.close();
-              currentEventSource = null;
+            // Delay closing EventSource by 1 second to capture remaining status messages
+            if (closeEventSourceTimer) {
+              clearTimeout(closeEventSourceTimer);
             }
-            // Don't close statusEs here - let status updates continue after response completion
+            closeEventSourceTimer = setTimeout(() => {
+              if (currentEventSource) {
+                currentEventSource.close();
+                currentEventSource = null;
+              }
+              closeEventSourceTimer = null;
+            }, 1000); // Wait 1 second for any pending status batches
+            
             runBtn.style.display = 'block'; // Show run button
             stopBtn.style.display = 'none'; // Hide stop button
             // Reset stop button state
@@ -992,6 +1011,11 @@
           case 'error':
             showSection(blk.t);
             blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks(data.message)}</div>`;
+            // Clear any pending close timer
+            if (closeEventSourceTimer) {
+              clearTimeout(closeEventSourceTimer);
+              closeEventSourceTimer = null;
+            }
             if (currentEventSource) {
               currentEventSource.close();
               currentEventSource = null;
@@ -1011,6 +1035,11 @@
           case 'cancelled':
             // Request was cancelled - clean up and reset UI
             console.log('Request cancelled:', data.request_id, 'at step', data.step);
+            // Clear any pending close timer
+            if (closeEventSourceTimer) {
+              clearTimeout(closeEventSourceTimer);
+              closeEventSourceTimer = null;
+            }
             if (currentEventSource) {
               currentEventSource.close();
               currentEventSource = null;
@@ -1147,11 +1176,21 @@
         } catch (err) {
           showSection(blk.t);
           blk.t.innerHTML = `<div class="response-text error">${formatTextWithLineBreaks('Request failed: ' + String(err))}</div>`;
+          // Clear any pending close timer
+          if (closeEventSourceTimer) {
+            clearTimeout(closeEventSourceTimer);
+            closeEventSourceTimer = null;
+          }
           if (currentStatusEventSource) {
             currentStatusEventSource.close();
             currentStatusEventSource = null;
           }
         } finally {
+          // Clear any pending close timer
+          if (closeEventSourceTimer) {
+            clearTimeout(closeEventSourceTimer);
+            closeEventSourceTimer = null;
+          }
           runBtn.style.display = 'block';
           stopBtn.style.display = 'none';
           // Reset stop button state
@@ -1237,6 +1276,11 @@
           stopBtn.disabled = false;
           stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
           // Keep currentRequestId and Request ID display visible
+          // Clear any pending close timer
+          if (closeEventSourceTimer) {
+            clearTimeout(closeEventSourceTimer);
+            closeEventSourceTimer = null;
+          }
           currentEventSource = null;
           es.close();
           if (currentStatusEventSource) {
@@ -1247,6 +1291,11 @@
       }, 1500);
 
       es.onerror = () => {
+        // Clear any pending close timer
+        if (closeEventSourceTimer) {
+          clearTimeout(closeEventSourceTimer);
+          closeEventSourceTimer = null;
+        }
         es.close();
         if (currentStatusEventSource) {
           currentStatusEventSource.close();
