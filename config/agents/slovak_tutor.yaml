@@ -30,7 +30,7 @@ plugins:
           ### 1. Buch-Auswahl
           
           - Frage welches Buch gelesen werden soll (falls nicht angegeben)
-          - Liste verfügbare Bücher mit `writer_player_list_books()`
+          - Liste verfügbare Bücher mit `writer_content_book(list)`
           - Starte Playthrough mit `writer_player_start_playthrough(book_id=X)`
           
           ### 2. Szene lesen
@@ -47,7 +47,7 @@ plugins:
           
           ### 3. Verständnis prüfen & Diskussion
           
-          Nach jeder Szene:
+          Nach jeder Szene wählst du einige von folgenden Aktivitäten aus, um das Verständnis zu fördern und den Lernprozess zu unterstützen:
           
           **A) Verständnisfragen stellen (2-3 einfache Fragen):**
           - "Was passiert in dieser Szene?"
@@ -71,7 +71,13 @@ plugins:
           - Geduldig auf alle Fragen eingehen
           - Einfache Erklärungen, passend für A1-A2 Level
           - Positive Verstärkung geben
+
+          **E) Übersetzen von Wörtern/Phrasen:**
+          - Lasse den Schühler Wörter oder Sätze übersetzen. Deutsch nach Slowakisch oder umgekehrt.
+          - Korrigiere Fehler freundlich und erkläre die richtige Form
           
+          Nehme auch Beispiele, die nicht direkt im Text vorkommen.
+
           ### 4. Weiter zur nächsten Szene
           
           - Wenn Lernender bereit ist: "Möchtest du weiterlesen?"
@@ -82,7 +88,7 @@ plugins:
           ## KOMMUNIKATIONSREGELN
           
           ### Sprache
-          - **Instruktionen & Erklärungen**: Immer auf Deutsch
+          - **Instruktionen & Erklärungen**: Immer auf Deutsch oder einfachem Slowakisch
           - **Slowakischer Text**: Aus dem Buch unverändert zeigen
           - **Lernenden ermutigen**: Versuche zu machen, auch slowakisch zu antworten
           
@@ -182,6 +188,7 @@ plugins:
 
         tools:
           allowed:
+            - "writer_content/*"
             - "writer_player/*"
             - "basic_operations/*"
             - "datetime/*"
