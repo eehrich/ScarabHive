@@ -60,6 +60,10 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         # Format: {sub_session_id: True}
         self._running_agents: set[str] = set()
         self._running_lock = __import__('asyncio').Lock()
+        
+        # Track async jobs by instance_id: {instance_id: {task, status, started_at, result, error}}
+        self._async_jobs: dict[str, dict[str, Any]] = {}
+        self._async_jobs_lock = __import__('asyncio').Lock()
 
     def get_template_vars(self) -> dict:
         """Return template variables for schema rendering.
@@ -220,6 +224,14 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 return await self._handle_create(params)
             elif operation == "continue":
                 return await self._handle_continue(params)
+            elif operation == "poll":
+                return await self._handle_poll(params)
+            elif operation == "wait":
+                return await self._handle_wait(params)
+            elif operation == "wait_all":
+                return await self._handle_wait_all(params)
+            elif operation == "cancel":
+                return await self._handle_cancel(params)
             elif operation == "list":
                 return await self._handle_list(params)
             elif operation == "info":
@@ -243,6 +255,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             task = params["task"]
             instance_label = params.get("instance_label")
             use_advanced_model = params.get("use_advanced_model", False)
+            blocking = params.get("blocking", True)  # NEW: default to blocking behavior
             # Note: config_overrides would be used here when Agent.run_events supports them
             # For now, sub-agent uses its default configuration
 
@@ -277,7 +290,53 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
             logger.info(f"Created sub-session {sub_session_id} for parent {parent_session_id}")
 
-            # Check if sub-agent is already running (prevent concurrent execution)
+            # If non-blocking, start async execution and return immediately
+            if not blocking:
+                if status:
+                    await status.progress(f"Starting async execution of {agent_name}")
+                
+                # Store job metadata
+                async with self._async_jobs_lock:
+                    self._async_jobs[sub_session_id] = {
+                        "instance_id": sub_session_id,
+                        "status": "pending",
+                        "agent_type": agent_name,
+                        "task": task,
+                        "parent_session_id": parent_session_id,
+                        "started_at": datetime.now(UTC).isoformat(),
+                        "completed_at": None,
+                        "result": None,
+                        "error": None,
+                        "task_handle": None
+                    }
+
+                # Start background execution
+                import asyncio
+                task_coro = self._execute_async_job(
+                    instance_id=sub_session_id,
+                    params=params,
+                    agent_name=agent_name,
+                    task=task,
+                    use_advanced_model=use_advanced_model
+                )
+                task_handle = asyncio.create_task(task_coro)
+                
+                # Store task handle
+                async with self._async_jobs_lock:
+                    self._async_jobs[sub_session_id]["task_handle"] = task_handle
+                    self._async_jobs[sub_session_id]["status"] = "running"
+
+                if status:
+                    await status.end(f"Async execution started: {sub_session_id}")
+
+                return {
+                    "instance_id": sub_session_id,
+                    "status": "running",
+                    "agent_type": agent_name,
+                    "message": "Sub-agent execution started in background. Use poll or wait to check status."
+                }
+
+            # BLOCKING path: Check if sub-agent is already running (prevent concurrent execution)
             async with self._running_lock:
                 if sub_session_id in self._running_agents:
                     raise ValueError(
@@ -776,6 +835,364 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 "status": "error",
                 "error": str(e)
             }
+
+    # ========== Async Job Management Handlers ==========
+
+    async def _execute_async_job(
+        self,
+        instance_id: str,
+        params: dict[str, Any],
+        agent_name: str,
+        task: str,
+        use_advanced_model: bool
+    ) -> None:
+        """Execute sub-agent in background and update job status.
+        
+        Args:
+            instance_id: The sub_session_id (already created by caller)
+            params: Full params dict with injected dependencies
+            agent_name: Agent type name
+            task: Task description
+            use_advanced_model: Whether to use advanced model
+        """
+        import asyncio
+        
+        try:
+            # Get dependencies
+            registry = self._extract_registry(params)
+            session_service = self._extract_session_service(params)
+            manager = self._get_manager(session_service, registry)
+            parent_session_id = params["_session_id"]
+
+            logger.info(f"Async execution started for {instance_id}")
+
+            # Mark as running (prevent concurrent execution)
+            async with self._running_lock:
+                if instance_id in self._running_agents:
+                    raise ValueError(f"Sub-agent '{instance_id}' is already running")
+                self._running_agents.add(instance_id)
+
+            try:
+                # Get agent and execute
+                agent = registry.get(agent_name)
+                if not agent:
+                    raise ValueError(f"Agent '{agent_name}' not found in registry")
+
+                agent._session_service = session_service
+                user_id = manager._extract_user_id(parent_session_id, params)
+                agent._session_tracker.set_session_metadata(instance_id, {
+                    "user_id": user_id,
+                    "agent_name": agent_name,
+                    "llm_profile": getattr(agent.agent_config, 'default_llm_profile', 'normal')
+                })
+
+                # Execute (collect final result)
+                result_text = ""
+                parent_request_id = params.get("_request_id")
+                sub_request_id = f"{parent_request_id}_async_{short_id(6)}" if parent_request_id else f"async_{short_id()}"
+
+                async for event in agent.run_events(
+                    task=task,
+                    request_id=sub_request_id,
+                    session_id=instance_id,
+                    use_advanced_model=use_advanced_model
+                ):
+                    event_type = event.get("type")
+                    
+                    # Track activity
+                    try:
+                        if event_type == "thinking_delta":
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, instance_id, "💭 Thinking..."
+                            )
+                        elif event_type == "mcp_call":
+                            tool_name = event.get("action", "tool")
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, instance_id, f"🔧 Running tool: {tool_name}"
+                            )
+                        elif event_type == "status":
+                            status_msg = event.get("message", "Processing...")
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, instance_id, f"⚙️ {status_msg}"
+                            )
+                    except Exception:
+                        pass  # Don't fail on activity tracking
+
+                    # Collect result
+                    if event_type == "final":
+                        result_text = event.get("summary", "")
+                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
+                    elif event_type in ["error", "cancelled"]:
+                        result_text = f"{event_type.capitalize()}: {event.get('message', event.get('reason', 'Unknown'))}"
+                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
+                        break
+
+                # Save session
+                llm_profile = agent.agent_config.default_llm_profile
+                await session_service.save_session(
+                    agent=agent,
+                    user_id=user_id,
+                    session_id=instance_id,
+                    agent_name=agent_name,
+                    llm_profile=llm_profile,
+                    was_new_session=True
+                )
+
+                # Update metadata
+                await manager.update_sub_session_metadata(
+                    parent_session_id=parent_session_id,
+                    sub_session_id=instance_id,
+                    last_used=datetime.now(UTC).isoformat()
+                )
+
+                # Mark job as completed
+                async with self._async_jobs_lock:
+                    if instance_id in self._async_jobs:
+                        self._async_jobs[instance_id]["status"] = "completed"
+                        self._async_jobs[instance_id]["result"] = result_text
+                        self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+
+                logger.info(f"Async execution completed for {instance_id}")
+
+            finally:
+                # Release lock
+                async with self._running_lock:
+                    self._running_agents.discard(instance_id)
+
+        except asyncio.CancelledError:
+            # Job was cancelled
+            async with self._async_jobs_lock:
+                if instance_id in self._async_jobs:
+                    self._async_jobs[instance_id]["status"] = "cancelled"
+                    self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+            logger.info(f"Async execution cancelled for {instance_id}")
+            raise
+
+        except Exception as e:
+            # Job failed
+            logger.exception(f"Async execution failed for {instance_id}: {e}")
+            async with self._async_jobs_lock:
+                if instance_id in self._async_jobs:
+                    self._async_jobs[instance_id]["status"] = "failed"
+                    self._async_jobs[instance_id]["error"] = str(e)
+                    self._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+
+    async def _handle_poll(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'poll' - check status of running sub-agent without blocking."""
+        try:
+            instance_id = params["instance_id"]
+
+            # First check if async execution is tracked
+            async with self._async_jobs_lock:
+                if instance_id in self._async_jobs:
+                    job = self._async_jobs[instance_id].copy()
+                    # Remove task_handle from response (not serializable)
+                    job.pop("task_handle", None)
+                    return job
+
+            # Not in async jobs - check if sub-agent exists in DB (may be completed or never ran async)
+            registry = self._extract_registry(params)
+            session_service = self._extract_session_service(params)
+            manager = self._get_manager(session_service, registry)
+            parent_session_id = params.get("_session_id")
+            
+            if not parent_session_id:
+                return {"status": "error", "error": "No session context available"}
+
+            # Check if sub-agent exists
+            sub_agents = await manager.list_sub_sessions(parent_session_id, include_archived=False)
+            matching = [s for s in sub_agents if s.instance_id == instance_id]
+            
+            if matching:
+                # Sub-agent exists but not in async tracking - it's completed
+                sub_agent = matching[0]
+                return {
+                    "instance_id": instance_id,
+                    "status": "completed",
+                    "agent_type": sub_agent.agent_type,
+                    "started_at": sub_agent.created_at.isoformat() if sub_agent.created_at else None,
+                    "completed_at": sub_agent.last_used.isoformat() if sub_agent.last_used else None,
+                    "result": "Sub-agent execution completed (session persisted)",
+                    "message": "Use 'info' operation to see conversation history"
+                }
+            else:
+                return {"status": "error", "error": f"Instance '{instance_id}' not found"}
+
+        except Exception as e:
+            logger.exception(f"Error in poll: {e}")
+            return {"status": "error", "error": str(e)}
+
+    async def _handle_wait(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'wait' - poll instance until completed or timeout."""
+        import asyncio
+        
+        status_ctx = params.get("_status")
+        try:
+            instance_id = params["instance_id"]
+            timeout = params.get("timeout", 3600)  # Default 1 hour
+
+            if status_ctx:
+                await status_ctx.progress(f"Waiting for {instance_id}...")
+
+            # Check if async execution is tracked
+            async with self._async_jobs_lock:
+                is_async = instance_id in self._async_jobs
+
+            if not is_async:
+                # Not in async jobs - check DB immediately (may already be completed)
+                poll_result = await self._handle_poll(params)
+                if poll_result.get("status") == "completed":
+                    if status_ctx:
+                        await status_ctx.end(f"Instance {instance_id} already completed")
+                    return poll_result
+                elif poll_result.get("status") == "error":
+                    if status_ctx:
+                        await status_ctx.error(f"Instance {instance_id} not found")
+                    return poll_result
+
+            # Async execution in progress - poll until done
+            start_time = asyncio.get_event_loop().time()
+
+            while True:
+                # Check status
+                async with self._async_jobs_lock:
+                    if instance_id not in self._async_jobs:
+                        # Async tracking lost - check DB
+                        poll_result = await self._handle_poll(params)
+                        if poll_result.get("status") in ["completed", "error"]:
+                            return poll_result
+                        # Still not found - instance was deleted
+                        return {"status": "error", "error": f"Instance '{instance_id}' disappeared during wait"}
+
+                    job = self._async_jobs[instance_id]
+                    job_status = job["status"]
+
+                    if job_status in ["completed", "failed", "cancelled"]:
+                        result = job.copy()
+                        result.pop("task_handle", None)
+                        
+                        if status_ctx:
+                            if job_status == "completed":
+                                await status_ctx.end(f"Instance {instance_id} completed")
+                            else:
+                                await status_ctx.error(f"Instance {instance_id} {job_status}")
+                        
+                        return result
+
+                # Check timeout
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed > timeout:
+                    return {
+                        "status": "error",
+                        "error": f"Timeout waiting for instance '{instance_id}' (waited {elapsed:.1f}s)"
+                    }
+
+                # Wait before next poll
+                await asyncio.sleep(0.5)
+
+        except Exception as e:
+            logger.exception(f"Error in wait: {e}")
+            if status_ctx:
+                await status_ctx.error(f"Failed to wait for instance: {e}")
+            return {"status": "error", "error": str(e)}
+
+    async def _handle_wait_all(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'wait_all' - wait for multiple sub-agents to complete."""
+        import asyncio
+        
+        status_ctx = params.get("_status")
+        try:
+            instance_ids = params["instance_ids"]
+            timeout = params.get("timeout", 3600)
+
+            if not isinstance(instance_ids, list):
+                return {"status": "error", "error": "instance_ids must be a list"}
+
+            if status_ctx:
+                await status_ctx.progress(f"Waiting for {len(instance_ids)} instances...")
+
+            # Wait for all instances
+            wait_tasks = [
+                self._handle_wait({"instance_id": iid, "timeout": timeout})
+                for iid in instance_ids
+            ]
+
+            results = await asyncio.gather(*wait_tasks, return_exceptions=True)
+
+            # Format results
+            formatted_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    formatted_results.append({
+                        "instance_id": instance_ids[i],
+                        "status": "error",
+                        "error": str(result)
+                    })
+                else:
+                    formatted_results.append(result)
+
+            # Count statuses
+            completed = sum(1 for r in formatted_results if r.get("status") == "completed")
+            failed = sum(1 for r in formatted_results if r.get("status") in ["failed", "error"])
+
+            if status_ctx:
+                await status_ctx.end(f"Completed: {completed}, Failed: {failed} of {len(instance_ids)} instances")
+
+            return {
+                "results": formatted_results,
+                "total": len(instance_ids),
+                "completed": completed,
+                "failed": failed
+            }
+
+        except Exception as e:
+            logger.exception(f"Error in wait_all: {e}")
+            if status_ctx:
+                await status_ctx.error(f"Failed to wait for instances: {e}")
+            return {"status": "error", "error": str(e)}
+
+    async def _handle_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle 'cancel' - cancel running async sub-agent."""
+        status_ctx = params.get("_status")
+        try:
+            instance_id = params["instance_id"]
+
+            async with self._async_jobs_lock:
+                if instance_id not in self._async_jobs:
+                    return {"status": "error", "error": f"Instance '{instance_id}' not found or not running async"}
+
+                job = self._async_jobs[instance_id]
+                task_handle = job.get("task_handle")
+
+                if job["status"] not in ["pending", "running"]:
+                    return {
+                        "status": "error",
+                        "error": f"Cannot cancel instance with status '{job['status']}'"
+                    }
+
+                if task_handle and not task_handle.done():
+                    task_handle.cancel()
+                    logger.info(f"Cancelled async execution of {instance_id}")
+
+                job["status"] = "cancelled"
+                job["completed_at"] = datetime.now(UTC).isoformat()
+
+            if status_ctx:
+                await status_ctx.end(f"Cancelled {instance_id}")
+
+            return {
+                "instance_id": instance_id,
+                "status": "cancelled",
+                "message": "Sub-agent cancelled successfully"
+            }
+
+        except Exception as e:
+            logger.exception(f"Error in cancel: {e}")
+            if status_ctx:
+                await status_ctx.error(f"Failed to cancel instance: {e}")
+            return {"status": "error", "error": str(e)}
+
+    # ========== End Async Job Management ==========
 
     def _is_agent_allowed(self, agent_name: str) -> bool:
         """Check if agent is allowed by this manager instance.

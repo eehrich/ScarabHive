@@ -421,3 +421,352 @@ class TestConcurrentExecutionPrevention:
                           if isinstance(r, dict) and r.get("status") == "completed")
         
         assert success_count == 2, "Both different instances should run concurrently"
+
+
+class TestAsyncExecution:
+    """Test async execution with blocking=false parameter."""
+
+    @pytest.mark.asyncio
+    async def test_create_blocking_false_returns_immediately(self, server):
+        """Test that create with blocking=false returns immediately."""
+        import asyncio
+        
+        # Mock dependencies
+        server._extract_registry = Mock(return_value=Mock())
+        server._extract_session_service = Mock(return_value=Mock())
+        server._get_manager = Mock(return_value=AsyncMock())
+        
+        # Mock manager to create sub-session
+        mock_manager = server._get_manager.return_value
+        mock_manager.create_sub_session = AsyncMock(return_value="sub_async_001")
+        
+        result = await server._handle_create({
+            "agent_type": "test_agent",
+            "task": "Test async",
+            "blocking": False,
+            "_session_id": "parent_session",
+            "_request_id": "req_001"
+        })
+        
+        assert result["status"] == "running"
+        assert result["instance_id"] == "sub_async_001"
+        assert "background" in result["message"].lower()
+        
+        # Verify async job was tracked
+        async with server._async_jobs_lock:
+            assert "sub_async_001" in server._async_jobs
+            job = server._async_jobs["sub_async_001"]
+            assert job["status"] in ["pending", "running"]
+            assert job["agent_type"] == "test_agent"
+
+    @pytest.mark.asyncio
+    async def test_create_blocking_true_waits_for_completion(self, server):
+        """Test that create with blocking=true (default) waits for completion."""
+        # Mock the handler properly
+        async def mock_create(params):
+            return {
+                "instance_id": "sub_001",
+                "status": "completed",
+                "result": "Done"
+            }
+        
+        server._handle_create = mock_create
+        
+        result = await server.manage_sub_agent({
+            "operation": "create",
+            "agent_type": "test_agent",
+            "task": "Test blocking",
+            "blocking": True  # Explicit
+        })
+        
+        assert result["status"] == "completed"
+        assert "result" in result
+
+    @pytest.mark.asyncio
+    async def test_poll_async_job_in_progress(self, server):
+        """Test polling an async job that's still running."""
+        import asyncio
+        from datetime import datetime, UTC
+        
+        # Add job to tracking
+        instance_id = "sub_poll_test_001"
+        async with server._async_jobs_lock:
+            server._async_jobs[instance_id] = {
+                "instance_id": instance_id,
+                "status": "running",
+                "agent_type": "test_agent",
+                "task": "Test task",
+                "started_at": datetime.now(UTC).isoformat(),
+                "completed_at": None,
+                "result": None,
+                "error": None,
+                "task_handle": asyncio.create_task(asyncio.sleep(10))
+            }
+        
+        result = await server._handle_poll({
+            "instance_id": instance_id
+        })
+        
+        assert result["status"] == "running"
+        assert result["instance_id"] == instance_id
+        assert "task_handle" not in result  # Should be removed
+
+    @pytest.mark.asyncio
+    async def test_poll_completed_job_from_db(self, server):
+        """Test polling a completed job that's not in async tracking (e.g., after restart)."""
+        from plugins.sub_agent_manager.schemas import SubAgentMetadata
+        from datetime import datetime, UTC
+        
+        instance_id = "sub_completed_001"
+        
+        # Mock dependencies for DB lookup
+        mock_manager = AsyncMock()
+        mock_manager.list_sub_sessions = AsyncMock(return_value=[
+            SubAgentMetadata(
+                instance_id=instance_id,
+                agent_type="test_agent",
+                created_at=datetime.now(UTC),
+                last_used=datetime.now(UTC),
+                status="active",
+                task_summary="Test task"
+            )
+        ])
+        
+        server._extract_registry = Mock(return_value=Mock())
+        server._extract_session_service = Mock(return_value=Mock())
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        # Not in async jobs (simulating restart)
+        result = await server._handle_poll({
+            "instance_id": instance_id,
+            "_session_id": "parent_session"
+        })
+        
+        assert result["status"] == "completed"
+        assert result["instance_id"] == instance_id
+        assert "Use 'info' operation" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_poll_non_existent_instance(self, server):
+        """Test polling an instance that doesn't exist."""
+        mock_manager = AsyncMock()
+        mock_manager.list_sub_sessions = AsyncMock(return_value=[])
+        
+        server._extract_registry = Mock(return_value=Mock())
+        server._extract_session_service = Mock(return_value=Mock())
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        result = await server._handle_poll({
+            "instance_id": "non_existent_001",
+            "_session_id": "parent_session"
+        })
+        
+        assert result["status"] == "error"
+        assert "not found" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_wait_completed_instance_returns_immediately(self, server):
+        """Test that wait returns immediately if instance already completed."""
+        from plugins.sub_agent_manager.schemas import SubAgentMetadata
+        from datetime import datetime, UTC
+        
+        instance_id = "sub_wait_completed_001"
+        
+        # Mock poll to return completed
+        async def mock_poll(params):
+            return {
+                "instance_id": instance_id,
+                "status": "completed",
+                "result": "Already done"
+            }
+        
+        server._handle_poll = mock_poll
+        
+        result = await server._handle_wait({
+            "instance_id": instance_id,
+            "_session_id": "parent_session",
+            "timeout": 10
+        })
+        
+        assert result["status"] == "completed"
+        assert result["instance_id"] == instance_id
+
+    @pytest.mark.asyncio
+    async def test_wait_async_job_until_completion(self, server):
+        """Test that wait polls async job until it completes."""
+        import asyncio
+        from datetime import datetime, UTC
+        
+        instance_id = "sub_wait_async_001"
+        
+        # Add running job
+        async with server._async_jobs_lock:
+            server._async_jobs[instance_id] = {
+                "instance_id": instance_id,
+                "status": "running",
+                "agent_type": "test_agent",
+                "started_at": datetime.now(UTC).isoformat(),
+                "completed_at": None,
+                "result": None,
+                "error": None,
+                "task_handle": None
+            }
+        
+        # Simulate job completing after short delay
+        async def complete_job():
+            await asyncio.sleep(0.1)
+            async with server._async_jobs_lock:
+                if instance_id in server._async_jobs:
+                    server._async_jobs[instance_id]["status"] = "completed"
+                    server._async_jobs[instance_id]["result"] = "Success"
+                    server._async_jobs[instance_id]["completed_at"] = datetime.now(UTC).isoformat()
+        
+        asyncio.create_task(complete_job())
+        
+        result = await server._handle_wait({
+            "instance_id": instance_id,
+            "timeout": 5
+        })
+        
+        assert result["status"] == "completed"
+        assert result["result"] == "Success"
+
+    @pytest.mark.asyncio
+    async def test_wait_all_multiple_instances(self, server):
+        """Test wait_all with multiple instances."""
+        from datetime import datetime, UTC
+        
+        instance_ids = ["sub_a", "sub_b", "sub_c"]
+        
+        # Add all as running
+        async with server._async_jobs_lock:
+            for inst_id in instance_ids:
+                server._async_jobs[inst_id] = {
+                    "instance_id": inst_id,
+                    "status": "running",
+                    "started_at": datetime.now(UTC).isoformat(),
+                    "completed_at": None,
+                    "result": None,
+                    "error": None,
+                    "task_handle": None
+                }
+        
+        # Mock wait to return completed immediately
+        async def mock_wait(params):
+            inst_id = params["instance_id"]
+            return {
+                "instance_id": inst_id,
+                "status": "completed",
+                "result": f"Result for {inst_id}"
+            }
+        
+        server._handle_wait = mock_wait
+        
+        result = await server._handle_wait_all({
+            "instance_ids": instance_ids,
+            "timeout": 10
+        })
+        
+        assert result["total"] == 3
+        assert result["completed"] == 3
+        assert result["failed"] == 0
+        assert len(result["results"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_cancel_running_async_job(self, server):
+        """Test cancelling a running async job."""
+        import asyncio
+        from datetime import datetime, UTC
+        
+        instance_id = "sub_cancel_001"
+        
+        # Add running job with task
+        task = asyncio.create_task(asyncio.sleep(100))
+        async with server._async_jobs_lock:
+            server._async_jobs[instance_id] = {
+                "instance_id": instance_id,
+                "status": "running",
+                "started_at": datetime.now(UTC).isoformat(),
+                "task_handle": task
+            }
+        
+        result = await server._handle_cancel({
+            "instance_id": instance_id
+        })
+        
+        assert result["status"] == "cancelled"
+        assert result["instance_id"] == instance_id
+        
+        # Give task time to be cancelled
+        await asyncio.sleep(0.01)
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_cancel_non_existent_job(self, server):
+        """Test cancelling a job that doesn't exist."""
+        result = await server._handle_cancel({
+            "instance_id": "non_existent"
+        })
+        
+        assert result["status"] == "error"
+        assert "not found" in result["error"].lower()
+
+
+class TestSystemPromptIntegration:
+    """Test that instance IDs from system prompt work correctly."""
+
+    @pytest.mark.asyncio
+    async def test_continue_with_system_prompt_id(self, server):
+        """Test that agent can use instance_id from system prompt to continue."""
+        # This is the ID that would be injected into system prompt
+        system_prompt_id = "sub_book_test_agent_001"
+        
+        # Mock continue handler
+        server._handle_continue = AsyncMock(return_value={
+            "instance_id": system_prompt_id,
+            "status": "completed",
+            "result": "Continued successfully"
+        })
+        
+        result = await server.manage_sub_agent({
+            "operation": "continue",
+            "instance_id": system_prompt_id,  # Exact ID from system prompt
+            "message": "Continue testing"
+        })
+        
+        assert result["instance_id"] == system_prompt_id
+        assert result["status"] == "completed"
+        server._handle_continue.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_poll_with_system_prompt_id(self, server):
+        """Test polling with ID from system prompt."""
+        from plugins.sub_agent_manager.schemas import SubAgentMetadata
+        from datetime import datetime, UTC
+        
+        system_prompt_id = "sub_scene_writer_042"
+        
+        # Mock DB lookup (simulating completed sub-agent)
+        mock_manager = AsyncMock()
+        mock_manager.list_sub_sessions = AsyncMock(return_value=[
+            SubAgentMetadata(
+                instance_id=system_prompt_id,
+                agent_type="scene_writer",
+                created_at=datetime.now(UTC),
+                last_used=datetime.now(UTC),
+                status="active",
+                task_summary="Write scene 42"
+            )
+        ])
+        
+        server._extract_registry = Mock(return_value=Mock())
+        server._extract_session_service = Mock(return_value=Mock())
+        server._get_manager = Mock(return_value=mock_manager)
+        
+        result = await server._handle_poll({
+            "instance_id": system_prompt_id,
+            "_session_id": "parent_session"
+        })
+        
+        assert result["status"] == "completed"
+        assert result["instance_id"] == system_prompt_id

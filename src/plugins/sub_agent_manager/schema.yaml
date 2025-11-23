@@ -9,14 +9,21 @@ tools:
         Sub-agents maintain conversation history and can be continued across multiple requests.
 
         Operations:
-        - create: Spawn new sub-agent and execute initial task (BLOCKING - returns result)
+        - create: Spawn new sub-agent and execute task (blocking=true by default, blocking=false for async)
         - continue: Send new message to existing sub-agent (BLOCKING - returns result)
+        - poll: Check status of running sub-agent (NON-BLOCKING)
+        - wait: Wait for sub-agent to complete (BLOCKING - returns result)
+        - wait_all: Wait for multiple sub-agents. (BLOCKING - returns result)
+        - cancel: Cancel running sub-agent
         - list: Get all active sub-agents for current session
         - info: Get detailed status and recent activity of specific sub-agent
         - delete: Archive sub-agent instance
 
-        IMPORTANT:
-        - Operations are BLOCKING - you receive full result before tool returns.
+        IMPORTANT - Blocking vs Async Operations:
+        - create with blocking=true (default): BLOCKING - returns full result before tool returns
+        - create with blocking=false: NON-BLOCKING - returns instance_id immediately, agent runs in background
+        - continue is always BLOCKING
+        - Use create(blocking=false) + wait_all for parallel execution (faster for batch operations)
         - Same instance_id cannot run concurrently. Use different instances for parallel work.
 
       parameters:
@@ -24,11 +31,15 @@ tools:
         properties:
           operation:
             type: string
-            enum: [create, continue, list, info, delete]
+            enum: [create, continue, poll, wait, wait_all, cancel, list, info, delete]
             description: |
               Operation to perform:
-              - create: Create and execute new sub-agent
-              - continue: Continue existing sub-agent with new message
+              - create: Create and execute new sub-agent (blocking=true default, blocking=false for async)
+              - continue: Continue existing sub-agent with new message (BLOCKING)
+              - poll: Check status of running sub-agent (NON-BLOCKING)
+              - wait: Wait for sub-agent to complete (BLOCKING)
+              - wait_all: Wait for multiple sub-agents (BLOCKING)
+              - cancel: Cancel running sub-agent
               - list: List all active sub-agents
               - info: Get detailed info about specific sub-agent
               - delete: Archive sub-agent instance
@@ -52,6 +63,14 @@ tools:
               Optional custom label for readability (create only).
               Auto-generated if omitted. Format: alphanumeric, underscore, hyphen.
 
+          blocking:
+            type: boolean
+            description: |
+              Wait for sub-agent to complete before returning (create only, default: true).
+              - blocking=true: Returns full result (BLOCKING)
+              - blocking=false: Returns instance_id immediately, agent runs in background (NON-BLOCKING)
+            default: true
+
           use_advanced_model:
             type: boolean
             description: |
@@ -60,12 +79,32 @@ tools:
               For standard tasks do not use, to save time and money.
             default: false
 
-          # Parameters for 'continue', 'info', 'delete' operations
+          # Parameters for async operations (poll/wait/cancel)
+          # Uses instance_id instead of separate job_id
+
+          timeout:
+            type: number
+            description: |
+              Timeout in seconds for wait/wait_all operations.
+            default: 3600
+
+          # Parameters for 'continue', 'poll', 'wait', 'cancel', 'info', 'delete' operations
           instance_id:
             type: string
             description: |
-              Sub-agent instance ID (required for continue/info/delete).
-              This was returned when the sub-agent was created.
+              Sub-agent instance ID (required for continue/poll/wait/cancel/info/delete).
+              Use the exact session ID as shown in the system prompt (e.g., 'sub_book_test_agent_001').
+              This ID is injected into your system prompt when sub-agents are active.
+              You can also use the ID returned when the sub-agent was created.
+
+          instance_ids:
+            type: array
+            items:
+              type: string
+            description: |
+              List of instance IDs (required for wait_all).
+              Use exact session IDs as shown in system prompt (e.g., ['sub_scene_writer_001', 'sub_scene_writer_002']).
+              All instances must exist or wait_all will fail.
 
           message:
             type: string
