@@ -4,7 +4,7 @@ hooks:
   - name: summarize_context
     type: pre_llm_call
     enabled: true
-    timeout: 300.0
+    timeout: 900.0
     description: "Intelligently summarizes older messages using LLM to reduce context size while preserving key information"
     category: "context_summarization"
     order:
@@ -132,6 +132,13 @@ config:
     type: string
     default: "[Summary of {count} messages from {start_time} to {end_time}]"
     description: "Format for summary marker. Placeholders: {count}, {start_time}, {end_time}"
+
+  min_time_between_summarizations:
+    type: number
+    default: 200.0
+    description: "Minimum time in seconds between summarizations for the same session (prevents endless loops)"
+    minimum: 10.0
+    maximum: 3600.0
 
 # Web UI configuration
 web_ui:

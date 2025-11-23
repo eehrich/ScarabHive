@@ -41,6 +41,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Web UI history tracking
         self.summarization_history = summarization_history
 
+        # Session tracking for rate limiting
+        self._last_summarization_time: Dict[str, float] = {}  # session_id -> timestamp
+
         # Load config - for hooks, config is a raw dict from YAML
         config = self.get_config()
         self.trigger_percentage = float(config.get('summarization_trigger_percentage', 0.60))
@@ -54,11 +57,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self.marker_format = str(config.get('summary_marker_format',
                                         '[Summary of {count} messages from {start_time} to {end_time}]'))
         self.max_preview_length = int(config.get('max_message_preview_length', 5000))
+        self.min_time_between = float(config.get('min_time_between_summarizations', 200.0))
 
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
             f"chunk_size={self.chunk_size}, preserve_recent={self.preserve_recent}, "
-            f"llm_profile={self.llm_profile}"
+            f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
         )
 
     async def summarize_context(self, context: HookContext) -> HookResult:
@@ -117,6 +121,31 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Skip threshold check if this is a manual trigger
             is_manual_trigger = context.metadata.get('manual_trigger', False) if context.metadata else False
+
+            # Check rate limiting: prevent endless loop by enforcing minimum time between summarizations
+            session_id = context.session_id or "unknown"
+            current_time = asyncio.get_event_loop().time()
+            
+            if not is_manual_trigger:
+                last_summarization = self._last_summarization_time.get(session_id)
+                if last_summarization:
+                    time_since_last = current_time - last_summarization
+                    if time_since_last < self.min_time_between:
+                        logger.info(
+                            f"[ContextSummarizer] Session {session_id}: Rate limited - "
+                            f"only {time_since_last:.1f}s since last summarization "
+                            f"(minimum: {self.min_time_between}s)"
+                        )
+                        return HookResult(
+                            success=True,
+                            modified=False,
+                            context=context,
+                            metadata={
+                                'reason': 'rate_limited',
+                                'time_since_last': time_since_last,
+                                'min_time_between': self.min_time_between
+                            }
+                        )
 
             if not is_manual_trigger and total_tokens < trigger_tokens:
                 logger.info(
@@ -320,6 +349,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         # Keep only last 1000 events
                         if len(self.summarization_history) > 1000:
                             self.summarization_history.pop(0)
+
+                    # Update last summarization time for rate limiting
+                    self._last_summarization_time[session_id] = current_time
 
                     # Store result instead of returning directly
                     result = HookResult(
