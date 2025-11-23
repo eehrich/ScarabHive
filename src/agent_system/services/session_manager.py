@@ -165,32 +165,55 @@ class SessionManager:
                 raise ValueError(f"Message {i} missing role or content")
 
     def _atomic_write(self, path: Path, data: Dict[str, Any]) -> None:
-        """Write data to file atomically.
+        """Write data to file atomically with retry on Windows file lock conflicts.
         
         Args:
             path: Target file path
             data: Data to write (will be JSON-serialized)
         
         Raises:
-            IOError: If write fails
+            IOError: If write fails after retries
         """
-        # Write to temporary file first
-        temp_path = path.parent / f".{path.name}.tmp"
+        # Use unique temp file per write to avoid conflicts between parallel writes
+        temp_path = path.parent / f".{path.name}.{uuid4().hex[:8]}.tmp"
         
-        try:
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+        max_retries = 5
+        retry_delay = 0.01  # Start with 10ms
+        
+        for attempt in range(max_retries):
+            try:
+                # Write to temporary file
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                
+                # Atomic move (overwrites target)
+                # On Windows, this can fail with PermissionError if another process holds the file
+                os.replace(temp_path, path)
+                logger.debug("Atomically wrote session to %s", path)
+                return  # Success!
+                
+            except (PermissionError, OSError) as e:
+                # Windows file lock conflict - retry with exponential backoff
+                if attempt < max_retries - 1:
+                    logger.debug(
+                        "File lock conflict writing %s (attempt %d/%d), retrying in %.2fms: %s",
+                        path, attempt + 1, max_retries, retry_delay * 1000, e
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    # Final attempt failed
+                    if temp_path.exists():
+                        temp_path.unlink()
+                    logger.error("Failed to write session %s after %d retries: %s", path, max_retries, e)
+                    raise IOError(f"Failed to write session after {max_retries} retries: {e}") from e
             
-            # Atomic move (overwrites target)
-            os.replace(temp_path, path)
-            logger.debug("Atomically wrote session to %s", path)
-            
-        except Exception as e:
-            # Clean up temp file on failure
-            if temp_path.exists():
-                temp_path.unlink()
-            logger.error("Failed to write session %s: %s", path, e)
-            raise IOError(f"Failed to write session: {e}") from e
+            except Exception as e:
+                # Other errors (JSON encoding, disk full, etc.) - fail immediately
+                if temp_path.exists():
+                    temp_path.unlink()
+                logger.error("Failed to write session %s: %s", path, e)
+                raise IOError(f"Failed to write session: {e}") from e
 
     def _read_session_file(self, path: Path) -> Dict[str, Any]:
         """Read and validate session file.
