@@ -287,6 +287,27 @@ class SubAgentManager:
 
         logger.debug(f"Updated metadata for sub-session {sub_session_id}: {updates}")
 
+    async def update_sub_agent_activity(
+        self,
+        parent_session_id: str,
+        sub_session_id: str,
+        activity: str | None
+    ) -> None:
+        """Update current activity status for sub-agent (for live status display).
+
+        Args:
+            parent_session_id: Parent session ID
+            sub_session_id: Sub-session ID
+            activity: Activity description (e.g., "Thinking...", "Running tool: writer_search") or None to clear
+        """
+        await self.update_sub_session_metadata(
+            parent_session_id=parent_session_id,
+            sub_session_id=sub_session_id,
+            current_activity=activity,
+            activity_updated_at=datetime.now(UTC).isoformat() if activity else None
+        )
+        logger.debug(f"Updated activity for {sub_session_id}: {activity}")
+
     async def _generate_instance_id(
         self,
         agent_type: str,

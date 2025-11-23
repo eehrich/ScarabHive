@@ -332,16 +332,41 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     # For now, sub-agent uses its default configuration
                 ):
                     event_type = event.get("type")
+                    
+                    # Track activity for live status display
+                    try:
+                        if event_type == "thinking_delta":
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, sub_session_id, "💭 Thinking..."
+                            )
+                        elif event_type == "mcp_call":
+                            tool_name = event.get("action", "tool")
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, sub_session_id, f"🔧 Running tool: {tool_name}"
+                            )
+                        elif event_type == "status":
+                            status_msg = event.get("message", "Processing...")
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, sub_session_id, f"⚙️ {status_msg}"
+                            )
+                    except Exception as activity_err:
+                        # Don't fail execution if activity tracking fails
+                        logger.debug(f"Activity tracking failed: {activity_err}")
+                    
                     # Collect final result (can be "final", "error", or "cancelled")
                     if event_type == "final":
                         result_text = event.get("summary", "")
+                        # Clear activity on completion
+                        await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
                     elif event_type == "error":
                         result_text = f"Error: {event.get('message', 'Unknown error')}"
                         logger.warning(f"Sub-agent {sub_session_id} returned error: {result_text}")
+                        await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
                         break  # Stop waiting for more events
                     elif event_type == "cancelled":
                         result_text = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
                         logger.info(f"Sub-agent {sub_session_id} was cancelled: {result_text}")
+                        await manager.update_sub_agent_activity(parent_session_id, sub_session_id, None)
                         break  # Stop waiting for more events
 
                 # Save session with messages after execution
@@ -476,16 +501,41 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     use_advanced_model=use_advanced_model
                 ):
                     event_type = event.get("type")
+                    
+                    # Track activity for live status display
+                    try:
+                        if event_type == "thinking_delta":
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, instance_id, "💭 Thinking..."
+                            )
+                        elif event_type == "mcp_call":
+                            tool_name = event.get("action", "tool")
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, instance_id, f"🔧 Running tool: {tool_name}"
+                            )
+                        elif event_type == "status":
+                            status_msg = event.get("message", "Processing...")
+                            await manager.update_sub_agent_activity(
+                                parent_session_id, instance_id, f"⚙️ {status_msg}"
+                            )
+                    except Exception as activity_err:
+                        # Don't fail execution if activity tracking fails
+                        logger.debug(f"Activity tracking failed: {activity_err}")
+                    
                     # Collect final result (can be "final", "error", or "cancelled")
                     if event_type == "final":
                         result_text = event.get("summary", "")
+                        # Clear activity on completion
+                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
                     elif event_type == "error":
                         result_text = f"Error: {event.get('message', 'Unknown error')}"
                         logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
+                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
                         break  # Stop waiting for more events
                     elif event_type == "cancelled":
                         result_text = f"Cancelled: {event.get('reason', 'Request was cancelled')}"
                         logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
+                        await manager.update_sub_agent_activity(parent_session_id, instance_id, None)
                         break  # Stop waiting for more events
 
                 # Save session with updated messages after execution
@@ -569,7 +619,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "status": metadata["status"],
                     "created_at": metadata["created_at"],
                     "last_used": metadata["last_used"],
-                    "task_summary": metadata["task_summary"]
+                    "task_summary": metadata["task_summary"],
+                    "current_activity": metadata.get("current_activity"),
+                    "activity_updated_at": metadata.get("activity_updated_at")
                 })
 
             # Emit descriptive status

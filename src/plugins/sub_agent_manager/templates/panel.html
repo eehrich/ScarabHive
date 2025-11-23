@@ -169,6 +169,28 @@
             font-style: italic;
         }
         
+        .agent-activity {
+            font-size: 12px;
+            color: #4ec9b0;
+            margin-bottom: 10px;
+            padding: 6px 10px;
+            background: #1e3a1e;
+            border-radius: 4px;
+            border-left: 3px solid #4ec9b0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .agent-activity .spinner {
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
         .agent-actions {
             display: flex;
             gap: 8px;
@@ -348,6 +370,7 @@
 
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
+        let autoRefreshInterval = null;
         
         // Get session ID from parent window if available (iframe context)
         function getSessionId() {
@@ -387,9 +410,32 @@
                 
                 renderAgents(data.instances || []);
                 await loadStats();
+                
+                // Start auto-refresh if there are active agents with activity
+                const hasActiveAgents = (data.instances || []).some(a => a.status === 'active' && a.current_activity);
+                if (hasActiveAgents) {
+                    startAutoRefresh();
+                } else {
+                    stopAutoRefresh();
+                }
             } catch (error) {
                 console.error('Error loading agents:', error);
                 agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>Error: ${error.message}</div></div>`;
+                stopAutoRefresh();
+            }
+        }
+        
+        function startAutoRefresh() {
+            if (autoRefreshInterval) return;
+            autoRefreshInterval = setInterval(() => {
+                loadAgents();
+            }, 2000); // Refresh every 2 seconds when agents are active
+        }
+        
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
             }
         }
         
@@ -416,7 +462,15 @@
                 return;
             }
             
-            agentsList.innerHTML = agents.map(agent => `
+            agentsList.innerHTML = agents.map(agent => {
+                const activityHtml = agent.current_activity 
+                    ? `<div class="agent-activity">
+                         <span class="spinner">⚙️</span>
+                         <span>${escapeHtml(agent.current_activity)}</span>
+                       </div>`
+                    : '';
+                
+                return `
                 <div class="agent-item">
                     <div class="agent-header">
                         <span class="agent-id">${agent.instance_id}</span>
@@ -428,6 +482,7 @@
                         <span>Last used: ${new Date(agent.last_used).toLocaleString()}</span>
                     </div>
                     <div class="agent-task">"${agent.task_summary || 'No task summary'}"</div>
+                    ${activityHtml}
                     <div class="agent-actions">
                         ${agent.status === 'active' ? `
                             <button onclick="viewDetails('${agent.instance_id}')">ℹ️ Details</button>
@@ -435,7 +490,8 @@
                         ` : ''}
                     </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
         
         async function archiveAgent(instanceId) {
@@ -552,6 +608,11 @@
                 // Auto-load agents
                 loadAgents();
             }
+        });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopAutoRefresh();
         });
     </script>
 </body>
