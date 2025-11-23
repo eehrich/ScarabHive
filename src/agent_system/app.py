@@ -1230,7 +1230,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             last_batch_time = asyncio.get_event_loop().time()
             batch_interval = 0.3  # Send batches every 0.3 seconds max (increased from 50ms for better UX)
             max_batch_size = 10  # Or when we have 10 events
-            batch_flush_queue = asyncio.Queue()  # Queue for timer-triggered flushes
             
             async def send_keepalive_if_needed():
                 """Send SSE comment to keep connection alive if no recent data"""
@@ -1252,25 +1251,36 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     last_batch_time = asyncio.get_event_loop().time()
                     last_event_time = last_batch_time
             
-            async def batch_timer():
-                """Background timer to flush status batch after timeout"""
+            async def check_batch_timeout():
+                """Check if batch needs to be flushed due to timeout"""
                 nonlocal status_batch, last_batch_time
-                try:
-                    while True:
-                        await asyncio.sleep(batch_interval)
-                        now = asyncio.get_event_loop().time()
-                        # Check if batch has pending events and timeout elapsed
-                        if status_batch and (now - last_batch_time) >= batch_interval:
-                            # Signal main loop to flush
-                            await batch_flush_queue.put(True)
-                except asyncio.CancelledError:
-                    pass
-            
-            # Start background timer
-            timer_task = asyncio.create_task(batch_timer())
+                if not status_batch:
+                    return False
+                now = asyncio.get_event_loop().time()
+                return (now - last_batch_time) >= batch_interval
 
             try:
-                async for ev in selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
+                # Convert async generator to iterator for timeout control
+                event_iter = selected_agent.run_events(task, request_id, actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info).__aiter__()
+                
+                while True:
+                    # Wait for next event with timeout to allow batch flushing
+                    try:
+                        ev = await asyncio.wait_for(event_iter.__anext__(), timeout=batch_interval)
+                    except asyncio.TimeoutError:
+                        # No event received within batch_interval - check if we need to flush
+                        if await check_batch_timeout():
+                            async for batch_msg in flush_status_batch():
+                                yield batch_msg
+                        # Send keepalive if needed
+                        keepalive_msg = await send_keepalive_if_needed()
+                        if keepalive_msg:
+                            yield keepalive_msg
+                        continue
+                    except StopAsyncIteration:
+                        # Event stream ended normally
+                        break
+                    
                     # Send keepalive before processing event (in case event processing is slow)
                     keepalive_msg = await send_keepalive_if_needed()
                     if keepalive_msg:
@@ -1333,13 +1343,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
 
                     try:
-                        # Check if background timer triggered flush
-                        if not batch_flush_queue.empty():
-                            await batch_flush_queue.get()
-                            if status_batch:
-                                async for batch_msg in flush_status_batch():
-                                    yield batch_msg
-                        
                         # Batch status events for efficiency
                         if payload.get("type") == "status":
                             status_batch.append(payload)
@@ -1359,13 +1362,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
                         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
-                # Cancel background timer
-                timer_task.cancel()
-                try:
-                    await timer_task
-                except asyncio.CancelledError:
-                    pass
-                
                 # Flush any remaining status events before cancellation
                 if status_batch:
                     try:
@@ -1392,14 +1388,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     pass  # Best effort
                 raise
             finally:
-                # Cancel background timer if still running
-                if not timer_task.done():
-                    timer_task.cancel()
-                    try:
-                        await timer_task
-                    except asyncio.CancelledError:
-                        pass
-                
                 # ALWAYS persist session after streaming, even if client disconnects
                 logger.debug(f"[SESSION_SAVE] Stream finished, persisting session {actual_session_id}")
                 if actual_session_id and _session_service:
