@@ -1002,7 +1002,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     return {"status": "error", "error": "Instance not found in async tracking and no session context available"}
 
                 # Check if sub-agent exists
-                sub_agents = await manager.list_sub_sessions(parent_session_id, include_archived=False)
+                sub_agents = await manager.list_sub_sessions(parent_session_id, include_completed=False)
                 matching = [s for s in sub_agents if s.instance_id == instance_id]
                 
                 if matching:
