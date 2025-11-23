@@ -549,11 +549,14 @@ class TestAsyncExecution:
     @pytest.mark.asyncio
     async def test_poll_non_existent_instance(self, server):
         """Test polling an instance that doesn't exist."""
-        mock_manager = AsyncMock()
+        mock_manager = Mock()
         mock_manager.list_sub_sessions = AsyncMock(return_value=[])
         
-        server._extract_registry = Mock(return_value=Mock())
-        server._extract_session_service = Mock(return_value=Mock())
+        mock_registry = Mock()
+        mock_session_service = Mock()
+        
+        server._extract_registry = Mock(return_value=mock_registry)
+        server._extract_session_service = Mock(return_value=mock_session_service)
         server._get_manager = Mock(return_value=mock_manager)
         
         result = await server._handle_poll({

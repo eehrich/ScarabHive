@@ -1003,7 +1003,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
                 # Check if sub-agent exists
                 sub_agents = await manager.list_sub_sessions(parent_session_id, include_completed=False)
-                matching = [s for s in sub_agents if s.instance_id == instance_id]
+                # Support both dict and Pydantic object access
+                matching = [s for s in sub_agents if (s.get("instance_id") if isinstance(s, dict) else s.instance_id) == instance_id]
                 
                 if matching:
                     # Sub-agent exists but not in async tracking - it's completed
@@ -1011,9 +1012,9 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     return {
                         "instance_id": instance_id,
                         "status": "completed",
-                        "agent_type": sub_agent.agent_type,
-                        "started_at": sub_agent.created_at.isoformat() if sub_agent.created_at else None,
-                        "completed_at": sub_agent.last_used.isoformat() if sub_agent.last_used else None,
+                        "agent_type": sub_agent.get("agent_type") if isinstance(sub_agent, dict) else sub_agent.agent_type,
+                        "started_at": sub_agent.get("created_at") if isinstance(sub_agent, dict) else (sub_agent.created_at.isoformat() if sub_agent.created_at else None),
+                        "completed_at": sub_agent.get("last_used") if isinstance(sub_agent, dict) else sub_agent.last_used,
                         "result": "Sub-agent execution completed (session persisted)",
                         "message": "Use 'info' operation to see conversation history"
                     }

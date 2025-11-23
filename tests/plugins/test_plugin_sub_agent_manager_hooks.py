@@ -245,14 +245,12 @@ async def test_markdown_context_format(injector, mock_manager):
     
     # Check Markdown formatting
     assert "## Active Sub-Agents" in injected_content
-    assert "### test_agent" in injected_content
-    assert "**Instance ID**: `test_sub_001`" in injected_content
-    assert "**Status**: active" in injected_content
-    assert "**Messages**: 5" in injected_content
-    assert "**Task**: Test task" in injected_content
-    assert "**Tools Used**: tool1, tool2" in injected_content
-    assert "```json" in injected_content  # Continue example
-    assert '"operation": "continue"' in injected_content
+    assert "**test_agent** (`test_sub_001`)" in injected_content
+    assert "- Status: active" in injected_content
+    assert "Messages: 5" in injected_content
+    assert "- Task: Test task" in injected_content
+    assert "- Tools: tool1, tool2" in injected_content
+    assert "manage_sub_agent" in injected_content  # Continue example
 
 
 @pytest.mark.asyncio
