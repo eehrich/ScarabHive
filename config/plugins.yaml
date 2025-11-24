@@ -270,25 +270,6 @@ plugins:
       type: message_debugger
       enabled: true
 
-    writer_content:
-      type: writer_content
-      enabled: true
-      config:
-        database: "data/writer/books.db"
-        auto_linking: true
-        auto_versioning: true
-        max_versions: 10
-
-    writer_state:
-      type: writer_state
-      enabled: true
-      config:
-        database: "data/writer/books.db"
-        read_only: true
-        enable_plausibility_checks: true
-        max_health_drop: 50
-        max_location_distance: 1000
-        max_time_jump_hours: 24
 
     terminal:
       type: terminal

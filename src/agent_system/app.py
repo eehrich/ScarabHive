@@ -1229,7 +1229,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             status_batch = []
             last_batch_time = asyncio.get_event_loop().time()
             batch_interval = 0.3  # Send batches every 0.3 seconds max (increased from 50ms for better UX)
-            max_batch_size = 10  # Or when we have 10 events
             batch_flush_queue = asyncio.Queue()  # Queue for timer-triggered flushes
             
             async def send_keepalive_if_needed():

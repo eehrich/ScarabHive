@@ -642,7 +642,6 @@ class OpenAIAsyncClient(LLMClient):
         # Retry logic for stream interruptions
         max_retries = 3
         retry_backoff = 1.0
-        last_exception = None
 
         for attempt in range(max_retries + 1):
             if cancellation_token and cancellation_token.is_cancelled:
@@ -748,7 +747,6 @@ class OpenAIAsyncClient(LLMClient):
                 return  # Success - exit retry loop
 
             except (httpx.RemoteProtocolError, httpx.NetworkError, httpx.ConnectError) as e:
-                last_exception = e
                 if attempt < max_retries:
                     backoff_time = retry_backoff * (2 ** attempt)
                     logger.warning(f"OpenAI stream interrupted (attempt {attempt + 1}/{max_retries + 1}), retrying in {backoff_time}s: {e}")
