@@ -533,7 +533,7 @@ async def test_operation_update_nonexistent(server: MemoryServer, mock_context: 
 @pytest.mark.asyncio
 async def test_call_tool_store(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with store operation"""
-    result = await server.memory({
+    result = await server.execute({
         "operation": "store",
         "session_id": mock_context["session_id"],
         "title": "Tool Test",
@@ -549,7 +549,7 @@ async def test_call_tool_store(server: MemoryServer, mock_context: Dict[str, Any
 async def test_call_tool_recall(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with recall operation"""
     # Store first
-    stored = await server.memory({
+    stored = await server.execute({
         "operation": "store",
         "session_id": mock_context["session_id"],
         "title": "Test",
@@ -558,7 +558,7 @@ async def test_call_tool_recall(server: MemoryServer, mock_context: Dict[str, An
     memory_id = stored["memory_id"]
     
     # Recall
-    result = await server.memory({
+    result = await server.execute({
         "operation": "recall",
         "session_id": mock_context["session_id"],
         "memory_id": memory_id,
@@ -570,14 +570,14 @@ async def test_call_tool_recall(server: MemoryServer, mock_context: Dict[str, An
 @pytest.mark.asyncio
 async def test_call_tool_search(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with search operation"""
-    await server.memory({
+    await server.execute({
         "operation": "store",
         "session_id": mock_context["session_id"],
         "title": "Python",
         "content": "Python programming",
     })
     
-    result = await server.memory({
+    result = await server.execute({
         "operation": "search",
         "session_id": mock_context["session_id"],
         "query": "programming",
@@ -589,7 +589,7 @@ async def test_call_tool_search(server: MemoryServer, mock_context: Dict[str, An
 @pytest.mark.asyncio
 async def test_call_tool_invalid_operation(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call with invalid operation"""
-    result = await server.memory({
+    result = await server.execute({
         "operation": "invalid_op",
         "session_id": mock_context["session_id"],
     })
@@ -602,7 +602,7 @@ async def test_call_tool_invalid_operation(server: MemoryServer, mock_context: D
 async def test_call_tool_missing_operation(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call without operation"""
     with pytest.raises(ValidationError) as exc_info:
-        await server.memory({
+        await server.execute({
             "session_id": mock_context["session_id"]
         })
     
