@@ -13,7 +13,7 @@ includes:
   - mcp_servers.yaml
   - mcp_server_mode.yaml
   - agents/*.yaml
-  - agents_writer/*.yaml
+  - agents_writer_v2/*.yaml
   - agents_trading/*.yaml
   - agents_for_dev/*.yaml
 
