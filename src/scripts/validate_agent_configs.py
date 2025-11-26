@@ -76,6 +76,17 @@ def validate_yaml_file(file_path: Path) -> Tuple[bool, str]:
                     loc = ".".join(str(x) for x in error["loc"])
                     error_lines.append(f"  {loc}: {error['msg']}")
                 return False, f"Schema validation failed for server '{server_name}':\n" + "\n".join(error_lines)
+            
+            # Step 4: Validate agent_config structure for basic_agent type
+            if server_config.get("type") == "basic_agent" and "agent_config" in server_config:
+                agent_config = server_config["agent_config"]
+                
+                # Check if tools/hooks are at wrong level (should be under agent_config)
+                if "tools" in server_config and "tools" not in agent_config:
+                    return False, f"Server '{server_name}': 'tools' must be inside 'agent_config', not at server level"
+                
+                if "hooks" in server_config and "hooks" not in agent_config:
+                    return False, f"Server '{server_name}': 'hooks' must be inside 'agent_config', not at server level"
 
         return True, ""
 
