@@ -50,7 +50,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self.chunk_size = int(config.get('summarization_chunk_size', 10))
         self.preserve_recent = int(config.get('preserve_recent_count', 10))
         self.preserve_system = bool(config.get('preserve_system_messages', True))
-        self.llm_profile = str(config.get('llm_profile', 'fast'))
+        self.llm_profile = str(config.get('llm_profile', 'turbo'))
         self.prompt_template = str(config.get('summary_prompt_template', ''))
         self.min_reduction = float(config.get('min_summary_reduction', 0.3))
         self.store_metadata = bool(config.get('store_original_metadata', True))
@@ -58,6 +58,10 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                                         '[Summary of {count} messages from {start_time} to {end_time}]'))
         self.max_preview_length = int(config.get('max_message_preview_length', 5000))
         self.min_time_between = float(config.get('min_time_between_summarizations', 200.0))
+        
+        # Store system_config for later LLM instantiation
+        self._system_config = None
+        self._summarizer_llm = None
 
         logger.info(
             f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
@@ -719,6 +723,46 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         return chunks
 
+    def _get_summarizer_llm(self, context: HookContext):
+        """Get or create LLM instance with configured llm_profile.
+        
+        Args:
+            context: Hook context with agent and system_config
+            
+        Returns:
+            LLM instance configured with self.llm_profile
+        """
+        # Cache LLM instance for reuse
+        if self._summarizer_llm is not None:
+            return self._summarizer_llm
+            
+        # Get system_config from context
+        if not context.agent or not hasattr(context.agent, 'system_config'):
+            logger.warning("[ContextSummarizer] No system_config available, falling back to context.llm")
+            return context.llm
+            
+        system_config = context.agent.system_config
+        
+        # Create LLM instance with configured profile
+        try:
+            from agent_system.llm.factory import create_llm
+            
+            self._summarizer_llm = create_llm(
+                system_config=system_config,
+                llm_profile=self.llm_profile
+            )
+            
+            logger.info(
+                f"[ContextSummarizer] Created LLM instance with profile '{self.llm_profile}' "
+                f"(model: {self._summarizer_llm.model_name if hasattr(self._summarizer_llm, 'model_name') else 'unknown'})"
+            )
+            
+            return self._summarizer_llm
+        except Exception as e:
+            logger.error(f"[ContextSummarizer] Failed to create LLM with profile '{self.llm_profile}': {e}")
+            logger.warning("[ContextSummarizer] Falling back to context.llm")
+            return context.llm
+
     async def _summarize_messages(
         self,
         messages: List[dict],
@@ -735,8 +779,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         Returns:
             Tuple of (summarized_messages, statistics)
         """
-        if not context.llm:
-            logger.warning("[ContextSummarizer] No LLM available in context, skipping summarization")
+        # Get LLM with configured profile (not agent's LLM!)
+        summarizer_llm = self._get_summarizer_llm(context)
+        
+        if not summarizer_llm:
+            logger.warning("[ContextSummarizer] No LLM available, skipping summarization")
             return messages, {'summary_count': 0, 'reason': 'no_llm'}
 
         # CRITICAL: Create chunks that keep tool_calls/tool response pairs together
@@ -797,7 +844,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
                 # Call LLM for summarization using chat() method with cancellation support
                 from agent_system.llm.models import ChatMessage
-                summary_response = await context.llm.chat(
+                summary_response = await summarizer_llm.chat(
                     messages=[ChatMessage(role='user', content=prompt, timestamp=datetime.now())],
                     cancellation_token=cancellation_token
                 )
