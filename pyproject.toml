@@ -113,4 +113,5 @@ ignore_missing_imports = true
 follow_imports = "silent"
 warn_unreachable = true
 disable_error_code = ["misc"]
+mypy_path = "src"
 

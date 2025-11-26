@@ -142,9 +142,9 @@ def _plugin_disable(plugins: dict, config: Any, plugin_name: str, args: Any) -> 
 async def _plugin_status(plugins: dict, config: Any, plugin_name: str | None, args: Any) -> None:
     """Show status of plugins."""
     if plugin_name:
-        await _plugin_info(plugins, config, plugin_name, args)
+        _plugin_info(plugins, config, plugin_name, args)
     else:
-        await _plugin_list(plugins, config, args)
+        _plugin_list(plugins, config, args)
 
 
 async def handle_plugin_command(plugins: dict, config: Any, args: Any) -> None:
@@ -152,25 +152,25 @@ async def handle_plugin_command(plugins: dict, config: Any, args: Any) -> None:
     action = getattr(args, 'action', 'list')
 
     if action == "list":
-        await _plugin_list(plugins, config, args)
+        _plugin_list(plugins, config, args)
     elif action == "info":
         plugin_name = getattr(args, 'name', None)
         if not plugin_name:
             print(json.dumps({"error": "Plugin name required for info action"}, ensure_ascii=False))
             return
-        await _plugin_info(plugins, config, plugin_name, args)
+        _plugin_info(plugins, config, plugin_name, args)
     elif action == "enable":
         plugin_name = getattr(args, 'name', None)
         if not plugin_name:
             print(json.dumps({"error": "Plugin name required for enable action"}, ensure_ascii=False))
             return
-        await _plugin_enable(plugins, config, plugin_name, args)
+        _plugin_enable(plugins, config, plugin_name, args)
     elif action == "disable":
         plugin_name = getattr(args, 'name', None)
         if not plugin_name:
             print(json.dumps({"error": "Plugin name required for disable action"}, ensure_ascii=False))
             return
-        await _plugin_disable(plugins, config, plugin_name, args)
+        _plugin_disable(plugins, config, plugin_name, args)
     elif action == "status":
         plugin_name = getattr(args, 'name', None)
         await _plugin_status(plugins, config, plugin_name, args)

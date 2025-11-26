@@ -8,7 +8,7 @@ OpenAI client which has known hanging/timeout issues.
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 
 import httpx
@@ -177,9 +177,9 @@ class HTTPXOpenAIClient(LLMClient):
                 streaming_enabled = self.capabilities.get('streaming', True)
             elif hasattr(self.capabilities, 'streaming'):
                 streaming_enabled = self.capabilities.streaming
-        
+
         logger.debug(f"_make_request: streaming_enabled={streaming_enabled}, capabilities type={type(self.capabilities)}")
-        
+
         if not streaming_enabled:
             # Use non-streaming request
             logger.debug("Using non-streaming request path")
@@ -241,7 +241,7 @@ class HTTPXOpenAIClient(LLMClient):
 
             try:
                 # Create fresh client for each request
-                client_kwargs = {"timeout": self._timeout}
+                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
 
@@ -342,7 +342,7 @@ class HTTPXOpenAIClient(LLMClient):
 
             try:
                 # Create fresh client for each request to avoid connection issues
-                client_kwargs = {"timeout": self._timeout}
+                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
                 # Only include verify if explicitly configured (None means use httpx default)
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
@@ -547,7 +547,7 @@ class HTTPXOpenAIClient(LLMClient):
 
             try:
                 # Create fresh client for each request to avoid connection issues
-                client_kwargs = {"timeout": self._timeout}
+                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
                 # Only include verify if explicitly configured (None means use httpx default)
                 if getattr(self, "_verify", None) is not None:
                     client_kwargs["verify"] = self._verify
@@ -651,7 +651,7 @@ class HTTPXOpenAIClient(LLMClient):
         """Format OpenAI API response to our standard format."""
         try:
             logger.debug(f"Formatting response_data keys: {list(response_data.keys())}")
-            
+
             choices = response_data.get("choices", [])
             if not choices:
                 return {"assistant": {"role": "assistant", "content": ""}}
