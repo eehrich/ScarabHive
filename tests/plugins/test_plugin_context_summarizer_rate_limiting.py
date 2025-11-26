@@ -299,8 +299,8 @@ async def test_config_parameter_loading(summarizer_plugin):
     assert isinstance(summarizer_plugin.min_time_between, (int, float))
     assert summarizer_plugin.min_time_between > 0
     
-    # Default should be 60.0 seconds according to schema
-    assert summarizer_plugin.min_time_between == 60.0
+    # Default should be 200.0 seconds according to schema
+    assert summarizer_plugin.min_time_between == 200.0
 
 
 @pytest.mark.asyncio  

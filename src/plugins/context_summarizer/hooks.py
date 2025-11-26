@@ -745,11 +745,38 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         
         # Create LLM instance with configured profile
         try:
-            from agent_system.llm.factory import create_llm
+            from agent_system.llm.factory import resolve_llm_config_for_agent
+            from agent_system.llm.clients import make_llm
+            from agent_system.config.models import AgentConfig
             
-            self._summarizer_llm = create_llm(
-                system_config=system_config,
-                llm_profile=self.llm_profile
+            # Create a temporary agent config with our llm_profile
+            temp_agent_config = AgentConfig(
+                default_llm_profile=self.llm_profile,
+                max_steps=1  # Dummy value, not used for LLM creation
+            )
+            
+            # Resolve LLM config using the profile
+            llm_kwargs = resolve_llm_config_for_agent(system_config, temp_agent_config)
+            
+            # Get SSL verify setting
+            ssl_verify = None
+            try:
+                ssl_verify = system_config.network.ssl_verify
+            except Exception:
+                pass
+            
+            # Create LLM instance
+            self._summarizer_llm = make_llm(
+                llm_kwargs["provider"],
+                llm_kwargs["model"],
+                llm_kwargs["openai_api_key"],
+                llm_kwargs["ollama_url"],
+                llm_kwargs["context_window"],
+                llm_kwargs["ollama_mode"],
+                llm_kwargs["request_timeout"],
+                ssl_verify=ssl_verify,
+                httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
+                capabilities=llm_kwargs.get("capabilities"),
             )
             
             logger.info(
