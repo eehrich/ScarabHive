@@ -634,8 +634,8 @@ You have no active stack. Use `{self.name}(operation="push_batch", items=[...])`
         if frames_to_show:
             lines.append("**Working Memory (top frames):**")
             for i, frame in enumerate(reversed(frames_to_show), 1):
-                # Calculate position from top
-                position = len(stack.frames) - (len(frames_to_show) - i)
+                # Calculate position from top (after reverse, i=1 is topmost)
+                position = len(stack.frames) - i + 1
 
                 # Show context (truncated)
                 context = frame.context[:150] + "..." if len(frame.context) > 150 else frame.context
