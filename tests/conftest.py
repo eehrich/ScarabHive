@@ -309,18 +309,56 @@ def _find_project_python_pids() -> List[int]:
             return matches
 
         for line in out.splitlines():
-            if not line.strip():
+                if not line.strip():
+                    continue
+                try:
+                    pid_str, args = line.strip().split(None, 1)
+                    pid = int(pid_str)
+                except Exception:
+                    continue
+                low = args.lower()
+                if "python" in low and (repo_root.lower() in low or "-m agent_system.app" in low or ".venv/" in low):
+                    matches.append(pid)
+
+        # Filter matches to avoid killing the current pytest process or its parent
+        filtered: List[int] = []
+        current_pid = os.getpid()
+        parent_pid = os.getppid()
+        for pid in dict.fromkeys(matches):  # preserve order, remove duplicates
+            if pid in (current_pid, parent_pid):
+                # Never consider the running test process or its immediate parent
                 continue
             try:
-                pid_str, args = line.strip().split(None, 1)
-                pid = int(pid_str)
-            except Exception:
-                continue
-            low = args.lower()
-            if "python" in low and (repo_root.lower() in low or "-m agent_system.app" in low or ".venv/" in low):
-                matches.append(pid)
+                # Try to inspect the command line for the pid to avoid false positives
+                cmd = None
+                try:
+                    with open(f"/proc/{pid}/cmdline", "r", encoding="utf-8", errors="ignore") as f:
+                        raw = f.read().replace('\x00', ' ').strip()
+                        cmd = raw.lower()
+                except Exception:
+                    # Fallback to ps if /proc is not available
+                    try:
+                        out2 = subprocess.check_output(["ps", "-p", str(pid), "-o", "args="], text=True, stderr=subprocess.DEVNULL)
+                        cmd = out2.strip().lower()
+                    except Exception:
+                        cmd = None
 
-    return matches
+                if cmd:
+                    # Avoid killing pytest runner or py.test
+                    if "pytest" in cmd or "py.test" in cmd:
+                        continue
+                    # Avoid matching ephemeral interactive python like 'python -'
+                    if cmd.endswith(" -") or cmd.endswith(" -c"):
+                        continue
+
+            except Exception:
+                # If anything goes wrong inspecting this pid, conservatively include it
+                pass
+
+            filtered.append(pid)
+
+        return filtered
+
 
 
 def _kill_pids(pids: List[int]) -> None:
