@@ -16,6 +16,55 @@ import aiofiles
 logger = logging.getLogger(__name__)
 
 
+# Cache for available ONNX providers (computed once)
+_AVAILABLE_ONNX_PROVIDERS: Optional[List[str]] = None
+
+
+def _get_available_onnx_providers() -> List[str]:
+    """Detect available ONNX Runtime execution providers.
+    
+    Returns providers in priority order: GPU first, then CPU fallback.
+    Caches result for performance.
+    """
+    global _AVAILABLE_ONNX_PROVIDERS
+    if _AVAILABLE_ONNX_PROVIDERS is not None:
+        return _AVAILABLE_ONNX_PROVIDERS
+
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+        logger.debug(f"Available ONNX providers: {available}")
+        
+        # Prefer GPU providers, fallback to CPU
+        preferred_order = [
+            "CUDAExecutionProvider",
+            "ROCMExecutionProvider", 
+            "DmlExecutionProvider",  # DirectML for Windows
+            "CoreMLExecutionProvider",  # Apple Silicon
+            "AzureExecutionProvider",
+            "CPUExecutionProvider"
+        ]
+        
+        # Filter to only available providers, maintaining priority order
+        _AVAILABLE_ONNX_PROVIDERS = [p for p in preferred_order if p in available]
+        
+        # If none of our preferred are available, use whatever is available
+        if not _AVAILABLE_ONNX_PROVIDERS:
+            _AVAILABLE_ONNX_PROVIDERS = available if available else ["CPUExecutionProvider"]
+        
+        logger.info(f"Selected ONNX providers for file_ops: {_AVAILABLE_ONNX_PROVIDERS}")
+        return _AVAILABLE_ONNX_PROVIDERS
+        
+    except ImportError:
+        logger.warning("onnxruntime not installed, using CPU provider only")
+        _AVAILABLE_ONNX_PROVIDERS = ["CPUExecutionProvider"]
+        return _AVAILABLE_ONNX_PROVIDERS
+    except Exception as e:
+        logger.warning(f"Failed to detect ONNX providers: {e}, using CPU")
+        _AVAILABLE_ONNX_PROVIDERS = ["CPUExecutionProvider"]
+        return _AVAILABLE_ONNX_PROVIDERS
+
+
 class ChromaDBError(Exception):
     """ChromaDB-related errors."""
     pass
@@ -92,9 +141,12 @@ class FileSearchEngine:
             )
             logger.debug("FILE_OPS: ChromaDB client created")
 
-            # Create embedding function with auto-detection of available providers
+            # Create embedding function with dynamically detected providers
             logger.debug("FILE_OPS: Creating embedding function...")
-            embedding_fn = embedding_functions.ONNXMiniLM_L6_V2()
+            available_providers = _get_available_onnx_providers()
+            embedding_fn = embedding_functions.ONNXMiniLM_L6_V2(
+                preferred_providers=available_providers
+            )
             logger.debug("FILE_OPS: Embedding function created")
 
             # Get or create collection (don't delete existing unless force_recreate is set)
