@@ -1,6 +1,6 @@
 import subprocess, sys, textwrap, os, tempfile, pathlib
 
-PY = os.path.join('.venv','Scripts','python.exe')
+PY = sys.executable
 MOD = 'scripts.backlog'
 
 BACKLOG_TEMPLATE = """# Backlog\n\n## 1. Epics - open\n\n- Epic 0001: Sample Epic\n  - status: open\n  - tasks:\n    - Task 0002: First task\n      - status: open\n    - Task 0003: Second task\n      - status: open\n\n## 2. Epics - finished\n\n""".lstrip()

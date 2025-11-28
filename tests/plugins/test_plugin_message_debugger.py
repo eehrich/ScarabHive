@@ -16,7 +16,7 @@ from agent_system.config.models import AgentSystemConfig, MCPConfig
 @pytest.fixture
 def plugin_dir():
     """Get path to message_debugger plugin directory."""
-    return Path(__file__).parent.parent / "src" / "plugins" / "message_debugger"
+    return Path(__file__).parent.parent.parent / "src" / "plugins" / "message_debugger"
 
 
 @pytest.fixture

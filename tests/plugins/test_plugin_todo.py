@@ -554,7 +554,7 @@ async def test_get_progress_summary(server: TodoServer, mock_context: Dict[str, 
 @pytest.mark.asyncio
 async def test_todo_mode_create(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() CREATE mode"""
-    result = await server.todo({
+    result = await server.call("todo", {
         "operation": "create",
         "title": "New Task",
         "description": "Description",
@@ -569,10 +569,10 @@ async def test_todo_mode_create(server: TodoServer, mock_context: Dict[str, Any]
 @pytest.mark.asyncio
 async def test_todo_mode_update(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() UPDATE mode"""
-    created = await server.todo({"operation": "create", "title": "Task", "context": mock_context})
+    created = await server.call("todo", {"operation": "create", "title": "Task", "context": mock_context})
     task_id = created["task_id"]
     
-    result = await server.todo({
+    result = await server.call("todo", {
         "operation": "update",
         "task_id": task_id,
         "status": "in-progress",
@@ -587,10 +587,10 @@ async def test_todo_mode_update(server: TodoServer, mock_context: Dict[str, Any]
 @pytest.mark.asyncio
 async def test_todo_mode_list(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() LIST mode"""
-    await server.todo({"operation": "create", "title": "Task 1", "priority": "high", "context": mock_context})
-    await server.todo({"operation": "create", "title": "Task 2", "priority": "low", "context": mock_context})
+    await server.call("todo", {"operation": "create", "title": "Task 1", "priority": "high", "context": mock_context})
+    await server.call("todo", {"operation": "create", "title": "Task 2", "priority": "low", "context": mock_context})
     
-    result = await server.todo({
+    result = await server.call("todo", {
         "operation": "list",
         "filter_priority": ["high"],
         "context": mock_context,
@@ -603,10 +603,10 @@ async def test_todo_mode_list(server: TodoServer, mock_context: Dict[str, Any]):
 @pytest.mark.asyncio
 async def test_todo_mode_get(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() GET mode"""
-    created = await server.todo({"operation": "create", "title": "Task", "context": mock_context})
+    created = await server.call("todo", {"operation": "create", "title": "Task", "context": mock_context})
     task_id = created["task_id"]
     
-    result = await server.todo({"operation": "get", "task_id": task_id, "context": mock_context})
+    result = await server.call("todo", {"operation": "get", "task_id": task_id, "context": mock_context})
     
     assert result["task"]["task_id"] == task_id
 
@@ -614,10 +614,10 @@ async def test_todo_mode_get(server: TodoServer, mock_context: Dict[str, Any]):
 @pytest.mark.asyncio
 async def test_todo_mode_summary(server: TodoServer, mock_context: Dict[str, Any]):
     """Test todo() SUMMARY mode"""
-    await server.todo({"operation": "create", "title": "Task 1", "context": mock_context})
-    await server.todo({"operation": "create", "title": "Task 2", "context": mock_context})
+    await server.call("todo", {"operation": "create", "title": "Task 1", "context": mock_context})
+    await server.call("todo", {"operation": "create", "title": "Task 2", "context": mock_context})
     
-    result = await server.todo({"operation": "summary", "context": mock_context})
+    result = await server.call("todo", {"operation": "summary", "context": mock_context})
     
     assert "total_tasks" in result
     assert result["total_tasks"] == 2
@@ -628,7 +628,7 @@ async def test_todo_invalid_args(server: TodoServer, mock_context: Dict[str, Any
     """Test todo() with invalid arguments"""
     # Missing operation should raise ValidationError
     with pytest.raises(Exception) as exc_info:
-        await server.todo({"context": mock_context})
+        await server.call("todo", {"context": mock_context})
     assert "operation" in str(exc_info.value).lower()
 
 

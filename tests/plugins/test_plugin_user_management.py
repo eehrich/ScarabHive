@@ -371,7 +371,7 @@ class TestUserManagementIntegration:
 
     def test_plugin_templates_directory_exists(self):
         """Test that templates directory exists"""
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "user_management"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "user_management"
         templates_dir = plugin_dir / "templates"
 
         # Templates should exist for web UI
@@ -379,7 +379,7 @@ class TestUserManagementIntegration:
 
     def test_plugin_configuration_from_schema(self):
         """Test that plugin can be configured from schema.yaml"""
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "user_management"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "user_management"
         schema_file = plugin_dir / "schema.yaml"
 
         assert schema_file.exists(), "schema.yaml should exist for user management plugin"

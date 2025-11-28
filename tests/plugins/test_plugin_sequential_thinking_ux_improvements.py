@@ -81,7 +81,7 @@ async def test_hook_with_relative_timestamps(plugin_server):
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
-    result = await plugin_server.sequential_thinking(params)
+    result = await plugin_server.call("sequential_thinking", params)
     assert result["status"] == "success"
     thinking_session_id = result["session_id"]
     
@@ -92,7 +92,7 @@ async def test_hook_with_relative_timestamps(plugin_server):
         "session_id": thinking_session_id,
         "_session_id": agent_session_id
     })
-    await plugin_server.sequential_thinking(params)
+    await plugin_server.call("sequential_thinking", params)
     
     # Call hook
     context = HookContext(
@@ -128,7 +128,7 @@ async def test_hook_with_quick_actions(plugin_server):
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
-    result = await plugin_server.sequential_thinking(params)
+    result = await plugin_server.call("sequential_thinking", params)
     thinking_session_id = result["session_id"]
     
     # Call hook
@@ -169,7 +169,7 @@ async def test_hook_without_quick_actions(plugin_server):
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
-    await plugin_server.sequential_thinking(params)
+    await plugin_server.call("sequential_thinking", params)
     
     # Call hook
     context = HookContext(
@@ -202,7 +202,7 @@ async def test_hook_multiple_sessions_display(plugin_server):
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
-    result1 = await plugin_server.sequential_thinking(params1)
+    result1 = await plugin_server.call("sequential_thinking", params1)
     session1_id = result1["session_id"]
     
     # Create second thinking session - explicitly request new session with unique ID
@@ -215,7 +215,7 @@ async def test_hook_multiple_sessions_display(plugin_server):
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
-    result2 = await plugin_server.sequential_thinking(params2)
+    result2 = await plugin_server.call("sequential_thinking", params2)
     session2_id = result2["session_id"]
     
     # Configure to show 2 sessions
@@ -261,7 +261,7 @@ async def test_hook_limits_sessions_displayed(plugin_server):
             "_status": AsyncMock(),
             "_session_id": agent_session_id
         }
-        result = await plugin_server.sequential_thinking(params)
+        result = await plugin_server.call("sequential_thinking", params)
         session_ids.append(result["session_id"])
     
     # Configure to show only 1 session
@@ -302,7 +302,7 @@ async def test_hook_shows_branch_switch_action_with_branches(plugin_server):
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
-    result = await plugin_server.sequential_thinking(params)
+    result = await plugin_server.call("sequential_thinking", params)
     session_id = result["session_id"]
     
     # Create a branch
@@ -314,7 +314,7 @@ async def test_hook_shows_branch_switch_action_with_branches(plugin_server):
         "session_id": session_id,
         "_session_id": agent_session_id
     })
-    await plugin_server.sequential_thinking(params)
+    await plugin_server.call("sequential_thinking", params)
     
     # Call hook
     context = HookContext(
@@ -349,7 +349,7 @@ async def test_relative_timestamps_can_be_disabled(plugin_server):
         "_status": AsyncMock(),
         "_session_id": agent_session_id
     }
-    await plugin_server.sequential_thinking(params)
+    await plugin_server.call("sequential_thinking", params)
     
     # Call hook
     context = HookContext(

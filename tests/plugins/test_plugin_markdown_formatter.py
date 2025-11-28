@@ -10,7 +10,7 @@ from plugins.markdown_formatter.hooks import MarkdownFormatterPlugin
 @pytest.fixture
 def formatter():
     """Create a markdown formatter plugin instance."""
-    plugin_dir = Path(__file__).parent.parent / 'src' / 'plugins' / 'markdown_formatter'
+    plugin_dir = Path(__file__).parent.parent.parent / 'src' / 'plugins' / 'markdown_formatter'
     return MarkdownFormatterPlugin(plugin_dir)
 
 

@@ -439,12 +439,12 @@ class TestSchemaCompliance:
 
     def test_schema_file_exists(self, mock_system_config, mock_mcp_config):
         """Test that schema.yaml file exists."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         assert schema_path.exists(), "schema.yaml file should exist"
 
     def test_schema_basic_structure(self, mock_system_config, mock_mcp_config):
         """Test basic schema structure."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
         with open(schema_path, "r", encoding="utf-8") as f:
             schema = yaml.safe_load(f)
@@ -461,7 +461,7 @@ class TestSchemaCompliance:
 
     def test_tools_definition(self, mock_system_config, mock_mcp_config):
         """Test tools definition in schema."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
         with open(schema_path, "r", encoding="utf-8") as f:
             schema = yaml.safe_load(f)
@@ -476,7 +476,7 @@ class TestSchemaCompliance:
 
     def test_eval_tool_schema(self, mock_system_config, mock_mcp_config):
         """Test eval tool schema structure."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
         with open(schema_path, "r", encoding="utf-8") as f:
             schema = yaml.safe_load(f)
@@ -497,7 +497,7 @@ class TestSchemaCompliance:
 
     def test_reset_tool_schema(self, mock_system_config, mock_mcp_config):
         """Test reset tool schema structure."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
         with open(schema_path, "r", encoding="utf-8") as f:
             schema = yaml.safe_load(f)
@@ -515,7 +515,7 @@ class TestSchemaCompliance:
 
     def test_security_section(self, mock_system_config, mock_mcp_config):
         """Test security section in schema."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
         with open(schema_path, "r", encoding="utf-8") as f:
             schema = yaml.safe_load(f)
@@ -526,7 +526,7 @@ class TestSchemaCompliance:
 
     def test_examples_section(self, mock_system_config, mock_mcp_config):
         """Test examples section in schema."""
-        schema_path = Path(__file__).parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
+        schema_path = Path(__file__).parent.parent.parent / "src" / "plugins" / "script_interpreter" / "schema.yaml"
         
         with open(schema_path, "r", encoding="utf-8") as f:
             schema = yaml.safe_load(f)

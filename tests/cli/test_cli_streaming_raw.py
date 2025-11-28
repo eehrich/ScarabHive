@@ -106,11 +106,23 @@ def test_cli_raw_flag_outputs_json(monkeypatch, capsys):
     cli.main()
 
     out = capsys.readouterr().out
-    # The CLI prints some status lines before the JSON blob; extract the last JSON object
-    # by finding the first ``{`` that starts the JSON object at or after the last newline.
+    # The CLI prints some status lines before the JSON blob; extract just the JSON object
+    # by finding the first ``{`` and matching closing ``}``.
     json_start = out.find('{')
     assert json_start != -1, f"No JSON object found in output: {out!r}"
-    parsed = json.loads(out[json_start:])
+    # Find matching closing brace for the JSON object
+    json_text = out[json_start:]
+    brace_count = 0
+    json_end = 0
+    for i, ch in enumerate(json_text):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                json_end = i + 1
+                break
+    parsed = json.loads(json_text[:json_end])
     assert parsed["task"] == "do it"
     assert parsed["summary"] == "done"
 

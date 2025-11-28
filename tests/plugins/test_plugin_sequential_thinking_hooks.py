@@ -129,7 +129,7 @@ async def test_hook_inject_active_session(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id  # Link to agent session
     }
-    result1 = await server.sequential_thinking(params1)
+    result1 = await server.call("sequential_thinking", params1)
     thinking_session_id = result1["session_id"]  # Sequential thinking session ID
     
     params2 = {
@@ -141,7 +141,7 @@ async def test_hook_inject_active_session(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id  # Same agent session
     }
-    result2 = await server.sequential_thinking(params2)
+    result2 = await server.call("sequential_thinking", params2)
     assert result2["status"] == "success"
     
     # Now test the hook with the AGENT session ID (not thinking session ID)
@@ -185,7 +185,7 @@ async def test_hook_with_branches(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id
     }
-    result1 = await server.sequential_thinking(params1)
+    result1 = await server.call("sequential_thinking", params1)
     thinking_session_id = result1["session_id"]
     
     # Create alternative branch
@@ -200,7 +200,7 @@ async def test_hook_with_branches(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id
     }
-    result2 = await server.sequential_thinking(params2)
+    result2 = await server.call("sequential_thinking", params2)
     assert result2["status"] == "success"
     
     # Test hook with branched session
@@ -239,7 +239,7 @@ async def test_hook_removes_old_injection(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id
     }
-    result = await server.sequential_thinking(params)
+    result = await server.call("sequential_thinking", params)
     # thinking_session_id = result["session_id"]  # Not needed for this test
     
     # Create context with old injection already present
@@ -292,7 +292,7 @@ async def test_hook_max_thoughts_limit(server, mock_status):
             "_status": mock_status,
             "_session_id": agent_session_id
         }
-        result = await server.sequential_thinking(params)
+        result = await server.call("sequential_thinking", params)
         if thinking_session_id is None:
             thinking_session_id = result["session_id"]
     
@@ -337,7 +337,7 @@ async def test_hook_truncates_long_thoughts(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id
     }
-    result = await server.sequential_thinking(params)
+    result = await server.call("sequential_thinking", params)
     # thinking_session_id = result["session_id"]  # Not needed
     
     context = HookContext(
@@ -377,7 +377,7 @@ async def test_hook_with_revision(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id
     }
-    result1 = await server.sequential_thinking(params1)
+    result1 = await server.call("sequential_thinking", params1)
     thinking_session_id = result1["session_id"]
     
     # Revision of first thought
@@ -392,7 +392,7 @@ async def test_hook_with_revision(server, mock_status):
         "_status": mock_status,
         "_session_id": agent_session_id
     }
-    result2 = await server.sequential_thinking(params2)
+    result2 = await server.call("sequential_thinking", params2)
     assert result2["status"] == "success"
     
     context = HookContext(

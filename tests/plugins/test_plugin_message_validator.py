@@ -460,7 +460,7 @@ class TestHookIntegration:
         from pathlib import Path
         import asyncio
 
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "message_validator"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "message_validator"
         plugin = MessageValidatorPlugin(plugin_dir)
 
         # Create context with orphaned tool_calls
@@ -496,7 +496,7 @@ class TestHookIntegration:
         from pathlib import Path
         import asyncio
 
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "message_validator"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "message_validator"
         plugin = MessageValidatorPlugin(plugin_dir)
 
         # Create context with valid messages
@@ -526,7 +526,7 @@ class TestHookIntegration:
         from pathlib import Path
         import asyncio
 
-        plugin_dir = Path(__file__).parent.parent / "src" / "plugins" / "message_validator"
+        plugin_dir = Path(__file__).parent.parent.parent / "src" / "plugins" / "message_validator"
         plugin = MessageValidatorPlugin(plugin_dir)
 
         # Create context with orphaned tool_calls
