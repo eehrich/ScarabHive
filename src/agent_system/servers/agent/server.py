@@ -1040,12 +1040,12 @@ class Agent(MCPServer):
 
             # Yield final response with usage data
             if final_assistant:
-                result = {"type": "thinking_complete", "assistant": final_assistant}
+                result = {"type": "thinking_complete", "step": step + 1, "assistant": final_assistant}
                 if final_usage:
                     result["usage"] = final_usage
                 yield result
             else:
-                yield {"type": "thinking_complete", "assistant": {"role": "assistant", "content": "".join(accumulated_content)}}
+                yield {"type": "thinking_complete", "step": step + 1, "assistant": {"role": "assistant", "content": "".join(accumulated_content)}}
 
         else:
             # Non-streaming LLM: Use polling with 100ms intervals
@@ -1089,7 +1089,7 @@ class Agent(MCPServer):
 
             # Get result
             llm_out = await llm_task
-            result = {"type": "thinking_complete", "assistant": llm_out.get("assistant", {})}
+            result = {"type": "thinking_complete", "step": step + 1, "assistant": llm_out.get("assistant", {})}
             # Preserve usage data if present
             if "usage" in llm_out:
                 result["usage"] = llm_out["usage"]
