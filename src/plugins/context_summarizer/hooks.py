@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -128,7 +129,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Check rate limiting: prevent endless loop by enforcing minimum time between summarizations
             session_id = context.session_id or "unknown"
-            current_time = asyncio.get_event_loop().time()
+            current_time = time.monotonic()  # Use monotonic clock, not event loop time
             
             if not is_manual_trigger:
                 last_summarization = self._last_summarization_time.get(session_id)

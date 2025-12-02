@@ -242,6 +242,7 @@ plugins:
       enabled: true
       config:
         max_message_preview_length: 5000
+        min_time_between_summarizations: 500
 
     context_optimizer:
       type: context_optimizer
