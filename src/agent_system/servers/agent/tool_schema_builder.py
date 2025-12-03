@@ -427,9 +427,9 @@ class ToolSchemaBuilder:
             # Convert MCPTool objects to OpenAI function format
             server_tools = []
             for mcp_tool in mcp_tools:
-                # Support both camelCase (inputSchema) and snake_case (input_schema)
-                # Different MCP implementations use different naming conventions
-                input_schema = getattr(mcp_tool, 'inputSchema', None) or getattr(mcp_tool, 'input_schema', {})
+                # MCPTool uses snake_case (input_schema) internally
+                # The MCP client converts from JSON camelCase (inputSchema) to Python snake_case
+                input_schema = mcp_tool.input_schema
                 tool_schema = {
                     "type": "function",
                     "function": {

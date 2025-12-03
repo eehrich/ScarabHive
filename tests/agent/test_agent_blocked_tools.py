@@ -184,7 +184,7 @@ async def test_build_schemas_with_blocked_patterns():
     class MockTool:
         name: str
         description: str
-        inputSchema: dict  # camelCase to match MCP tool format
+        input_schema: dict  # snake_case to match MCPTool class definition
     
     # Create mock MCP integration manager
     mock_mcp_integration = Mock()
@@ -193,9 +193,9 @@ async def test_build_schemas_with_blocked_patterns():
     # Create mock server that returns tool objects with proper attributes
     mock_server = Mock()
     mock_server.list_tools = AsyncMock(return_value=[
-        MockTool(name="writer_graph_validate", description="Validate", inputSchema={}),
-        MockTool(name="writer_graph_batch_link", description="Batch link", inputSchema={}),
-        MockTool(name="writer_graph_create", description="Create", inputSchema={}),
+        MockTool(name="writer_graph_validate", description="Validate", input_schema={}),
+        MockTool(name="writer_graph_batch_link", description="Batch link", input_schema={}),
+        MockTool(name="writer_graph_create", description="Create", input_schema={}),
     ])
     
     def mock_get_server(name):
