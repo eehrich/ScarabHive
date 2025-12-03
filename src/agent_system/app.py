@@ -816,8 +816,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     async def get_agent_allowed_tools_debug(agent_name: str):
         """Return detailed pattern match diagnostics for an agent's allowed tools.
 
-        Provides for each available tool server which allow pattern(s) matched.
-        If no allow list configured, returns an informational note.
+        Provides:
+        - Phase 1: Server-level filtering (which servers pass the allow patterns)
+        - Phase 2: Tool-level filtering (actual tools after expansion and blocked filtering)
+        
+        This shows the complete two-phase filtering process.
         """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
@@ -830,21 +833,68 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             patterns = srv.agent_config.tools.allowed if srv.agent_config.tools else None
             available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
-            diagnostics = []
+            
+            # Phase 1: Server-level diagnostics (which servers matched which patterns)
+            server_diagnostics = []
             if patterns:
                 for tool in available:
                     matched_by = []
                     for pat in patterns:
                         if srv._is_tool_allowed(tool, [pat]):  # type: ignore[attr-defined]
                             matched_by.append(pat)
-                    diagnostics.append({"tool": tool, "matched_patterns": matched_by})
+                    server_diagnostics.append({"server": tool, "matched_patterns": matched_by})
             else:
-                diagnostics = [{"tool": t, "matched_patterns": ["<implicit:all>"]} for t in available]
+                server_diagnostics = [{"server": t, "matched_patterns": ["<implicit:all>"]} for t in available]
+            
+            # Phase 2: Get actual expanded and filtered tools via ToolSchemaBuilder
+            final_tools = []
+            tool_details = []
+            try:
+                from .servers.agent.tool_schema_builder import ToolSchemaBuilder
+                
+                # Create tool schema builder (same as used during chat)
+                tool_builder = ToolSchemaBuilder(
+                    agent_name=agent_name,
+                    mcp_integration_manager=srv._mcp_integration_manager,
+                    server_getter_func=srv._get_server_from_any_registry
+                )
+                
+                # Build schemas with filtering applied
+                tools_schema, tool_name_mapping, usable_tools, display_tools = await tool_builder.build_schemas(
+                    available_tools=available,
+                    allowed_patterns=allowed_patterns,
+                    blocked_patterns=blocked_patterns
+                )
+                
+                # Extract final tool names from schemas
+                for schema in tools_schema:
+                    if schema.get("type") == "function" and "function" in schema:
+                        func = schema["function"]
+                        tool_name = func.get("name", "")
+                        server_name = tool_name_mapping.get(tool_name, "")
+                        final_tools.append(tool_name)
+                        tool_details.append({
+                            "tool": tool_name,
+                            "server": server_name,
+                            "full_path": f"{server_name}/{tool_name}" if server_name else tool_name
+                        })
+            except Exception as e:
+                logger.warning(f"Failed to build tool schemas for debug: {e}")
+                tool_details = [{"error": str(e)}]
+            
             return {
-                "agent": agent_name, 
-                "patterns": patterns or [], 
+                "agent": agent_name,
+                "allowed_patterns": patterns or [],
                 "blocked_patterns": blocked_patterns or [],
-                "diagnostics": diagnostics
+                "phase1_server_filtering": {
+                    "description": "Servers that passed allowed pattern matching",
+                    "servers": server_diagnostics
+                },
+                "phase2_tool_filtering": {
+                    "description": "Final tools after expansion and blocked pattern filtering",
+                    "total_tools": len(final_tools),
+                    "tools": tool_details
+                }
             }
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
