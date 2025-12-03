@@ -8,12 +8,14 @@ tools:
         Manage persistent sub-agent instances for delegation of specialized tasks.
         Sub-agents maintain conversation history and can be continued across multiple requests.
 
+        **Followup existing agents:** Use `continue` to send new tasks to existing sub-agents.
+        
         Operations:
         - create: Spawn new sub-agent and execute task (blocking=true by default, blocking=false for async)
-        - continue: Send new message to existing sub-agent (BLOCKING - returns result)
+        - continue: Continue existing sub-agent with new user message. (blocking=true by default, blocking=false for async)
         - poll: Check status of running sub-agent (NON-BLOCKING)
         - wait: Wait for sub-agent to complete (BLOCKING - returns result)
-        - wait_all: Wait for multiple sub-agents. (BLOCKING - returns result)
+        - wait_all: Wait for multiple sub-agents (BLOCKING - returns result)
         - cancel: Cancel running sub-agent
         - list: Get all active sub-agents for current session
         - info: Get detailed status and recent activity of specific sub-agent
@@ -34,8 +36,8 @@ tools:
             enum: [create, continue, poll, wait, wait_all, cancel, list, info, delete]
             description: |
               Operation to perform:
-              - create: Create and execute new sub-agent (blocking=true default, blocking=false for async)
-              - continue: Continue existing sub-agent with new message (BLOCKING)
+              - create: Create new sub-agent (only if instance does not exist)
+              - continue: Continue existing sub-agent with new message/task
               - poll: Check status of running sub-agent (NON-BLOCKING)
               - wait: Wait for sub-agent to complete (BLOCKING)
               - wait_all: Wait for multiple sub-agents (BLOCKING)
