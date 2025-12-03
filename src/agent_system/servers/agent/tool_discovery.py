@@ -7,7 +7,7 @@ Extracted from servers/agent/server.py to reduce complexity (Issue #11).
 
 from __future__ import annotations
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, Tuple, TYPE_CHECKING
 import logging
 import fnmatch
 
@@ -43,19 +43,23 @@ class ToolDiscoveryService:
         self.mcp_integration_manager = mcp_integration_manager
         self.registry = registry
     
-    async def discover_allowed_tools(self) -> List[str]:
+    async def discover_allowed_tools(self) -> Tuple[List[str], Optional[List[str]], Optional[List[str]]]:
         """
-        Discover all available tools and apply allow-list and block-list filtering.
+        Discover all available tools and apply allow-list filtering.
         
         Combines tools from:
         1. Plugin-provided tool servers
         2. External MCP servers
         3. Local registry (filtered by _mcp_tool_visible flag)
         
-        Then applies allow-list and block-list filtering.
+        Then applies allow-list filtering at server level. Both allowed and blocked
+        patterns are returned for fine-grained filtering after tool expansion.
         
         Returns:
-            List of allowed tool names
+            Tuple of:
+            - List of allowed tool names (server names at this stage)
+            - List of allowed patterns (for fine-grained filtering after expansion)
+            - List of blocked patterns (to be applied after tool expansion)
         """
         # Get allow/block patterns
         allowed_patterns = self._get_allowed_patterns()
@@ -65,7 +69,7 @@ class ToolDiscoveryService:
                 "Agent %s: no tools.allowed configured -> deny-all (0 tools)",
                 self.agent_name
             )
-            return []
+            return [], None, None
         
         # Empty list means allow all tools
         if isinstance(allowed_patterns, list) and len(allowed_patterns) == 0:
@@ -74,19 +78,19 @@ class ToolDiscoveryService:
         # Discover all available tools
         available_tools = await self._discover_all_tools()
         
-        # Apply allow-list filter
+        # Apply allow-list filter (server-level)
         available_tools = self._apply_allow_list(available_tools, allowed_patterns)
         
         # Apply wildcard fallback if needed
         if not available_tools:
             available_tools = await self._apply_wildcard_fallback(allowed_patterns)
         
-        # Apply block-list filter
+        # Get blocked patterns but don't apply yet - tools need to be expanded first
+        # Both allowed_patterns and blocked_patterns are applied in ToolSchemaBuilder
+        # after individual tools are discovered
         blocked_patterns = self._get_blocked_patterns()
-        if blocked_patterns:
-            available_tools = self._apply_block_list(available_tools, blocked_patterns)
         
-        return available_tools
+        return available_tools, allowed_patterns, blocked_patterns
     
     def _get_allowed_patterns(self) -> Optional[List[str]]:
         """Get allowed tool patterns from agent config."""
@@ -361,6 +365,7 @@ class ToolDiscoveryService:
         - Wildcards with '*'
         - Dot notation patterns
         - Server name matching for wildcard patterns (e.g., "ssh_control" matches "ssh_control/*")
+        - Server name matching for specific tool patterns (e.g., "writer_content" matches "writer_content/writer_content_book")
         
         Args:
             tool: Tool name to check
@@ -385,6 +390,13 @@ class ToolDiscoveryService:
                     server_name = pattern[:-2]  # Remove "/*"
                     if tool == server_name:
                         return True
+            
+            # Special case: If pattern is "server_name/tool_name", match "server_name"
+            # This allows server names to pass through for later tool-level filtering
+            if '/' in pattern and '*' not in pattern:
+                server_name = pattern.split('/')[0]
+                if tool == server_name:
+                    return True
             
             # Dot notation match (e.g., "plugin.tool" matches "plugin.*")
             if '.' in pattern and '.' in tool:

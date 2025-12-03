@@ -404,8 +404,8 @@ async def test_agent_respects_tool_filtering_for_other_agents():
     )
     main_agent = Agent("main_agent", system_config, main_config, registry)
     
-    # Check available tools
-    available_tools = await main_agent.list_usable_tools()
+    # Check available tools - list_usable_tools returns tuple: (tools, blocked_patterns)
+    available_tools, _, _ = await main_agent.list_usable_tools()
     
     assert "agent_allowed" in available_tools, "Should see allowed agent"
     assert "agent_blocked" not in available_tools, "Should NOT see blocked agent"

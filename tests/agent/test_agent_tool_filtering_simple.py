@@ -22,8 +22,11 @@ async def test_filter_no_patterns_all_available(monkeypatch):
     agent = Agent("test_agent", system_config, mcp_config, registry)
 
     # Neue Policy: Keine tools.allowed -> keine Tools erlaubt
-    filtered = await agent.list_usable_tools()  # type: ignore[attr-defined]
+    # list_usable_tools now returns (tools, blocked_patterns)
+    filtered, _, blocked_patterns = await agent.list_usable_tools()  # type: ignore[attr-defined]
     assert filtered == []
+    # blocked_patterns can be None or empty list when no blocked patterns configured
+    assert blocked_patterns is None or blocked_patterns == []
 
 @pytest.mark.asyncio
 async def test_filter_patterns():
@@ -76,3 +79,32 @@ async def test_is_tool_allowed_edge_cases():
     registry = MCPRegistry()
     agent = Agent("test_agent", system_config, mcp_config, registry)
     assert agent._is_tool_allowed("anything", ["*"])  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_blocked_tools_returned_with_allowed():
+    """Test that blocked_patterns is returned correctly alongside allowed tools."""
+    # Create minimal system config
+    system_config = Mock(spec=AgentSystemConfig)
+    system_config.llm_system = LLMSystemConfig(
+        models={"gpt-4o-mini": {"provider": "openai", "model": "gpt-4o-mini"}},
+        profiles={"default": {"model_ref": "gpt-4o-mini"}}
+    )
+    
+    # AgentConfig with both allowed and blocked tools
+    tool_config = ToolConfig(
+        allowed=["writer_graph/*", "web_scraper/*"],
+        blocked=["writer_graph/writer_graph_batch_link"]
+    )
+    agent_config = AgentConfig(llm_profile="default", tools=tool_config)
+    mcp_config = MCPConfig(type="basic_agent", enabled=True, agent_config=agent_config)
+    
+    registry = MCPRegistry()
+    agent = Agent("test_agent", system_config, mcp_config, registry)
+    
+    # list_usable_tools should return blocked_patterns
+    tools, _, blocked_patterns = await agent.list_usable_tools()  # type: ignore[attr-defined]
+    
+    # Blocked patterns should be returned for later application
+    assert blocked_patterns is not None
+    assert "writer_graph/writer_graph_batch_link" in blocked_patterns

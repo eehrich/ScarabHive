@@ -7,8 +7,9 @@ Extracted from servers/agent/server.py to reduce _run_events() complexity (Issue
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 import logging
+import fnmatch
 
 if TYPE_CHECKING:
     from agent_system.servers.agent.components.mcp_integration import MCPIntegrationManager
@@ -39,7 +40,9 @@ class ToolSchemaBuilder:
 
     async def build_schemas(
         self,
-        available_tools: List[str]
+        available_tools: List[str],
+        allowed_patterns: Optional[List[str]] = None,
+        blocked_patterns: Optional[List[str]] = None
     ) -> Tuple[List[Dict], Dict[str, str], List[str], List[str]]:
         """
         Build tool schemas for LLM and maintain name mapping.
@@ -47,9 +50,13 @@ class ToolSchemaBuilder:
         Processes:
         1. External MCP tools (e.g., "server.tool_name")
         2. Internal tools (plugins, agents) from available_tools list
+        3. Apply allowed patterns to filter to only wanted tools (if specified)
+        4. Apply blocked patterns to filter out unwanted tools
 
         Args:
             available_tools: List of available tool server names
+            allowed_patterns: Optional list of allowed tool patterns (e.g., "plugin/tool_name")
+            blocked_patterns: Optional list of blocked tool patterns (e.g., "plugin/tool_name")
 
         Returns:
             Tuple of:
@@ -84,7 +91,262 @@ class ToolSchemaBuilder:
             tool for tool in available_tools if "." in tool  # External tools (e.g., "context7.resolve-library-id")
         ]
 
+        # Apply allowed patterns FIRST (if specified) to whitelist tools
+        if allowed_patterns:
+            tools_schema, tool_name_mapping, usable_tools, display_tools = self._apply_allowed_patterns(
+                tools_schema, tool_name_mapping, usable_tools, display_tools, allowed_patterns
+            )
+
+        # Apply blocked patterns AFTER tools have been expanded to individual names
+        if blocked_patterns:
+            tools_schema, tool_name_mapping, usable_tools, display_tools = self._apply_blocked_patterns(
+                tools_schema, tool_name_mapping, usable_tools, display_tools, blocked_patterns
+            )
+
         return tools_schema, tool_name_mapping, usable_tools, display_tools
+
+    def _apply_allowed_patterns(
+        self,
+        tools_schema: List[Dict],
+        tool_name_mapping: Dict[str, str],
+        usable_tools: List[str],
+        display_tools: List[str],
+        allowed_patterns: List[str]
+    ) -> Tuple[List[Dict], Dict[str, str], List[str], List[str]]:
+        """
+        Apply allowed patterns to whitelist only wanted tools.
+
+        Patterns support:
+        - Exact match: "plugin_name/tool_name"
+        - Wildcards: "plugin_name/*" (all tools from plugin)
+        - Server-level: "plugin_name" (allows all tools from that server)
+
+        Args:
+            tools_schema: List of tool schemas
+            tool_name_mapping: Maps tool names to server names
+            usable_tools: List of usable tool names
+            display_tools: List of display tool names
+            allowed_patterns: List of allowed patterns
+
+        Returns:
+            Filtered tuple of (tools_schema, tool_name_mapping, usable_tools, display_tools)
+        """
+        allowed_tool_names: set[str] = set()
+
+        # Find all tools that match allowed patterns
+        for tool_name in list(tool_name_mapping.keys()):
+            server_name = tool_name_mapping.get(tool_name, "")
+            
+            if self._is_tool_allowed(tool_name, server_name, allowed_patterns):
+                allowed_tool_names.add(tool_name)
+
+        if allowed_tool_names:
+            logger.debug(
+                f"Agent {self.agent_name}: Allowed tools kept: {sorted(allowed_tool_names)}"
+            )
+
+            # Filter tools_schema to only allowed tools
+            filtered_schema = [
+                schema for schema in tools_schema
+                if schema.get("type") == "function" and
+                schema.get("function", {}).get("name") in allowed_tool_names
+            ]
+
+            # Filter tool_name_mapping to only allowed tools
+            filtered_mapping = {
+                name: server for name, server in tool_name_mapping.items()
+                if name in allowed_tool_names
+            }
+
+            # Filter usable_tools to only allowed tools
+            filtered_usable = [
+                tool for tool in usable_tools
+                if tool in allowed_tool_names or tool in [tool_name_mapping.get(t, "") for t in allowed_tool_names]
+            ]
+
+            # Filter display_tools to only allowed tools
+            filtered_display = [
+                tool for tool in display_tools
+                if tool in allowed_tool_names
+            ]
+
+            return filtered_schema, filtered_mapping, filtered_usable, filtered_display
+
+        # If no tools match allowed patterns, return empty lists (deny all)
+        return [], {}, [], []
+
+    def _is_tool_allowed(self, tool_name: str, server_name: str, allowed_patterns: List[str]) -> bool:
+        """
+        Check if a tool matches any allowed pattern.
+
+        Patterns:
+        - "server/tool": exact match on "server/tool" or tool_name == "tool" with server_name == "server"
+        - "server/*": all tools from server
+        - "server": all tools from server (shorthand)
+        - "*tool*": wildcard matching on tool name
+
+        Args:
+            tool_name: Individual tool name (e.g., "writer_graph_batch_link")
+            server_name: Server the tool belongs to (e.g., "writer_graph")
+            allowed_patterns: List of allowed patterns
+
+        Returns:
+            True if tool should be allowed
+        """
+        # Construct full tool path for matching
+        full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
+
+        for pattern in allowed_patterns:
+            # Exact match on full path
+            if pattern == full_tool_path:
+                logger.debug(f"Tool '{tool_name}' allowed by exact pattern '{pattern}'")
+                return True
+
+            # Server/* pattern - allow all tools from server
+            if pattern.endswith("/*"):
+                server_pattern = pattern[:-2]
+                if server_name == server_pattern:
+                    logger.debug(f"Tool '{tool_name}' allowed by server wildcard pattern '{pattern}'")
+                    return True
+
+            # Server-level allow (no slash) - allow entire server
+            if "/" not in pattern and pattern == server_name:
+                logger.debug(f"Tool '{tool_name}' allowed by server pattern '{pattern}'")
+                return True
+
+            # Wildcard matching using fnmatch
+            if "*" in pattern:
+                # Try matching against full path
+                if fnmatch.fnmatch(full_tool_path, pattern):
+                    logger.debug(f"Tool '{tool_name}' allowed by wildcard pattern '{pattern}' (full path)")
+                    return True
+                # Try matching against just tool name
+                if fnmatch.fnmatch(tool_name, pattern):
+                    logger.debug(f"Tool '{tool_name}' allowed by wildcard pattern '{pattern}' (tool name)")
+                    return True
+
+        return False
+
+    def _apply_blocked_patterns(
+        self,
+        tools_schema: List[Dict],
+        tool_name_mapping: Dict[str, str],
+        usable_tools: List[str],
+        display_tools: List[str],
+        blocked_patterns: List[str]
+    ) -> Tuple[List[Dict], Dict[str, str], List[str], List[str]]:
+        """
+        Apply blocked patterns to filter out unwanted tools.
+
+        Patterns support:
+        - Exact match: "plugin_name/tool_name"
+        - Wildcards: "plugin_name/*" (all tools from plugin)
+        - Server-level: "plugin_name" (blocks all tools from that server)
+
+        Args:
+            tools_schema: List of tool schemas
+            tool_name_mapping: Maps tool names to server names
+            usable_tools: List of usable tool names
+            display_tools: List of display tool names
+            blocked_patterns: List of blocked patterns
+
+        Returns:
+            Filtered tuple of (tools_schema, tool_name_mapping, usable_tools, display_tools)
+        """
+        blocked_tool_names: set[str] = set()
+
+        # Find all tools that match blocked patterns
+        for tool_name in list(tool_name_mapping.keys()):
+            server_name = tool_name_mapping.get(tool_name, "")
+            
+            if self._is_tool_blocked(tool_name, server_name, blocked_patterns):
+                blocked_tool_names.add(tool_name)
+
+        if blocked_tool_names:
+            logger.debug(
+                f"Agent {self.agent_name}: Blocked tools removed: {sorted(blocked_tool_names)}"
+            )
+
+            # Filter tools_schema
+            filtered_schema = [
+                schema for schema in tools_schema
+                if schema.get("type") == "function" and
+                schema.get("function", {}).get("name") not in blocked_tool_names
+            ]
+
+            # Filter tool_name_mapping
+            filtered_mapping = {
+                name: server for name, server in tool_name_mapping.items()
+                if name not in blocked_tool_names
+            }
+
+            # Filter usable_tools
+            filtered_usable = [
+                tool for tool in usable_tools
+                if tool not in blocked_tool_names
+            ]
+
+            # Filter display_tools
+            filtered_display = [
+                tool for tool in display_tools
+                if tool not in blocked_tool_names
+            ]
+
+            return filtered_schema, filtered_mapping, filtered_usable, filtered_display
+
+        return tools_schema, tool_name_mapping, usable_tools, display_tools
+
+    def _is_tool_blocked(self, tool_name: str, server_name: str, blocked_patterns: List[str]) -> bool:
+        """
+        Check if a tool matches any blocked pattern.
+
+        Patterns:
+        - "server/tool": exact match on "server/tool" or tool_name == "tool" with server_name == "server"
+        - "server/*": all tools from server
+        - "server": all tools from server (shorthand)
+        - "*tool*": wildcard matching on tool name
+
+        Args:
+            tool_name: Individual tool name (e.g., "writer_graph_batch_link")
+            server_name: Server the tool belongs to (e.g., "writer_graph")
+            blocked_patterns: List of blocked patterns
+
+        Returns:
+            True if tool should be blocked
+        """
+        # Construct full tool path for matching
+        full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
+
+        for pattern in blocked_patterns:
+            # Exact match on full path
+            if pattern == full_tool_path:
+                logger.debug(f"Tool '{tool_name}' blocked by exact pattern '{pattern}'")
+                return True
+
+            # Server/* pattern - block all tools from server
+            if pattern.endswith("/*"):
+                server_pattern = pattern[:-2]
+                if server_name == server_pattern:
+                    logger.debug(f"Tool '{tool_name}' blocked by server wildcard pattern '{pattern}'")
+                    return True
+
+            # Server-level block (no slash) - block entire server
+            if "/" not in pattern and pattern == server_name:
+                logger.debug(f"Tool '{tool_name}' blocked by server pattern '{pattern}'")
+                return True
+
+            # Wildcard matching using fnmatch
+            if "*" in pattern:
+                # Try matching against full path
+                if fnmatch.fnmatch(full_tool_path, pattern):
+                    logger.debug(f"Tool '{tool_name}' blocked by wildcard pattern '{pattern}' (full path)")
+                    return True
+                # Try matching against just tool name
+                if fnmatch.fnmatch(tool_name, pattern):
+                    logger.debug(f"Tool '{tool_name}' blocked by wildcard pattern '{pattern}' (tool name)")
+                    return True
+
+        return False
 
     async def _build_internal_tool_schemas(
         self,
@@ -165,12 +427,15 @@ class ToolSchemaBuilder:
             # Convert MCPTool objects to OpenAI function format
             server_tools = []
             for mcp_tool in mcp_tools:
+                # Support both camelCase (inputSchema) and snake_case (input_schema)
+                # Different MCP implementations use different naming conventions
+                input_schema = getattr(mcp_tool, 'inputSchema', None) or getattr(mcp_tool, 'input_schema', {})
                 tool_schema = {
                     "type": "function",
                     "function": {
                         "name": mcp_tool.name,
                         "description": mcp_tool.description,
-                        "parameters": mcp_tool.input_schema
+                        "parameters": input_schema
                     }
                 }
                 server_tools.append(tool_schema)

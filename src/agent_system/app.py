@@ -800,9 +800,15 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
         try:
-            available = await srv.list_usable_tools()
-            patterns = getattr(srv.agent_config, 'allowed_tools', None)
-            return {"agent": agent_name, "patterns": patterns or [], "available": sorted(available), "effective": sorted(available)}
+            available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
+            patterns = srv.agent_config.tools.allowed if srv.agent_config.tools else None
+            return {
+                "agent": agent_name, 
+                "patterns": patterns or [], 
+                "blocked_patterns": blocked_patterns or [],
+                "available": sorted(available), 
+                "effective": sorted(available)
+            }
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
 
@@ -822,8 +828,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
         try:
-            patterns = getattr(srv.agent_config, 'allowed_tools', None)
-            available = await srv.list_usable_tools()
+            patterns = srv.agent_config.tools.allowed if srv.agent_config.tools else None
+            available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
             diagnostics = []
             if patterns:
                 for tool in available:
@@ -834,7 +840,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     diagnostics.append({"tool": tool, "matched_patterns": matched_by})
             else:
                 diagnostics = [{"tool": t, "matched_patterns": ["<implicit:all>"]} for t in available]
-            return {"agent": agent_name, "patterns": patterns or [], "diagnostics": diagnostics}
+            return {
+                "agent": agent_name, 
+                "patterns": patterns or [], 
+                "blocked_patterns": blocked_patterns or [],
+                "diagnostics": diagnostics
+            }
         except Exception as e:
             return {"agent": agent_name, "error": str(e)}
 

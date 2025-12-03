@@ -191,8 +191,8 @@ async def test_tool_server_filtering_config(base_system_config, mock_registry_wi
     )
     
     # Check tools the agent CAN USE (not what it OFFERS)
-    # list_usable_tools() returns filtered tool names based on agent config
-    tool_names = await agent.list_usable_tools()
+    # list_usable_tools() returns tuple: (tool names, allowed patterns, blocked patterns)
+    tool_names, _, _ = await agent.list_usable_tools()
     
     # Should only have datetime and weather (filtered by tools.allowed)
     assert "datetime" in tool_names
@@ -226,8 +226,8 @@ async def test_empty_allowed_tools_means_all(base_system_config, mock_registry_w
     )
     
     # Check tools the agent CAN USE (not what it OFFERS)
-    # list_usable_tools() returns tool names this agent can call
-    tool_names = await agent.list_usable_tools()
+    # list_usable_tools() returns tuple: (tool names, allowed patterns, blocked patterns)
+    tool_names, _, blocked_patterns = await agent.list_usable_tools()
     
     # Should have all tools when tools.allowed is empty
     assert "datetime" in tool_names
@@ -470,8 +470,8 @@ async def test_config_with_all_tools_disabled(base_system_config, mock_registry_
     
     # Should have no tools available for internal use
     # Note: list_tools() returns what agent OFFERS (always returns itself)
-    # list_usable_tools() returns what agent CAN USE (filtered by config)
-    usable_tools = await agent.list_usable_tools()
+    # list_usable_tools() returns tuple: (tool names, allowed patterns, blocked patterns)
+    usable_tools, _, blocked_patterns = await agent.list_usable_tools()
     assert len(usable_tools) == 0, "Agent should have no usable tools with nonexistent_server filter"
     
     # Should still be able to run (without tools)

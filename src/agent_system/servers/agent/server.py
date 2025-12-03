@@ -370,7 +370,7 @@ class Agent(MCPServer):
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
         try:
-            usable_tools = await self.list_usable_tools()
+            usable_tools, _, _ = await self.list_usable_tools()  # Ignore patterns for prompt display
         except Exception as e:
             logger.warning(f"Failed to list usable tools for system prompt: {e}", exc_info=True)
             usable_tools = []
@@ -459,7 +459,7 @@ class Agent(MCPServer):
         Patterns may be:
           plugin            -> matches exact tool/plugin name
           plugin/*          -> matches all functions of plugin and plugin itself
-          plugin/function   -> matches one function inside multi-tool plugin
+          plugin/function   -> matches one function inside multi-tool plugin (also matches plugin server name for discovery)
           external.tool     -> exact external tool name
           external.*        -> all tools of an external server (dot form)
         Uses fnmatch for flexible wildcard support.
@@ -484,6 +484,13 @@ class Agent(MCPServer):
             if pat.endswith('.*'):
                 base = pat[:-2]
                 if tool_name.startswith(base + '.'):
+                    return True
+            # Special case: If pattern is "server_name/tool_name" (specific tool pattern),
+            # also match the server name itself. This allows server names to pass through
+            # discovery so tools can be expanded later and filtered at the tool level.
+            if '/' in pat and '*' not in pat:
+                server_name = pat.split('/')[0]
+                if tool_name == server_name:
                     return True
             # Direct fnmatch (covers explicit names and wildcards)
             if fnmatch(tool_name, pat):
@@ -511,7 +518,7 @@ class Agent(MCPServer):
             logger.debug("Agent %s tools.allowed patterns with no matches: %s", self.name, unmatched)
         return matched
 
-    async def list_usable_tools(self) -> list[str]:
+    async def list_usable_tools(self) -> tuple[list[str], list[str] | None, list[str] | None]:
         """Return list of tool names this agent CAN USE (filtered by agent config).
 
         This is the INTERNAL interface - tools available for this agent's execution.
@@ -520,7 +527,10 @@ class Agent(MCPServer):
         Contrast with list_tools() which returns what this agent OFFERS to others.
 
         Returns:
-            List of tool server names this agent is allowed to use
+            Tuple of:
+            - List of tool server names this agent is allowed to use
+            - List of allowed patterns (for fine-grained filtering after tool expansion)
+            - List of blocked patterns (to be applied after tool expansion)
         """
         # Initialize MCP integration (idempotent)
         await self._mcp_integration_manager.setup_mcp_integration()
@@ -786,7 +796,8 @@ class Agent(MCPServer):
         await self._mcp_integration_manager.setup_mcp_integration()
 
         # Get tools this agent can use (filtered by agent_config)
-        usable_tools = await self.list_usable_tools()
+        # Returns tuple: (tools, allowed_patterns, blocked_patterns)
+        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
 
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -837,6 +848,7 @@ class Agent(MCPServer):
         self._current_messages = messages.copy()
 
         # Build tool schemas using ToolSchemaBuilder
+        # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
         schema_builder = ToolSchemaBuilder(
             agent_name=self.name,
             mcp_integration_manager=self._mcp_integration_manager,
@@ -844,7 +856,9 @@ class Agent(MCPServer):
         )
 
         tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
-            usable_tools
+            usable_tools,
+            allowed_patterns=allowed_patterns,
+            blocked_patterns=blocked_patterns
         )
 
         # Return initialized context
