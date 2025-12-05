@@ -156,7 +156,7 @@ The plugin publishes real-time status messages during summarization via the stat
 - **PROGRESS**: Reports number of messages being summarized and preserved
 - **END**: Shows completion statistics (messages reduced, tokens saved, reduction ratio)
 
-Status messages include detailed metadata and can be monitored via `/status/stream` endpoint.
+Status messages include detailed metadata and can be monitored via the `/events` SSE endpoint.
 
 Example status messages:
 ```

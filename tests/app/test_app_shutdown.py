@@ -71,13 +71,13 @@ async def test_server_with_connection():
     
     try:
         # Create an SSE connection to simulate active client with timeout
-        logger.info("Connecting to server status stream...")
+        logger.info("Connecting to server events stream...")
         timeout = aiohttp.ClientTimeout(total=30, sock_read=5)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
-                async with session.get("http://127.0.0.1:8000/status/stream") as response:
+                async with session.get("http://127.0.0.1:8000/events") as response:
                     if response.status == 200:
-                        logger.info("Connected to status stream")
+                        logger.info("Connected to events stream")
                         
                         # Read a few lines to establish connection with timeout
                         lines_read = 0
