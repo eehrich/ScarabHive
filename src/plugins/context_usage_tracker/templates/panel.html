@@ -22,6 +22,7 @@
         .container {
             max-width: 1200px;
             margin: 0 auto;
+            padding-right: 10px;
         }
 
         h1 {
@@ -32,9 +33,10 @@
 
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 12px;
             margin-bottom: 30px;
+            margin-right: 5px;
         }
 
         .stat-card {
@@ -54,10 +56,12 @@
         }
 
         .stat-value {
-            font-size: clamp(14px, 3.5vw, 24px);
+            font-size: clamp(12px, 3vw, 22px);
             font-weight: 600;
             color: #4ec9b0;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .agent-section {
@@ -86,8 +90,9 @@
             border-radius: 4px;
             padding: 12px;
             display: grid;
-            grid-template-columns: 2fr 1fr 1fr 1fr;
+            grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr;
             gap: 15px;
+            align-items: center;
         }
 
         .agent-name {
@@ -294,6 +299,18 @@
         let tokenChart = null;
         let currentSessionOnly = true; // Filter by current session by default
 
+        // Format large numbers compactly (e.g., 1.18M, 234K)
+        function formatCompact(num) {
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(2) + 'M';
+            } else if (num >= 100000) {
+                return (num / 1000).toFixed(0) + 'K';
+            } else if (num >= 10000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toLocaleString();
+        }
+
         function getCurrentSessionId() {
             // Method 1: Try to get from parent window's sessionManager
             try {
@@ -459,7 +476,7 @@
                     ? ((accumulatedCachedTokens / accumulatedTotalTokens) * 100).toFixed(0)
                     : 0;
                 document.getElementById('accumulated-cached').textContent =
-                    `${accumulatedCachedTokens.toLocaleString()} (${accumulatedCachedPercent}%)`;
+                    `${formatCompact(accumulatedCachedTokens)} (${accumulatedCachedPercent}%)`;
 
                 // Get history data (already filtered by backend if sessionId provided)
                 const historyResp = await fetch(historyUrl);
@@ -474,11 +491,16 @@
 
                 document.getElementById('total-calls').textContent = totalCalls;
                 document.getElementById('accumulated-tokens').textContent =
-                    accumulatedTokens.toLocaleString();
+                    formatCompact(accumulatedTokens);
 
                 const agentList = document.getElementById('agent-list');
                 if (Object.keys(agents).length > 0) {
-                    agentList.innerHTML = Object.values(agents).map(agent => `
+                    agentList.innerHTML = Object.values(agents).map(agent => {
+                        const cachedPercent = agent.total_tokens > 0
+                            ? ((agent.total_cached_tokens || 0) / agent.total_tokens * 100).toFixed(0)
+                            : 0;
+                        const cachedColor = cachedPercent < 30 ? '#f48771' : cachedPercent < 60 ? '#dcdcaa' : '#4ec9b0';
+                        return `
                         <div class="agent-item">
                             <div>
                                 <div class="agent-name">${agent.agent_name}</div>
@@ -493,15 +515,19 @@
                                 <div class="agent-stat-label">Accumulated</div>
                             </div>
                             <div>
-                                <div class="agent-stat">${agent.total_cached_tokens?.toLocaleString() || '0'}</div>
+                                <div class="agent-stat">${(agent.total_cached_tokens || 0).toLocaleString()}</div>
                                 <div class="agent-stat-label">Cached</div>
                             </div>
                             <div>
-                                <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div>
+                                <div class="agent-stat" style="color: ${cachedColor}">${cachedPercent}%</div>
+                                <div class="agent-stat-label">Cache %</div>
+                            </div>
+                            <div>
+                                <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div></div>
                                 <div class="agent-stat-label">Peak Tokens</div>
                             </div>
                         </div>
-                    `).join('');
+                    `}).join('');
                 } else {
                     agentList.innerHTML = '<div class="no-data">No agent data available</div>';
                 }
