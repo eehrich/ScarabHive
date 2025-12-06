@@ -442,11 +442,12 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 )
                 logger.debug(f"Saved sub-agent session {sub_session_id} with messages")
 
-                # Update metadata after execution
+                # Update metadata after execution (including message_count)
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=sub_session_id,
-                    last_used=datetime.now(UTC).isoformat()
+                    last_used=datetime.now(UTC).isoformat(),
+                    message_count=2  # user + assistant for initial creation
                 )
 
                 if status:
@@ -611,15 +612,17 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 )
                 logger.debug(f"Saved continued sub-agent session {instance_id} with messages")
 
-                # Update last_used timestamp
+                # Get current message count (after the new exchange)
+                messages = sub_session_data.get("messages", [])
+                new_message_count = len(messages) + 2  # existing + user + assistant
+
+                # Update last_used timestamp and message_count in parent metadata
                 await manager.update_sub_session_metadata(
                     parent_session_id=parent_session_id,
                     sub_session_id=instance_id,
-                    last_used=datetime.now(UTC).isoformat()
+                    last_used=datetime.now(UTC).isoformat(),
+                    message_count=new_message_count
                 )
-
-                # Get current message count
-                messages = sub_session_data.get("messages", [])
 
                 if status:
                     await status.end(f"Continued sub-agent {instance_id} (type: {agent_type})")

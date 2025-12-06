@@ -140,34 +140,30 @@ class SubAgentContextInjector:
             return self._build_text_context(sub_agents)
 
     def _build_markdown_context(self, sub_agents: List[Dict[str, Any]]) -> str:
-        """Build Markdown-formatted context message."""
+        """Build compact Markdown table context message."""
         lines = ["## Active Sub-Agents\n"]
-        lines.append("You have access to the following persistent sub-agent instances:\n")
-
+        
+        # Table header
+        lines.append("| Type | Instance ID | Status | Msgs | Task |")
+        lines.append("|------|-------------|--------|------|------|")
+        
         for sub_agent in sub_agents:
             instance_id = sub_agent.get("instance_id", "unknown")
             agent_type = sub_agent.get("agent_type", "unknown")
             status = sub_agent.get("status", "unknown")
             message_count = sub_agent.get("message_count", 0)
-            task_summary = sub_agent.get("task_summary", "No description")
-            last_used = sub_agent.get("last_used")
-
-            # Format last used time
-            last_used_str = self._format_time_ago(last_used) if last_used else "Never"
-
-            # Build sub-agent section
-            lines.append(f"**{agent_type}** (`{instance_id}`)")
-            lines.append(f"- Status: {status} | Messages: {message_count} | Last used: {last_used_str}")
-            lines.append(f"- Task: {task_summary}")
-
-            # Add tool state if enabled
-            if self.show_tool_state and sub_agent.get("tools_used"):
-                tools_str = ", ".join(sub_agent["tools_used"])
-                lines.append(f"- Tools: {tools_str}")
-
-            lines.append("")  # Blank line between sub-agents
-
-        lines.append("**Continue sub-agent:** `manage_sub_agent(operation='continue', instance_id='...', message='...')`")
+            task_summary = sub_agent.get("task_summary", "")
+            
+            # Truncate task to 50 chars for table readability
+            if len(task_summary) > 50:
+                task_summary = task_summary[:47] + "..."
+            # Escape pipe characters in task
+            task_summary = task_summary.replace("|", "\\|")
+            
+            lines.append(f"| {agent_type} | `{instance_id}` | {status} | {message_count} | {task_summary} |")
+        
+        lines.append("")
+        lines.append("Continue: `manage_sub_agent(operation='continue', instance_id='...', message='...')`")
 
         return "\n".join(lines)
 
