@@ -90,8 +90,8 @@
             border-radius: 4px;
             padding: 12px;
             display: grid;
-            grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr;
-            gap: 15px;
+            grid-template-columns: minmax(120px, 1.5fr) repeat(5, minmax(60px, 1fr));
+            gap: 10px;
             align-items: center;
         }
 
@@ -523,7 +523,7 @@
                                 <div class="agent-stat-label">Cache %</div>
                             </div>
                             <div>
-                                <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div></div>
+                                <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div>
                                 <div class="agent-stat-label">Peak Tokens</div>
                             </div>
                         </div>
