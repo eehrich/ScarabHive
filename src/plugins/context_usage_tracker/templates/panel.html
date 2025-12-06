@@ -229,8 +229,16 @@
                 <div class="stat-value" id="current-tokens">-</div>
             </div>
             <div class="stat-card">
+                <div class="stat-label">Current Cached</div>
+                <div class="stat-value" id="current-cached" style="color: #9cdcfe;">-</div>
+            </div>
+            <div class="stat-card">
                 <div class="stat-label">Accumulated Tokens</div>
                 <div class="stat-value" id="accumulated-tokens">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Accumulated Cached</div>
+                <div class="stat-value" id="accumulated-cached" style="color: #9cdcfe;">-</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Usage %</div>
@@ -354,6 +362,14 @@
                         backgroundColor: 'rgba(206, 145, 120, 0.1)',
                         tension: 0.4,
                         fill: true
+                    }, {
+                        label: 'Cached Tokens',
+                        data: [],
+                        borderColor: '#9cdcfe',
+                        backgroundColor: 'rgba(156, 220, 254, 0.1)',
+                        tension: 0.4,
+                        fill: false,
+                        borderDash: [5, 5]
                     }]
                 },
                 options: {
@@ -396,6 +412,7 @@
             tokenChart.data.datasets[0].data = data.map(item => item.total_tokens);
             tokenChart.data.datasets[1].data = data.map(item => item.prompt_tokens);
             tokenChart.data.datasets[2].data = data.map(item => item.completion_tokens);
+            tokenChart.data.datasets[3].data = data.map(item => item.cached_tokens || 0);
             tokenChart.update('none');
         }
 
@@ -414,12 +431,20 @@
                 const latest = usageData.latest || {};
                 document.getElementById('current-tokens').textContent =
                     latest.total_tokens?.toLocaleString() || '0';
+                document.getElementById('current-cached').textContent =
+                    (latest.cached_tokens || 0).toLocaleString();
                 document.getElementById('usage-percent').textContent =
                     latest.usage_percentage ? latest.usage_percentage.toFixed(1) + '%' : '0%';
                 document.getElementById('message-count').textContent =
                     latest.message_count || '0';
 
                 const agents = usageData.agents || {};
+
+                // Calculate accumulated cached tokens from all agents
+                const accumulatedCachedTokens = Object.values(agents).reduce((sum, agent) =>
+                    sum + (agent.total_cached_tokens || 0), 0);
+                document.getElementById('accumulated-cached').textContent =
+                    accumulatedCachedTokens.toLocaleString();
 
                 // Get history data (already filtered by backend if sessionId provided)
                 const historyResp = await fetch(historyUrl);
@@ -453,6 +478,10 @@
                                 <div class="agent-stat-label">Accumulated</div>
                             </div>
                             <div>
+                                <div class="agent-stat">${agent.total_cached_tokens?.toLocaleString() || '0'}</div>
+                                <div class="agent-stat-label">Cached</div>
+                            </div>
+                            <div>
                                 <div class="agent-stat">${agent.peak_tokens?.toLocaleString()}</div>
                                 <div class="agent-stat-label">Peak Tokens</div>
                             </div>
@@ -469,12 +498,13 @@
                     const historyList = document.getElementById('history-list');
                     historyList.innerHTML = history.slice().reverse().slice(0, 50).map(item => {
                         const date = new Date(item.timestamp * 1000);
+                        const cachedInfo = item.cached_tokens > 0 ? ` (${item.cached_tokens} cached)` : '';
                         return `
                             <div class="history-item">
                                 <div class="history-time">${date.toLocaleString()}</div>
                                 <div>
                                     <strong>${item.agent_name}</strong> -
-                                    ${item.total_tokens} tokens
+                                    ${item.total_tokens} tokens${cachedInfo}
                                     (${item.usage_percentage.toFixed(1)}%) -
                                     ${item.message_count} messages
                                 </div>

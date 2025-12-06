@@ -449,11 +449,24 @@ class OpenAIAsyncClient(LLMClient):
             if hasattr(resp, 'usage'):
                 logger.debug("OpenAI response usage value: %s", resp.usage)
                 if resp.usage:
-                    result["usage"] = {
+                    usage_data = {
                         "prompt_tokens": resp.usage.prompt_tokens,
                         "completion_tokens": resp.usage.completion_tokens,
                         "total_tokens": resp.usage.total_tokens
                     }
+                    # Extract prompt_tokens_details (cached_tokens) if available
+                    if hasattr(resp.usage, 'prompt_tokens_details') and resp.usage.prompt_tokens_details:
+                        ptd = resp.usage.prompt_tokens_details
+                        usage_data["prompt_tokens_details"] = {
+                            "cached_tokens": getattr(ptd, 'cached_tokens', 0) or 0
+                        }
+                    # Extract completion_tokens_details if available
+                    if hasattr(resp.usage, 'completion_tokens_details') and resp.usage.completion_tokens_details:
+                        ctd = resp.usage.completion_tokens_details
+                        usage_data["completion_tokens_details"] = {
+                            "reasoning_tokens": getattr(ctd, 'reasoning_tokens', 0) or 0
+                        }
+                    result["usage"] = usage_data
                     logger.debug("Added usage to result: %s", result["usage"])
                 else:
                     logger.debug("OpenAI response usage is None")
@@ -676,6 +689,18 @@ class OpenAIAsyncClient(LLMClient):
                             "completion_tokens": chunk.usage.completion_tokens,
                             "total_tokens": chunk.usage.total_tokens
                         }
+                        # Extract prompt_tokens_details (cached_tokens) if available
+                        if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
+                            ptd = chunk.usage.prompt_tokens_details
+                            accumulated_usage["prompt_tokens_details"] = {
+                                "cached_tokens": getattr(ptd, 'cached_tokens', 0) or 0
+                            }
+                        # Extract completion_tokens_details if available
+                        if hasattr(chunk.usage, 'completion_tokens_details') and chunk.usage.completion_tokens_details:
+                            ctd = chunk.usage.completion_tokens_details
+                            accumulated_usage["completion_tokens_details"] = {
+                                "reasoning_tokens": getattr(ctd, 'reasoning_tokens', 0) or 0
+                            }
 
                     choices = chunk.choices if hasattr(chunk, 'choices') else []
                     if not choices:

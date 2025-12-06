@@ -118,6 +118,24 @@ async def test_track_llm_usage(plugin, mock_hook_context):
 
 
 @pytest.mark.asyncio
+async def test_track_llm_usage_with_cached_tokens(plugin, mock_hook_context):
+    """Test that LLM usage tracking extracts cached tokens from prompt_tokens_details."""
+    # Add cached_tokens to the mock response (OpenAI format)
+    mock_hook_context.llm_response["usage"]["prompt_tokens_details"] = {
+        "cached_tokens": 75  # 75 of 100 prompt tokens were cached
+    }
+    
+    result = await plugin.hooks_plugin.track_usage(mock_hook_context)
+    
+    assert result.success is True
+    
+    latest = plugin.tracker.get_latest()
+    assert latest is not None
+    assert latest["cached_tokens"] == 75
+    assert latest["prompt_tokens"] == 100  # Total prompt tokens still 100
+
+
+@pytest.mark.asyncio
 async def test_track_llm_usage_no_response(plugin):
     """Test that hook handles missing LLM response gracefully."""
     context = Mock(spec=HookContext)
@@ -335,4 +353,81 @@ async def test_track_llm_usage_respects_llm_override(plugin):
     # Verify usage percentage is calculated correctly with 20k, not 100k
     expected_percentage = (1096 / 20000) * 100  # ~5.48%
     assert abs(latest["usage_percentage"] - expected_percentage) < 0.01
+
+
+def test_tracker_cached_tokens(plugin):
+    """Test that tracker properly records and accumulates cached_tokens."""
+    # Record usage with cached tokens
+    plugin.tracker.record_usage(
+        agent_id="test-agent",
+        agent_name="Test Agent",
+        session_id="session-1",
+        total_tokens=500,
+        prompt_tokens=300,
+        completion_tokens=200,
+        message_count=3,
+        context_window=8000,
+        cached_tokens=150,  # 150 of the 300 prompt tokens were cached
+    )
+    plugin.tracker.record_usage(
+        agent_id="test-agent",
+        agent_name="Test Agent",
+        session_id="session-1",
+        total_tokens=800,
+        prompt_tokens=500,
+        completion_tokens=300,
+        message_count=5,
+        context_window=8000,
+        cached_tokens=200,  # 200 of the 500 prompt tokens were cached
+    )
+
+    # Check latest snapshot has cached_tokens
+    latest = plugin.tracker.get_latest()
+    assert latest is not None
+    assert latest["cached_tokens"] == 200
+
+    # Check agent stats accumulates cached_tokens
+    agent_stats = plugin.tracker.get_agent_stats()
+    assert "test-agent" in agent_stats
+    stats = agent_stats["test-agent"]
+    assert stats["total_cached_tokens"] == 350  # 150 + 200
+
+    # Check history contains cached_tokens
+    history = plugin.tracker.get_history()
+    assert len(history) == 2
+    assert history[0]["cached_tokens"] == 150
+    assert history[1]["cached_tokens"] == 200
+
+
+def test_tracker_cached_tokens_persistence(tmp_path):
+    """Test that cached_tokens persists and loads correctly."""
+    storage_path = tmp_path / "tracker_cached.json"
+
+    # Create tracker and record data with cached tokens
+    tracker1 = UsageTracker(max_history=10, storage_path=storage_path)
+    tracker1.record_usage(
+        agent_id="agent-1",
+        agent_name="Agent 1",
+        session_id="session-1",
+        total_tokens=500,
+        prompt_tokens=300,
+        completion_tokens=200,
+        message_count=3,
+        context_window=8000,
+        cached_tokens=100,
+    )
+
+    # Verify data in first tracker
+    assert tracker1.get_latest()["cached_tokens"] == 100
+    assert tracker1.get_agent_stats()["agent-1"]["total_cached_tokens"] == 100
+
+    # Create new tracker instance (simulates restart)
+    tracker2 = UsageTracker(max_history=10, storage_path=storage_path)
+
+    # Verify cached_tokens was loaded
+    latest2 = tracker2.get_latest()
+    assert latest2["cached_tokens"] == 100
+    
+    agent_stats2 = tracker2.get_agent_stats()
+    assert agent_stats2["agent-1"]["total_cached_tokens"] == 100
 

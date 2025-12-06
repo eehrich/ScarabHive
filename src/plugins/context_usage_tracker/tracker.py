@@ -25,6 +25,7 @@ class ContextUsageSnapshot:
     message_count: int
     context_window: int
     usage_percentage: float
+    cached_tokens: int = 0  # OpenAI cached prompt tokens
 
 
 @dataclass
@@ -37,6 +38,7 @@ class AgentStats:
     peak_tokens: int = 0
     message_count: int = 0
     last_activity: float = 0
+    total_cached_tokens: int = 0  # Accumulated cached tokens
 
 
 class UsageTracker:
@@ -62,7 +64,8 @@ class UsageTracker:
                     prompt_tokens: int = 0,
                     completion_tokens: int = 0,
                     message_count: int = 0,
-                    context_window: int = 0) -> None:
+                    context_window: int = 0,
+                    cached_tokens: int = 0) -> None:
         """Record a context usage snapshot."""
 
         usage_percentage = (total_tokens / context_window * 100) if context_window > 0 else 0
@@ -78,6 +81,7 @@ class UsageTracker:
             message_count=message_count,
             context_window=context_window,
             usage_percentage=usage_percentage,
+            cached_tokens=cached_tokens,
         )
 
         with self._lock:
@@ -97,6 +101,7 @@ class UsageTracker:
             stats.peak_tokens = max(stats.peak_tokens, total_tokens)
             stats.message_count = message_count
             stats.last_activity = time.time()
+            stats.total_cached_tokens += cached_tokens
 
         self._save_to_disk()
 
@@ -154,6 +159,7 @@ class UsageTracker:
                             "peak_tokens": 0,
                             "message_count": snapshot.message_count,
                             "last_activity": snapshot.timestamp,
+                            "total_cached_tokens": 0,
                         }
 
                     stats = session_agent_stats[agent_id]
@@ -162,6 +168,7 @@ class UsageTracker:
                     stats["peak_tokens"] = max(stats["peak_tokens"], snapshot.total_tokens)
                     stats["message_count"] = snapshot.message_count
                     stats["last_activity"] = max(stats["last_activity"], snapshot.timestamp)
+                    stats["total_cached_tokens"] += getattr(snapshot, 'cached_tokens', 0)
 
                 return session_agent_stats
 
@@ -175,6 +182,7 @@ class UsageTracker:
                     "peak_tokens": stats.peak_tokens,
                     "message_count": stats.message_count,
                     "last_activity": stats.last_activity,
+                    "total_cached_tokens": stats.total_cached_tokens,
                 }
                 for agent_id, stats in self._agent_stats.items()
             }
@@ -240,7 +248,8 @@ class UsageTracker:
                         "total_tokens": stats.total_tokens,
                         "peak_tokens": stats.peak_tokens,
                         "message_count": stats.message_count,
-                        "last_activity": stats.last_activity
+                        "last_activity": stats.last_activity,
+                        "total_cached_tokens": stats.total_cached_tokens
                     }
                     for agent_id, stats in self._agent_stats.items()
                 }
@@ -287,18 +296,25 @@ class UsageTracker:
                         total_tokens=stats_dict.get("total_tokens", 0),
                         peak_tokens=stats_dict.get("peak_tokens", 0),
                         message_count=stats_dict.get("message_count", 0),
-                        last_activity=stats_dict.get("last_activity", 0)
+                        last_activity=stats_dict.get("last_activity", 0),
+                        total_cached_tokens=stats_dict.get("total_cached_tokens", 0)
                     )
 
                 # Load history snapshots
                 history_data = data.get("history", [])
                 for snapshot_dict in history_data:
+                    # Handle missing cached_tokens field for backwards compatibility
+                    if "cached_tokens" not in snapshot_dict:
+                        snapshot_dict["cached_tokens"] = 0
                     snapshot = ContextUsageSnapshot(**snapshot_dict)
                     self._history.append(snapshot)
 
                 # Load latest snapshot
                 latest_data = data.get("latest")
                 if latest_data:
+                    # Handle missing cached_tokens field for backwards compatibility
+                    if "cached_tokens" not in latest_data:
+                        latest_data["cached_tokens"] = 0
                     self._latest_snapshot = ContextUsageSnapshot(**latest_data)
 
             logger.info(

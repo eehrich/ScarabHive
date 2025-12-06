@@ -59,6 +59,13 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
             total_tokens = usage.get("total_tokens", 0)
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
+            
+            # Extract cached_tokens from OpenAI's prompt_tokens_details
+            # Format: {"prompt_tokens_details": {"cached_tokens": 1920}}
+            cached_tokens = 0
+            prompt_tokens_details = usage.get("prompt_tokens_details")
+            if prompt_tokens_details and isinstance(prompt_tokens_details, dict):
+                cached_tokens = prompt_tokens_details.get("cached_tokens", 0)
 
             # Get context_window from the actual LLM instance (respects llm_override)
             # instead of resolving from agent_config (which uses agent's default profile)
@@ -95,6 +102,7 @@ class ContextUsageTrackerHooks(SchemaBasedPluginHook):
                 completion_tokens=completion_tokens,
                 message_count=message_count,
                 context_window=context_window,
+                cached_tokens=cached_tokens,
             )
 
             return HookResult(success=True, modified=False, context=context)
