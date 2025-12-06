@@ -429,10 +429,16 @@
                 const usageData = await usageResp.json();
 
                 const latest = usageData.latest || {};
+                const currentTotalTokens = latest.total_tokens || 0;
+                const currentCachedTokens = latest.cached_tokens || 0;
+                const currentCachedPercent = currentTotalTokens > 0
+                    ? ((currentCachedTokens / currentTotalTokens) * 100).toFixed(0)
+                    : 0;
+
                 document.getElementById('current-tokens').textContent =
-                    latest.total_tokens?.toLocaleString() || '0';
+                    currentTotalTokens.toLocaleString();
                 document.getElementById('current-cached').textContent =
-                    (latest.cached_tokens || 0).toLocaleString();
+                    `${currentCachedTokens.toLocaleString()} (${currentCachedPercent}%)`;
                 document.getElementById('usage-percent').textContent =
                     latest.usage_percentage ? latest.usage_percentage.toFixed(1) + '%' : '0%';
                 document.getElementById('message-count').textContent =
@@ -443,8 +449,13 @@
                 // Calculate accumulated cached tokens from all agents
                 const accumulatedCachedTokens = Object.values(agents).reduce((sum, agent) =>
                     sum + (agent.total_cached_tokens || 0), 0);
+                const accumulatedTotalTokens = Object.values(agents).reduce((sum, agent) =>
+                    sum + (agent.total_tokens || 0), 0);
+                const accumulatedCachedPercent = accumulatedTotalTokens > 0
+                    ? ((accumulatedCachedTokens / accumulatedTotalTokens) * 100).toFixed(0)
+                    : 0;
                 document.getElementById('accumulated-cached').textContent =
-                    accumulatedCachedTokens.toLocaleString();
+                    `${accumulatedCachedTokens.toLocaleString()} (${accumulatedCachedPercent}%)`;
 
                 // Get history data (already filtered by backend if sessionId provided)
                 const historyResp = await fetch(historyUrl);
