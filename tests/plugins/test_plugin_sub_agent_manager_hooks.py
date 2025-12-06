@@ -243,13 +243,12 @@ async def test_markdown_context_format(injector, mock_manager):
     
     injected_content = context.messages[0].content
     
-    # Check Markdown formatting
+    # Check Markdown table formatting (minimal: Type, Instance ID, Status)
     assert "## Active Sub-Agents" in injected_content
-    assert "**test_agent** (`test_sub_001`)" in injected_content
-    assert "- Status: active" in injected_content
-    assert "Messages: 5" in injected_content
-    assert "- Task: Test task" in injected_content
-    assert "- Tools: tool1, tool2" in injected_content
+    assert "| Type | Instance ID | Status |" in injected_content
+    assert "test_agent" in injected_content
+    assert "`test_sub_001`" in injected_content
+    assert "active" in injected_content
     assert "manage_sub_agent" in injected_content  # Continue example
 
 

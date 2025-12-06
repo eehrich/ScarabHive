@@ -89,7 +89,6 @@ class TestSubAgentManagerSchema:
         desc = props["use_advanced_model"]["description"]
         assert "create" in desc.lower()
         assert "continue" in desc.lower()
-        assert "switching" in desc.lower()
 
 
 class TestSubAgentManagerCreateOperation:

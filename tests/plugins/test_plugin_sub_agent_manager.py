@@ -265,4 +265,3 @@ async def test_hook_updates_when_sub_agents_change(mock_manager, injector):
     updated_injection = injections[0]
     assert "research_agent" in updated_injection.content
     assert "code_agent" not in updated_injection.content, "Removed sub-agent should not appear"
-    assert "Updated research task" in updated_injection.content

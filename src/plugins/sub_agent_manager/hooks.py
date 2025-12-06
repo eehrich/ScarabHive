@@ -143,17 +143,16 @@ class SubAgentContextInjector:
         """Build compact Markdown table context message."""
         lines = ["## Active Sub-Agents\n"]
         
-        # Table header - no Task column to preserve token caching
-        lines.append("| Type | Instance ID | Status | Msgs |")
-        lines.append("|------|-------------|--------|------|")
+        # Table header - minimal columns to preserve token caching
+        lines.append("| Type | Instance ID | Status |")
+        lines.append("|------|-------------|--------|")
         
         for sub_agent in sub_agents:
             instance_id = sub_agent.get("instance_id", "unknown")
             agent_type = sub_agent.get("agent_type", "unknown")
             status = sub_agent.get("status", "unknown")
-            message_count = sub_agent.get("message_count", 0)
             
-            lines.append(f"| {agent_type} | `{instance_id}` | {status} | {message_count} |")
+            lines.append(f"| {agent_type} | `{instance_id}` | {status} |")
         
         lines.append("")
         lines.append("Continue: `manage_sub_agent(operation='continue', instance_id='...', message='...')`")
