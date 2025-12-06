@@ -301,11 +301,28 @@ class ToolExecutionManager:
         if request_id:
             return await self._execute_with_cancellation(tc, tool_name, openai_tool_name, params, step, request_id)
         else:
-            # Legacy execution without cancellation
-            if "." in tool_name:
-                return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id)
-            else:
-                return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+            # Legacy execution without cancellation - wrap in try/except for robustness
+            try:
+                if "." in tool_name:
+                    return await self._execute_external_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+                else:
+                    return await self._execute_plugin_tool(tc, tool_name, openai_tool_name, params, step, request_id)
+            except Exception as e:
+                # Handle unknown tool errors gracefully - return error message instead of crashing
+                logger.exception("Tool %s execution failed (legacy path): %s", tool_name, e)
+                tool_call_id = tc.get("id") or f"error-call-{int(time.time()*1000)}"
+                error_content = json.dumps({
+                    "error": f"Tool '{tool_name}' execution failed: {str(e)}",
+                    "type": type(e).__name__
+                })
+                message = ChatMessage(
+                    role="tool",
+                    tool_call_id=tool_call_id,
+                    name=sanitize_for_llm(openai_tool_name),
+                    content=sanitize_json_content(error_content),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                return message, [{"type": "tool_error", "tool": tool_name, "error": str(e)}], []
 
     async def _execute_with_cancellation(self, tc: Dict, tool_name: str, openai_tool_name: str,
                                        params: Dict[str, Any], step: int, request_id: str) -> tuple[ChatMessage, List[Dict], List[Dict]]:
