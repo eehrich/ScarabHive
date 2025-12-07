@@ -204,7 +204,8 @@ class SubAgentManager:
             "last_used": datetime.now(UTC).isoformat(),
             "status": "active",
             "task_summary": task_summary[:100],
-            "depth": child_depth
+            "depth": child_depth,
+            "message_count": 0  # Will be updated after first LLM interaction
         }
 
         await session_manager.save_session(parent_data)

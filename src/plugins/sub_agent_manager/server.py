@@ -690,7 +690,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "last_used": metadata["last_used"],
                     "task_summary": metadata["task_summary"],
                     "current_activity": metadata.get("current_activity"),
-                    "activity_updated_at": metadata.get("activity_updated_at")
+                    "activity_updated_at": metadata.get("activity_updated_at"),
+                    "message_count": metadata.get("message_count", 0)
                 })
 
             # Emit descriptive status
