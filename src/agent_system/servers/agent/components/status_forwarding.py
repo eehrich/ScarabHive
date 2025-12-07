@@ -79,10 +79,22 @@ class StatusEventForwarder:
                     # Wait for status event (blocking, no CPU spin)
                     # This efficiently blocks until an event arrives or task is cancelled
                     status_event = await self.status_queue.get()
-                    logger.debug("Forwarding received status event: %s [%s]: %s (seq: %s)",
-                               status_event.server, status_event.phase, status_event.message,
-                               status_event.meta.get('_seq') if status_event.meta else 'no-seq')
-                    logger.debug("Forwarding status event: %s [%s]: %s", status_event.server, status_event.phase, status_event.message)
+                    
+                    # Filter events to only forward those matching our request_id
+                    # We subscribed without filter to catch suffixed IDs (e.g., "abc123_001")
+                    # but we need to filter here to avoid forwarding events from other requests
+                    event_request_id = status_event.request_id
+                    if self.request_id and event_request_id:
+                        # Check if event belongs to this request (exact match or prefix match for suffixed IDs)
+                        if not (event_request_id == self.request_id or 
+                                event_request_id.startswith(f"{self.request_id}_")):
+                            # Event doesn't belong to this request, skip it
+                            logger.debug("Skipping status event for different request: %s (our request: %s)",
+                                       event_request_id, self.request_id)
+                            continue
+                    
+                    logger.debug("Forwarding status event: %s [%s]: %s", 
+                               status_event.server, status_event.phase, status_event.message)
                     # Convert status event to SSE format
                     status_sse_event = {
                         "type": "status",
