@@ -6,12 +6,91 @@ import logging
 from pathlib import Path
 import sys
 import types
-from typing import Any, Callable, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List, Set
 import yaml
 
 from ..mcp.base import MCPServer
 
 logger = logging.getLogger(__name__)
+
+# Cache for already-registered shared modules per package
+_registered_shared_modules: Dict[str, Set[str]] = {}
+
+
+def _register_shared_modules(path: Path, pkg_name: str) -> None:
+    """Register shared modules (non-plugin directories with __init__.py) in the package.
+    
+    This allows relative imports like "from ..writer_core import X" to work
+    when loading plugins via importlib.
+    
+    Args:
+        path: The plugin directory path (e.g., src/plugins_writer)
+        pkg_name: The package name (e.g., "plugins_writer")
+    """
+    global _registered_shared_modules
+    
+    # Don't skip if we've processed this package before - module state may be stale
+    # (e.g., from previous test runs or partial imports)
+    
+    if pkg_name not in _registered_shared_modules:
+        _registered_shared_modules[pkg_name] = set()
+    
+    for subdir in path.iterdir():
+        if not subdir.is_dir():
+            continue
+        
+        # Skip if it has plugin.py (it's a plugin, not a shared module)
+        if (subdir / "plugin.py").exists():
+            continue
+        
+        # Check if it has __init__.py (it's a Python package)
+        init_file = subdir / "__init__.py"
+        if not init_file.exists():
+            continue
+        
+        # This is a shared module (like writer_core)
+        module_name = f"{pkg_name}.{subdir.name}"
+        
+        # Check if module is already properly loaded (has the key exports)
+        existing_mod = sys.modules.get(module_name)
+        if existing_mod is not None:
+            # If module was loaded normally (e.g., by pytest imports), it should work
+            # Only reload if it looks like an incomplete placeholder
+            if hasattr(existing_mod, 'ensure_database') or hasattr(existing_mod, 'WriteKeyMixin'):
+                _registered_shared_modules[pkg_name].add(subdir.name)
+                continue  # Already properly loaded
+        
+        try:
+            # First, register all Python files in the shared module as submodules
+            # This is needed for relative imports within __init__.py to work
+            for py_file in subdir.glob("*.py"):
+                if py_file.name == "__init__.py":
+                    continue
+                submod_name = f"{module_name}.{py_file.stem}"
+                if submod_name not in sys.modules:
+                    submod_spec = importlib.util.spec_from_file_location(
+                        submod_name, str(py_file)
+                    )
+                    if submod_spec and submod_spec.loader:
+                        submod = importlib.util.module_from_spec(submod_spec)
+                        sys.modules[submod_name] = submod
+                        submod_spec.loader.exec_module(submod)
+            
+            # Now create and execute the main module's __init__.py
+            sub_mod = types.ModuleType(module_name)
+            sub_mod.__path__ = [str(subdir.resolve())]
+            sub_mod.__file__ = str(init_file)
+            sys.modules[module_name] = sub_mod
+            
+            # Execute the __init__.py to set up exports
+            spec = importlib.util.spec_from_file_location(module_name, str(init_file))
+            if spec and spec.loader:
+                spec.loader.exec_module(sub_mod)
+            
+            _registered_shared_modules[pkg_name].add(subdir.name)
+            logger.debug(f"Registered shared module: {module_name}")
+        except Exception as e:
+            logger.debug(f"Failed to register shared module {module_name}: {e}")
 
 
 def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
@@ -50,14 +129,21 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., MCPServer]]:
         if not plugin_file.exists():
             logger.debug(f"Skipping plugin {d.name}: entrypoint file {plugin_file} not found")
             continue
-            
-        pkg_name = "plugins"
+        
+        # Use the parent directory name as the package name
+        # This supports both src/plugins/ and src/plugins_writer/
+        pkg_name = path.name  # e.g., "plugins" or "plugins_writer"
         plugin_pkg = f"{pkg_name}.{d.name}"
         try:
             if pkg_name not in sys.modules:
                 pkg_mod = types.ModuleType(pkg_name)
                 pkg_mod.__path__ = [str(path.resolve())]
                 sys.modules[pkg_name] = pkg_mod
+            
+            # Also register shared modules (like writer_core) that plugins depend on
+            # This allows relative imports like "from ..writer_core import X" to work
+            _register_shared_modules(path, pkg_name)
+            
             if plugin_pkg not in sys.modules:
                 sub_mod = types.ModuleType(plugin_pkg)
                 sub_mod.__path__ = [str(d.resolve())]

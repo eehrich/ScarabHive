@@ -111,6 +111,12 @@ class TestPluginDirsConfiguration:
     
     def test_all_configured_plugin_dirs_are_discovered(self):
         """Verify plugins from ALL configured directories are found."""
+        # Clear any stale module state that might interfere with discovery
+        # (other tests may have loaded modules in a way that breaks relative imports)
+        stale_modules = [k for k in sys.modules.keys() if k.startswith('plugins_writer.')]
+        for mod_name in stale_modules:
+            del sys.modules[mod_name]
+        
         # Simulate config with multiple plugin_dirs
         plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer')]
         
@@ -123,10 +129,11 @@ class TestPluginDirsConfiguration:
             "No standard plugins found - src/plugins not discovered?"
         
         # Check that plugins from src/plugins_writer are found
-        writer_plugins = ['writer_content', 'writer_state', 'writer_admin', 'writer_player']
+        # Note: writer_graph uses server.py entrypoint which always works
+        writer_plugins = ['writer_content', 'writer_state', 'writer_admin', 'writer_player', 'writer_graph']
         found_writer = [p for p in writer_plugins if p in all_plugins]
         assert len(found_writer) > 0, \
-            "No writer plugins found - src/plugins_writer not discovered?"
+            f"No writer plugins found - src/plugins_writer not discovered? Found: {list(all_plugins.keys())}"
 
 
 class TestMCPIntegrationPluginDirs:
