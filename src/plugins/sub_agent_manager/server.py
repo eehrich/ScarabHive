@@ -679,11 +679,24 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 include_completed=include_completed
             )
 
-            # Format response
+            # Format response - load actual message count from each sub-session
+            session_manager = session_service.session_manager
+            user_id = manager._extract_user_id(parent_session_id)
+            
             instances = []
             for metadata in sub_sessions:
+                instance_id = metadata["instance_id"]
+                
+                # Get actual message count from sub-session (not from cached metadata)
+                try:
+                    sub_session_data = await session_manager.load_session(user_id, instance_id)
+                    actual_message_count = len(sub_session_data.get("messages", []))
+                except Exception:
+                    # Fallback to metadata if sub-session can't be loaded
+                    actual_message_count = metadata.get("message_count", 0)
+                
                 instances.append({
-                    "instance_id": metadata["instance_id"],
+                    "instance_id": instance_id,
                     "agent_type": metadata["agent_type"],
                     "status": metadata["status"],
                     "created_at": metadata["created_at"],
@@ -691,7 +704,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     "task_summary": metadata["task_summary"],
                     "current_activity": metadata.get("current_activity"),
                     "activity_updated_at": metadata.get("activity_updated_at"),
-                    "message_count": metadata.get("message_count", 0)
+                    "message_count": actual_message_count
                 })
 
             # Emit descriptive status
