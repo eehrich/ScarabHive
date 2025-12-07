@@ -311,6 +311,101 @@
             padding: 40px;
             color: #858585;
         }
+        
+        /* Multi-select dropdown styles */
+        .filter-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        
+        .filter-dropdown-btn {
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 160px;
+            justify-content: space-between;
+        }
+        
+        .filter-dropdown-btn:hover {
+            border-color: #0e639c;
+        }
+        
+        .filter-dropdown-content {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            min-width: 180px;
+            z-index: 100;
+            margin-top: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        
+        .filter-dropdown-content.show {
+            display: block;
+        }
+        
+        .filter-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background 0.15s;
+            font-size: 13px;
+        }
+        
+        .filter-option:hover {
+            background: #2d2d30;
+        }
+        
+        .filter-option input[type="checkbox"] {
+            accent-color: #0e639c;
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        
+        .filter-divider {
+            height: 1px;
+            background: #3e3e42;
+            margin: 4px 0;
+        }
+        
+        .filter-actions {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            border-top: 1px solid #3e3e42;
+        }
+        
+        .filter-actions button {
+            flex: 1;
+            font-size: 11px;
+            padding: 4px 8px;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+        
+        .status-badge.running { background: #ff9800; }
+        .status-badge.active { background: #16825d; }
+        .status-badge.archived { background: #6e6e6e; }
     </style>
 </head>
 <body>
@@ -319,12 +414,38 @@
         
         <div class="controls">
             <input type="text" id="sessionIdInput" placeholder="Session ID (required)" />
-            <select id="statusFilter" onchange="loadAgents()">
-                <option value="all">All Status</option>
-                <option value="running">Running Only</option>
-                <option value="active">Active Only</option>
-                <option value="archived">Archived Only</option>
-            </select>
+            
+            <!-- Multi-select status filter -->
+            <div class="filter-dropdown" id="statusFilterDropdown">
+                <button type="button" class="filter-dropdown-btn" onclick="toggleFilterDropdown()">
+                    <span id="filterLabel">Filter Status</span>
+                    <span>▼</span>
+                </button>
+                <div class="filter-dropdown-content" id="filterDropdownContent">
+                    <label class="filter-option">
+                        <input type="checkbox" id="filterRunning" checked onchange="updateFilter()">
+                        <span class="status-badge running"></span>
+                        <span>🏃 Running</span>
+                    </label>
+                    <label class="filter-option">
+                        <input type="checkbox" id="filterActive" checked onchange="updateFilter()">
+                        <span class="status-badge active"></span>
+                        <span>✅ Active (idle)</span>
+                    </label>
+                    <label class="filter-option">
+                        <input type="checkbox" id="filterArchived" onchange="updateFilter()">
+                        <span class="status-badge archived"></span>
+                        <span>📦 Archived</span>
+                    </label>
+                    <div class="filter-divider"></div>
+                    <div class="filter-actions">
+                        <button type="button" onclick="selectAllFilters()">All</button>
+                        <button type="button" onclick="selectNoneFilters()">None</button>
+                        <button type="button" onclick="selectActiveOnly()">Active Only</button>
+                    </div>
+                </div>
+            </div>
+            
             <button onclick="loadAgents()">🔄 Refresh</button>
             <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="background: #3c3c3c;">⏸️ Auto-Refresh: OFF</button>
         </div>
@@ -381,10 +502,91 @@
                 e.preventDefault();
             }
         }, { passive: false });
+        
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const dropdown = document.getElementById('statusFilterDropdown');
+            if (dropdown && !dropdown.contains(e.target)) {
+                document.getElementById('filterDropdownContent').classList.remove('show');
+            }
+        });
 
         const API_BASE = `/plugins/{{ plugin_name }}`;
         let currentSessionId = '';
         let autoRefreshInterval = null;
+        
+        // Filter dropdown functions
+        function toggleFilterDropdown() {
+            const content = document.getElementById('filterDropdownContent');
+            content.classList.toggle('show');
+        }
+        
+        function getSelectedFilters() {
+            const runningEl = document.getElementById('filterRunning');
+            const activeEl = document.getElementById('filterActive');
+            const archivedEl = document.getElementById('filterArchived');
+            
+            // Defensive: if elements don't exist, use defaults
+            return {
+                running: runningEl ? runningEl.checked : true,
+                active: activeEl ? activeEl.checked : true,
+                archived: archivedEl ? archivedEl.checked : false
+            };
+        }
+        
+        function updateFilterLabel() {
+            const filters = getSelectedFilters();
+            const selected = [];
+            if (filters.running) selected.push('Running');
+            if (filters.active) selected.push('Active');
+            if (filters.archived) selected.push('Archived');
+            
+            const label = document.getElementById('filterLabel');
+            if (!label) return;  // Element not found
+            
+            if (selected.length === 0) {
+                label.textContent = 'No Filter';
+            } else if (selected.length === 3) {
+                label.textContent = 'All Status';
+            } else {
+                label.textContent = selected.join(', ');
+            }
+        }
+        
+        function updateFilter() {
+            updateFilterLabel();
+            loadAgents();
+        }
+        
+        function selectAllFilters() {
+            const r = document.getElementById('filterRunning');
+            const a = document.getElementById('filterActive');
+            const ar = document.getElementById('filterArchived');
+            if (r) r.checked = true;
+            if (a) a.checked = true;
+            if (ar) ar.checked = true;
+            updateFilter();
+        }
+        
+        function selectNoneFilters() {
+            const r = document.getElementById('filterRunning');
+            const a = document.getElementById('filterActive');
+            const ar = document.getElementById('filterArchived');
+            if (r) r.checked = false;
+            if (a) a.checked = false;
+            if (ar) ar.checked = false;
+            updateFilter();
+        }
+        
+        function selectActiveOnly() {
+            const r = document.getElementById('filterRunning');
+            const a = document.getElementById('filterActive');
+            const ar = document.getElementById('filterArchived');
+            if (r) r.checked = true;
+            if (a) a.checked = true;
+            if (ar) ar.checked = false;
+            updateFilter();
+        }
         
         // Get session ID from parent window if available (iframe context)
         function getSessionId() {
@@ -410,21 +612,23 @@
                 return;
             }
             
-            const statusFilter = document.getElementById('statusFilter').value;
-            // Always load all agents, then filter client-side for running status
-            const includeArchived = (statusFilter === 'all' || statusFilter === 'archived');
+            const filters = getSelectedFilters();
+            console.log('loadAgents - filters:', filters);  // Debug
+            // Load archived agents only if archived filter is selected
+            const includeArchived = filters.archived;
             const agentsList = document.getElementById('agentsList');
             agentsList.innerHTML = '<div class="loading">Loading...</div>';
             
             try {
                 const response = await fetch(`${API_BASE}/sub-agents?session_id=${currentSessionId}&include_completed=${includeArchived}`);
                 const data = await response.json();
+                console.log('loadAgents - API response:', data);  // Debug
                 
                 if (data.error) {
                     throw new Error(data.error);
                 }
                 
-                renderAgents(data.instances || [], statusFilter);
+                renderAgents(data.instances || [], filters);
                 await loadStats();
             } catch (error) {
                 console.error('Error loading agents:', error);
@@ -492,35 +696,11 @@
             return date.toLocaleDateString();
         }
         
-        function renderAgents(agents, statusFilter = 'all') {
+        function renderAgents(agents, filters = {running: true, active: true, archived: false}) {
             const agentsList = document.getElementById('agentsList');
             
-            // Apply status filter
-            let filteredAgents = agents;
-            if (statusFilter !== 'all') {
-                filteredAgents = agents.filter(agent => {
-                    const activityLower = (agent.current_activity || '').toLowerCase();
-                    const isRunning = agent.current_activity && 
-                                     agent.status === 'active' && 
-                                     !activityLower.includes('completed') &&
-                                     !activityLower.includes('cancelled') &&
-                                     !activityLower.includes('failed') &&
-                                     !activityLower.includes('error');
-                    
-                    if (statusFilter === 'running') return isRunning;
-                    if (statusFilter === 'active') return agent.status === 'active' && !isRunning;
-                    if (statusFilter === 'archived') return agent.status === 'archived';
-                    return true;
-                });
-            }
-            
-            if (!filteredAgents.length) {
-                agentsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div>No sub-agents found</div></div>';
-                return;
-            }
-            
-            agentsList.innerHTML = filteredAgents.map(agent => {
-                // Agent is running only if it has activity AND it's not in a terminal state
+            // Helper to determine agent's effective status
+            function getAgentEffectiveStatus(agent) {
                 const activityLower = (agent.current_activity || '').toLowerCase();
                 const isRunning = agent.current_activity && 
                                  agent.status === 'active' && 
@@ -528,6 +708,37 @@
                                  !activityLower.includes('cancelled') &&
                                  !activityLower.includes('failed') &&
                                  !activityLower.includes('error');
+                
+                if (isRunning) return 'running';
+                if (agent.status === 'archived') return 'archived';
+                return 'active';  // active but not running (idle)
+            }
+            
+            // Apply multi-select status filter
+            let filteredAgents = agents.filter(agent => {
+                const effectiveStatus = getAgentEffectiveStatus(agent);
+                
+                if (effectiveStatus === 'running' && filters.running) return true;
+                if (effectiveStatus === 'active' && filters.active) return true;
+                if (effectiveStatus === 'archived' && filters.archived) return true;
+                
+                return false;
+            });
+            
+            if (!filteredAgents.length) {
+                const filterText = [];
+                if (filters.running) filterText.push('running');
+                if (filters.active) filterText.push('active');
+                if (filters.archived) filterText.push('archived');
+                const filterStr = filterText.length > 0 ? filterText.join('/') : 'selected';
+                agentsList.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📦</div><div>No ${filterStr} sub-agents found</div></div>`;
+                return;
+            }
+            
+            agentsList.innerHTML = filteredAgents.map(agent => {
+                // Agent is running only if it has activity AND it's not in a terminal state
+                const effectiveStatus = getAgentEffectiveStatus(agent);
+                const isRunning = effectiveStatus === 'running';
                 const statusClass = isRunning ? 'running' : agent.status;
                 const statusText = isRunning ? '🔄 RUNNING' : agent.status.toUpperCase();
                 
@@ -667,15 +878,13 @@
             const sessionId = getSessionId();
             if (sessionId) {
                 // Hide session ID input if we got it from parent
-                const inputContainer = document.querySelector('.controls');
                 const sessionInput = document.getElementById('sessionIdInput');
                 if (sessionInput && sessionInput.value === '') {
                     sessionInput.style.display = 'none';
-                    const label = inputContainer.querySelector('label');
-                    if (label) label.style.display = 'none';
                 }
                 
-                // Auto-load agents
+                // Initialize filter label and load agents
+                updateFilterLabel();
                 loadAgents();
             }
         });
