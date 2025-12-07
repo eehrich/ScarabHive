@@ -215,8 +215,11 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
         Dispatches to operation-specific handlers based on params["operation"].
         """
         operation = params.get("operation")
+        status = params.get("_status")  # Get status early for error reporting
 
         if not operation:
+            if status:
+                await status.error("Missing 'operation' parameter")
             return {"status": "error", "error": "Missing 'operation' parameter"}
 
         try:
@@ -239,9 +242,13 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
             elif operation == "delete":
                 return await self._handle_delete(params)
             else:
+                if status:
+                    await status.error(f"Unknown operation: {operation}")
                 return {"status": "error", "error": f"Unknown operation: {operation}"}
         except Exception as e:
             logger.exception(f"Error in manage_sub_agent ({operation}): {e}")
+            if status:
+                await status.error(f"Sub-agent error ({operation}): {str(e)}")
             return {"status": "error", "error": str(e)}
 
     async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -982,6 +989,7 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
     async def _handle_poll(self, params: dict[str, Any]) -> dict[str, Any]:
         """Handle 'poll' - check status of running sub-agent without blocking."""
+        status = params.get("_status")
         try:
             instance_id = params["instance_id"]
 
@@ -991,6 +999,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                     job = self._async_jobs[instance_id].copy()
                     # Remove task_handle from response (not serializable)
                     job.pop("task_handle", None)
+                    if status:
+                        await status.end(f"Poll: {instance_id} status={job.get('status', 'unknown')}")
                     return job
 
             # Not in async jobs - check if sub-agent exists in DB (may be completed or never ran async)
@@ -1002,6 +1012,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 parent_session_id = params.get("_session_id")
                 
                 if not parent_session_id:
+                    if status:
+                        await status.error(f"Poll: {instance_id} not found (no session context)")
                     return {"status": "error", "error": "Instance not found in async tracking and no session context available"}
 
                 # Check if sub-agent exists
@@ -1012,6 +1024,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 if matching:
                     # Sub-agent exists but not in async tracking - it's completed
                     sub_agent = matching[0]
+                    if status:
+                        await status.end(f"Poll: {instance_id} completed")
                     return {
                         "instance_id": instance_id,
                         "status": "completed",
@@ -1022,17 +1036,25 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         "message": "Use 'info' operation to see conversation history"
                     }
                 else:
+                    if status:
+                        await status.error(f"Poll: {instance_id} not found")
                     return {"status": "error", "error": f"Instance '{instance_id}' not found"}
             except RuntimeError:
                 # No registry available - can only check async tracking (already done above)
+                if status:
+                    await status.error(f"Poll: {instance_id} not found in async tracking")
                 return {"status": "error", "error": f"Instance '{instance_id}' not found in async tracking"}
 
         except KeyError as e:
             # Missing required parameter
             logger.error(f"Missing parameter in poll: {e}")
+            if status:
+                await status.error(f"Poll: Missing parameter {e}")
             return {"status": "error", "error": f"Missing required parameter: {e}"}
         except Exception as e:
             logger.exception(f"Unexpected error in poll: {e}")
+            if status:
+                await status.error(f"Poll error: {e}")
             return {"status": "error", "error": str(e)}
 
     async def _handle_wait(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1075,6 +1097,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                         if poll_result.get("status") in ["completed", "error"]:
                             return poll_result
                         # Still not found - instance was deleted
+                        if status_ctx:
+                            await status_ctx.error(f"Instance {instance_id} disappeared during wait")
                         return {"status": "error", "error": f"Instance '{instance_id}' disappeared during wait"}
 
                     job = self._async_jobs[instance_id]
@@ -1095,6 +1119,8 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
                 # Check timeout
                 elapsed = asyncio.get_event_loop().time() - start_time
                 if elapsed > timeout:
+                    if status_ctx:
+                        await status_ctx.error(f"Timeout waiting for {instance_id} ({elapsed:.1f}s)")
                     return {
                         "status": "error",
                         "error": f"Timeout waiting for instance '{instance_id}' (waited {elapsed:.1f}s)"
@@ -1179,12 +1205,16 @@ class SubAgentManagerServer(SchemaBasedMCPServer, PluginHook):
 
             async with self._async_jobs_lock:
                 if instance_id not in self._async_jobs:
+                    if status_ctx:
+                        await status_ctx.error(f"Cancel: {instance_id} not found or not running async")
                     return {"status": "error", "error": f"Instance '{instance_id}' not found or not running async"}
 
                 job = self._async_jobs[instance_id]
                 task_handle = job.get("task_handle")
 
                 if job["status"] not in ["pending", "running"]:
+                    if status_ctx:
+                        await status_ctx.error(f"Cancel: {instance_id} has status '{job['status']}'")
                     return {
                         "status": "error",
                         "error": f"Cannot cancel instance with status '{job['status']}'"
