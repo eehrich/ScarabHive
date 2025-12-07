@@ -1506,12 +1506,32 @@ class Agent(MCPServer):
                 # Add tool results to the results dictionary
                 results["calls"].extend(tool_results)
 
-                # Add tool messages to conversation
-                messages.extend(tool_messages)
-                # Only extend context.messages if it's a different list
-                if context.messages is not messages:
-                    context.messages.extend(tool_messages)
-                # IMPORTANT: If lists were different, they're now out of sync. Re-sync them.
+                # CRITICAL: Check if a tool (e.g., context_summarizer) modified the session messages
+                # If so, we need to use the modified messages instead of extending the old ones
+                # This handles the case where context_summarizer_summarize tool was called
+                #
+                # The session tracker stores conversation messages WITHOUT system message.
+                # So we compare: stored_messages vs (messages - system_message)
+                stored_messages = self._session_tracker.get_session_messages(session_id)
+                local_conversation = [m for m in messages if m.role != "system"]
+                
+                if stored_messages and len(stored_messages) < len(local_conversation):
+                    # Session was summarized! The stored messages are shorter than our current list
+                    logger.info(
+                        f"Detected summarized session: stored {len(stored_messages)} msgs, "
+                        f"local conversation {len(local_conversation)} msgs. Using summarized messages."
+                    )
+                    # Reconstruct messages: system + summarized conversation + tool results
+                    system_msg = messages[0] if messages and messages[0].role == "system" else None
+                    if system_msg:
+                        messages = [system_msg] + list(stored_messages) + tool_messages
+                    else:
+                        messages = list(stored_messages) + tool_messages
+                else:
+                    # Normal case: just extend with tool messages
+                    messages.extend(tool_messages)
+
+                # Sync context.messages with the updated messages list
                 context.messages = messages
 
                 # Update tracked messages after tool execution
