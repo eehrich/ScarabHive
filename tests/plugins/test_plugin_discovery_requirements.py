@@ -129,8 +129,8 @@ class TestPluginDirsConfiguration:
             "No standard plugins found - src/plugins not discovered?"
         
         # Check that plugins from src/plugins_writer are found
-        # Note: writer_graph uses server.py entrypoint which always works
-        writer_plugins = ['writer_content', 'writer_state', 'writer_admin', 'writer_player', 'writer_graph']
+        # Note: v3 architecture replaced writer_graph/writer_state with writer_path
+        writer_plugins = ['writer_content', 'writer_path', 'writer_admin', 'writer_player', 'writer_core', 'writer_search', 'writer_review']
         found_writer = [p for p in writer_plugins if p in all_plugins]
         assert len(found_writer) > 0, \
             f"No writer plugins found - src/plugins_writer not discovered? Found: {list(all_plugins.keys())}"
