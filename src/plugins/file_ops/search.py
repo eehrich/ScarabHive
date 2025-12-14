@@ -12,62 +12,10 @@ from typing import Any, Dict, List, Optional, Set
 
 import aiofiles
 
+from agent_system.utils.vector_store import VectorStore, VectorStoreError
+
 
 logger = logging.getLogger(__name__)
-
-
-# Cache for available ONNX providers (computed once)
-_AVAILABLE_ONNX_PROVIDERS: Optional[List[str]] = None
-
-
-def _get_available_onnx_providers() -> List[str]:
-    """Detect available ONNX Runtime execution providers.
-    
-    Returns providers in priority order: GPU first, then CPU fallback.
-    Caches result for performance.
-    """
-    global _AVAILABLE_ONNX_PROVIDERS
-    if _AVAILABLE_ONNX_PROVIDERS is not None:
-        return _AVAILABLE_ONNX_PROVIDERS
-
-    try:
-        import onnxruntime as ort
-        available = ort.get_available_providers()
-        logger.debug(f"Available ONNX providers: {available}")
-        
-        # Prefer GPU providers, fallback to CPU
-        preferred_order = [
-            "CUDAExecutionProvider",
-            "ROCMExecutionProvider", 
-            "DmlExecutionProvider",  # DirectML for Windows
-            "CoreMLExecutionProvider",  # Apple Silicon
-            "AzureExecutionProvider",
-            "CPUExecutionProvider"
-        ]
-        
-        # Filter to only available providers, maintaining priority order
-        _AVAILABLE_ONNX_PROVIDERS = [p for p in preferred_order if p in available]
-        
-        # If none of our preferred are available, use whatever is available
-        if not _AVAILABLE_ONNX_PROVIDERS:
-            _AVAILABLE_ONNX_PROVIDERS = available if available else ["CPUExecutionProvider"]
-        
-        logger.info(f"Selected ONNX providers for file_ops: {_AVAILABLE_ONNX_PROVIDERS}")
-        return _AVAILABLE_ONNX_PROVIDERS
-        
-    except ImportError:
-        logger.warning("onnxruntime not installed, using CPU provider only")
-        _AVAILABLE_ONNX_PROVIDERS = ["CPUExecutionProvider"]
-        return _AVAILABLE_ONNX_PROVIDERS
-    except Exception as e:
-        logger.warning(f"Failed to detect ONNX providers: {e}, using CPU")
-        _AVAILABLE_ONNX_PROVIDERS = ["CPUExecutionProvider"]
-        return _AVAILABLE_ONNX_PROVIDERS
-
-
-class ChromaDBError(Exception):
-    """ChromaDB-related errors."""
-    pass
 
 
 class FileSearchEngine:
@@ -94,10 +42,10 @@ class FileSearchEngine:
         self._index_lock = asyncio.Lock()
         self._indexing_started = False
 
-        # ChromaDB for semantic search
-        self.chroma_client = None
-        self.chroma_collection = None
-        self._chroma_initialized = False
+        # VectorStore for semantic search (replaces direct ChromaDB usage)
+        self._vector_store: Optional[VectorStore] = None
+        self._vector_store_initialized = False
+        self._collection_name = "file_ops_semantic_index"
 
     def _ensure_indexing_started(self):
         """Start background indexing if not already started and if enabled."""
@@ -112,83 +60,36 @@ class FileSearchEngine:
                 # No event loop running yet, will be started on first use
                 pass
 
-    def _init_chromadb(self):
-        """Initialize ChromaDB persistent client for semantic search."""
-        if self._chroma_initialized:
+    def _init_vector_store(self):
+        """Initialize VectorStore for semantic search."""
+        if self._vector_store_initialized:
             return
 
         try:
-            logger.info("FILE_OPS: Initializing ChromaDB...")
-            import chromadb
-            from chromadb.config import Settings
-            from chromadb.utils import embedding_functions
-
-            # Get ChromaDB path from config or use default
-            chroma_path = Path(self.config.get(
-                "chroma_db_path",
+            logger.info("FILE_OPS: Initializing VectorStore for semantic search...")
+            
+            # Get persist path from config or use default
+            persist_path = Path(self.config.get(
+                "chroma_db_path",  # Keep old config name for compatibility
                 "data/cache/file_ops_chromadb"
             ))
-            chroma_path.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"FILE_OPS: ChromaDB path: {chroma_path}")
-
-            logger.debug("FILE_OPS: Creating ChromaDB client...")
-            self.chroma_client = chromadb.PersistentClient(
-                path=str(chroma_path),
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
-                )
-            )
-            logger.debug("FILE_OPS: ChromaDB client created")
-
-            # Create embedding function with dynamically detected providers
-            logger.debug("FILE_OPS: Creating embedding function...")
-            available_providers = _get_available_onnx_providers()
-            embedding_fn = embedding_functions.ONNXMiniLM_L6_V2(
-                preferred_providers=available_providers
-            )
-            logger.debug("FILE_OPS: Embedding function created")
-
-            # Get or create collection (don't delete existing unless force_recreate is set)
-            collection_name = "file_ops_semantic_index"
-            force_recreate = self.config.get("force_recreate_chroma_collection", False)
-
-            if force_recreate:
-                logger.info(f"FILE_OPS: Force recreating ChromaDB collection '{collection_name}'")
-                try:
-                    self.chroma_client.delete_collection(collection_name)
-                    logger.debug("FILE_OPS: Deleted existing collection")
-                except Exception as delete_error:
-                    logger.debug(f"FILE_OPS: No existing collection to delete: {delete_error}")
-
-            # Try to get existing collection first
-            try:
-                logger.debug(f"FILE_OPS: Attempting to get existing collection '{collection_name}'...")
-                self.chroma_collection = self.chroma_client.get_collection(
-                    name=collection_name,
-                    embedding_function=embedding_fn
-                )
-                logger.info(f"FILE_OPS: Using existing ChromaDB collection '{collection_name}'")
-            except Exception:
-                # Collection doesn't exist, create it
-                logger.debug(f"FILE_OPS: Creating new collection '{collection_name}'...")
-                try:
-                    self.chroma_collection = self.chroma_client.create_collection(
-                        name=collection_name,
-                        metadata={"description": "Semantic index for file content"},
-                        embedding_function=embedding_fn
-                    )
-                    logger.info(f"FILE_OPS: Created new ChromaDB collection '{collection_name}'")
-                except Exception as create_error:
-                    logger.error(f"FILE_OPS: Failed to create ChromaDB collection: {create_error}")
-                    raise ChromaDBError(f"Collection creation failed: {create_error}")
-
-            self._chroma_initialized = True
-            logger.info(f"FILE_OPS: ChromaDB initialized successfully at {chroma_path}")
+            
+            self._vector_store = VectorStore(persist_path=persist_path)
+            
+            # Force recreate collection if configured
+            if self.config.get("force_recreate_chroma_collection", False):
+                logger.info(f"FILE_OPS: Force recreating collection '{self._collection_name}'")
+                self._vector_store.delete_collection(self._collection_name)
+            
+            # Initialize collection
+            self._vector_store.get_or_create_collection(self._collection_name)
+            
+            self._vector_store_initialized = True
+            logger.info(f"FILE_OPS: VectorStore initialized (backend: {self._vector_store.backend})")
 
         except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}", exc_info=True)
-            raise ChromaDBError(f"ChromaDB initialization failed: {e}")
+            logger.error(f"Failed to initialize VectorStore: {e}", exc_info=True)
+            raise VectorStoreError(f"VectorStore initialization failed: {e}")
 
     async def _background_indexer(self):
         """Periodically rebuild index in background."""
@@ -246,35 +147,35 @@ class FileSearchEngine:
         files_updated = 0
         files_removed = 0
 
-        # ChromaDB semantic index
+        # Semantic search via VectorStore
         semantic_enabled = self.config.get("enable_semantic_search", True)
         if semantic_enabled and not incremental:
             # Only clear for full rebuild
-            logger.info("FILE_OPS: Initializing ChromaDB for semantic search...")
+            logger.info("FILE_OPS: Initializing VectorStore for semantic search...")
             if status_callback:
-                await status_callback("Initializing ChromaDB for semantic search...")
-            self._init_chromadb()
+                await status_callback("Initializing VectorStore for semantic search...")
+            self._init_vector_store()
             # Clear existing semantic index (delete all documents)
-            if self.chroma_collection:
+            if self._vector_store:
                 try:
-                    # Get all IDs and delete them
-                    existing_data = self.chroma_collection.get()
-                    if existing_data and existing_data["ids"]:
-                        logger.info(f"FILE_OPS: Clearing {len(existing_data['ids'])} existing documents from index...")
+                    count = self._vector_store.count(self._collection_name)
+                    if count > 0:
+                        logger.info(f"FILE_OPS: Clearing {count} existing documents from index...")
                         if status_callback:
-                            await status_callback(f"Clearing {len(existing_data['ids'])} existing documents from index...")
-                        self.chroma_collection.delete(ids=existing_data["ids"])
-                        logger.info(f"FILE_OPS: Cleared {len(existing_data['ids'])} existing documents from ChromaDB")
+                            await status_callback(f"Clearing {count} existing documents from index...")
+                        self._vector_store.delete_collection(self._collection_name)
+                        self._vector_store.get_or_create_collection(self._collection_name)
+                        logger.info(f"FILE_OPS: Cleared {count} existing documents from VectorStore")
                 except Exception as e:
-                    logger.warning(f"FILE_OPS: Failed to clear ChromaDB collection: {e}")
+                    logger.warning(f"FILE_OPS: Failed to clear VectorStore collection: {e}")
         elif semantic_enabled and incremental:
             # For incremental: just init, don't clear
-            self._init_chromadb()
+            self._init_vector_store()
 
         max_size_kb = self.config.get("max_file_size_for_indexing_kb", 1024)
         max_size = max_size_kb * 1024
 
-        # Collect file data for batch ChromaDB insertion
+        # Collect file data for batch VectorStore insertion
         chroma_docs = []
         chroma_ids = []
         chroma_metadatas = []
@@ -325,8 +226,8 @@ class FileSearchEngine:
                                 # Remove key if list is empty
                                 if not new_file_index[filename_lower]:
                                     del new_file_index[filename_lower]
-                            # Mark for ChromaDB deletion
-                            if semantic_enabled and self.chroma_collection:
+                            # Mark for VectorStore deletion
+                            if semantic_enabled and self._vector_store:
                                 chroma_ids_to_delete.append(str(file_path))
 
                     # Index filename
@@ -341,8 +242,8 @@ class FileSearchEngine:
                         content = await self._index_file_content(file_path, new_text_index)
                         new_mtimes[file_path] = current_mtime
 
-                        # Add to ChromaDB batch if semantic search enabled
-                        if semantic_enabled and content and self.chroma_collection:
+                        # Add to VectorStore batch if semantic search enabled
+                        if semantic_enabled and content and self._vector_store:
                             chroma_docs.append(content)
                             chroma_ids.append(str(file_path))
                             chroma_metadatas.append({
@@ -389,20 +290,20 @@ class FileSearchEngine:
                         # Remove key if list is empty
                         if not new_file_index[filename_lower]:
                             del new_file_index[filename_lower]
-                    # Mark for ChromaDB deletion
-                    if semantic_enabled and self.chroma_collection:
+                    # Mark for VectorStore deletion
+                    if semantic_enabled and self._vector_store:
                         chroma_ids_to_delete.append(str(file_path))
 
-        # Delete old ChromaDB entries for updated/deleted files
-        if semantic_enabled and chroma_ids_to_delete and self.chroma_collection:
+        # Delete old VectorStore entries for updated/deleted files
+        if semantic_enabled and chroma_ids_to_delete and self._vector_store:
             try:
-                logger.info(f"FILE_OPS: Removing {len(chroma_ids_to_delete)} updated/deleted files from ChromaDB...")
-                self.chroma_collection.delete(ids=chroma_ids_to_delete)
+                logger.info(f"FILE_OPS: Removing {len(chroma_ids_to_delete)} updated/deleted files from VectorStore...")
+                self._vector_store.delete(self._collection_name, ids=chroma_ids_to_delete)
             except Exception as e:
-                logger.warning(f"FILE_OPS: Failed to delete from ChromaDB: {e}")
+                logger.warning(f"FILE_OPS: Failed to delete from VectorStore: {e}")
 
-        # Batch insert into ChromaDB (with chunking to avoid batch size limits)
-        if semantic_enabled and chroma_docs and self.chroma_collection:
+        # Batch insert into VectorStore (with chunking to avoid batch size limits)
+        if semantic_enabled and chroma_docs and self._vector_store:
             logger.info(f"FILE_OPS: Creating embeddings for {len(chroma_docs)} files...")
             logger.info("FILE_OPS: This may take several minutes depending on file count and GPU availability")
             if status_callback:
@@ -410,13 +311,14 @@ class FileSearchEngine:
             try:
                 embedding_start = time.time()
 
-                # ChromaDB has a max batch size (~5000), so chunk large inserts
+                # VectorStore handles batching internally, but we chunk large inserts
                 BATCH_SIZE = 5000
                 for i in range(0, len(chroma_docs), BATCH_SIZE):
                     batch_end = min(i + BATCH_SIZE, len(chroma_docs))
                     logger.info(f"FILE_OPS: Processing embedding batch {i//BATCH_SIZE + 1} ({i+1}-{batch_end} of {len(chroma_docs)})")
 
-                    self.chroma_collection.add(
+                    self._vector_store.add(
+                        collection=self._collection_name,
                         ids=chroma_ids[i:batch_end],
                         documents=chroma_docs[i:batch_end],
                         metadatas=chroma_metadatas[i:batch_end]
@@ -425,7 +327,7 @@ class FileSearchEngine:
                 embedding_time = time.time() - embedding_start
                 logger.info(f"FILE_OPS: Created embeddings for {len(chroma_docs)} files in {embedding_time:.2f}s")
             except Exception as e:
-                logger.error(f"FILE_OPS: ChromaDB batch insert failed: {e}", exc_info=True)
+                logger.error(f"FILE_OPS: VectorStore batch insert failed: {e}", exc_info=True)
 
         # Atomic swap under lock
         async with self._index_lock:
@@ -823,28 +725,29 @@ class FileSearchEngine:
             Dict with status, results (list of matches with similarity scores)
         """
         try:
-            # Initialize ChromaDB if needed
-            if not self._chroma_initialized:
-                self._init_chromadb()
+            # Initialize VectorStore if needed
+            if not self._vector_store_initialized:
+                self._init_vector_store()
 
             # Ensure index is fresh before semantic search
             await self._ensure_index_fresh()
 
-            if not self.chroma_collection:
+            if not self._vector_store:
                 return {
                     "status": "error",
-                    "error": "Semantic search not available (ChromaDB not initialized)",
-                    "error_type": "ChromaDBNotInitialized"
+                    "error": "Semantic search not available (VectorStore not initialized)",
+                    "error_type": "VectorStoreNotInitialized"
                 }
 
             # Perform semantic search
-            results = self.chroma_collection.query(
-                query_texts=[query],
+            results = self._vector_store.query(
+                collection=self._collection_name,
+                query_text=query,
                 n_results=max_results,
                 include=["documents", "metadatas", "distances"]
             )
 
-            if not results["ids"] or len(results["ids"][0]) == 0:
+            if not results["ids"] or len(results["ids"]) == 0:
                 return {
                     "status": "success",
                     "query": query,
@@ -853,12 +756,16 @@ class FileSearchEngine:
                     "message": "No files found"
                 }
 
-            # Format results
+            # Format results - VectorStore returns flat lists, not nested
+            ids = results.get("ids", [])
+            metadatas = results.get("metadatas", [])
+            distances = results.get("distances", [])
+            
             matches = []
-            for i in range(len(results["ids"][0])):
-                file_path = results["ids"][0][i]
-                metadata = results["metadatas"][0][i]
-                distance = results["distances"][0][i]
+            for i in range(len(ids)):
+                file_path = ids[i]
+                metadata = metadatas[i] if i < len(metadatas) else {}
+                distance = distances[i] if i < len(distances) else 0.0
 
                 # Filter by pattern if specified
                 if filter_pattern:
@@ -891,12 +798,12 @@ class FileSearchEngine:
                 "max_results": max_results
             }
 
-        except ChromaDBError as e:
-            logger.error(f"ChromaDB semantic search error: {e}", exc_info=True)
+        except VectorStoreError as e:
+            logger.error(f"VectorStore semantic search error: {e}", exc_info=True)
             return {
                 "status": "error",
                 "error": str(e),
-                "error_type": "ChromaDBError"
+                "error_type": "VectorStoreError"
             }
         except Exception as e:
             logger.error(f"Semantic search error: {e}", exc_info=True)
@@ -918,16 +825,14 @@ class FileSearchEngine:
             self._indexing_task = None
             self._indexing_started = False
 
-        # Cleanup ChromaDB resources
-        if self.chroma_client:
+        # Cleanup VectorStore resources
+        if self._vector_store:
             try:
-                # ChromaDB PersistentClient doesn't have explicit close,
-                # but we should clear references
-                self.chroma_collection = None
-                self.chroma_client = None
-                self._chroma_initialized = False
+                self._vector_store.close()
+                self._vector_store = None
+                self._vector_store_initialized = False
             except Exception as e:
-                logger.debug(f"ChromaDB cleanup warning: {e}")
+                logger.debug(f"VectorStore cleanup warning: {e}")
 
         # Clear in-memory indexes
         self.text_index.clear()
