@@ -875,20 +875,7 @@
               }
             }
             
-            // Show tool calls in thinking section if any
-            if (data.assistant && data.assistant.tool_calls && data.assistant.tool_calls.length > 0) {
-              if (!blk.think) {
-                blk.think = document.createElement('pre');
-                blk.think.className = 'think-section';
-                blk.r.appendChild(blk.think);
-              }
-              blk.think.textContent = `🧠 Step ${data.step || '?'}: Planning to call ${data.assistant.tool_calls.length} tool(s):\n`;
-              data.assistant.tool_calls.forEach((tc, i) => {
-                const func = tc.function || {};
-                blk.think.textContent += `  ${i + 1}. ${func.name || 'unknown'}\n`;
-              });
-              showSection(blk.think);
-            }
+            // Note: Tool calls display is handled by the 'thinking' event to avoid duplicates
             break;
           case 'thinking':
             // Complete thinking event (also handles backward compatibility)

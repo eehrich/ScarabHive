@@ -650,6 +650,112 @@ class TestGeminiClientStreaming:
             assert final_events[0]["usage"]["total_tokens"] == 15
 
     @pytest.mark.asyncio
+    async def test_streaming_thought_parts_stream_as_content_delta(self):
+        """Gemini thought summaries (thought=true) stream as content_delta for unified response display."""
+        gemini_client = GeminiClient(
+            model="gemini-3-pro-preview",
+            api_key="test-api-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            include_thoughts=True,
+        )
+
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def mock_aiter_lines():
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            {"text": "Thinking...", "thought": True},
+                            {"text": "Hi"}
+                        ]
+                    }
+                }]
+            })
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+
+            mock_client_class.return_value = mock_client
+
+            events = []
+            async for event in gemini_client.chat_tools_streaming(messages, tools):
+                events.append(event)
+
+            # Both thought and content are streamed as content_delta
+            content_deltas = [e for e in events if e["type"] == "content_delta"]
+            assert len(content_deltas) == 2
+            assert content_deltas[0]["delta"] == "Thinking..."
+            assert content_deltas[1]["delta"] == "Hi"
+
+            final_events = [e for e in events if e["type"] == "final"]
+            assert len(final_events) == 1
+            # Thoughts and content combined in assistant response
+            assert final_events[0]["assistant"]["content"] == "Thinking...Hi"
+
+    @pytest.mark.asyncio
+    async def test_streaming_payload_includes_thinking_config_when_enabled(self):
+        """When include_thoughts is enabled, request payload must include thinkingConfig.includeThoughts."""
+        gemini_client = GeminiClient(
+            model="gemini-3-pro-preview",
+            api_key="test-api-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            include_thoughts=True,
+        )
+
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def mock_aiter_lines():
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {"parts": [{"text": "Hi"}]}
+                }]
+            })
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+
+            mock_client_class.return_value = mock_client
+
+            events = []
+            async for event in gemini_client.chat_tools_streaming(messages, tools):
+                events.append(event)
+
+            # Verify payload passed into httpx stream
+            assert mock_client.stream.call_count == 1
+            _, kwargs = mock_client.stream.call_args
+            assert "json" in kwargs
+            assert kwargs["json"].get("thinkingConfig") == {"includeThoughts": True}
+
+    @pytest.mark.asyncio
     async def test_streaming_http_error(self, gemini_client):
         """Test handling of HTTP errors."""
         messages = [ChatMessage(role="user", content="Hello")]

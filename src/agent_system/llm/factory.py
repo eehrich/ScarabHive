@@ -58,6 +58,9 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
         "capabilities": model_config.capabilities,  # Pass Pydantic model directly
     }
 
+    if model_config.include_thoughts is not None:
+        llm_kwargs["include_thoughts"] = model_config.include_thoughts
+
     # Add HTTPX timeouts if available (model-specific overrides or system defaults)
     httpx_timeouts = None
     if model_config.httpx_timeouts:
@@ -108,6 +111,15 @@ class LLMFactory:
         except Exception:
             ssl_verify = None
 
+        make_kwargs = {
+            "ssl_verify": ssl_verify,
+            "httpx_timeouts": llm_kwargs.get("httpx_timeouts"),
+            "capabilities": llm_kwargs.get("capabilities"),
+        }
+
+        if llm_kwargs.get("include_thoughts") is not None:
+            make_kwargs["include_thoughts"] = llm_kwargs.get("include_thoughts")
+
         return make_llm(
             llm_kwargs["provider"],
             llm_kwargs["model"],
@@ -116,7 +128,5 @@ class LLMFactory:
             llm_kwargs["context_window"],
             llm_kwargs["ollama_mode"],
             llm_kwargs["request_timeout"],
-            ssl_verify=ssl_verify,
-            httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-            capabilities=llm_kwargs.get("capabilities"),
+            **make_kwargs,
         )

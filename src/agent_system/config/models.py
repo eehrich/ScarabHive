@@ -71,6 +71,7 @@ class LLMModelConfig(BaseModel):
     parallel_tool_calls: bool = True  # Enable parallel tool execution (set to False if LLM concatenates tool names/args)
     httpx_timeouts: Optional[HTTPXTimeoutConfig] = None  # HTTPX-specific timeout overrides
     capabilities: Optional[ModelCapabilitiesConfig] = None  # Model capabilities
+    include_thoughts: Optional[bool] = None  # Enable thinking/reasoning output (Gemini, DeepSeek)
 
 
 class LLMProfile(BaseModel):

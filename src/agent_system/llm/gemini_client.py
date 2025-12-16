@@ -239,6 +239,12 @@ class GeminiClient(LLMClient):
                 "functionDeclarations": function_declarations
             }]
 
+        # Optional: enable Gemini "thought summaries" in responses.
+        # When enabled, Gemini may emit parts with {"text": "...", "thought": true}.
+        # We stream those as type=thinking_delta (server maps them to reasoning_delta).
+        if self.extra_params.get("include_thoughts") is True:
+            payload["thinkingConfig"] = {"includeThoughts": True}
+
         url = f"{self.base_url}/models/{self.model}:streamGenerateContent?key={self.api_key}&alt=sse"
 
         # Accumulators
@@ -292,11 +298,14 @@ class GeminiClient(LLMClient):
                             logger.debug(f"Gemini chunk: {len(parts)} parts")
 
                             for part in parts:
-                                # Handle text
+                                # Handle text (both normal content and thought summaries)
                                 if "text" in part:
                                     text_delta = part["text"]
+
+                                    # Stream everything as content_delta (thoughts + content)
+                                    # so the frontend shows it all in the response section
                                     accumulated_content.append(text_delta)
-                                    logger.debug(f"Gemini text delta: {len(text_delta)} chars")
+                                    logger.debug(f"Gemini text delta: {len(text_delta)} chars (thought={part.get('thought', False)})")
                                     yield {
                                         "type": "content_delta",
                                         "delta": text_delta,
