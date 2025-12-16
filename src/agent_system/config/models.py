@@ -61,7 +61,7 @@ class ModelCapabilitiesConfig(BaseModel):
 
 class LLMModelConfig(BaseModel):
     """Individual LLM model configuration"""
-    provider: Literal["ollama", "openai", "openai_httpx", "gemini", "mock"] = "ollama"
+    provider: Literal["ollama", "openai", "openai_httpx", "gemini", "gemini_sdk", "mock"] = "ollama"
     model: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # Custom base URL for API endpoint (e.g. Gemini, Ollama, OpenAI-compatible)

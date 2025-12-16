@@ -54,16 +54,26 @@ _patch_session_manager()
 # tests that don't explicitly provide an encoding.
 _original_popen = subprocess.Popen
 
-def _popen_force_utf8(*args, **kwargs):
-    # If text mode is requested but no encoding provided, force UTF-8 with replace
-    if kwargs.get("text") and "encoding" not in kwargs:
-        kwargs["encoding"] = "utf-8"
-        kwargs.setdefault("errors", "replace")
-    return _original_popen(*args, **kwargs)
+class _PopenForceUtf8:
+    """Wrapper around subprocess.Popen that forces UTF-8 encoding in text mode.
+    
+    This is a class wrapper instead of a function to preserve __class_getitem__
+    support for type annotations like subprocess.Popen[bytes] used by mcp library.
+    """
+    def __new__(cls, *args, **kwargs):
+        # If text mode is requested but no encoding provided, force UTF-8 with replace
+        if kwargs.get("text") and "encoding" not in kwargs:
+            kwargs["encoding"] = "utf-8"
+            kwargs.setdefault("errors", "replace")
+        return _original_popen(*args, **kwargs)
+    
+    def __class_getitem__(cls, item):
+        # Support type annotations like Popen[bytes]
+        return _original_popen.__class_getitem__(item)
 
 # Replace subprocess.Popen with our wrapper for the test session
 # Keep subprocess wrapper installed
-subprocess.Popen = _popen_force_utf8
+subprocess.Popen = _PopenForceUtf8
 
 # --- Test-only LLM factory stub ---------------------------------------------
 # During bootstrap the code may call `make_llm()` to construct LLM clients which

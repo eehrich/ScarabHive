@@ -81,10 +81,19 @@ class MCPIntegration:
         """Bootstrap MCP servers and agents using bootstrap_servers().
         
         This is called once during initialization. If bootstrap_servers()
-        was already called externally (e.g., by build_mcp_app), skip it.
+        was already called externally (e.g., by InitializationService), skip it.
         """
         if self.servers_bootstrapped:
-            logger.debug("Servers already bootstrapped, skipping")
+            logger.debug("Servers already bootstrapped (flag set), skipping")
+            return
+        
+        # Check if plugin_registry already has servers (bootstrapped elsewhere)
+        if self.plugin_registry.plugin_servers:
+            logger.debug(
+                f"Servers already bootstrapped externally "
+                f"({len(self.plugin_registry.plugin_servers)} servers in plugin_registry), skipping"
+            )
+            self.servers_bootstrapped = True
             return
         
         from ..mcp.base import MCPRegistry

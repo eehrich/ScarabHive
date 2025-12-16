@@ -47,8 +47,9 @@ class TestGeminiClientMessageConversion:
         system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
         
         assert system_instruction == "You are a helpful assistant."
-        assert len(contents) == 1  # System message not in contents
+        assert len(contents) == 1  # Only user message
         assert contents[0]["role"] == "user"
+        assert contents[0]["parts"][0]["text"] == "Hello"
 
     def test_convert_assistant_message(self, gemini_client):
         """Test conversion of assistant message."""
@@ -704,8 +705,8 @@ class TestGeminiClientStreaming:
 
             final_events = [e for e in events if e["type"] == "final"]
             assert len(final_events) == 1
-            # Thoughts and content combined in assistant response
-            assert final_events[0]["assistant"]["content"] == "Thinking...Hi"
+            # Only non-thought content is stored in assistant response (thoughts are streamed only)
+            assert final_events[0]["assistant"]["content"] == "Hi"
 
     @pytest.mark.asyncio
     async def test_streaming_payload_includes_thinking_config_when_enabled(self):

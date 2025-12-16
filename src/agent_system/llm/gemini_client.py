@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -83,13 +83,16 @@ class GeminiClient(LLMClient):
         Returns:
             (system_instruction, contents) tuple
         """
-        system_instruction = None
+        system_instructions: List[str] = []
         contents = []
 
         for msg in messages:
             if msg.role == "system":
-                # Gemini uses systemInstruction separately
-                system_instruction = msg.content if isinstance(msg.content, str) else ""
+                # Gemini uses systemInstruction separately - collect ALL system messages
+                content = msg.content if isinstance(msg.content, str) else ""
+                if content:
+                    system_instructions.append(content)
+                    logger.debug(f"Collected system instruction: {len(content)} chars")
                 continue
 
             # Map roles
@@ -168,6 +171,12 @@ class GeminiClient(LLMClient):
                     "role": role,
                     "parts": [{"text": content_text}]
                 })
+
+        # Merge all system instructions (first one is the main prompt, others are context additions)
+        system_instruction = None
+        if system_instructions:
+            system_instruction = "\n\n".join(system_instructions)
+            logger.debug(f"Final merged system instruction: {len(system_instruction)} chars from {len(system_instructions)} parts")
 
         return system_instruction, contents
 
@@ -289,7 +298,7 @@ class GeminiClient(LLMClient):
                             logger.error(f"Gemini streaming request failed: {error_msg}")
                             raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                        logger.debug(f"Gemini streaming: Response started, reading chunks...")
+                        logger.debug("Gemini streaming: Response started, reading chunks...")
                         async for line in response.aiter_lines():
                             if cancellation_token and cancellation_token.is_cancelled:
                                 raise asyncio.CancelledError("Request cancelled during streaming")
@@ -415,7 +424,7 @@ class GeminiClient(LLMClient):
                         if accumulated_usage:
                             final_result["usage"] = accumulated_usage
 
-                        logger.debug(f"Yielding final result")
+                        logger.debug("Yielding final result")
                         yield {"type": "final", **final_result}
                         return  # Success
 

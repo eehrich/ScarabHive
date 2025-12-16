@@ -16,6 +16,7 @@ from .openai_client import OpenAIAsyncClient  # type: ignore
 from .ollama_client import OllamaNativeAsyncClient  # type: ignore
 from .httpx_client import HTTPXOpenAIClient, HTTPXTimeoutConfig  # type: ignore
 from .gemini_client import GeminiClient  # type: ignore
+from .gemini_sdk_client import GeminiSDKClient  # type: ignore
 from ..config.models import ModelCapabilitiesConfig
 
 
@@ -24,7 +25,8 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
 
     - provider=openai: use AsyncOpenAI against OpenAI API.
     - provider=openai_httpx: use HTTPX-based OpenAI client.
-    - provider=gemini: use native Google Gemini API.
+    - provider=gemini: use HTTP-based Google Gemini API.
+    - provider=gemini_sdk: use official Google Gen AI SDK.
     - provider=ollama: use Ollama (native or openai-compat) depending on mode.
     """
     import os
@@ -48,6 +50,26 @@ def make_llm(provider: str, model: str, api_key: Optional[str], base_url: Option
             request_timeout=request_timeout or 180,
             ssl_verify=ssl_verify if ssl_verify is not None else True,
             httpx_timeouts=httpx_timeouts,
+            parallel_tool_calls=parallel_tool_calls,
+            include_thoughts=include_thoughts,
+            thinking_budget=thinking_budget,
+        )
+    
+    if provider == "gemini_sdk":
+        if not api_key:
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required when provider=gemini_sdk")
+        
+        return GeminiSDKClient(
+            model=model,
+            api_key=api_key,
+            base_url=base_url or "https://generativelanguage.googleapis.com/v1beta",
+            context_window=context_window or 200000,
+            request_timeout=request_timeout or 180,
+            ssl_verify=ssl_verify if ssl_verify is not None else True,
+            httpx_timeouts=httpx_timeouts,
+            max_retries=3,
             parallel_tool_calls=parallel_tool_calls,
             include_thoughts=include_thoughts,
             thinking_budget=thinking_budget,

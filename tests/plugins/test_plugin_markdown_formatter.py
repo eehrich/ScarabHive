@@ -284,7 +284,7 @@ async def test_format_markdown_to_text(formatter):
 
 @pytest.mark.asyncio
 async def test_format_html_to_ansi(formatter):
-    """Test that HTML input is converted back to markdown then to ANSI."""
+    """Test that HTML input is converted back to markdown for Rich Console rendering."""
     # Simulate HTML output from agent (already formatted as HTML)
     html_output = """<h1>Header 1</h1>
 <p><strong>Bold</strong> and <em>italic</em> text</p>
@@ -309,11 +309,13 @@ async def test_format_html_to_ansi(formatter):
     result = await formatter.format_markdown_output(context)
     
     assert result.success is True
-    # Plugin returns content as-is with metadata indicating CLI should render with Rich
-    # When HTML is provided as input for ANSI format, plugin just passes it through
-    # (The LLM should generate markdown, not HTML, so this is an edge case)
+    # Plugin converts HTML to Markdown for Rich Console rendering
     assert result.metadata['content_format'] == 'ansi'
     assert result.metadata.get('render_with_rich') is True
-    # Content is returned unchanged (HTML passed through)
-    assert result.context.output == html_output
-    assert result.modified is False  # Not modified
+    assert result.metadata.get('converted_from') == 'html'
+    # Content is converted from HTML to Markdown
+    assert result.modified is True
+    # Verify markdown content was generated (should contain # for headers, ** for bold, etc.)
+    markdown_output = result.context.output
+    assert '# Header 1' in markdown_output or 'Header 1' in markdown_output
+    assert '**Bold**' in markdown_output or 'Bold' in markdown_output

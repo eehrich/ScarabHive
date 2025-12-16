@@ -25,6 +25,7 @@ dependencies = [
     "tweepy>=4.14.0",
     "openai>=1.37.0",
     "ollama>=0.3.0",
+    "google-genai>=1.0.0",  # Official Google Gen AI SDK for Gemini
     "jinja2>=3.1",
     "pytz>=2024.1",
     "pytest>=8.4",

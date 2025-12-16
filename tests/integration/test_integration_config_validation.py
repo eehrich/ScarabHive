@@ -204,21 +204,21 @@ async def test_tool_server_filtering_config(base_system_config, mock_registry_wi
 
 
 @pytest.mark.asyncio
-async def test_empty_allowed_tools_means_all(base_system_config, mock_registry_with_servers):
-    """Test 3: Empty tools.allowed list means all tools available"""
+async def test_empty_allowed_tools_means_none(base_system_config, mock_registry_with_servers):
+    """Test 3: Empty tools.allowed list means NO tools available (security by default)."""
     
     agent_config = AgentConfig(
         
         llm_profile="default",
         system_prompt="Test",
-        tools=ToolConfig(allowed=[])  # Empty = all tools
+        tools=ToolConfig(allowed=[])  # Empty = deny all (security by default)
     )
     
     mock_llm = MockLLMClient()
     mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
-        name="all_tools_test",
+        name="no_tools_test",
         system_config=base_system_config,
         mcp_config=mcp_config,
         registry=mock_registry_with_servers,
@@ -229,13 +229,10 @@ async def test_empty_allowed_tools_means_all(base_system_config, mock_registry_w
     # list_usable_tools() returns tuple: (tool names, allowed patterns, blocked patterns)
     tool_names, _, blocked_patterns = await agent.list_usable_tools()
     
-    # Should have all tools when tools.allowed is empty
-    assert "datetime" in tool_names
-    assert "weather" in tool_names
-    assert "calculator" in tool_names
-    assert "database" in tool_names
+    # Empty allowed list = deny all (security by default)
+    assert len(tool_names) == 0, f"Expected no tools, got: {tool_names}"
     
-    logger.info("✓ Empty tools.allowed gives all tools")
+    logger.info("✓ Empty tools.allowed gives NO tools (security by default)")
 
 
 @pytest.mark.asyncio

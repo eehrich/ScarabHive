@@ -9,7 +9,7 @@ llm_system:
 
   models:
     gemini-2-5-flash:
-      provider: gemini
+      provider: gemini_sdk
       model: gemini-2.5-flash
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
@@ -26,9 +26,8 @@ llm_system:
         supported_api_types: [chat_completions]
         default_api_type: chat_completions
 
-
     gemini-3-0-pro:
-      provider: gemini
+      provider: gemini_sdk
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta
@@ -46,7 +45,7 @@ llm_system:
         default_api_type: chat_completions
 
     gemini-3-0-pro-nostream:
-      provider: gemini
+      provider: gemini_sdk
       model: gemini-3-pro-preview
       api_key: "***REMOVED***"
       base_url: https://generativelanguage.googleapis.com/v1beta

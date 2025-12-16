@@ -268,7 +268,9 @@ class TestVectorStoreMetadata:
         )
         
         assert "metadatas" in results
-        if results["metadatas"]:
-            metadata = results["metadatas"][0]
+        # Results are in batch format: [[metadata1, metadata2, ...]]
+        # So metadatas[0] is the list of metadatas for the first (and only) query
+        if results["metadatas"] and results["metadatas"][0]:
+            metadata = results["metadatas"][0][0]  # First result of first query
             assert metadata.get("author") == "test"
             assert metadata.get("year") == "2024"
