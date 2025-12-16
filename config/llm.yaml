@@ -8,6 +8,24 @@ llm_system:
     pool: 5.0          # Pool timeout - getting connection from pool (seconds)
 
   models:
+    gemini-2-5-flash:
+      provider: ollama
+      model: gemini-2.5-flash
+      openai_api_key: "***REMOVED***"
+      ollama_url: https://generativelanguage.googleapis.com/v1beta/openai/
+      ollama_mode: openai_compat
+      context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
+      request_timeout: 180
+      capabilities:
+        tools: true
+        function_calling: true
+        image_input: true
+        streaming: false
+        json_mode: true
+        supported_api_types: [chat_completions]
+        default_api_type: chat_completions
+
+
     gpt-4.1:
       provider: openai_httpx
       model: gpt-4.1
@@ -266,6 +284,10 @@ llm_system:
     small:
       model_ref: deepseek-chat-small
       description: "Cheap and fast none thinking model, for medium complex tasks"
+      max_steps: 100
+    gemini:
+      model_ref: gemini-2-5-flash
+      description: "Google Gemini model for advanced reasoning tasks."
       max_steps: 100
     local:
       model_ref: ollama-gpt-oss-20b
