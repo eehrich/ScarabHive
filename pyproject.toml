@@ -10,7 +10,7 @@ authors = [{ name = "Enrico Ehrich" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.7",
+    "pydantic>=2.7,<2.11",  # <2.11 needed for chromadb 0.6.3 compatibility
     "pyyaml>=6.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30",
@@ -46,7 +46,8 @@ dependencies = [
     "markdownify>=0.11.0",
     "pygments>=2.15.0",
     "websockets>=15.0.0",
-    "chromadb>=1.0.0",
+    "chromadb>=0.6.0,<1.0.0",  # 0.6.x works on Windows with hnswlib 0.7.x
+    "hnswlib>=0.7.0,<0.8.0",   # Required for ChromaDB on Windows (needs MSVC Build Tools)
     "sqlite-vec>=0.1.0",
     "onnxruntime>=1.20.0",
 ]

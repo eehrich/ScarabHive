@@ -437,13 +437,21 @@ class VectorStore:
         
         results = coll.query(**kwargs)
         
-        # Flatten results (ChromaDB returns nested lists)
-        return {
-            "ids": results.get("ids", [[]])[0] if results.get("ids") else [],
-            "distances": results.get("distances", [[]])[0] if results.get("distances") else [],
-            "documents": results.get("documents", [[]])[0] if results.get("documents") else [],
-            "metadatas": results.get("metadatas", [[]])[0] if results.get("metadatas") else [],
-        }
+        # Normalize format: ChromaDB 0.6.x returns flat lists, 1.x returns list-of-lists
+        # Keep as list-of-lists for consistency with batch query interface
+        if results.get('ids'):
+            # Check if already nested (ChromaDB 1.x) or flat (ChromaDB 0.6.x)
+            if not isinstance(results['ids'][0], list):
+                # ChromaDB 0.6.x format - wrap in list
+                return {
+                    "ids": [results.get("ids", [])],
+                    "distances": [results.get("distances", [])],
+                    "documents": [results.get("documents", [])],
+                    "metadatas": [results.get("metadatas", [])],
+                }
+        
+        # ChromaDB 1.x format or empty - return as-is
+        return results
     
     def _chromadb_delete(
         self,
@@ -636,14 +644,14 @@ class VectorStore:
         else:
             raise VectorStoreError("Either query_text or query_embedding required")
         
-        # Query vectors
+        # Query vectors (sqlite-vec requires k parameter in MATCH clause)
         rows = conn.execute(f'''
             SELECT v.item_id, v.distance, m.document, m.metadata
             FROM vec_{collection} v
             LEFT JOIN meta_{collection} m ON v.item_id = m.item_id
             WHERE v.embedding MATCH ?
+              AND k = ?
             ORDER BY v.distance
-            LIMIT ?
         ''', (self._serialize_embedding(emb), n_results)).fetchall()
         
         import json
@@ -659,11 +667,12 @@ class VectorStore:
             meta_str = row["metadata"]
             metadatas.append(json.loads(meta_str) if meta_str else None)
         
+        # Return format compatible with ChromaDB (list of lists for batch queries)
         return {
-            "ids": ids,
-            "distances": distances,
-            "documents": documents,
-            "metadatas": metadatas,
+            "ids": [ids],
+            "distances": [distances],
+            "documents": [documents],
+            "metadatas": [metadatas],
         }
     
     def _sqlite_vec_delete(
