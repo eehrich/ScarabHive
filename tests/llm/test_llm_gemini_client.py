@@ -1,0 +1,663 @@
+"""Tests for Google Gemini native API client."""
+import asyncio
+import pytest
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
+
+from agent_system.llm.gemini_client import GeminiClient
+from agent_system.llm.models import ChatMessage
+
+
+@pytest.fixture
+def gemini_client():
+    """Create a GeminiClient instance for testing."""
+    return GeminiClient(
+        model="gemini-2.0-flash-exp",
+        api_key="test-api-key",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        context_window=200000,
+        request_timeout=180
+    )
+
+
+class TestGeminiClientMessageConversion:
+    """Test message format conversion from ChatMessage to Gemini format."""
+
+    def test_convert_simple_user_message(self, gemini_client):
+        """Test conversion of simple user message."""
+        messages = [
+            ChatMessage(role="user", content="Hello, how are you?")
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert system_instruction is None
+        assert len(contents) == 1
+        assert contents[0]["role"] == "user"
+        assert contents[0]["parts"] == [{"text": "Hello, how are you?"}]
+
+    def test_convert_system_message(self, gemini_client):
+        """Test that system messages are extracted separately."""
+        messages = [
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content="Hello")
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert system_instruction == "You are a helpful assistant."
+        assert len(contents) == 1  # System message not in contents
+        assert contents[0]["role"] == "user"
+
+    def test_convert_assistant_message(self, gemini_client):
+        """Test conversion of assistant message."""
+        messages = [
+            ChatMessage(role="assistant", content="I'm doing well, thank you!")
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert system_instruction is None
+        assert len(contents) == 1
+        assert contents[0]["role"] == "model"  # Gemini uses "model" instead of "assistant"
+        assert contents[0]["parts"] == [{"text": "I'm doing well, thank you!"}]
+
+    def test_convert_tool_response(self, gemini_client):
+        """Test conversion of tool response message."""
+        messages = [
+            ChatMessage(
+                role="tool",
+                content='{"temperature": 22, "condition": "sunny"}',
+                tool_call_id="call_123",
+                name="get_weather"
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert system_instruction is None
+        assert len(contents) == 1
+        assert contents[0]["role"] == "function"
+        assert "functionResponse" in contents[0]["parts"][0]
+        func_response = contents[0]["parts"][0]["functionResponse"]
+        assert func_response["name"] == "get_weather"
+        assert func_response["response"]["temperature"] == 22
+        assert func_response["response"]["condition"] == "sunny"
+
+    def test_convert_assistant_with_tool_calls(self, gemini_client):
+        """Test conversion of assistant message with tool calls."""
+        messages = [
+            ChatMessage(
+                role="assistant",
+                content="Let me check the weather for you.",
+                tool_calls=[
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Berlin", "units": "celsius"}'
+                        }
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert system_instruction is None
+        assert len(contents) == 1
+        assert contents[0]["role"] == "model"
+        assert len(contents[0]["parts"]) == 2  # Text + function call
+        
+        # Check text part
+        assert contents[0]["parts"][0] == {"text": "Let me check the weather for you."}
+        
+        # Check function call part
+        func_call = contents[0]["parts"][1]["functionCall"]
+        assert func_call["name"] == "get_weather"
+        assert func_call["args"]["city"] == "Berlin"
+        assert func_call["args"]["units"] == "celsius"
+
+    def test_convert_multiple_tool_calls(self, gemini_client):
+        """Test conversion of assistant message with multiple tool calls."""
+        messages = [
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Berlin"}'
+                        }
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "get_time",
+                            "arguments": '{}'
+                        }
+                    }
+                ]
+            )
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert len(contents) == 1
+        assert len(contents[0]["parts"]) == 2  # Two function calls
+        
+        assert contents[0]["parts"][0]["functionCall"]["name"] == "get_weather"
+        assert contents[0]["parts"][1]["functionCall"]["name"] == "get_time"
+
+    def test_convert_conversation_flow(self, gemini_client):
+        """Test conversion of complete conversation with tools."""
+        messages = [
+            ChatMessage(role="system", content="You are a weather assistant."),
+            ChatMessage(role="user", content="What's the weather in Berlin?"),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[{
+                    "id": "call_1",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Berlin"}'
+                    }
+                }]
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"temp": 22}',
+                tool_call_id="call_1",
+                name="get_weather"
+            ),
+            ChatMessage(role="assistant", content="The weather in Berlin is 22°C.")
+        ]
+        
+        system_instruction, contents = gemini_client._convert_messages_to_gemini(messages)
+        
+        assert system_instruction == "You are a weather assistant."
+        assert len(contents) == 4  # User, Assistant, Function Response, Assistant
+        
+        assert contents[0]["role"] == "user"
+        assert contents[1]["role"] == "model"
+        assert contents[2]["role"] == "function"
+        assert contents[3]["role"] == "model"
+
+
+class TestGeminiClientToolConversion:
+    """Test tool schema conversion from OpenAI to Gemini format."""
+
+    def test_convert_simple_tool(self, gemini_client):
+        """Test conversion of simple tool schema."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string", "description": "City name"}
+                        },
+                        "required": ["city"]
+                    }
+                }
+            }
+        ]
+        
+        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        
+        assert len(function_declarations) == 1
+        assert function_declarations[0]["name"] == "get_weather"
+        assert function_declarations[0]["description"] == "Get current weather for a city"
+        assert "parameters" in function_declarations[0]
+        assert function_declarations[0]["parameters"]["properties"]["city"]["type"] == "string"
+
+    def test_convert_multiple_tools(self, gemini_client):
+        """Test conversion of multiple tools."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "description": "Get current time",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }
+        ]
+        
+        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        
+        assert len(function_declarations) == 2
+        assert function_declarations[0]["name"] == "get_weather"
+        assert function_declarations[1]["name"] == "get_time"
+
+    def test_convert_tool_without_parameters(self, gemini_client):
+        """Test conversion of tool without parameters."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "hello_world",
+                    "description": "Say hello"
+                }
+            }
+        ]
+        
+        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        
+        assert len(function_declarations) == 1
+        assert function_declarations[0]["name"] == "hello_world"
+        assert "parameters" not in function_declarations[0]
+
+    def test_skip_non_function_tools(self, gemini_client):
+        """Test that non-function tools are skipped."""
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "test", "description": "Test"}
+            },
+            {
+                "type": "other",  # Invalid type
+                "function": {"name": "skip_me"}
+            }
+        ]
+        
+        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        
+        assert len(function_declarations) == 1
+        assert function_declarations[0]["name"] == "test"
+
+    def test_clean_schema_removes_additional_properties(self, gemini_client):
+        """Test that additionalProperties and other unsupported fields are removed."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "test_tool",
+                    "description": "Test tool with additionalProperties",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "nested": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {"type": "number"}
+                                },
+                                "additionalProperties": False
+                            }
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                        "$schema": "http://json-schema.org/draft-07/schema#"
+                    }
+                }
+            }
+        ]
+        
+        function_declarations = gemini_client._convert_tools_to_gemini(tools)
+        
+        assert len(function_declarations) == 1
+        params = function_declarations[0]["parameters"]
+        
+        # Check that additionalProperties is removed at root level
+        assert "additionalProperties" not in params
+        assert "$schema" not in params
+        
+        # Check that additionalProperties is removed from nested objects
+        assert "additionalProperties" not in params["properties"]["nested"]
+        
+        # Check that valid fields are kept
+        assert params["type"] == "object"
+        assert "name" in params["properties"]
+        assert params["required"] == ["name"]
+
+
+class TestGeminiClientStreaming:
+    """Test streaming functionality."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_text_response(self, gemini_client):
+        """Test streaming a simple text response."""
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        # Mock HTTPX streaming response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        
+        async def mock_aiter_lines():
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [{"text": "Hello"}]
+                    }
+                }]
+            })
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [{"text": " there!"}]
+                    }
+                }]
+            })
+            yield "data: [DONE]"
+        
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+            
+            mock_client_class.return_value = mock_client
+
+            events = []
+            async for event in gemini_client.chat_tools_streaming(messages, tools):
+                events.append(event)
+
+            # Check we got content deltas and final result
+            content_deltas = [e for e in events if e["type"] == "content_delta"]
+            assert len(content_deltas) == 2
+            assert content_deltas[0]["delta"] == "Hello"
+            assert content_deltas[1]["delta"] == " there!"
+            
+            final_events = [e for e in events if e["type"] == "final"]
+            assert len(final_events) == 1
+            assert final_events[0]["assistant"]["content"] == "Hello there!"
+
+    @pytest.mark.asyncio
+    async def test_streaming_function_call(self, gemini_client):
+        """Test streaming a function call response."""
+        messages = [ChatMessage(role="user", content="What's the weather?")]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            }
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        
+        async def mock_aiter_lines():
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "functionCall": {
+                                "name": "get_weather",
+                                "args": {"city": "Berlin"}
+                            }
+                        }]
+                    }
+                }]
+            })
+            yield "data: [DONE]"
+        
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+            
+            mock_client_class.return_value = mock_client
+
+            events = []
+            async for event in gemini_client.chat_tools_streaming(messages, tools):
+                events.append(event)
+
+            # Check we got tool call delta and final result
+            tool_deltas = [e for e in events if e["type"] == "tool_call_delta"]
+            assert len(tool_deltas) == 1
+            
+            final_events = [e for e in events if e["type"] == "final"]
+            assert len(final_events) == 1
+            assert "tool_calls" in final_events[0]["assistant"]
+            assert len(final_events[0]["assistant"]["tool_calls"]) == 1
+            assert final_events[0]["assistant"]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    @pytest.mark.asyncio
+    async def test_streaming_with_usage_metadata(self, gemini_client):
+        """Test that usage metadata is captured."""
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        
+        async def mock_aiter_lines():
+            yield "data: " + json.dumps({
+                "candidates": [{
+                    "content": {"parts": [{"text": "Hi"}]},
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 5,
+                        "totalTokenCount": 15
+                    }
+                }]
+            })
+            yield "data: [DONE]"
+        
+        mock_response.aiter_lines = mock_aiter_lines
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+            
+            mock_client_class.return_value = mock_client
+
+            events = []
+            async for event in gemini_client.chat_tools_streaming(messages, tools):
+                events.append(event)
+
+            final_events = [e for e in events if e["type"] == "final"]
+            assert len(final_events) == 1
+            assert "usage" in final_events[0]
+            assert final_events[0]["usage"]["prompt_tokens"] == 10
+            assert final_events[0]["usage"]["completion_tokens"] == 5
+            assert final_events[0]["usage"]["total_tokens"] == 15
+
+    @pytest.mark.asyncio
+    async def test_streaming_http_error(self, gemini_client):
+        """Test handling of HTTP errors."""
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.request = MagicMock()
+        
+        async def mock_atext():
+            return json.dumps({
+                "error": {
+                    "code": 400,
+                    "message": "Invalid request"
+                }
+            })
+        
+        mock_response.atext = mock_atext
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            
+            mock_stream = MagicMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream = MagicMock(return_value=mock_stream)
+            
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(Exception) as exc_info:
+                async for _ in gemini_client.chat_tools_streaming(messages, tools):
+                    pass
+
+            assert "HTTP 400" in str(exc_info.value) or "Invalid request" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_streaming_cancellation(self, gemini_client):
+        """Test cancellation during streaming."""
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        # Mock cancellation token
+        mock_token = MagicMock()
+        mock_token.is_cancelled = True
+
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in gemini_client.chat_tools_streaming(messages, tools, cancellation_token=mock_token):
+                pass
+
+
+class TestGeminiClientNonStreaming:
+    """Test non-streaming methods."""
+
+    @pytest.mark.asyncio
+    async def test_chat_tools_text_response(self, gemini_client):
+        """Test non-streaming text response."""
+        messages = [ChatMessage(role="user", content="Hello")]
+        tools = []
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(return_value={
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello there!"}]
+                },
+                "usageMetadata": {
+                    "promptTokenCount": 5,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 8
+                }
+            }]
+        })
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            
+            mock_client_class.return_value = mock_client
+
+            result = await gemini_client.chat_tools(messages, tools)
+
+            assert result["assistant"]["content"] == "Hello there!"
+            assert result["usage"]["prompt_tokens"] == 5
+            assert result["usage"]["completion_tokens"] == 3
+
+    @pytest.mark.asyncio
+    async def test_chat_tools_function_call(self, gemini_client):
+        """Test non-streaming function call response."""
+        messages = [ChatMessage(role="user", content="What's the weather?")]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather"
+                }
+            }
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(return_value={
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "get_weather",
+                            "args": {"city": "Berlin"}
+                        }
+                    }]
+                },
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 5,
+                    "totalTokenCount": 15
+                }
+            }]
+        })
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            
+            mock_client_class.return_value = mock_client
+
+            result = await gemini_client.chat_tools(messages, tools)
+
+            assert "tool_calls" in result["assistant"]
+            assert len(result["assistant"]["tool_calls"]) == 1
+            assert result["assistant"]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    @pytest.mark.asyncio
+    async def test_chat_simple(self, gemini_client):
+        """Test simple chat without tools."""
+        messages = [ChatMessage(role="user", content="Hello")]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(return_value={
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hi there!"}]
+                }
+            }]
+        })
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            
+            mock_client_class.return_value = mock_client
+
+            result = await gemini_client.chat(messages)
+
+            assert result == "Hi there!"

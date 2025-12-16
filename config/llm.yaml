@@ -9,13 +9,12 @@ llm_system:
 
   models:
     gemini-2-5-flash:
-      provider: openai_httpx
+      provider: gemini
       model: gemini-2.5-flash
-      openai_api_key: "***REMOVED***"
-      base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
       context_window: 200000 # Gemini 2.5 Flash has 1M context, but limit it to 200k for $$$
       request_timeout: 180
-      parallel_tool_calls: false  # Gemini doesn't support this OpenAI parameter
       capabilities:
         tools: true
         function_calling: true
@@ -27,13 +26,12 @@ llm_system:
 
 
     gemini-3-0-pro:
-      provider: openai_httpx
+      provider: gemini
       model: gemini-3-pro-preview
-      openai_api_key: "***REMOVED***"
-      base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
-      context_window: 200000  # Gemini 3 Pro: 1M input / 64k output, limit to 200k because of $$$
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000  # Gemini 2 Flash Thinking: 32k input / 8k output, limit to 200k
       request_timeout: 180
-      parallel_tool_calls: false  # Gemini doesn't support this OpenAI parameter
       capabilities:
         tools: true
         function_calling: true
@@ -44,13 +42,12 @@ llm_system:
         default_api_type: chat_completions
 
     gemini-3-0-pro-nostream:
-      provider: openai_httpx
+      provider: gemini
       model: gemini-3-pro-preview
-      openai_api_key: "***REMOVED***"
-      base_url: https://generativelanguage.googleapis.com/v1beta/openai/v1
-      context_window: 200000  # Gemini 3 Pro: 1M input / 64k output, limit to 200k because of $$$
+      api_key: "***REMOVED***"
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      context_window: 200000  # Gemini 2 Flash Thinking: 32k input / 8k output
       request_timeout: 180
-      parallel_tool_calls: false  # Gemini doesn't support this OpenAI parameter
       capabilities:
         tools: true
         function_calling: true
@@ -63,7 +60,7 @@ llm_system:
     gpt-4.1:
       provider: openai_httpx
       model: gpt-4.1
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 1000000
       request_timeout: 60
       capabilities:
@@ -83,7 +80,7 @@ llm_system:
     gpt-5-nano:
       provider: openai_httpx
       model: gpt-5-nano
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 60
       capabilities:
@@ -98,7 +95,7 @@ llm_system:
     gpt-5-mini:
       provider: openai_httpx
       model: gpt-5-mini
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
       httpx_timeouts:
@@ -121,7 +118,7 @@ llm_system:
     gpt-5.1:
       provider: openai_httpx
       model: gpt-5.1
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
       capabilities:
@@ -141,7 +138,7 @@ llm_system:
     gpt-5.1-codex:
       provider: openai_httpx
       model: gpt-5.1-codex
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
       capabilities:
@@ -161,7 +158,7 @@ llm_system:
     gpt-5.1-codex-mini:
       provider: openai_httpx
       model: gpt-5.1-codex-mini
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 272000
       request_timeout: 180
       httpx_timeouts:
@@ -184,7 +181,7 @@ llm_system:
     gpt-realtime:
       provider: openai
       model: gpt-realtime
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 27900
       request_timeout: 180
       capabilities:
@@ -199,7 +196,7 @@ llm_system:
     gpt-realtime-mini:
       provider: openai
       model: gpt-realtime-mini
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 27900
       request_timeout: 180
       capabilities:
@@ -215,7 +212,7 @@ llm_system:
     gpt-audio:
       provider: openai
       model: gpt-audio
-      openai_api_key: ***REMOVED***
+      api_key: ***REMOVED***
       context_window: 100000
       request_timeout: 180
       capabilities:
@@ -239,7 +236,7 @@ llm_system:
     deepseek-chat:
       provider: openai_httpx
       model: deepseek-chat
-      openai_api_key: "***REMOVED***"
+      api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000 # 128K context size totally
       request_timeout: 180
@@ -252,7 +249,7 @@ llm_system:
     deepseek-chat-nostream:
       provider: openai_httpx
       model: deepseek-chat
-      openai_api_key: "***REMOVED***"
+      api_key: "***REMOVED***"
       base_url: https://api.deepseek.com/v1
       context_window: 100000 # 128K context size totally
       request_timeout: 180
@@ -320,7 +317,7 @@ llm_system:
       description: "OpenAI model for medium reasoning tasks."
       max_steps: 500          
     gpt-nano:
-      model_ref: gpt-5-mini
+      model_ref: gpt-5-nano
       description: "OpenAI model for medium reasoning tasks."
       max_steps: 500          
     local:

@@ -118,8 +118,8 @@ class LLMRouterServer(SchemaBasedMCPServer):
             return make_llm(
                 llm_kwargs["provider"],
                 llm_kwargs["model"],
-                llm_kwargs["openai_api_key"],
-                llm_kwargs["ollama_url"],
+                llm_kwargs["api_key"],
+                llm_kwargs["base_url"],
                 llm_kwargs["context_window"],
                 llm_kwargs["ollama_mode"],
                 llm_kwargs["request_timeout"],

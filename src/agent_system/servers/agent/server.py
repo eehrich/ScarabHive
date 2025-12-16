@@ -171,8 +171,8 @@ class Agent(MCPServer):
                     self.llm = make_llm(
                         llm_kwargs["provider"],
                         llm_kwargs["model"],
-                        llm_kwargs["openai_api_key"],
-                        llm_kwargs["ollama_url"],
+                        llm_kwargs["api_key"],
+                        llm_kwargs["base_url"],
                         llm_kwargs["context_window"],
                         llm_kwargs["ollama_mode"],
                         llm_kwargs["request_timeout"],
@@ -689,8 +689,8 @@ class Agent(MCPServer):
                     llm_override = make_llm(
                         llm_kwargs["provider"],
                         llm_kwargs["model"],
-                        llm_kwargs["openai_api_key"],
-                        llm_kwargs["ollama_url"],
+                        llm_kwargs["api_key"],
+                        llm_kwargs["base_url"],
                         llm_kwargs["context_window"],
                         llm_kwargs["ollama_mode"],
                         llm_kwargs["request_timeout"],
@@ -1313,7 +1313,7 @@ class Agent(MCPServer):
                 await status_coordinator.error(f"cancelled at step {step + 1}",
                                             meta={"step": step + 1, "reason": "cancelled"})
                 await asyncio.sleep(0.01)
-                for status_event in self._status_event_forwarder.get_pending_events():
+                for status_event in context.status_forwarder.get_pending_events():
                     yield status_event
                 yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
                 return

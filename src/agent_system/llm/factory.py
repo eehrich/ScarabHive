@@ -49,9 +49,8 @@ def resolve_llm_config_for_agent(config: AgentSystemConfig, agent_config: AgentC
     llm_kwargs = {
         "provider": model_config.provider,
         "model": model_config.model,
-        "openai_api_key": model_config.openai_api_key,
+        "api_key": model_config.api_key,
         "base_url": model_config.base_url,
-        "ollama_url": model_config.ollama_url,
         "context_window": model_config.context_window,
         "ollama_mode": model_config.ollama_mode,
         "request_timeout": model_config.request_timeout,
@@ -112,9 +111,8 @@ class LLMFactory:
         return make_llm(
             llm_kwargs["provider"],
             llm_kwargs["model"],
-            llm_kwargs["openai_api_key"],
+            llm_kwargs["api_key"],
             llm_kwargs["base_url"],
-            llm_kwargs["ollama_url"],
             llm_kwargs["context_window"],
             llm_kwargs["ollama_mode"],
             llm_kwargs["request_timeout"],

@@ -36,7 +36,7 @@ vision: # type VisionConfig
 
 # Network settings
 network:
-  ssl_verify: false
+  ssl_verify: true
   host: 127.0.0.1
   port: 8000
   disable_cache: true
